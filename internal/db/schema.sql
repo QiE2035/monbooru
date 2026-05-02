@@ -13,7 +13,16 @@ INSERT OR IGNORE INTO tag_categories (name, color, is_builtin) VALUES
     ('character', '#00aa00', 1),
     ('artist',    '#cc0000', 1),
     ('copyright', '#aa00aa', 1),
-    ('meta',      '#ffaa00', 1);
+    ('meta',      '#ffaa00', 1),
+    ('rating',    '#996666', 1),
+    ('medium',    '#7d4fbf', 1),
+    ('person',    '#b85c9e', 1),
+    ('year',      '#4a8fa8', 1);
+
+-- Promote any pre-existing user-created medium/person/year category to
+-- built-in so a library that already had one of these as a custom row
+-- stops being deletable once the seed catches up.
+UPDATE tag_categories SET is_builtin = 1 WHERE name IN ('medium', 'person', 'year');
 
 CREATE TABLE IF NOT EXISTS tags (
     id               INTEGER PRIMARY KEY,
@@ -25,6 +34,16 @@ CREATE TABLE IF NOT EXISTS tags (
     created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     UNIQUE(name, category_id)
 );
+
+-- Canonical rating tags. The category accepts only these four names; the
+-- tagger routes WD14 rating labels here, search uses the IDs directly via
+-- a fixed-name SELECT, and the GetOrCreateTag guard refuses anything else
+-- in this category.
+INSERT OR IGNORE INTO tags (name, category_id) VALUES
+    ('general',      (SELECT id FROM tag_categories WHERE name = 'rating')),
+    ('sensitive',    (SELECT id FROM tag_categories WHERE name = 'rating')),
+    ('questionable', (SELECT id FROM tag_categories WHERE name = 'rating')),
+    ('explicit',     (SELECT id FROM tag_categories WHERE name = 'rating'));
 
 CREATE TABLE IF NOT EXISTS images (
     id             INTEGER PRIMARY KEY,
@@ -54,10 +73,18 @@ CREATE TABLE IF NOT EXISTS image_tags (
     image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
     tag_id      INTEGER NOT NULL REFERENCES tags(id)   ON DELETE CASCADE,
     is_auto     INTEGER NOT NULL DEFAULT 0,
+    is_implied  INTEGER NOT NULL DEFAULT 0,
     confidence  REAL,
     tagger_name TEXT,
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     PRIMARY KEY (image_id, tag_id)
+);
+
+CREATE TABLE IF NOT EXISTS tag_implications (
+    parent_tag_id  INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    implied_tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    created_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (parent_tag_id, implied_tag_id)
 );
 
 CREATE TABLE IF NOT EXISTS sd_metadata (
@@ -97,8 +124,10 @@ CREATE INDEX IF NOT EXISTS idx_tags_name         ON tags(name);
 CREATE INDEX IF NOT EXISTS idx_tags_category     ON tags(category_id);
 CREATE INDEX IF NOT EXISTS idx_tags_usage        ON tags(usage_count DESC);
 CREATE INDEX IF NOT EXISTS idx_tags_active_usage ON tags(usage_count DESC, name) WHERE is_alias = 0;
+CREATE INDEX IF NOT EXISTS idx_tags_alias_canonical ON tags(canonical_tag_id, name) WHERE is_alias = 1;
 CREATE INDEX IF NOT EXISTS idx_image_tags_tag    ON image_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_image_tags_image  ON image_tags(image_id);
+CREATE INDEX IF NOT EXISTS idx_tag_implications_implied ON tag_implications(implied_tag_id);
 CREATE INDEX IF NOT EXISTS idx_image_tags_user_tag ON image_tags(tag_id) WHERE is_auto = 0;
 CREATE INDEX IF NOT EXISTS idx_image_tags_auto_tagger ON image_tags(tagger_name)
     WHERE is_auto = 1 AND tagger_name IS NOT NULL AND tagger_name != '';

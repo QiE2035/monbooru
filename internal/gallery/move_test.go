@@ -88,6 +88,57 @@ func TestMoveImage_FilenameCollisionAutosuffixes(t *testing.T) {
 	}
 }
 
+func TestMoveImage_RenameFailureRollsBackTx(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses directory permissions")
+	}
+	database, env, galleryDir := setupSyncTest(t)
+	srcPath := createTestPNGFile(t, galleryDir, "rollme.png")
+	if _, _, err := Ingest(database, galleryDir, env.thumbnailsPath, srcPath, "png", ""); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	var id int64
+	database.Read.QueryRow(`SELECT id FROM images`).Scan(&id)
+
+	// Pre-create the destination dir without write permission so the
+	// rename inside MoveImage fails; the in-flight tx must roll back and
+	// leave canonical_path / image_paths.path pointing at the original.
+	dstDir := filepath.Join(galleryDir, "ro")
+	if err := os.MkdirAll(dstDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dstDir, 0o755) })
+
+	if _, err := MoveImage(database, galleryDir, id, "ro"); err == nil {
+		t.Fatal("expected MoveImage to fail when destination is not writable")
+	}
+
+	var canonPath, folderPath string
+	if err := database.Read.QueryRow(
+		`SELECT canonical_path, folder_path FROM images WHERE id = ?`, id,
+	).Scan(&canonPath, &folderPath); err != nil {
+		t.Fatal(err)
+	}
+	if canonPath != srcPath {
+		t.Errorf("canonical_path = %q, want %q (rename failure should roll back)", canonPath, srcPath)
+	}
+	if folderPath != "" {
+		t.Errorf("folder_path = %q, want empty", folderPath)
+	}
+	var pathRow string
+	if err := database.Read.QueryRow(
+		`SELECT path FROM image_paths WHERE image_id = ? AND is_canonical = 1`, id,
+	).Scan(&pathRow); err != nil {
+		t.Fatal(err)
+	}
+	if pathRow != srcPath {
+		t.Errorf("image_paths.path = %q, want %q", pathRow, srcPath)
+	}
+	if _, err := os.Stat(srcPath); err != nil {
+		t.Errorf("source file gone after failed move: %v", err)
+	}
+}
+
 func TestMoveImage_SameFolderIsNoop(t *testing.T) {
 	database, env, galleryDir := setupSyncTest(t)
 	sub := filepath.Join(galleryDir, "here")

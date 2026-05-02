@@ -37,7 +37,7 @@ type Image struct {
 	IsFavorited   bool
 	AutoTaggedAt  *time.Time
 	SourceType    string // "a1111" | "comfyui" | "none" | "a1111,comfyui"
-	Origin        string // "ingest" | "upload" | caller-supplied string (app name, URL…)
+	Origin        string // "ingest" | "upload" | caller-supplied string (app name, URL...)
 	IngestedAt    time.Time
 }
 
@@ -79,9 +79,24 @@ type ImageTag struct {
 	Color      string
 	UsageCount int
 	IsAuto     bool
+	IsImplied  bool // row was fanned out from a parent tag's implication graph
 	Confidence *float64
 	TaggerName string // source auto-tagger when IsAuto; empty for manual tags
 	CreatedAt  time.Time
+}
+
+// Implication is one edge of the tag implication graph: adding ParentID
+// to an image fans out an implied row for ImpliedID.
+type Implication struct {
+	ParentID            int64
+	ImpliedID           int64
+	ParentName          string
+	ParentCategoryName  string
+	ParentCategoryColor string
+	ImpliedName         string
+	ImpliedCategoryName string
+	ImpliedCategoryColor string
+	CreatedAt           time.Time
 }
 
 // SDParam is a single parsed key-value pair from A1111 generation parameters.

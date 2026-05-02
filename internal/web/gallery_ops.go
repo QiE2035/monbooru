@@ -207,8 +207,6 @@ func (s *Server) RenameGallery(oldName, newName string) error {
 		s.ctxMu.Unlock()
 		return fmt.Errorf("gallery %q already exists", newName)
 	}
-	// Close the DB, rename the data dir on disk, then reopen under the new
-	// name so derived paths stay consistent.
 	newDB, newThumbs := s.cfg.DerivePaths(newName)
 	newDir := filepath.Dir(newDB)
 	if _, err := os.Stat(newDir); err == nil {

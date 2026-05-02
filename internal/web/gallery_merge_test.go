@@ -74,6 +74,47 @@ func makeUniquePNG(t *testing.T, marker uint8) []byte {
 	return buf.Bytes()
 }
 
+// TestCopyZipEntry_RejectsOversizedEntry pins the per-entry decompressed
+// cap that defends archive imports against zip-bomb compression ratios.
+// maxBytes <= 0 mirrors Sync's "no per-file limit" handling.
+func TestCopyZipEntry_RejectsOversizedEntry(t *testing.T) {
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	w, err := zw.Create("payload.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(make([]byte, 4096)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(zipBuf.Bytes()), int64(zipBuf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := zr.File[0]
+
+	var sink bytes.Buffer
+	if err := copyZipEntry(&sink, entry, 1024); err == nil {
+		t.Errorf("expected oversize error for 4 KiB entry against 1 KiB cap")
+	}
+
+	sink.Reset()
+	if err := copyZipEntry(&sink, entry, 0); err != nil {
+		t.Errorf("maxBytes=0 should disable the cap, got %v", err)
+	}
+	if sink.Len() != 4096 {
+		t.Errorf("uncapped copy wrote %d bytes, want 4096", sink.Len())
+	}
+
+	sink.Reset()
+	if err := copyZipEntry(&sink, entry, 8192); err != nil {
+		t.Errorf("entry inside the cap should copy clean, got %v", err)
+	}
+}
+
 // imageTagNames returns every tag name attached to imgID, joined by "|"
 // for stable assertions.
 func imageTagNames(t *testing.T, srv *Server, gallery string, imgID int64) []string {
@@ -257,6 +298,78 @@ func TestMergeGallery_Zip_IngestsNewImage(t *testing.T) {
 	got := imageTagNames(t, srv, "stock", newID)
 	if len(got) != 2 {
 		t.Errorf("expected 2 tags on merged image, got %v", got)
+	}
+}
+
+// TestMergeGallery_Zip_HydrusBuiltinNamespacesRoundTrip exercises the
+// hydrus compat path with sidecar tokens that hit the new built-in
+// categories (medium/person/year), the creator→artist rewrite, and the
+// general fallback. The PNG is unique so the merge ingests it as a new
+// image; tag rows are then read back joined with their categories so we
+// can pin which category each landed in.
+func TestMergeGallery_Zip_HydrusBuiltinNamespacesRoundTrip(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+	imgBytes := makeUniquePNG(t, 91)
+
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	if w, err := zw.Create("img.png"); err != nil {
+		t.Fatal(err)
+	} else if _, err := w.Write(imgBytes); err != nil {
+		t.Fatal(err)
+	}
+	sidecar := "medium:digital\nperson:alice\nyear:2024\ncreator:bob\nseries:fate\nstudio:shaft\ngeneral_only_tag\n"
+	if w, err := zw.Create("img.png.txt"); err != nil {
+		t.Fatal(err)
+	} else if _, err := w.Write([]byte(sidecar)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := srv.MergeGallery("stock", "zip", bytes.NewReader(zipBuf.Bytes())); err != nil {
+		t.Fatalf("MergeGallery: %v", err)
+	}
+
+	cx := srv.Get("stock")
+	rows, err := cx.DB.Read.Query(`
+		SELECT t.name, tc.name FROM image_tags it
+		JOIN tags t ON t.id = it.tag_id
+		JOIN tag_categories tc ON tc.id = t.category_id
+		ORDER BY tc.name, t.name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var name, cat string
+		if err := rows.Scan(&name, &cat); err != nil {
+			t.Fatal(err)
+		}
+		got[name] = cat
+	}
+	want := map[string]string{
+		"digital":          "medium",
+		"alice":            "person",
+		"2024":             "year",
+		"bob":              "artist",    // creator→artist rewrite
+		"fate":             "copyright", // series→copyright rewrite
+		"shaft":            "copyright", // studio→copyright rewrite
+		"general_only_tag": "general",
+	}
+	for n, wantCat := range want {
+		if gotCat, ok := got[n]; !ok {
+			t.Errorf("tag %q missing; got rows %v", n, got)
+		} else if gotCat != wantCat {
+			t.Errorf("tag %q in category %q, want %q", n, gotCat, wantCat)
+		}
+	}
+	for _, raw := range []string{"creator:bob", "series:fate", "studio:shaft"} {
+		if _, ok := got[raw]; ok {
+			t.Errorf("literal %q should not survive the rewrite; got rows %v", raw, got)
+		}
 	}
 }
 

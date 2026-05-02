@@ -8,8 +8,28 @@ document.addEventListener('keydown', function(e) {
   // 'Escape' → blur input first; once nothing is focused, go back to active search on detail page
   if (e.key === 'Escape') {
     if (isInput) { e.target.blur(); return; }
-    const openDialogs = document.querySelectorAll('dialog[open]');
-    if (openDialogs.length > 0) { openDialogs.forEach(function(d) { d.close(); }); return; }
+    // The dialog itself owns the close on Escape via the browser's close
+    // watcher (which fires the `cancel` event below). The keydown handler
+    // just bails so detail-page back-nav and other shortcuts don't fire
+    // on top of the close.
+    if (document.querySelector('dialog[open]')) return;
+    // Batch selection takes priority over detail-page back-nav: while the
+    // batch bar is up, Escape clears the selection instead of leaving the
+    // gallery. The bar is gallery-only, so detail-page Escape is unaffected.
+    var batchBar = document.getElementById('batch-bar');
+    if (batchBar && batchBar.classList.contains('visible')) {
+      e.preventDefault();
+      clearSelection();
+      return;
+    }
+    // Detail-page tag-focus mode (entered with 'r'): Escape leaves the mode
+    // without removing anything. Checked before the back-nav branch so the
+    // first Escape unwinds the mode and a second Escape leaves the page.
+    if (document.querySelector('#image-tags .tag-item.focused')) {
+      e.preventDefault();
+      exitTagFocusMode();
+      return;
+    }
     var detailPage = document.getElementById('detail-page');
     if (detailPage) {
       e.preventDefault();
@@ -29,6 +49,13 @@ document.addEventListener('keydown', function(e) {
     }
   }
 
+  // While a dialog is open, swallow gallery / detail keyboard shortcuts so
+  // arrow-key grid nav, h/l pagination, f/t/s focus, Delete, Space, Enter,
+  // and the `a` chooser shortcut don't fire under the user's input. Inputs,
+  // selects, and textareas inside the dialog still receive their own
+  // keystrokes because isInput is true for those targets.
+  if (!isInput && document.querySelector('dialog[open]')) return;
+
   // 'f' → favorite toggle on detail page
   if (e.key === 'f' && !isInput) {
     const favBtn = document.querySelector('.btn-fav');
@@ -43,11 +70,80 @@ document.addEventListener('keydown', function(e) {
     return;
   }
 
-  // 't' → focus the tag input (detail page)
-  if (e.key === 't' && !isInput) {
-    const tagInput = document.getElementById('tag-input');
-    if (tagInput) { e.preventDefault(); tagInput.focus(); }
+  // Ctrl/Cmd+A → select every visible thumbnail. Gated on the gallery grid
+  // existing so the browser's native select-all-text still works on pages
+  // without a grid.
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A') && !isInput) {
+    if (!document.querySelector('.thumb-checkbox')) return;
+    e.preventDefault();
+    selectAll();
     return;
+  }
+
+  // 'a' → context-dependent add-tag entry point:
+  //   - gallery with selection : open the Add-tags-on-selection dialog
+  //   - detail page            : focus the per-image tag input
+  //   - gallery, no selection  : open the Actions chooser
+  // No-op when an input is focused, when a dialog is already open, or when
+  // modifiers are held (Ctrl+A is handled above).
+  if (e.key === 'a' && !isInput && !e.ctrlKey && !e.metaKey) {
+    if (document.querySelector('dialog[open]')) return;
+    const bar = document.getElementById('batch-bar');
+    if (bar && bar.classList.contains('visible')) {
+      e.preventDefault();
+      openTagSelectedDialog();
+      return;
+    }
+    const tagInput = document.getElementById('tag-input');
+    if (tagInput) {
+      e.preventDefault();
+      tagInput.focus();
+      return;
+    }
+    const actionsBtn = document.getElementById('actions-btn');
+    if (!actionsBtn) return;
+    e.preventDefault();
+    actionsBtn.click();
+    return;
+  }
+
+  // 'r' → remove tags. On the gallery this opens the Remove-tags dialog when
+  // a selection is active. On the detail page it enters tag-focus mode so
+  // arrow keys can cycle through individual tags and Enter triggers the per-
+  // tag remove button.
+  if (e.key === 'r' && !isInput) {
+    const bar = document.getElementById('batch-bar');
+    if (bar && bar.classList.contains('visible')) {
+      e.preventDefault();
+      openStripSelectedDialog();
+      return;
+    }
+    if (document.getElementById('detail-page')) {
+      e.preventDefault();
+      enterTagFocusMode();
+      return;
+    }
+  }
+
+  // 't' → auto-tag. On the gallery this opens the Auto-tag-on-selection
+  // dialog when the batch bar is up. On the detail page it clicks the
+  // header's Auto-tag button (which opens the per-image dialog). No-op when
+  // no taggers are configured (the .btn-autotag button isn't rendered).
+  if (e.key === 't' && !isInput) {
+    const bar = document.getElementById('batch-bar');
+    if (bar && bar.classList.contains('visible')) {
+      if (!document.querySelector('.btn-autotag')) return;
+      e.preventDefault();
+      openAutotagSelectedDialog();
+      return;
+    }
+    if (document.getElementById('detail-page')) {
+      const btn = document.querySelector('.detail-actions .btn-autotag');
+      if (!btn) return;
+      e.preventDefault();
+      btn.click();
+      return;
+    }
   }
 
   // 'Delete' → delete current image on detail page
@@ -57,13 +153,24 @@ document.addEventListener('keydown', function(e) {
     return;
   }
 
-  // Spacebar → play/pause the detail-page video. Guarded by !isInput so it
-  // doesn't hijack spaces inside the tag or search inputs.
+  // Spacebar → play/pause the detail-page video, or toggle the focused
+  // thumbnail's selection on the gallery. Guarded by !isInput so it doesn't
+  // hijack spaces inside the tag or search inputs.
   if (e.key === ' ' && !isInput) {
     var vid = document.querySelector('.detail-video');
     if (vid) {
       e.preventDefault();
       if (vid.paused) vid.play(); else vid.pause();
+      return;
+    }
+    var focusedCard = document.querySelector('.thumb-card.focused');
+    if (focusedCard) {
+      var cb = focusedCard.querySelector('.thumb-checkbox');
+      if (cb) {
+        e.preventDefault();
+        cb.checked = !cb.checked;
+        updateBatchBar();
+      }
     }
     return;
   }
@@ -83,6 +190,14 @@ document.addEventListener('keydown', function(e) {
 
   // Arrow keys: navigate gallery grid or prev/next on detail page
   if (!isInput && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    // Detail-page tag-focus mode: arrows cycle the focused tag instead of
+    // navigating to the prev/next image. The per-image image arrows resume
+    // their default role as soon as the user exits the mode (Esc).
+    if (document.querySelector('#image-tags .tag-item.focused')) {
+      e.preventDefault();
+      cycleTagFocus(e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
     // Detail page: left/right = prev/next image
     if (document.getElementById('detail-page')) {
       if (e.key === 'ArrowLeft') {
@@ -120,6 +235,19 @@ document.addEventListener('keydown', function(e) {
     cards[idx].scrollIntoView({ block: 'nearest' });
     e.preventDefault();
     return;
+  }
+
+  // Enter on a tag in detail-page tag-focus mode: trigger the per-tag remove
+  // button. Falls through to the gallery's open-focused-card handler when no
+  // tag is focused.
+  if (e.key === 'Enter' && !isInput) {
+    var focusedTag = document.querySelector('#image-tags .tag-item.focused');
+    if (focusedTag) {
+      e.preventDefault();
+      var btn = focusedTag.querySelector('.tag-remove-btn');
+      if (btn) btn.click();
+      return;
+    }
   }
 
   // Enter: open focused card
@@ -267,12 +395,11 @@ function updateBatchBar() {
   if (grid) grid.classList.toggle('batch-active', checked.length > 0);
   const countEl = document.getElementById('batch-count');
   if (countEl) countEl.textContent = checked.length + ' selected';
-  // Hide the header's Delete-all and Tag-all so users aiming for the
-  // batch-bar equivalents can't misclick.
-  const delAll = document.getElementById('delete-search-btn');
-  if (delAll) delAll.hidden = checked.length > 0;
-  const tagAll = document.getElementById('tag-search-btn');
-  if (tagAll) tagAll.hidden = checked.length > 0;
+  // Hide the header's Actions chooser while a selection is active so users
+  // aiming for the batch-bar's selection-scoped buttons can't misclick onto
+  // the search-scoped variants.
+  const actions = document.getElementById('actions-btn');
+  if (actions) actions.hidden = checked.length > 0;
 }
 
 function clearSelection() {
@@ -283,6 +410,34 @@ function clearSelection() {
 function selectAll() {
   document.querySelectorAll('.thumb-checkbox').forEach(function(cb) { cb.checked = true; });
   updateBatchBar();
+}
+
+// Detail-page tag-focus mode (entered with 'r'). The currently focused tag
+// is marked by .tag-item.focused; arrow keys cycle, Enter triggers the
+// matching .tag-remove-btn, Escape exits without removing.
+function enterTagFocusMode() {
+  var items = document.querySelectorAll('#image-tags .tag-item');
+  if (!items.length) return;
+  if (document.querySelector('#image-tags .tag-item.focused')) return;
+  items[0].classList.add('focused');
+  items[0].scrollIntoView({block: 'nearest'});
+}
+
+function exitTagFocusMode() {
+  document.querySelectorAll('#image-tags .tag-item.focused').forEach(function(li) {
+    li.classList.remove('focused');
+  });
+}
+
+function cycleTagFocus(step) {
+  var items = Array.from(document.querySelectorAll('#image-tags .tag-item'));
+  if (!items.length) return;
+  var current = document.querySelector('#image-tags .tag-item.focused');
+  var idx = current ? items.indexOf(current) : 0;
+  idx = Math.max(0, Math.min(items.length - 1, idx + step));
+  items.forEach(function(li) { li.classList.remove('focused'); });
+  items[idx].classList.add('focused');
+  items[idx].scrollIntoView({block: 'nearest'});
 }
 
 // Batch delete: populate the confirmation dialog with the selected count and
@@ -311,6 +466,38 @@ function refreshJobStatus() {
   window.htmx.process(el);
   window.htmx.ajax('GET', '/internal/job/status', {target: '#job-status', swap: 'outerHTML'});
 }
+
+// Close a dialog and, if it was opened from another dialog (data-return-to
+// set by the opener), re-open the parent. Used by sub-dialog Cancel buttons
+// reachable from the Actions chooser so cancel/escape pops one level
+// instead of collapsing the whole stack.
+function closeDialogAndRestoreParent(dialogId) {
+  var d = document.getElementById(dialogId);
+  if (!d) return;
+  var parentId = d.dataset.returnTo;
+  d.close();
+  if (parentId) {
+    var parent = document.getElementById(parentId);
+    if (parent && typeof parent.showModal === 'function') parent.showModal();
+  }
+}
+
+// Escape on a modal <dialog> raises the `cancel` event via the browser's
+// close watcher, regardless of whether an input inside the dialog is
+// focused. We listen in the capture phase because the cancel event
+// doesn't bubble. When the dialog has data-return-to set (chooser opened
+// it), preventDefault keeps the dialog open just long enough for
+// closeDialogAndRestoreParent to swap the chooser back in. Without this
+// hook, the keydown branch alone misses the input-focused case (the
+// user's first Escape only blurs the input, then the browser's default
+// close fires on the next tick before any JS can re-open the parent).
+document.addEventListener('cancel', function(e) {
+  var d = e.target;
+  if (!d || !d.tagName || d.tagName !== 'DIALOG') return;
+  if (!d.dataset.returnTo) return;
+  e.preventDefault();
+  closeDialogAndRestoreParent(d.id);
+}, true);
 
 // Shared confirmation dialog: replaces native confirm() and intercepts
 // hx-confirm via the htmx:confirm event listener below. The triggering
@@ -556,10 +743,23 @@ function applySearchSuggest(tagName) {
   } else {
     words.push(tagName);
   }
-  si.value = words.join('') + ' ';
+  // system: cheat-sheet rows end on a colon (`date:`) or a comparison
+  // operator (`date:>`, `width:>=`, `date:..`); the user's next keystroke
+  // is the value, so don't push the cursor onto a new term with a space.
+  var keepCursor = /[:<>=]$|\.\.$/.test(tagName);
+  si.value = words.join('') + (keepCursor ? '' : ' ');
   var dd = document.getElementById('search-suggest');
   if (dd) dd.innerHTML = '';
   si.focus();
+  // After picking a colon- or operator-terminated row the cursor stays
+  // parked next to the prefix (`fav:`, `date:>`, `character:`); fire an
+  // input event so htmx's `input changed` trigger refreshes the
+  // dropdown with the level-2 hint - operators or value lists for
+  // filter keywords, live tags for category prefixes - without forcing
+  // the user to type a throwaway character to wake autocomplete back up.
+  if (keepCursor) {
+    si.dispatchEvent(new Event('input', { bubbles: true }));
+  }
 }
 
 // Auto-reload gallery/tags after job completes; auto-clear status after 30s
@@ -571,6 +771,13 @@ var _jobAutoClearFinishedAt = '';
 // Track the FinishedAt timestamp of the last reloaded event so each new
 // watcher/job completion triggers exactly one reload.
 var _lastReloadedFinishedAt = '';
+// The first job-status settle after page load reports whatever job last
+// finished on the server, even when that job completed before the page was
+// rendered. Reloading the grid/tags on that first poll is wasted work (and
+// races user keystrokes) because the server-rendered DOM already reflects
+// the post-job state. Skip exactly one reload, then resume normal behaviour
+// so subsequent watcher/job events still surface live.
+var _firstJobStatusSettle = true;
 // Processed cursor for the currently-running job. The gallery grid is
 // refreshed whenever the worker bumps this so changes show up without a
 // manual reload, mirroring the watcher's per-event surface path. Applies
@@ -602,6 +809,12 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
 
   if (!el || el.id !== 'job-status') return;
 
+  // Latch first-settle once per page load. Used below to suppress the
+  // initial done-state reload when the server-rendered DOM already reflects
+  // the just-finished job.
+  var firstSettle = _firstJobStatusSettle;
+  _firstJobStatusSettle = false;
+
   var isDone = !!el.querySelector('.job-done');
   var isErr  = !!el.querySelector('.job-error');
   // `job-running` lives on #job-status itself, not a descendant, so use
@@ -612,7 +825,7 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
   // Running progress-emitting jobs: refresh the gallery grid whenever the
   // worker's Processed cursor advances so new ingests, deletions, and
   // re-extractions show up without a manual reload. The listed types call
-  // jobs.Update(processed,…) inside their worker loops; others either
+  // jobs.Update(processed,...) inside their worker loops; others either
   // finish quickly (watcher events surface via FinishedAt) or don't
   // visibly alter the gallery during the run. Sits above the isIdle bail
   // so the running state reaches this branch.
@@ -683,6 +896,7 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
   // latch on a single flag.
   if (isDone && finishedAt && finishedAt !== _lastReloadedFinishedAt) {
     _lastReloadedFinishedAt = finishedAt;
+    if (firstSettle) return;
 
     // Gallery page: reload grid
     var grid = document.getElementById('gallery-grid');
@@ -771,12 +985,18 @@ function handleSuggestKey(e, dropdownId, inputId) {
     e.preventDefault();
     items.forEach(function(i){ i.classList.remove('kbd-focused'); });
     idx = Math.min(idx + 1, items.length - 1);
-    if (idx >= 0) items[idx].classList.add('kbd-focused');
+    if (idx >= 0) {
+      items[idx].classList.add('kbd-focused');
+      items[idx].scrollIntoView({ block: 'nearest' });
+    }
   } else if (e.key === 'ArrowUp') {
     e.preventDefault();
     items.forEach(function(i){ i.classList.remove('kbd-focused'); });
     idx = Math.max(idx - 1, 0);
-    if (idx >= 0) items[idx].classList.add('kbd-focused');
+    if (idx >= 0) {
+      items[idx].classList.add('kbd-focused');
+      items[idx].scrollIntoView({ block: 'nearest' });
+    }
   } else if (e.key === 'Enter' && focused) {
     e.preventDefault();
     focused.click();
@@ -835,8 +1055,10 @@ initSuggestDismiss('search-suggest', 'search-input', {blurOnSubmit: true});
 initSuggestDismiss('tag-suggest-dropdown', 'tag-input');
 initSuggestDismiss('merge-suggest', 'merge-canon-input');
 initSuggestDismiss('move-selected-suggest', 'move-selected-folder');
+initSuggestDismiss('move-search-suggest', 'move-search-folder');
 initSuggestDismiss('move-image-suggest', 'move-image-folder');
 initSuggestDismiss('batch-tag-suggest', 'batch-tag-input');
+initSuggestDismiss('batch-strip-suggest', 'batch-strip-input');
 
 // Detail page: tags added in the current session are split into a "just-added"
 // list and reset on full page reload.
@@ -909,16 +1131,3 @@ document.addEventListener('DOMContentLoaded', function() {
   if (el) captureInitialTags(el);
 });
 
-// Save search: update hidden query field when dialog opens
-document.addEventListener('click', function(e) {
-  if (e.target.id !== 'save-search-btn') return;
-  var si = document.getElementById('search-input');
-  var sq = document.getElementById('save-search-query');
-  var sp = document.getElementById('save-search-preview');
-  if (si && sq) {
-    sq.value = si.value;
-  }
-  if (si && sp) {
-    sp.textContent = si.value || '(empty)';
-  }
-});

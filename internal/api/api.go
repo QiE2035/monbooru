@@ -91,15 +91,18 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" && h.cfg.Server.BaseURL != "" {
-			if origin != h.cfg.Server.BaseURL {
+		// Browsers always send Origin without a trailing slash; an
+		// operator's base_url written as "http://host/" would otherwise
+		// reject every CORS request with no obvious diagnostic.
+		baseURL := strings.TrimRight(h.cfg.Server.BaseURL, "/")
+		if origin != "" && baseURL != "" {
+			if origin != baseURL {
 				apiError(w, http.StatusForbidden, "forbidden", "CORS: origin not allowed")
 				return
 			}
-			w.Header().Set("Access-Control-Allow-Origin", h.cfg.Server.BaseURL)
+			w.Header().Set("Access-Control-Allow-Origin", baseURL)
 		}
 
-		// An empty API token means the API is disabled.
 		if h.cfg.Auth.APIToken == "" {
 			apiError(w, http.StatusServiceUnavailable, "api_disabled",
 				"API is disabled: generate an API token in Settings to enable it")

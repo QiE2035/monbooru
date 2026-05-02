@@ -64,6 +64,12 @@ type Server struct {
 	staticFS   fs.FS
 	done       chan struct{} // closed on Close() to stop background goroutines
 
+	// schedReload wakes runScheduler so a Settings → Schedule edit takes
+	// effect on the next select tick instead of waiting out the current
+	// sleep. Buffered cap 1 with non-blocking sends so concurrent saves
+	// coalesce into one reload.
+	schedReload chan struct{}
+
 	// ctxMu guards contexts and activeName. Read handlers take RLock via
 	// ContextMiddleware; mutation handlers take the write lock.
 	ctxMu      sync.RWMutex
@@ -150,12 +156,19 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 			// land in the "user" bucket; API-supplied sources each get their
 			// own "Tags added by <source>" subsection. Auto rows keep the
 			// existing per-tagger grouping with the "auto-tagger" suffix.
+			// is_implied rows skip every source bucket and trail at the
+			// end as a single "Implied tags" group, dimmed by CSS.
 			var userTags []models.ImageTag
+			var impliedTags []models.ImageTag
 			byUserSource := map[string]*imageTagSourceGroup{}
 			var userSourceOrder []string
 			byTagger := map[string]*imageTagSourceGroup{}
 			var order []string
 			for _, t := range tagList {
+				if t.IsImplied {
+					impliedTags = append(impliedTags, t)
+					continue
+				}
 				if !t.IsAuto {
 					if t.TaggerName == "" {
 						userTags = append(userTags, t)
@@ -214,6 +227,13 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 				})
 				out = append(out, *g)
 			}
+			if len(impliedTags) > 0 {
+				out = append(out, imageTagSourceGroup{
+					Source: "implied",
+					Title:  "Implied tags",
+					Tags:   impliedTags,
+				})
+			}
 			return out
 		},
 		"autoConfPct": func(c *float64) string {
@@ -223,15 +243,30 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 			return strconv.Itoa(int(*c * 100))
 		},
 		"groupByImageTags": func(tagList []models.ImageTag) []imageTagGroup {
+			// Sidebar consumer: skip implied rows. The user asked for them
+			// to render only in the under-image list (less visible there),
+			// not in the per-image sidebar where every tag would compete
+			// for the same column.
 			order := []string{}
 			groups := map[string]*imageTagGroup{}
 			for _, t := range tagList {
+				if t.IsImplied {
+					continue
+				}
 				key := t.Category
 				if _, ok := groups[key]; !ok {
 					order = append(order, key)
 					groups[key] = &imageTagGroup{Name: t.Category, Color: t.Color}
 				}
 				groups[key].Tags = append(groups[key].Tags, t)
+			}
+			// Lift rating to the top so the effective rating sits where
+			// the eye lands first.
+			for i, k := range order {
+				if k == "rating" && i > 0 {
+					order = append([]string{"rating"}, append(order[:i], order[i+1:]...)...)
+					break
+				}
 			}
 			out := make([]imageTagGroup, 0, len(order))
 			for _, k := range order {
@@ -329,17 +364,18 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 	}
 
 	s := &Server{
-		cfg:        cfg,
-		configPath: configPath,
-		jobs:       jobManager,
-		sessions:   sessions,
-		loginRL:    newLoginRateLimiter(),
-		csrfSecret: mustRandBytes(32),
-		tmpl:       tmpl,
-		staticFS:   staticFS,
-		done:       make(chan struct{}),
-		contexts:   map[string]*galleryCtx{},
-		activeName: cfg.DefaultGallery,
+		cfg:         cfg,
+		configPath:  configPath,
+		jobs:        jobManager,
+		sessions:    sessions,
+		loginRL:     newLoginRateLimiter(),
+		csrfSecret:  mustRandBytes(32),
+		tmpl:        tmpl,
+		staticFS:    staticFS,
+		done:        make(chan struct{}),
+		schedReload: make(chan struct{}, 1),
+		contexts:    map[string]*galleryCtx{},
+		activeName:  cfg.DefaultGallery,
 	}
 
 	for _, g := range cfg.Galleries {
@@ -448,6 +484,9 @@ func contextMiddlewareBypass(path string) bool {
 	if path == "/internal/gallery/switch" {
 		return true
 	}
+	if path == "/custom.css" {
+		return true
+	}
 	return strings.HasPrefix(path, "/static/") ||
 		strings.HasPrefix(path, "/thumbnails/") ||
 		strings.HasPrefix(path, "/settings/galleries")
@@ -476,6 +515,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.staticFS))))
+	mux.HandleFunc("GET /custom.css", s.serveCustomCSS)
 	mux.HandleFunc("GET /thumbnails/{gallery}/{file}", s.serveThumbnail)
 
 	// Health check (unauthenticated)
@@ -513,9 +553,14 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /tags", s.tagsHandler)
 	mux.HandleFunc("POST /tags/merge", s.mergeTagsPost)
+	mux.HandleFunc("POST /tags/new", s.createTagPost)
+	mux.HandleFunc("POST /tags/aliases", s.createAliasPost)
 	mux.HandleFunc("POST /tags/{id}/rename", s.renameTagPost)
 	mux.HandleFunc("DELETE /tags/{id}", s.deleteTagHandler)
 	mux.HandleFunc("PATCH /tags/{id}/category", s.changeTagCategory)
+	mux.HandleFunc("GET /tags/{id}/implications", s.implicationsDialogHandler)
+	mux.HandleFunc("POST /tags/{id}/implications", s.addImplicationPost)
+	mux.HandleFunc("DELETE /tags/{id}/implications/{impliedID}", s.removeImplicationDelete)
 	mux.HandleFunc("POST /tags/categories", s.createCategoryPost)
 	mux.HandleFunc("POST /tags/categories/{id}/rename", s.renameCategoryPost)
 	mux.HandleFunc("DELETE /tags/categories/{id}", s.deleteCategoryDelete)
@@ -540,9 +585,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/maintenance/re-extract-metadata", s.reExtractMetadataPost)
 	mux.HandleFunc("POST /settings/maintenance/rebuild-thumbnails", s.rebuildThumbnailsPost)
 	mux.HandleFunc("POST /settings/maintenance/vacuum-db", s.vacuumDBPost)
-	mux.HandleFunc("POST /settings/tagger/remove-autotagged", s.removeAutotaggedPost)
-	mux.HandleFunc("POST /settings/tagger/remove-user-tags", s.removeAllUserTagsPost)
-	mux.HandleFunc("POST /settings/tagger/remove-all-tags", s.removeAllTagsPost)
 	mux.HandleFunc("POST /settings/tagger/{name}/enable", s.settingsTaggerEnablePost)
 	mux.HandleFunc("POST /settings/tagger/{name}/disable", s.settingsTaggerDisablePost)
 	mux.HandleFunc("POST /settings/tagger/{name}/delete", s.settingsTaggerDeletePost)
@@ -561,13 +603,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /internal/batch-delete", s.batchDelete)
 	mux.HandleFunc("POST /internal/batch-move", s.batchMove)
 	mux.HandleFunc("POST /internal/batch-tag", s.batchTag)
+	mux.HandleFunc("POST /internal/batch-strip", s.batchStrip)
 	mux.HandleFunc("POST /internal/delete-search", s.deleteSearchPost)
+	mux.HandleFunc("POST /tags/delete-search", s.deleteTagsSearchPost)
 	mux.HandleFunc("POST /internal/delete-folder", s.deleteFolderPost)
 	mux.HandleFunc("GET /internal/tags/suggest", s.tagSuggest)
 	mux.HandleFunc("GET /internal/search/suggest", s.searchSuggest)
 	mux.HandleFunc("GET /internal/folders/suggest", s.foldersSuggest)
 	mux.HandleFunc("GET /internal/sidebar", s.gallerySidebar)
 	mux.HandleFunc("GET /internal/sidebar-browse", s.sidebarBrowse)
+	mux.HandleFunc("POST /internal/rating-ceiling", s.ratingCeilingPost)
 	mux.HandleFunc("POST /images/{id}/autotag", s.autotagImage)
 	mux.HandleFunc("GET /images/{id}/tags", s.getImageTagsHandler)
 
@@ -646,6 +691,24 @@ var RepoURL = "https://github.com/leqwin/monbooru"
 // CPU build; rendered in parentheses in the footer when non-empty.
 var Variant = ""
 
+// ratingLevel is one cell in the footer rating selector. Value is the
+// underlying tag name (used as the cookie value and the AST key); Label
+// is the user-facing text - "general" renders as "sfw" so the toggle
+// doesn't lead with the implicit-default name.
+type ratingLevel struct {
+	Value string
+	Label string
+}
+
+// ratingFooterLevels is the fixed left-to-right footer order, low to
+// high. Active is "explicit" when the cookie is unset (no ceiling).
+var ratingFooterLevels = []ratingLevel{
+	{Value: "general", Label: "sfw"},
+	{Value: "sensitive", Label: "sensitive"},
+	{Value: "questionable", Label: "questionable"},
+	{Value: "explicit", Label: "explicit"},
+}
+
 // baseData is common template data present on every page.
 type baseData struct {
 	Title         string
@@ -656,6 +719,7 @@ type baseData struct {
 	Version       string
 	RepoURL       string
 	Variant       string
+	CustomCSS     bool
 	ActiveGallery string
 	Galleries     []config.Gallery
 	// Counts surfaced on the footer status bar. Populated per-request;
@@ -663,6 +727,10 @@ type baseData struct {
 	VisibleCount int
 	TagCount     int
 	SavedCount   int
+	// Rating ceiling state for the footer selector. ActiveRating is the
+	// effective level - "explicit" when no cookie is set.
+	RatingLevels  []ratingLevel
+	ActiveRating  string
 }
 
 func (s *Server) base(r *http.Request, nav, title string) baseData {
@@ -681,6 +749,10 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 	// request, but the slice is cheap and small).
 	galleries := make([]config.Gallery, len(s.cfg.Galleries))
 	copy(galleries, s.cfg.Galleries)
+	active := ratingCeilingFromRequest(r)
+	if active == "" {
+		active = "explicit"
+	}
 	return baseData{
 		Title:         title,
 		ActiveNav:     nav,
@@ -690,11 +762,14 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 		Version:       Version,
 		RepoURL:       RepoURL,
 		Variant:       Variant,
+		CustomCSS:     s.cfg.Server.CustomCSS != "",
 		ActiveGallery: s.activeName,
 		Galleries:     galleries,
 		VisibleCount:  visible,
 		TagCount:      tagCount,
 		SavedCount:    savedCount,
+		RatingLevels:  ratingFooterLevels,
+		ActiveRating:  active,
 	}
 }
 
@@ -748,6 +823,17 @@ func (s *Server) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.ServeFile(w, r, fullPath)
+}
+
+// serveCustomCSS serves the operator-supplied stylesheet pointed at by
+// server.custom_css. An empty config 404s so the layout's gated <link>
+// degrades cleanly when the knob is not set.
+func (s *Server) serveCustomCSS(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Server.CustomCSS == "" {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, s.cfg.Server.CustomCSS)
 }
 
 // serveImageFile serves the raw image/video file.

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ import (
 	meta "github.com/leqwin/monbooru/internal/metadata"
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/search"
+	"github.com/leqwin/monbooru/internal/searchkw"
 	"github.com/leqwin/monbooru/internal/tagger"
 	"github.com/leqwin/monbooru/internal/tags"
 	"golang.org/x/crypto/bcrypt"
@@ -111,18 +113,19 @@ func (s *Server) logoutPost(w http.ResponseWriter, r *http.Request) {
 
 type galleryData struct {
 	baseData
-	Query         string
-	Sort          string
-	Order         string
-	RandomSeed    int64
-	Page          int
-	TotalPages    int
-	Result        *models.SearchResult
-	SidebarTags   []models.Tag
-	FolderTree    []gallery.FolderNode
-	SourceCounts  gallery.SourceCounts
-	SavedSearches []models.SavedSearch
-	SidebarURL    string // populated on full-page renders so the placeholder can lazy-load the sidebar
+	Query          string
+	Sort           string
+	Order          string
+	RandomSeed     int64
+	Page           int
+	TotalPages     int
+	Result         *models.SearchResult
+	SidebarTags    []models.Tag
+	FolderTree     []gallery.FolderNode
+	SourceCounts   gallery.SourceCounts
+	SavedSearches  []models.SavedSearch
+	SidebarURL     string                // populated on full-page renders so the placeholder can lazy-load the sidebar
+	EnabledTaggers []tagger.TaggerStatus // gates the gallery's Auto-tag controls; mirrors detailData.EnabledTaggers
 }
 
 func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
@@ -154,9 +157,16 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		if randomSeed == 0 {
 			seedBytes := make([]byte, 8)
 			if _, err := rand.Read(seedBytes); err == nil {
-				randomSeed = int64(binary.BigEndian.Uint64(seedBytes) >> 1) // >>1 to keep positive
+				// Clamp to 31 bits (and force odd) so SQLite's int64
+				// arithmetic on `(i.id * seed) & 2147483647` stays
+				// inside int64 for any reasonable image id and the
+				// low bits of the product remain uniform. A 63-bit
+				// seed overflows on multiplication; the result coerces
+				// to REAL and the low-bit mask becomes near-monotonic
+				// in id, surfacing as identity-ordered "random" pages.
+				randomSeed = int64(binary.BigEndian.Uint32(seedBytes) | 1)
 			} else {
-				randomSeed = time.Now().UnixNano()
+				randomSeed = time.Now().UnixNano() & 0x7FFFFFFF
 			}
 			if randomSeed < 0 {
 				randomSeed = -randomSeed
@@ -177,6 +187,8 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	if parseErr != nil {
 		logx.Warnf("gallery search parse: %v", parseErr)
 	}
+	ceiling := ratingCeilingFromRequest(r)
+	expr = applyRatingCeiling(expr, ceiling)
 	sq := search.Query{
 		Expr:       expr,
 		Sort:       sortStr,
@@ -186,7 +198,9 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		Limit:      s.cfg.UI.PageSize,
 	}
 	// Unfiltered browse hits the full-visible count on every page; serve it
-	// from the per-gallery cache to skip the O(N) index scan.
+	// from the per-gallery cache to skip the O(N) index scan. The cache
+	// counts every visible image, so it overcounts when a ceiling is on -
+	// fall back to fastCountCeiling in that case.
 	if expr == nil {
 		if cx := s.Active(); cx != nil {
 			if n, err := cx.VisibleCount(); err == nil {
@@ -245,18 +259,19 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := galleryData{
-		baseData:      s.base(r, "gallery", "Images - Monbooru"),
-		Query:         queryStr,
-		Sort:          sortStr,
-		Order:         orderStr,
-		RandomSeed:    randomSeed,
-		Page:          page,
-		TotalPages:    totalPages,
-		Result:        result,
-		SidebarTags:   sidebarTags,
-		FolderTree:    folderTree,
-		SourceCounts:  sourceCounts,
-		SavedSearches: savedSearches,
+		baseData:       s.base(r, "gallery", "Images - Monbooru"),
+		Query:          queryStr,
+		Sort:           sortStr,
+		Order:          orderStr,
+		RandomSeed:     randomSeed,
+		Page:           page,
+		TotalPages:     totalPages,
+		Result:         result,
+		SidebarTags:    sidebarTags,
+		FolderTree:     folderTree,
+		SourceCounts:   sourceCounts,
+		SavedSearches:  savedSearches,
+		EnabledTaggers: tagger.EnabledTaggers(s.cfg),
 	}
 
 	if htmxGridTarget {
@@ -358,6 +373,7 @@ func (s *Server) gallerySidebar(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		expr, _ := search.Parse(queryStr)
+		expr = applyRatingCeiling(expr, ratingCeilingFromRequest(r))
 		sq := search.Query{
 			Expr:       expr,
 			Sort:       sortStr,
@@ -504,6 +520,7 @@ type detailData struct {
 	EnabledTaggers []tagger.TaggerStatus // enabled+available taggers offered in the auto-tag control
 	ImageTaggers   []string              // distinct tagger names currently on this image's auto-tags
 	HasUserTags    bool                  // true when at least one manual (non-auto) tag is on this image
+	Aliases        []models.Tag          // alias rows pointing at any non-implied tag on this image, flattened for display
 }
 
 func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
@@ -556,6 +573,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 			backOrder = "desc"
 		}
 	}
+	ceiling := ratingCeilingFromRequest(r)
 
 	// The remaining reads are independent of each other and target different
 	// tables (or the filesystem for ExtractGeneric). Run them in parallel
@@ -590,11 +608,11 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			prevID, nextID = s.findAdjacentImages(id, backQ, backSort, backOrder, backSeed)
+			prevID, nextID = s.findAdjacentImages(id, backQ, backSort, backOrder, backSeed, ceiling)
 		}()
 		go func() {
 			defer wg.Done()
-			position, positionTotal = s.findImagePosition(id, backQ, backSort, backOrder, backSeed)
+			position, positionTotal = s.findImagePosition(id, backQ, backSort, backOrder, backSeed, ceiling)
 		}()
 	}
 	wg.Wait()
@@ -640,6 +658,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		EnabledTaggers: enabledTaggers,
 		ImageTaggers:   imageTaggers,
 		HasUserTags:    hasUserTags,
+		Aliases:        s.aliasesForImageTags(imageTags),
 	}
 	s.renderTemplate(w, "detail.html", data)
 }
@@ -654,7 +673,7 @@ func (s *Server) relatedImagesHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	related, _ := s.tagSvc().RelatedImages(id, 9)
+	related, _ := s.tagSvc().RelatedImages(id, 9, ratingCeilingFromRequest(r))
 	q := r.URL.Query()
 	s.renderTemplate(w, "partials/related_images.html", map[string]any{
 		"Images":        related,
@@ -813,36 +832,99 @@ func (s *Server) addTagToImage(w http.ResponseWriter, r *http.Request) {
 
 	catTags, parseErrMsg := s.parseTagInput(tagInput)
 
+	var rejected, dupes []string
+	var promotedTokens []string
 	addErrMsg := parseErrMsg
+	mutated := false
 	for _, ct := range catTags {
 		tag, err := s.tagSvc().GetOrCreateTag(ct.name, ct.catID)
 		if err != nil {
 			logx.Warnf("add tag %q: %v", ct.name, err)
-			addErrMsg = err.Error()
+			rejected = append(rejected, ct.name+": "+err.Error())
 			continue
 		}
 		// Single write-pool transaction does the INSERT OR IGNORE and
 		// reports whether the row was actually new, so parallel adds
 		// can't both claim they were the first writer.
-		added, err := s.tagSvc().AddTagToImageReportingDup(id, tag.ID, false, nil, "")
+		added, promoted, err := s.tagSvc().AddTagToImageReportingDup(id, tag.ID, false, nil, "")
 		if err != nil {
 			logx.Warnf("add tag %q to image %d: %v", ct.name, id, err)
-			addErrMsg = err.Error()
+			rejected = append(rejected, ct.name+": "+err.Error())
 			continue
 		}
-		if !added {
-			addErrMsg = "tag already on image: " + ct.name
+		if added || promoted {
+			mutated = true
+		}
+		if !added && !promoted {
+			dupes = append(dupes, ct.name)
+		}
+		if promoted {
+			promotedTokens = append(promotedTokens, ct.name)
 		}
 	}
 
-	s.renderTagListWithSidebar(w, r, id, addErrMsg, addErrMsg == "")
+	if mutated {
+		s.Active().InvalidateCaches()
+	}
+	// Distinguish "everything went in" from "some tokens failed" so a
+	// pasted multi-token input doesn't leave the user diffing the under-
+	// image list against their string. The input is cleared on full
+	// success and on a clean partial (some applied, some duplicates):
+	// the user can read the live tag list to confirm what's there. It
+	// stays populated only when at least one token was rejected, so the
+	// user can edit and resubmit.
+	switch {
+	case len(rejected) > 0 && addErrMsg == "":
+		addErrMsg = "rejected: " + strings.Join(rejected, "; ")
+	case len(rejected) == 0 && len(dupes) > 0 && !mutated && parseErrMsg == "":
+		// Whole submit hit only existing tags; preserve the prior
+		// soft-error feedback so the user sees something happened.
+		addErrMsg = "tag already on image: " + strings.Join(dupes, ", ")
+	}
+	addOkMsg := ""
+	if len(promotedTokens) > 0 {
+		addOkMsg = "promoted to user tag: " + strings.Join(promotedTokens, ", ")
+	}
+	s.renderTagListWithSidebar(w, r, id, addErrMsg, addOkMsg, len(rejected) == 0 && parseErrMsg == "")
+}
+
+// aliasesForImageTags returns the alias rows pointing at any non-implied
+// tag carried by the image, ordered by name. Used by both the full
+// detail render and the htmx tag-list refresh so the "Aliases" group at
+// the bottom of the under-image list stays in sync.
+func (s *Server) aliasesForImageTags(imageTags []models.ImageTag) []models.Tag {
+	if len(imageTags) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(imageTags))
+	for _, t := range imageTags {
+		if t.IsImplied {
+			continue
+		}
+		ids = append(ids, t.TagID)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	byCanon, err := s.tagSvc().AliasesForTagIDs(ids)
+	if err != nil {
+		logx.Warnf("AliasesForTagIDs: %v", err)
+		return nil
+	}
+	var out []models.Tag
+	for _, list := range byCanon {
+		out = append(out, list...)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // renderTagListWithSidebar renders the image tag list partial and always emits
 // OOB swaps of the detail sidebar and danger zone so tag groups and remove-tag
 // buttons stay in sync without a page reload.
-// errMsg is shown as an inline flash if non-empty; clearInput resets the add-tag input.
-func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request, id int64, errMsg string, clearInput bool) {
+// errMsg / okMsg are shown as inline flashes if non-empty; clearInput resets
+// the add-tag input.
+func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request, id int64, errMsg, okMsg string, clearInput bool) {
 	imageTags, _ := s.tagSvc().GetImageTags(id)
 	hasUserTags := false
 	for _, t := range imageTags {
@@ -857,6 +939,7 @@ func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request
 	s.renderTemplate(w, "partials/tag_list.html", map[string]any{
 		"ImageID":       id,
 		"ImageTags":     imageTags,
+		"Aliases":       s.aliasesForImageTags(imageTags),
 		"SidebarTags":   true,
 		"DangerZone":    true,
 		"HasUserTags":   hasUserTags,
@@ -869,6 +952,7 @@ func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request
 		"CSRFToken":     s.csrfToken(sessionFromContext(r.Context())),
 		"EditMode":      true,
 		"ErrMsg":        errMsg,
+		"OkMsg":         okMsg,
 		"ClearInput":    clearInput,
 		"CurrentFolder": folderPath,
 	})
@@ -895,7 +979,7 @@ func (s *Server) removeAutoTagsFromImageHandler(w http.ResponseWriter, r *http.R
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.renderTagListWithSidebar(w, r, id, "", false)
+	s.renderTagListWithSidebar(w, r, id, "", "", false)
 }
 
 func (s *Server) removeUserTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
@@ -909,7 +993,7 @@ func (s *Server) removeUserTagsFromImageHandler(w http.ResponseWriter, r *http.R
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.renderTagListWithSidebar(w, r, id, "", false)
+	s.renderTagListWithSidebar(w, r, id, "", "", false)
 }
 
 func (s *Server) removeAllTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
@@ -923,7 +1007,7 @@ func (s *Server) removeAllTagsFromImageHandler(w http.ResponseWriter, r *http.Re
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.renderTagListWithSidebar(w, r, id, "", false)
+	s.renderTagListWithSidebar(w, r, id, "", "", false)
 }
 
 func (s *Server) removeTagFromImage(w http.ResponseWriter, r *http.Request) {
@@ -944,7 +1028,83 @@ func (s *Server) removeTagFromImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.renderTagListWithSidebar(w, r, id, "", false)
+	s.renderTagListWithSidebar(w, r, id, "", "", false)
+}
+
+// ratingCeilingFromRequest reads the monbooru_rating_ceiling cookie and
+// returns the active level. Empty string and "explicit" both mean "no
+// ceiling" - callers should treat them as a no-op. Anything outside the
+// closed enum is dropped to "" so a stale or hand-crafted cookie can't
+// inject arbitrary AST values.
+func ratingCeilingFromRequest(r *http.Request) string {
+	c, err := r.Cookie("monbooru_rating_ceiling")
+	if err != nil {
+		return ""
+	}
+	switch c.Value {
+	case "general", "sensitive", "questionable", "explicit":
+		return c.Value
+	}
+	return ""
+}
+
+// applyRatingCeiling AND-chains a NotExpr per rating level above the
+// ceiling onto userExpr. An empty/unknown ceiling and "explicit" pass
+// through unchanged.
+func applyRatingCeiling(userExpr search.Expr, ceiling string) search.Expr {
+	rank := -1
+	for i, l := range tags.RatingLevels {
+		if l == ceiling {
+			rank = i
+			break
+		}
+	}
+	if rank < 0 || rank >= len(tags.RatingLevels)-1 {
+		return userExpr
+	}
+	var ce search.Expr
+	for i := rank + 1; i < len(tags.RatingLevels); i++ {
+		not := search.NotExpr{Expr: search.FilterExpr{Key: "rating", Val: tags.RatingLevels[i]}}
+		if ce == nil {
+			ce = not
+		} else {
+			ce = search.AndExpr{Left: ce, Right: not}
+		}
+	}
+	if userExpr == nil {
+		return ce
+	}
+	return search.AndExpr{Left: userExpr, Right: ce}
+}
+
+// ratingCeilingPost sets or clears the monbooru_rating_ceiling cookie.
+// Posting level=explicit (or any out-of-enum value) clears the cookie so
+// the empty-storage steady state means "no ceiling".
+func (s *Server) ratingCeilingPost(w http.ResponseWriter, r *http.Request) {
+	level := r.URL.Query().Get("level")
+	if level == "" {
+		level = r.FormValue("level")
+	}
+	switch level {
+	case "general", "sensitive", "questionable":
+		http.SetCookie(w, &http.Cookie{
+			Name:     "monbooru_rating_ceiling",
+			Value:    level,
+			Path:     "/",
+			HttpOnly: true,
+			MaxAge:   31_536_000,
+			SameSite: http.SameSiteLaxMode,
+		})
+	default:
+		// "explicit" or any unknown value clears the cookie.
+		http.SetCookie(w, &http.Cookie{
+			Name:   "monbooru_rating_ceiling",
+			Value:  "",
+			Path:   "/",
+			MaxAge: -1,
+		})
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) toggleFavorite(w http.ResponseWriter, r *http.Request) {
@@ -1015,7 +1175,7 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 		if orderStr == "" {
 			orderStr = "desc"
 		}
-		prevID, nextID = s.findAdjacentImages(id, backQ, sortStr, orderStr, backSeed)
+		prevID, nextID = s.findAdjacentImages(id, backQ, sortStr, orderStr, backSeed, ratingCeilingFromRequest(r))
 	}
 
 	result, err := gallery.DeleteImage(s.db(), s.thumbnailsPath(), id, s.tagSvc().RemoveAllTagsFromImage)
@@ -1173,15 +1333,22 @@ func (s *Server) deleteAlias(w http.ResponseWriter, r *http.Request) {
 	// first, otherwise the image would lose its on-disk reference entirely.
 	var isCanon int
 	var aliasPath string
-	s.db().Read.QueryRow(
+	if err := s.db().Read.QueryRow(
 		`SELECT is_canonical, path FROM image_paths WHERE id = ? AND image_id = ?`, pathID, id,
-	).Scan(&isCanon, &aliasPath)
+	).Scan(&isCanon, &aliasPath); err != nil {
+		http.Error(w, "alias path not found", http.StatusNotFound)
+		return
+	}
 	if isCanon == 1 {
 		http.Error(w, "cannot delete canonical path", http.StatusBadRequest)
 		return
 	}
 
-	s.db().Write.Exec(`DELETE FROM image_paths WHERE id = ?`, pathID)
+	if _, err := s.db().Write.Exec(`DELETE FROM image_paths WHERE id = ?`, pathID); err != nil {
+		logx.Warnf("delete alias row %d: %v", pathID, err)
+		http.Error(w, "delete failed", http.StatusInternalServerError)
+		return
+	}
 
 	if aliasPath != "" {
 		if err := os.Remove(aliasPath); err != nil && !os.IsNotExist(err) {
@@ -1203,15 +1370,19 @@ func (s *Server) deleteAlias(w http.ResponseWriter, r *http.Request) {
 // can reach its own state via direct field access.
 type tagsPageData struct {
 	baseData
-	Tags       []models.Tag
-	Categories []models.TagCategory
-	Total      int
-	Page       int
-	TotalPages int
-	CategoryID string
-	Prefix     string
-	Sort       string
-	Origin     string
+	Tags         []models.Tag
+	Categories   []models.TagCategory
+	Implications map[int64][]models.Implication // direct implications keyed by parent tag id
+	Total        int
+	Page         int
+	TotalPages   int
+	CategoryID   string
+	Prefix       string
+	Sort         string
+	Order        string
+	Origin       string
+	ShowZero     bool
+	ZeroOnly     bool
 }
 
 func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
@@ -1226,13 +1397,29 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 	if sortStr == "" {
 		sortStr = "usage"
 	}
+	orderStr := q.Get("order")
+	if orderStr != "asc" && orderStr != "desc" {
+		// Default to the natural reading direction per sort: most-used first
+		// for usage, alphabetical A→Z for name.
+		if sortStr == "usage" {
+			orderStr = "desc"
+		} else {
+			orderStr = "asc"
+		}
+	}
 	originStr := q.Get("origin")
+	// show_zero is tri-state: empty/"1" → Show (default so freshly-declared
+	// tags surface without a filter flip); "0" → Hide; "only" → only zero-
+	// usage rows (triage view).
+	zeroParam := q.Get("show_zero")
+	zeroOnly := zeroParam == "only"
+	showZero := zeroOnly || zeroParam != "0"
 	page := 1
 	if p, err := strconv.Atoi(q.Get("page")); err == nil && p > 0 {
 		page = p
 	}
 
-	filter := s.buildTagFilter(catIDStr, prefix, sortStr, originStr, page, 100)
+	filter := s.buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr, showZero, zeroOnly, page, 100)
 
 	tagList, total, err := s.tagSvc().ListTags(filter)
 	if err != nil {
@@ -1243,28 +1430,47 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 	cats, _ := s.tagSvc().ListCategories()
 	totalPages := (total + 99) / 100
 
+	parentIDs := make([]int64, 0, len(tagList))
+	for _, t := range tagList {
+		if !t.IsAlias {
+			parentIDs = append(parentIDs, t.ID)
+		}
+	}
+	imps, err := s.tagSvc().ImplicationsForParents(parentIDs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	data := tagsPageData{
-		baseData:   s.base(r, "tags", "Tags - Monbooru"),
-		Tags:       tagList,
-		Categories: cats,
-		Total:      total,
-		Page:       page,
-		TotalPages: totalPages,
-		CategoryID: catIDStr,
-		Prefix:     prefix,
-		Sort:       sortStr,
-		Origin:     originStr,
+		baseData:     s.base(r, "tags", "Tags - Monbooru"),
+		Tags:         tagList,
+		Categories:   cats,
+		Implications: imps,
+		Total:        total,
+		Page:         page,
+		TotalPages:   totalPages,
+		CategoryID:   catIDStr,
+		Prefix:       prefix,
+		Sort:         sortStr,
+		Order:        orderStr,
+		Origin:       originStr,
+		ShowZero:     showZero,
+		ZeroOnly:     zeroOnly,
 	}
 	s.renderTemplate(w, "tags.html", data)
 }
 
-func (s *Server) buildTagFilter(catIDStr, prefix, sortStr, originStr string, page, limit int) tags.TagFilter {
+func (s *Server) buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr string, showZero, zeroOnly bool, page, limit int) tags.TagFilter {
 	f := tags.TagFilter{
 		Prefix:    prefix,
 		Sort:      sortStr,
+		Order:     orderStr,
 		PageIndex: page - 1,
 		Limit:     limit,
 		Origin:    originStr,
+		ShowZero:  showZero,
+		ZeroOnly:  zeroOnly,
 	}
 	if catIDStr != "" {
 		if id, err := strconv.ParseInt(catIDStr, 10, 64); err == nil {
@@ -1284,6 +1490,10 @@ func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
 	aliasID, err := strconv.ParseInt(aliasIDStr, 10, 64)
 	if err != nil {
 		if isHTMXRequest(r) {
+			// 200 + flash so htmx 1.9 swaps it into #merge-error;
+			// the dialog's after-request hook detects the
+			// flash-err class to stay open instead of closing.
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Write([]byte(`<div class="flash flash-err">Invalid source tag.</div>`))
 			return
 		}
@@ -1296,6 +1506,7 @@ func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
 	var canonID int64
 	mergeErr := func(msg string) {
 		if isHTMXRequest(r) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(msg) + `</div>`))
 			return
 		}
@@ -1343,12 +1554,14 @@ func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.tagSvc().MergeTags(aliasID, canonID); err != nil {
 		if isHTMXRequest(r) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.Active().InvalidateCaches()
 
 	if isHTMXRequest(r) {
 		w.Header().Set("HX-Redirect", "/tags")
@@ -1356,6 +1569,403 @@ func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/tags", http.StatusSeeOther)
+}
+
+// resolveCanonicalTag turns the merge-style canonical input (numeric id,
+// "category:name", or plain name) into a tag id. The plain-name branch
+// requires the name to live in a single category; ambiguity returns a
+// human-readable error message the caller surfaces verbatim.
+func (s *Server) resolveCanonicalTag(input string) (int64, string) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return 0, "Tag name is required."
+	}
+	if id, err := strconv.ParseInt(input, 10, 64); err == nil {
+		return id, ""
+	}
+	if idx := strings.Index(input, ":"); idx > 0 && s.categoryExists(input[:idx]) {
+		catName := input[:idx]
+		tagName := input[idx+1:]
+		var canonID int64
+		if err := s.db().Read.QueryRow(
+			`SELECT t.id FROM tags t JOIN tag_categories tc ON tc.id = t.category_id
+			 WHERE t.name = ? AND tc.name = ?`, tagName, catName,
+		).Scan(&canonID); err != nil {
+			return 0, "Tag not found: " + input
+		}
+		return canonID, ""
+	}
+	rows, err := s.db().Read.Query(`SELECT id FROM tags WHERE name = ?`, input)
+	if err != nil {
+		return 0, "Tag lookup failed: " + err.Error()
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			logx.Warnf("resolveCanonicalTag scan: %v", err)
+			continue
+		}
+		ids = append(ids, id)
+	}
+	switch len(ids) {
+	case 0:
+		return 0, "Tag not found: " + input
+	case 1:
+		return ids[0], ""
+	default:
+		return 0, "Tag name " + input + " exists in multiple categories; use category:name or the tag ID"
+	}
+}
+
+func (s *Server) createTagPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	catIDStr := r.FormValue("category_id")
+
+	flashErr := func(msg string) {
+		if isHTMXRequest(r) {
+			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(msg) + `</div>`))
+			return
+		}
+		http.Error(w, msg, http.StatusBadRequest)
+	}
+
+	catID, err := strconv.ParseInt(catIDStr, 10, 64)
+	if err != nil {
+		flashErr("Invalid category.")
+		return
+	}
+	if _, err := s.tagSvc().GetOrCreateTag(name, catID); err != nil {
+		flashErr(err.Error())
+		return
+	}
+	s.Active().InvalidateCaches()
+	if isHTMXRequest(r) {
+		w.Header().Set("HX-Redirect", "/tags?q="+name)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, "/tags", http.StatusSeeOther)
+}
+
+func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	catIDStr := r.FormValue("category_id")
+	canonInput := strings.TrimSpace(r.FormValue("canonical_id"))
+
+	flashErr := func(msg string) {
+		if isHTMXRequest(r) {
+			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(msg) + `</div>`))
+			return
+		}
+		http.Error(w, msg, http.StatusBadRequest)
+	}
+
+	catID, err := strconv.ParseInt(catIDStr, 10, 64)
+	if err != nil {
+		flashErr("Invalid category.")
+		return
+	}
+	canonID, msg := s.resolveCanonicalTag(canonInput)
+	if msg != "" {
+		flashErr(msg)
+		return
+	}
+
+	if _, err := s.tagSvc().CreateAlias(name, catID, canonID); err != nil {
+		flashErr(err.Error())
+		return
+	}
+	s.Active().InvalidateCaches()
+
+	if isHTMXRequest(r) {
+		w.Header().Set("HX-Redirect", "/tags?origin=alias&q="+name)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, "/tags?origin=alias", http.StatusSeeOther)
+}
+
+// implicationsDialogHandler renders the body of the implications dialog
+// on the /tags page: one chip per direct implication with a delete
+// button, plus a multi-tag input with autocomplete to declare new edges.
+func (s *Server) implicationsDialogHandler(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	parent, err := s.tagSvc().GetTag(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	imps, err := s.tagSvc().ListImplications(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data := map[string]any{
+		"Parent":       parent,
+		"Implications": imps,
+		"CSRFToken":    s.csrfToken(sessionFromContext(r.Context())),
+	}
+	s.renderTemplate(w, "partials/implications_dialog.html", data)
+}
+
+func (s *Server) addImplicationPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	parentID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	rawInput := strings.TrimSpace(r.FormValue("implied_id"))
+	if rawInput == "" {
+		w.Write([]byte(`<div class="flash flash-err">Tag name is required.</div>`))
+		return
+	}
+
+	// Parse the same way the detail-page tag input does so users get
+	// space-separated multi-add and "category:name" / quoted spans.
+	catTags, parseErrMsg := s.parseTagInput(rawInput)
+	if parseErrMsg != "" {
+		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(parseErrMsg) + `</div>`))
+		return
+	}
+
+	added := 0
+	var failures []string
+	for _, ct := range catTags {
+		tag, err := s.tagSvc().GetOrCreateTag(ct.name, ct.catID)
+		if err != nil {
+			failures = append(failures, ct.name+": "+err.Error())
+			continue
+		}
+		isNew, err := s.tagSvc().AddImplication(parentID, tag.ID)
+		if err != nil {
+			failures = append(failures, ct.name+": "+err.Error())
+			continue
+		}
+		if isNew {
+			added++
+			s.startImplicationPropagation(parentID, tag.ID, "add")
+		}
+	}
+
+	if added > 0 {
+		// New implication targets may have been created via GetOrCreateTag,
+		// so the cached tag count is stale until next render.
+		s.Active().InvalidateCaches()
+		// The dialog's after-request hook listens for this trigger and
+		// re-fetches the body so newly-added rows render without a
+		// full-page refresh that would close the modal underneath it.
+		w.Header().Set("HX-Trigger", "implication-added")
+	}
+	switch {
+	case len(failures) == 0 && added > 0:
+		w.WriteHeader(http.StatusNoContent)
+	case len(failures) == 0 && added == 0:
+		w.Write([]byte(`<div class="flash flash-ok">Already declared.</div>`))
+	case added > 0:
+		w.Write([]byte(`<div class="flash flash-err">Added ` +
+			strconv.Itoa(added) + `. Failed: ` +
+			html.EscapeString(strings.Join(failures, "; ")) + `</div>`))
+	default:
+		w.Write([]byte(`<div class="flash flash-err">` +
+			html.EscapeString(strings.Join(failures, "; ")) + `</div>`))
+	}
+}
+
+func (s *Server) removeImplicationDelete(w http.ResponseWriter, r *http.Request) {
+	parentID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	impliedID, err := strconv.ParseInt(r.PathValue("impliedID"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad implied id", http.StatusBadRequest)
+		return
+	}
+	if err := s.tagSvc().RemoveImplication(parentID, impliedID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.startImplicationPropagation(parentID, impliedID, "remove")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// startImplicationPropagation kicks off the background job that fans
+// out (op="add") or sweeps (op="remove") the parent → implied edge
+// across every image carrying parent. Skipped when a job is already
+// running; the user can re-trigger by editing the implication again
+// (the in-DB edge is independent of this propagation, so search and
+// future adds still see it through the synchronous transitive walk).
+func (s *Server) startImplicationPropagation(parentID, impliedID int64, op string) {
+	if err := s.jobs.Start("tag"); err != nil {
+		logx.Warnf("implication %s skipped: %v", op, err)
+		return
+	}
+	go s.runImplicationPropagation(parentID, impliedID, op)
+}
+
+func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string) {
+	ctx := s.jobs.Context()
+	const chunkSize = 500
+	processed := 0
+
+	rows, err := s.db().Read.QueryContext(ctx,
+		`SELECT image_id FROM image_tags WHERE tag_id = ? ORDER BY image_id`, parentID,
+	)
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		return
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			s.jobs.Fail(err.Error())
+			return
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+
+	total := len(ids)
+	verb := "applying implication"
+	if op == "remove" {
+		verb = "removing implication"
+	}
+	s.jobs.Update(0, total, fmt.Sprintf("%s 0/%d…", verb, total))
+
+	for start := 0; start < total; start += chunkSize {
+		if ctx.Err() != nil {
+			s.jobs.Complete(fmt.Sprintf("%s cancelled (%d/%d)", verb, processed, total))
+			return
+		}
+		end := start + chunkSize
+		if end > total {
+			end = total
+		}
+		chunk := ids[start:end]
+		tx, err := s.db().Write.Begin()
+		if err != nil {
+			s.jobs.Fail(err.Error())
+			return
+		}
+		for _, imageID := range chunk {
+			if op == "add" {
+				if err := propagateAddImplication(tx, imageID, parentID); err != nil {
+					tx.Rollback()
+					s.jobs.Fail(err.Error())
+					return
+				}
+			} else {
+				if err := propagateRemoveImplication(tx, imageID, parentID, impliedID); err != nil {
+					tx.Rollback()
+					s.jobs.Fail(err.Error())
+					return
+				}
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			s.jobs.Fail(err.Error())
+			return
+		}
+		processed = end
+		s.jobs.Update(processed, total, fmt.Sprintf("%s %d/%d…", verb, processed, total))
+	}
+
+	if err := s.tagSvc().RecalcIDs([]int64{impliedID}); err != nil {
+		logx.Warnf("implication propagation recalc: %v", err)
+	}
+	s.Active().InvalidateCaches()
+	s.jobs.Complete(fmt.Sprintf("%s applied to %d image(s)", verb, processed))
+}
+
+// propagateAddImplication backfills implied rows for the parent on the
+// given image, mirroring what addTagToImageTxReportingDup would have
+// done if the implication had existed at the original add time.
+// Existing rows are left alone; only fresh INSERTs get is_implied=1.
+func propagateAddImplication(tx *sql.Tx, imageID, parentID int64) error {
+	var isAuto int
+	err := tx.QueryRow(
+		`SELECT is_auto FROM image_tags WHERE image_id = ? AND tag_id = ?`, imageID, parentID,
+	).Scan(&isAuto)
+	if err == sql.ErrNoRows {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return tags.ApplyImpliedFanoutTx(tx, imageID, parentID, isAuto == 1)
+}
+
+// propagateRemoveImplication walks the implied tag (and its transitive
+// dependents) on this image and drops any row whose only justification
+// was the now-deleted edge. is_implied=0 rows (user-owned) and rows
+// still implied by another parent on the image are preserved.
+func propagateRemoveImplication(tx *sql.Tx, imageID, parentID, impliedID int64) error {
+	// Closure under the now-gone edge: every tag that was implied via
+	// parent → implied → ... must be reconsidered.
+	closure, err := tags.TransitiveImpliedTx(tx, []int64{impliedID})
+	if err != nil {
+		return err
+	}
+	closure = append([]int64{impliedID}, closure...)
+	for _, id := range closure {
+		var rowImplied int
+		err := tx.QueryRow(
+			`SELECT is_implied FROM image_tags WHERE image_id = ? AND tag_id = ?`, imageID, id,
+		).Scan(&rowImplied)
+		if err == sql.ErrNoRows {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if rowImplied != 1 {
+			continue
+		}
+		// Still implied by another parent on the image? Keep it.
+		var alt int64
+		err = tx.QueryRow(
+			`SELECT ti.parent_tag_id
+			 FROM tag_implications ti
+			 JOIN image_tags it ON it.tag_id = ti.parent_tag_id
+			 WHERE ti.implied_tag_id = ? AND it.image_id = ?
+			 LIMIT 1`,
+			id, imageID,
+		).Scan(&alt)
+		if err == nil {
+			continue
+		}
+		if err != sql.ErrNoRows {
+			return err
+		}
+		if _, err := tx.Exec(
+			`DELETE FROM image_tags WHERE image_id = ? AND tag_id = ?`, imageID, id,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`UPDATE tags SET usage_count = MAX(0, usage_count - 1) WHERE id = ?`, id,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) categoriesHandler(w http.ResponseWriter, r *http.Request) {
@@ -1375,11 +1985,14 @@ func (s *Server) categoriesHandler(w http.ResponseWriter, r *http.Request) {
 		"Version":       base.Version,
 		"RepoURL":       base.RepoURL,
 		"Variant":       base.Variant,
+		"CustomCSS":     base.CustomCSS,
 		"ActiveGallery": base.ActiveGallery,
 		"Galleries":     s.galleryList(),
 		"VisibleCount":  base.VisibleCount,
 		"TagCount":      base.TagCount,
 		"SavedCount":    base.SavedCount,
+		"RatingLevels":  base.RatingLevels,
+		"ActiveRating":  base.ActiveRating,
 		"Categories":    cats,
 	}
 	s.renderTemplate(w, "categories.html", data)
@@ -1408,12 +2021,6 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	base := s.base(r, "settings", "Settings - Monbooru")
 	s.disableUnavailableTaggers()
 	taggers := tagger.AvailableTaggers(s.cfg)
-	enabledCount := 0
-	for _, t := range taggers {
-		if t.Enabled && t.Available {
-			enabledCount++
-		}
-	}
 	// Build a unified row list: catalog-backed rows (installed-and-in-catalog
 	// plus catalog entries whose subfolder isn't on disk yet) come first as
 	// "supported"; user-only installed taggers (not in the catalog) come last
@@ -1463,27 +2070,28 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	taggerRows := append(supportedRows, unsupportedRows...)
 	data := map[string]any{
-		"Title":             base.Title,
-		"ActiveNav":         base.ActiveNav,
-		"CSRFToken":         base.CSRFToken,
-		"AuthEnabled":       base.AuthEnabled,
-		"Degraded":          base.Degraded,
-		"Version":           base.Version,
-		"RepoURL":           base.RepoURL,
-		"Variant":           base.Variant,
-		"ActiveGallery":     base.ActiveGallery,
-		"Galleries":         s.galleryRows(),
-		"VisibleCount":      base.VisibleCount,
-		"TagCount":          base.TagCount,
-		"SavedCount":        base.SavedCount,
-		"Config":            s.cfg,
-		"Taggers":           taggers,
-		"EnabledCount":      enabledCount,
-		"TaggerRows":        taggerRows,
-		"SupportedCount":    len(supportedRows),
-		"UnsupportedCount":  len(unsupportedRows),
-		"BulkTaggerRows":    s.bulkTaggerRows(taggers),
-		"ScheduleStatus":    s.ScheduleStatus(),
+		"Title":            base.Title,
+		"ActiveNav":        base.ActiveNav,
+		"CSRFToken":        base.CSRFToken,
+		"AuthEnabled":      base.AuthEnabled,
+		"Degraded":         base.Degraded,
+		"Version":          base.Version,
+		"RepoURL":          base.RepoURL,
+		"Variant":          base.Variant,
+		"CustomCSS":        base.CustomCSS,
+		"ActiveGallery":    base.ActiveGallery,
+		"Galleries":        s.galleryRows(),
+		"VisibleCount":     base.VisibleCount,
+		"TagCount":         base.TagCount,
+		"SavedCount":       base.SavedCount,
+		"RatingLevels":     base.RatingLevels,
+		"ActiveRating":     base.ActiveRating,
+		"Config":           s.cfg,
+		"Taggers":          taggers,
+		"TaggerRows":       taggerRows,
+		"SupportedCount":   len(supportedRows),
+		"UnsupportedCount": len(unsupportedRows),
+		"ScheduleStatus":   s.ScheduleStatus(),
 	}
 	s.renderTemplate(w, "settings.html", data)
 }
@@ -1505,13 +2113,15 @@ func (s *Server) settingsSchedulePost(w http.ResponseWriter, r *http.Request) {
 	s.cfg.Schedule.SyncGallery = r.FormValue("sync_gallery") == "on"
 	s.cfg.Schedule.RemoveOrphans = r.FormValue("remove_orphans") == "on"
 	s.cfg.Schedule.RunAutoTaggers = r.FormValue("run_auto_taggers") == "on"
-	s.cfg.Schedule.RecomputeTags = r.FormValue("recompute_tags") == "on"
 	s.cfg.Schedule.MergeGeneralTags = r.FormValue("merge_general_tags") == "on"
-	s.cfg.Schedule.VacuumDB = r.FormValue("vacuum_db") == "on"
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
 		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
 		return
+	}
+	select {
+	case s.schedReload <- struct{}{}:
+	default:
 	}
 	logx.Infof("settings: schedule updated (time=%s)", timeVal)
 	w.Write([]byte(`<div class="flash flash-ok">Saved.</div>`))
@@ -1902,7 +2512,7 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 		for id := range affectedTags {
 			tagIDs = append(tagIDs, id)
 		}
-		if err := s.tagSvc().RecalcAndPruneIDs(tagIDs); err != nil {
+		if err := s.tagSvc().RecalcIDs(tagIDs); err != nil {
 			logx.Warnf("prune-missing recalc IDs: %v", err)
 		}
 	}
@@ -1976,11 +2586,11 @@ func (s *Server) pruneOrphanedThumbnailsPost(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) recalcTagsPost(w http.ResponseWriter, r *http.Request) {
-	updated, pruned := s.tagSvc().RecalcAndPruneCount()
+	updated := s.tagSvc().RecalcCount()
 	s.Active().InvalidateCaches()
 	w.Write([]byte(fmt.Sprintf(
-		`<div class="flash flash-ok">Recalculated %d tag count(s); pruned %d unused tag(s).</div>`,
-		updated, pruned,
+		`<div class="flash flash-ok">Recalculated %d tag count(s).</div>`,
+		updated,
 	)))
 }
 
@@ -2138,7 +2748,6 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
 		return
 	}
-	defer rows.Close()
 
 	type pathRow struct {
 		ID   int64
@@ -2237,8 +2846,18 @@ func (s *Server) startRebuildThumbsJob(cx *galleryCtx) error {
 }
 
 func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
+	// VACUUM holds the writer for tens of seconds on a multi-GB DB. Take
+	// a job slot so the status bar reflects what's running and the
+	// scheduler / a concurrent user-triggered job is refused with the
+	// usual "a job is already running" message instead of silently
+	// queueing behind the writer.
+	if err := s.jobs.Start("vacuum"); err != nil {
+		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+		return
+	}
 	beforeSize := dbFileSize(s.dbPath())
 	if _, err := s.db().Write.Exec(`VACUUM`); err != nil {
+		s.jobs.Fail(err.Error())
 		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
 		return
 	}
@@ -2253,6 +2872,7 @@ func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
 	if freed < 0 {
 		freed = 0
 	}
+	s.jobs.Complete(fmt.Sprintf("Vacuumed (reclaimed %s).", humanBytesFmt(freed)))
 	w.Write([]byte(fmt.Sprintf(
 		`<div class="flash flash-ok">Database vacuumed. Reclaimed %s.</div>`, humanBytesFmt(freed),
 	)))
@@ -2538,6 +3158,7 @@ func (s *Server) deleteSavedSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "delete failed", http.StatusInternalServerError)
 		return
 	}
+	s.Active().InvalidateCaches()
 	// 200 + empty body - HTMX outerHTML swap removes the element.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -2557,16 +3178,25 @@ func (s *Server) createSavedSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name and query required", http.StatusBadRequest)
 		return
 	}
+	// Plain INSERT so the UNIQUE(name) constraint surfaces as an error
+	// instead of clobbering the existing entry. The user can delete the
+	// previous saved search from the sidebar and resubmit; same idiom
+	// the category and tag-name uniqueness checks use elsewhere.
 	if _, err := s.db().Write.Exec(
-		`INSERT OR REPLACE INTO saved_searches (name, query) VALUES (?, ?)`, name, query,
+		`INSERT INTO saved_searches (name, query) VALUES (?, ?)`, name, query,
 	); err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "UNIQUE") {
+			msg = "A saved search named " + name + " already exists. Delete it first or pick another name."
+		}
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(msg) + `</div>`))
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, msg, http.StatusBadRequest)
 		return
 	}
+	s.Active().InvalidateCaches()
 	if isHTMXRequest(r) {
 		w.Write([]byte(`<div class="flash flash-ok">Saved.</div>`))
 		return
@@ -2585,7 +3215,77 @@ func (s *Server) deleteTagHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.Active().InvalidateCaches()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteTagsSearchPost deletes every tag matching the current /tags
+// filter. Mirrors the gallery's /internal/delete-search: resolves the
+// id set up front, kicks off a background "tag" job, and returns 202
+// Accepted so the client surfaces progress via the job status bar.
+func (s *Server) deleteTagsSearchPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	q := r.Form
+	zeroParam := q.Get("show_zero")
+	zeroOnly := zeroParam == "only"
+	showZero := zeroOnly || zeroParam != "0"
+	filter := s.buildTagFilter(
+		q.Get("cat"), q.Get("q"), q.Get("sort"), q.Get("order"),
+		q.Get("origin"), showZero, zeroOnly, 1, 0,
+	)
+	ids, err := s.tagSvc().ListTagIDs(filter)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		return
+	}
+	if len(ids) == 0 {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if err := s.jobs.Start("tag"); err != nil {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+		return
+	}
+	go s.runDeleteTagsByIDs(ids)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// runDeleteTagsByIDs deletes the supplied tag ids one by one, reporting
+// progress through the job manager and honouring cancellation.
+// DeleteTag handles cascade and usage-count cleanup per row.
+func (s *Server) runDeleteTagsByIDs(ids []int64) {
+	ctx := s.jobs.Context()
+	total := len(ids)
+	processed, deleted := 0, 0
+	cancelled := false
+
+	s.jobs.Update(0, total, fmt.Sprintf("deleting tags 0/%d…", total))
+	for i, id := range ids {
+		if ctx.Err() != nil {
+			cancelled = true
+			break
+		}
+		if err := s.tagSvc().DeleteTag(id); err != nil {
+			logx.Warnf("delete tag %d: %v", id, err)
+		} else {
+			deleted++
+		}
+		processed = i + 1
+		if processed%50 == 0 || processed == total {
+			s.jobs.Update(processed, total, fmt.Sprintf("deleting tags %d/%d…", processed, total))
+		}
+	}
+
+	s.Active().InvalidateCaches()
+	if cancelled {
+		s.jobs.Complete(fmt.Sprintf("delete tags cancelled (%d/%d processed)", processed, total))
+		return
+	}
+	s.jobs.Complete(fmt.Sprintf("deleted %d tag(s)", deleted))
 }
 
 func (s *Server) renameTagPost(w http.ResponseWriter, r *http.Request) {
@@ -2613,6 +3313,11 @@ func (s *Server) renameTagPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if isHTMXRequest(r) {
+		w.Header().Set("HX-Redirect", "/tags")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	http.Redirect(w, r, "/tags", http.StatusSeeOther)
@@ -2665,11 +3370,14 @@ func (s *Server) helpHandler(w http.ResponseWriter, r *http.Request) {
 		"Version":       base.Version,
 		"RepoURL":       base.RepoURL,
 		"Variant":       base.Variant,
+		"CustomCSS":     base.CustomCSS,
 		"ActiveGallery": base.ActiveGallery,
 		"Galleries":     base.Galleries,
 		"VisibleCount":  base.VisibleCount,
 		"TagCount":      base.TagCount,
 		"SavedCount":    base.SavedCount,
+		"RatingLevels":  base.RatingLevels,
+		"ActiveRating":  base.ActiveRating,
 	}
 	s.renderTemplate(w, "help.html", data)
 }
@@ -2818,7 +3526,7 @@ func (s *Server) startBulkDelete(w http.ResponseWriter, targets []search.DeleteT
 // comfyui_metadata on image delete, so a single DELETE FROM images clears the
 // dependent rows. Tag usage counts are reconciled at the end by a targeted
 // recalc scoped to the tag IDs actually touched by the cascade (collected
-// from image_tags before the DELETE), avoiding a full-table RecalcAndPrune
+// from image_tags before the DELETE), avoiding a full-table Recalc
 // that would walk every tag in the library.
 func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 	ctx := s.jobs.Context()
@@ -2904,7 +3612,7 @@ func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 		for id := range affectedTags {
 			ids = append(ids, id)
 		}
-		if err := s.tagSvc().RecalcAndPruneIDs(ids); err != nil {
+		if err := s.tagSvc().RecalcIDs(ids); err != nil {
 			logx.Warnf("bulk delete recalc IDs: %v", err)
 		}
 	}
@@ -2927,11 +3635,14 @@ func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 // image IDs into the requested folder. Collisions on filename auto-suffix via
 // UniqueDestPath. The watcher suppresses its events while this job runs so
 // the Rename pairs don't flap the images as missing in transit.
+//
+// scope=search materialises ids by streaming the search result through
+// search.ExecuteForDeleteStream (same idiom as batchTag and deleteSearchPost);
+// scope=selection (or empty) reads ids[] from the form.
 func (s *Server) batchMove(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
-	idStrs := r.Form["ids"]
 	targetFolder := strings.TrimSpace(r.FormValue("folder"))
 
 	// Validate the folder once up-front so the user sees the error inline
@@ -2942,13 +3653,32 @@ func (s *Server) batchMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope := strings.TrimSpace(r.FormValue("scope"))
 	var ids []int64
-	for _, idStr := range idStrs {
-		id, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
-			continue
+	if scope == "search" {
+		expr, parseErr := search.Parse(r.FormValue("q"))
+		if parseErr != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`<div class="flash flash-err">Could not parse search: ` +
+				html.EscapeString(parseErr.Error()) + `</div>`))
+			return
 		}
-		ids = append(ids, id)
+		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
+			ids = append(ids, t.ID)
+			return nil
+		})
+		if err != nil {
+			logx.Errorf("batch-move search: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`<div class="flash flash-err">Search error.</div>`))
+			return
+		}
+	} else {
+		for _, idStr := range r.Form["ids"] {
+			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+				ids = append(ids, id)
+			}
+		}
 	}
 
 	if len(ids) == 0 {
@@ -2974,7 +3704,12 @@ func (s *Server) runBatchMove(ids []int64, targetFolder string) {
 	total := len(ids)
 	moved, failed := 0, 0
 	cancelled := false
-	oldFolders := map[string]struct{}{}
+	// Track every observed source folder, not just successful ones. A
+	// failed move can still be the last image in its source folder
+	// (because earlier successful moves emptied it), and the post-loop
+	// cleanup must consider those too. DeleteEmptyFolderIfEmpty is a
+	// no-op on non-empty folders so over-eager calls are safe.
+	observedSources := map[string]struct{}{}
 
 	s.jobs.Update(0, total, fmt.Sprintf("moving 0/%d…", total))
 
@@ -2987,10 +3722,18 @@ func (s *Server) runBatchMove(ids []int64, targetFolder string) {
 		if err != nil {
 			logx.Warnf("batch move %d: %v", id, err)
 			failed++
+			// Pull the source folder from the row directly so we can
+			// still try to clean it up. MoveImage rolls back on
+			// failure but the row's folder_path is still known.
+			var oldFolder string
+			_ = s.db().Read.QueryRow(`SELECT folder_path FROM images WHERE id = ?`, id).Scan(&oldFolder)
+			if oldFolder != "" {
+				observedSources[oldFolder] = struct{}{}
+			}
 			continue
 		}
 		if res.OldFolderPath != res.NewFolderPath && res.OldFolderPath != "" {
-			oldFolders[res.OldFolderPath] = struct{}{}
+			observedSources[res.OldFolderPath] = struct{}{}
 		}
 		moved++
 		if (i+1)%25 == 0 || i == total-1 {
@@ -2998,7 +3741,7 @@ func (s *Server) runBatchMove(ids []int64, targetFolder string) {
 		}
 	}
 
-	for fp := range oldFolders {
+	for fp := range observedSources {
 		gallery.DeleteEmptyFolderIfEmpty(s.galleryPath(), fp)
 	}
 
@@ -3016,12 +3759,13 @@ func (s *Server) runBatchMove(ids []int64, targetFolder string) {
 	s.jobs.Complete(summary)
 }
 
-// batchTag kicks off a background `tag` job that adds or removes a tag set
-// across either every image in the current search (scope=search) or just
-// the checked ids (scope=selection). The dialog in gallery.html uses the
-// same shape as batchDelete / batchMove and posts the tags string verbatim
-// (parsed server-side so category:name and quoted spans behave identically
-// to the detail-page tag input).
+// batchTag kicks off a background `tag` job that adds (op=add) or removes
+// (op=remove) a tag set across either every image in the current search
+// (scope=search) or just the checked ids (scope=selection). The dialogs in
+// gallery.html post the tags string verbatim (parsed server-side so
+// category:name and quoted spans behave identically to the detail-page
+// tag input). The op=remove path is the "specific tags by name" branch of
+// #batch-strip-dialog; the bulk user/auto/all branches go through batchStrip.
 func (s *Server) batchTag(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
@@ -3099,7 +3843,7 @@ func (s *Server) batchTag(w http.ResponseWriter, r *http.Request) {
 }
 
 // runBatchTag resolves each (catID, name) token to a tag id once up front
-// (creating new tags on add, looking up only existing ones on remove), then
+// (creating new tags on add, looking up only existing ones on remove) and
 // applies the resolved set to every image in turn. Cancellable via the
 // shared job context, identical to runBulkDelete's pattern.
 func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
@@ -3156,7 +3900,7 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 		}
 		for _, t := range resolved {
 			if op == "add" {
-				added, err := s.tagSvc().AddTagToImageReportingDup(id, t.id, false, nil, "")
+				added, _, err := s.tagSvc().AddTagToImageReportingDup(id, t.id, false, nil, "")
 				if err != nil {
 					logx.Warnf("batch-tag add %d/%d: %v", id, t.id, err)
 					continue
@@ -3183,7 +3927,7 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 		for id := range affectedTags {
 			tagIDs = append(tagIDs, id)
 		}
-		if err := s.tagSvc().RecalcAndPruneIDs(tagIDs); err != nil {
+		if err := s.tagSvc().RecalcIDs(tagIDs); err != nil {
 			logx.Warnf("batch-tag recalc IDs: %v", err)
 		}
 	}
@@ -3194,6 +3938,191 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 		return
 	}
 	s.jobs.Complete(fmt.Sprintf("%s %d image(s) (%d row change(s)).", summary, processed, applied))
+}
+
+// batchStrip kicks off a background `tag` job that strips tags by category
+// (mode=user|auto|all) across either every image in the current search
+// (scope=search) or the checked ids (scope=selection). Mirrors batchTag's
+// scope dispatch; the per-mode predicate decides which image_tags rows the
+// chunked DELETE in runBatchStrip touches. When mode=auto and tagger_name is
+// set, the strip is further scoped to that tagger's output rows.
+func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	mode := strings.TrimSpace(r.FormValue("mode"))
+	switch mode {
+	case "user", "auto", "all":
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`<div class="flash flash-err">mode must be user, auto, or all</div>`))
+		return
+	}
+	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
+	if taggerName != "" && mode != "auto" {
+		// tagger_name only narrows mode=auto; user/all carry no tagger_name
+		// concept. Reject silently to keep the predicate composition simple.
+		taggerName = ""
+	}
+
+	scope := strings.TrimSpace(r.FormValue("scope"))
+	var ids []int64
+	switch scope {
+	case "selection":
+		for _, idStr := range r.Form["ids"] {
+			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+				ids = append(ids, id)
+			}
+		}
+	case "search":
+		expr, parseErr := search.Parse(r.FormValue("q"))
+		if parseErr != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`<div class="flash flash-err">Could not parse search: ` +
+				html.EscapeString(parseErr.Error()) + `</div>`))
+			return
+		}
+		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
+			ids = append(ids, t.ID)
+			return nil
+		})
+		if err != nil {
+			logx.Errorf("batch-strip search: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`<div class="flash flash-err">Search error.</div>`))
+			return
+		}
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`<div class="flash flash-err">scope must be search or selection</div>`))
+		return
+	}
+
+	if len(ids) == 0 {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if err := s.jobs.Start("tag"); err != nil {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+		return
+	}
+	go s.runBatchStrip(ids, mode, taggerName)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// runBatchStrip processes targets in chunks of 500 with one transaction per
+// chunk. The per-chunk pattern collects the distinct touched tag_ids before
+// the DELETE so the post-pass RecalcIDs is scoped to the tags that
+// actually changed (mirrors runBulkDelete). modePredicate narrows the strip:
+//
+//	user → AND is_auto = 0
+//	auto → AND is_auto = 1                  (+ AND tagger_name = ? when scoped)
+//	all  → (no extra predicate)
+func (s *Server) runBatchStrip(ids []int64, mode, taggerName string) {
+	var modePredicate, label, summary string
+	var extraArgs []any
+	switch mode {
+	case "user":
+		modePredicate = ` AND is_auto = 0`
+		label, summary = "removing user tags", "Removed user tags from"
+	case "auto":
+		modePredicate = ` AND is_auto = 1`
+		if taggerName != "" {
+			modePredicate += ` AND tagger_name = ?`
+			extraArgs = append(extraArgs, taggerName)
+			label = fmt.Sprintf("removing %s auto-tags", taggerName)
+			summary = fmt.Sprintf("Removed %s auto-tags from", taggerName)
+		} else {
+			label, summary = "removing auto-tags", "Removed auto-tags from"
+		}
+	case "all":
+		modePredicate = ``
+		label, summary = "removing tags", "Removed all tags from"
+	}
+
+	ctx := s.jobs.Context()
+	const chunkSize = 500
+	total := len(ids)
+	processed := 0
+	affectedTags := map[int64]struct{}{}
+	cancelled := false
+
+	s.jobs.Update(0, total, fmt.Sprintf("%s 0/%d…", label, total))
+
+	for start := 0; start < total; start += chunkSize {
+		if ctx.Err() != nil {
+			cancelled = true
+			break
+		}
+		end := start + chunkSize
+		if end > total {
+			end = total
+		}
+		chunk := ids[start:end]
+		placeholders := strings.Repeat("?,", len(chunk))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := make([]any, 0, len(chunk)+len(extraArgs))
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		args = append(args, extraArgs...)
+
+		tx, err := s.db().Write.Begin()
+		if err != nil {
+			s.jobs.Fail(err.Error())
+			return
+		}
+		rows, err := tx.Query(
+			`SELECT DISTINCT tag_id FROM image_tags WHERE image_id IN (`+placeholders+`)`+modePredicate, args...)
+		if err != nil {
+			tx.Rollback()
+			s.jobs.Fail(err.Error())
+			return
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				tx.Rollback()
+				s.jobs.Fail(err.Error())
+				return
+			}
+			affectedTags[id] = struct{}{}
+		}
+		rows.Close()
+		if _, err := tx.Exec(
+			`DELETE FROM image_tags WHERE image_id IN (`+placeholders+`)`+modePredicate, args...); err != nil {
+			tx.Rollback()
+			s.jobs.Fail(err.Error())
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			s.jobs.Fail(err.Error())
+			return
+		}
+
+		processed = end
+		s.jobs.Update(processed, total, fmt.Sprintf("%s %d/%d…", label, processed, total))
+	}
+
+	if len(affectedTags) > 0 {
+		s.jobs.Update(processed, total, "reconciling tag counts…")
+		tagIDs := make([]int64, 0, len(affectedTags))
+		for id := range affectedTags {
+			tagIDs = append(tagIDs, id)
+		}
+		if err := s.tagSvc().RecalcIDs(tagIDs); err != nil {
+			logx.Warnf("batch-strip recalc IDs: %v", err)
+		}
+	}
+	s.Active().InvalidateCaches()
+
+	if cancelled {
+		s.jobs.Complete(fmt.Sprintf("%s cancelled (%d/%d processed)", label, processed, total))
+		return
+	}
+	s.jobs.Complete(fmt.Sprintf("%s %d image(s).", summary, processed))
 }
 
 // moveImage relocates the one image at {id} into the requested folder. A `move`
@@ -3240,7 +4169,7 @@ func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
 
 // foldersSuggest returns up to 10 existing folder paths whose name or leading
 // segments match the typed prefix. Drives the autocomplete dropdown on the
-// move dialogs. Root (” folder_path) is excluded from suggestions because it
+// move dialogs. Root (empty folder_path) is excluded from suggestions because it
 // maps to an empty input anyway.
 func (s *Server) foldersSuggest(w http.ResponseWriter, r *http.Request) {
 	prefix := strings.TrimSpace(r.URL.Query().Get("prefix"))
@@ -3370,6 +4299,20 @@ func (s *Server) tagSuggest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// searchSuggestRow is the render shape of the search-bar autocomplete
+// dropdown. Tag rows leave Category empty and the template falls through
+// to the count column; `system:` cheat-sheet rows set Category to
+// "system" and the template suppresses the count. Description, when
+// non-empty, renders just left of the category column as a short
+// English label of what the row does.
+type searchSuggestRow struct {
+	Name          string
+	CategoryColor string
+	Category      string
+	Description   string
+	UsageCount    int
+}
+
 func (s *Server) searchSuggest(w http.ResponseWriter, r *http.Request) {
 	// Pin the swap target server-side. When an auto-refresh fires concurrently
 	// with the debounced input request, htmx has been observed to resolve the
@@ -3393,25 +4336,43 @@ func (s *Server) searchSuggest(w http.ResponseWriter, r *http.Request) {
 		last := words[len(words)-1]
 		contextTokens = words[:len(words)-1]
 		last = strings.TrimPrefix(last, "-")
+		// system: hijacks the suggest endpoint to surface the query
+		// language itself - the keywords, operators, and closed-vocabulary
+		// values - without the user leaving the search bar. "system" is
+		// reserved at the category layer, so the categoryExists branch
+		// below cannot reach this name.
+		if rest, ok := strings.CutPrefix(last, "system:"); ok {
+			s.renderSystemSuggest(w, rest)
+			return
+		}
 		if colonIdx := strings.IndexByte(last, ':'); colonIdx >= 0 {
 			key := strings.ToLower(last[:colonIdx])
 			val := last[colonIdx+1:]
-			// For value-only filter keywords, don't suggest tags. The set
-			// is shared with alreadyTypedTags via search.IsFilterKeyword
-			// so the two helpers stay in lockstep.
-			if search.IsFilterKeyword(key) {
-				// no tag suggestions
-			} else {
-				// Category-qualified only when the prefix actually names
-				// a category; otherwise suggest literal tags that match
-				// the whole "key:val" string (e.g. "nier:aut…" →
-				// "nier:automata").
-				if colonIdx > 0 && s.categoryExists(key) {
-					catFilter = key
-					prefix = val
-				} else {
-					prefix = last
+			// Filter keyword: surface the level-2 hint - operators for
+			// date/width/height, closed-vocabulary values for
+			// fav/source/rating/etc., live category names for cat: - so
+			// the dropdown helps the user the same way `system:<key>:`
+			// would. Avoids forcing the user to remember the cheat-sheet
+			// trigger after they've already committed to the filter.
+			if searchkw.IsKeyword(key) {
+				rows := s.systemSuggestLevel2(key, strings.ToLower(val))
+				if len(rows) == 0 {
+					w.WriteHeader(http.StatusNoContent)
+					return
 				}
+				s.renderTemplate(w, "partials/search_suggest.html", map[string]any{
+					"Suggestions": rows,
+				})
+				return
+			}
+			// Category-qualified only when the prefix actually names a
+			// category; otherwise suggest literal tags that match the
+			// whole "key:val" string (e.g. "nier:aut..." → "nier:automata").
+			if colonIdx > 0 && s.categoryExists(key) {
+				catFilter = key
+				prefix = val
+			} else {
+				prefix = last
 			}
 		} else {
 			prefix = last
@@ -3452,9 +4413,155 @@ func (s *Server) searchSuggest(w http.ResponseWriter, r *http.Request) {
 		suggestions = out
 	}
 
+	rows := make([]searchSuggestRow, len(suggestions))
+	for i, t := range suggestions {
+		rows[i] = searchSuggestRow{
+			Name:          t.Name,
+			CategoryColor: t.CategoryColor,
+			UsageCount:    t.UsageCount,
+		}
+	}
 	s.renderTemplate(w, "partials/search_suggest.html", map[string]any{
-		"Suggestions": suggestions,
+		"Suggestions": rows,
 	})
+}
+
+// renderSystemSuggest emits cheat-sheet rows for the search-bar's
+// `system:` namespace. rest is what follows "system:" in the user's
+// last word. Without an inner colon the level-1 list surfaces every
+// real prefix (filter keywords plus existing tag categories); with an
+// inner colon the per-keyword level-2 list takes over (static operators
+// or values for filter keywords, live tags for category prefixes).
+func (s *Server) renderSystemSuggest(w http.ResponseWriter, rest string) {
+	var rows []searchSuggestRow
+	if colonIdx := strings.IndexByte(rest, ':'); colonIdx >= 0 {
+		key := strings.ToLower(rest[:colonIdx])
+		valPrefix := strings.ToLower(rest[colonIdx+1:])
+		rows = s.systemSuggestLevel2(key, valPrefix)
+	} else {
+		rows = s.systemSuggestLevel1(strings.ToLower(rest))
+	}
+	if len(rows) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	s.renderTemplate(w, "partials/search_suggest.html", map[string]any{
+		"Suggestions": rows,
+	})
+}
+
+// systemSuggestLevel1 lists every prefix the user can type to start a
+// `key:value` search token: the search-filter keywords plus every
+// existing tag category. A category whose name doubles as a filter
+// keyword (rating: is both) is folded into the keyword row to avoid
+// duplicate dropdown entries.
+func (s *Server) systemSuggestLevel1(prefix string) []searchSuggestRow {
+	var rows []searchSuggestRow
+	for _, kw := range searchkw.Keywords {
+		if !strings.HasPrefix(kw, prefix) {
+			continue
+		}
+		rows = append(rows, searchSuggestRow{
+			Name:        kw + ":",
+			Category:    "system",
+			Description: searchkw.Descriptions[kw],
+		})
+	}
+	for _, name := range s.systemCategoryNames() {
+		if searchkw.IsKeyword(name) {
+			continue
+		}
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		rows = append(rows, searchSuggestRow{
+			Name:        name + ":",
+			Category:    "system",
+			Description: "tag category",
+		})
+	}
+	return rows
+}
+
+func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
+	if key == "cat" {
+		var rows []searchSuggestRow
+		for _, name := range s.systemCategoryNames() {
+			if !strings.HasPrefix(name, valPrefix) {
+				continue
+			}
+			rows = append(rows, searchSuggestRow{
+				Name:     "cat:" + name,
+				Category: "system",
+			})
+			if len(rows) >= 10 {
+				break
+			}
+		}
+		return rows
+	}
+	if expansions, ok := searchkw.Expansions[key]; ok {
+		descs := searchkw.ExpansionDescriptions[key]
+		var rows []searchSuggestRow
+		for _, exp := range expansions {
+			if !strings.HasPrefix(exp, valPrefix) {
+				continue
+			}
+			rows = append(rows, searchSuggestRow{
+				Name:        key + ":" + exp,
+				Category:    "system",
+				Description: descs[exp],
+			})
+		}
+		return rows
+	}
+	// Filter keyword without a static expansion (folder, folderonly,
+	// generated): no level-2 hint - the user types the value freeform.
+	if searchkw.IsKeyword(key) {
+		return nil
+	}
+	// Real category at level 2: list tags in that category, mirroring
+	// the existing `<category>:<prefix>` autocomplete path. These rows
+	// wear the category color and a usage count, not the dim "system"
+	// label, since they're real data, not a static hint.
+	if s.categoryExists(key) {
+		suggestions, _ := search.SuggestTagsWithFilter(s.db(), nil, valPrefix, key, 10)
+		rows := make([]searchSuggestRow, 0, len(suggestions))
+		for _, t := range suggestions {
+			rows = append(rows, searchSuggestRow{
+				Name:          key + ":" + t.Name,
+				CategoryColor: t.CategoryColor,
+				UsageCount:    t.UsageCount,
+			})
+		}
+		return rows
+	}
+	return nil
+}
+
+// systemCategoryNames pulls the live category list once per request.
+// tag_categories is small (~9 builtin plus a handful of user rows) so
+// it's cheaper to read all and filter in Go than to run a LIKE per
+// keystroke and worry about escaping underscored names.
+func (s *Server) systemCategoryNames() []string {
+	d := s.db()
+	if d == nil {
+		return nil
+	}
+	dbrows, err := d.Read.Query(`SELECT name FROM tag_categories ORDER BY name`)
+	if err != nil {
+		return nil
+	}
+	defer dbrows.Close()
+	var out []string
+	for dbrows.Next() {
+		var name string
+		if err := dbrows.Scan(&name); err != nil {
+			return out
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 // alreadyTypedTags normalizes the preceding search-bar tokens into the same
@@ -3470,9 +4577,9 @@ func alreadyTypedTags(contextTokens []string) map[string]struct{} {
 			continue
 		}
 		// Skip filter keywords; only tag tokens belong in the de-dup set.
-		// Shares search.IsFilterKeyword with searchSuggest's value-only check.
+		// Shares searchkw.IsKeyword with searchSuggest's value-only check.
 		if colonIdx := strings.IndexByte(t, ':'); colonIdx > 0 {
-			if search.IsFilterKeyword(strings.ToLower(t[:colonIdx])) {
+			if searchkw.IsKeyword(strings.ToLower(t[:colonIdx])) {
 				continue
 			}
 		}
@@ -3521,15 +4628,17 @@ func (s *Server) getImageTagsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	s.renderTagListWithSidebar(w, r, id, "", false)
+	s.renderTagListWithSidebar(w, r, id, "", "", false)
 }
 
 // findAdjacentImages finds the prev/next image IDs in the given search context
 // via cursor-style LIMIT 1 queries - O(log n) per side instead of loading the
 // full matching ID list. seedStr carries the random-sort seed forward from the
 // referring gallery so the same shuffle resolves to the same neighbours.
-func (s *Server) findAdjacentImages(currentID int64, queryStr, sortStr, orderStr, seedStr string) (prevID, nextID *int64) {
-	sq := adjacentSearchQuery(queryStr, sortStr, orderStr, seedStr)
+// ceiling AND-chains the cookie-ceiling NotExprs onto the parsed back_q so
+// adjacency walks the same set the gallery shows.
+func (s *Server) findAdjacentImages(currentID int64, queryStr, sortStr, orderStr, seedStr, ceiling string) (prevID, nextID *int64) {
+	sq := adjacentSearchQuery(queryStr, sortStr, orderStr, seedStr, ceiling)
 	prevID, nextID, err := search.ExecuteAdjacent(s.db(), sq, currentID)
 	if err != nil {
 		logx.Warnf("findAdjacentImages: %v", err)
@@ -3541,8 +4650,8 @@ func (s *Server) findAdjacentImages(currentID int64, queryStr, sortStr, orderStr
 // search and the total matching rows. Used by the detail page's X/Y counter.
 // Shares the same query-building path as findAdjacentImages so both numbers
 // agree with the prev/next arrows they sit next to.
-func (s *Server) findImagePosition(currentID int64, queryStr, sortStr, orderStr, seedStr string) (pos, total int) {
-	sq := adjacentSearchQuery(queryStr, sortStr, orderStr, seedStr)
+func (s *Server) findImagePosition(currentID int64, queryStr, sortStr, orderStr, seedStr, ceiling string) (pos, total int) {
+	sq := adjacentSearchQuery(queryStr, sortStr, orderStr, seedStr, ceiling)
 	pos, total, err := search.ExecutePosition(s.db(), sq, currentID)
 	if err != nil {
 		logx.Warnf("findImagePosition: %v", err)
@@ -3550,8 +4659,9 @@ func (s *Server) findImagePosition(currentID int64, queryStr, sortStr, orderStr,
 	return
 }
 
-func adjacentSearchQuery(queryStr, sortStr, orderStr, seedStr string) search.Query {
+func adjacentSearchQuery(queryStr, sortStr, orderStr, seedStr, ceiling string) search.Query {
 	expr, _ := search.Parse(queryStr)
+	expr = applyRatingCeiling(expr, ceiling)
 	sq := search.Query{
 		Expr:  expr,
 		Sort:  sortStr,

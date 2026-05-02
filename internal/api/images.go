@@ -347,8 +347,12 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 			} else {
 				imgID := img.ID
 				database := g.DB
+				invalidate := g.InvalidateCaches
 				go func() {
 					skipped, err := tagger.RunWithTaggers(h.jobs.Context(), database, h.cfg, []int64{imgID}, selected, h.jobs, h.cfg.Tagger.UseCUDA)
+					if invalidate != nil {
+						invalidate()
+					}
 					if err != nil {
 						h.jobs.Fail(err.Error())
 						return

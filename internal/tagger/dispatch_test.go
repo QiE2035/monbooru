@@ -1,0 +1,192 @@
+//go:build tagger
+
+package tagger
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// canonicalCatIDs mirrors the seed in db/schema.sql so tests use the same
+// category names every shipped tagger's dispatch can reference.
+var canonicalCatIDs = map[string]int64{
+	"general":   1,
+	"character": 2,
+	"artist":    3,
+	"copyright": 4,
+	"meta":      5,
+	"rating":    6,
+	"medium":    7,
+	"person":    8,
+	"year":      9,
+}
+
+func writeOverlay(t *testing.T, modelPath, taggerName, body string) {
+	t.Helper()
+	dir := filepath.Join(modelPath, taggerName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir overlay dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dispatch.json"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+}
+
+func TestLoadDispatch_EmbeddedDefaults(t *testing.T) {
+	tmp := t.TempDir()
+	d := LoadDispatch(tmp, "wd-swinv2", canonicalCatIDs)
+	if rule, ok := d.Lookup("monochrome"); !ok || rule.Drop || rule.CatID != canonicalCatIDs["medium"] || rule.Name != "" {
+		t.Errorf("monochrome rule = %+v ok=%v, want CatID=medium, Name='', Drop=false", rule, ok)
+	}
+}
+
+func TestLoadDispatch_OverlayReplaceAndAppend(t *testing.T) {
+	tmp := t.TempDir()
+	writeOverlay(t, tmp, "wd-swinv2", `{
+		"version": 1,
+		"rules": [
+			{"source": "monochrome", "category": "meta"},
+			{"source": "brand_new_label", "category": "character", "name": "renamed"}
+		]
+	}`)
+
+	d := LoadDispatch(tmp, "wd-swinv2", canonicalCatIDs)
+
+	if rule, ok := d.Lookup("monochrome"); !ok || rule.CatID != canonicalCatIDs["meta"] {
+		t.Errorf("overlay did not replace monochrome: %+v ok=%v", rule, ok)
+	}
+	if rule, ok := d.Lookup("brand_new_label"); !ok || rule.CatID != canonicalCatIDs["character"] || rule.Name != "renamed" {
+		t.Errorf("overlay did not append brand_new_label: %+v ok=%v", rule, ok)
+	}
+	// Untouched embedded rules survive.
+	if _, ok := d.Lookup("comic"); !ok {
+		t.Errorf("embedded comic rule should still resolve after overlay")
+	}
+}
+
+func TestLoadDispatch_UnknownCategoryDropped(t *testing.T) {
+	tmp := t.TempDir()
+	writeOverlay(t, tmp, "wd-swinv2", `{
+		"version": 1,
+		"rules": [
+			{"source": "monochrome", "category": "definitely_not_a_category"}
+		]
+	}`)
+
+	d := LoadDispatch(tmp, "wd-swinv2", canonicalCatIDs)
+	// Overlay rule is dropped, so the embedded default for monochrome
+	// (category=medium) survives - the overlay couldn't replace it
+	// because the resolver skipped the bad rule before touching the map.
+	if rule, ok := d.Lookup("monochrome"); !ok || rule.CatID != canonicalCatIDs["medium"] {
+		t.Errorf("unknown-category overlay must not poison the embedded rule: %+v ok=%v", rule, ok)
+	}
+}
+
+func TestLoadDispatch_EmptyCategoryDrops(t *testing.T) {
+	tmp := t.TempDir()
+	writeOverlay(t, tmp, "custom", `{
+		"version": 1,
+		"rules": [
+			{"source": "annoying_label", "category": ""}
+		]
+	}`)
+
+	d := LoadDispatch(tmp, "custom", canonicalCatIDs)
+	rule, ok := d.Lookup("annoying_label")
+	if !ok {
+		t.Fatalf("empty-category rule should still produce a Lookup hit (Drop=true)")
+	}
+	if !rule.Drop {
+		t.Errorf("empty-category rule must produce Drop=true, got %+v", rule)
+	}
+}
+
+func TestLoadDispatch_SchemaVersionMismatch(t *testing.T) {
+	tmp := t.TempDir()
+	writeOverlay(t, tmp, "wd-swinv2", `{
+		"version": 999,
+		"rules": [
+			{"source": "monochrome", "category": "meta"}
+		]
+	}`)
+
+	d := LoadDispatch(tmp, "wd-swinv2", canonicalCatIDs)
+	// Overlay ignored entirely; embedded default for monochrome stands.
+	if rule, ok := d.Lookup("monochrome"); !ok || rule.CatID != canonicalCatIDs["medium"] {
+		t.Errorf("schema-mismatch overlay must be ignored, monochrome = %+v ok=%v", rule, ok)
+	}
+}
+
+func TestLoadDispatch_OverlayMissingNameKeepsSource(t *testing.T) {
+	tmp := t.TempDir()
+	writeOverlay(t, tmp, "custom", `{
+		"version": 1,
+		"rules": [
+			{"source": "kept_as_is", "category": "character"}
+		]
+	}`)
+
+	d := LoadDispatch(tmp, "custom", canonicalCatIDs)
+	rule, _ := d.Lookup("kept_as_is")
+	if rule.Name != "" {
+		t.Errorf("missing name must stay empty so caller keeps the source label, got %q", rule.Name)
+	}
+}
+
+func TestLoadDispatch_NoConfigReturnsEmptyTable(t *testing.T) {
+	tmp := t.TempDir()
+	d := LoadDispatch(tmp, "no-such-tagger", canonicalCatIDs)
+	if d == nil {
+		t.Fatal("LoadDispatch must never return nil")
+	}
+	if _, ok := d.Lookup("anything"); ok {
+		t.Errorf("empty table must not resolve any source")
+	}
+}
+
+func TestDispatchTable_LookupOnNilTable(t *testing.T) {
+	var d *DispatchTable
+	if _, ok := d.Lookup("x"); ok {
+		t.Errorf("nil DispatchTable Lookup should always be a miss")
+	}
+}
+
+// TestLoadDispatch_GoldenShippedMappings pins the canonical entries that
+// the in-repo dispatch defaults must keep producing. An LLM-regenerated
+// dispatch_default/*.json that breaks these (e.g. drops the rename on
+// photo_(medium), or routes hatsune_miku to general) trips this test in
+// CI before it lands in a release.
+func TestLoadDispatch_GoldenShippedMappings(t *testing.T) {
+	tmp := t.TempDir()
+
+	cases := []struct {
+		tagger, source string
+		wantCat        string
+		wantName       string
+	}{
+		{"joytag", "hatsune_miku", "character", ""},
+		{"joytag", "photo_(medium)", "medium", "photo"},
+		{"wd-swinv2", "dakimakura_(medium)", "medium", "dakimakura"},
+		{"wd-swinv2", "monochrome", "medium", ""},
+		{"wd-swinv2", "comic", "medium", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.tagger+"/"+c.source, func(t *testing.T) {
+			d := LoadDispatch(tmp, c.tagger, canonicalCatIDs)
+			rule, ok := d.Lookup(c.source)
+			if !ok {
+				t.Fatalf("missing dispatch rule for %s/%s", c.tagger, c.source)
+			}
+			if rule.Drop {
+				t.Fatalf("%s/%s unexpectedly Drop=true", c.tagger, c.source)
+			}
+			if rule.CatID != canonicalCatIDs[c.wantCat] {
+				t.Errorf("%s/%s catID = %d, want %s (%d)", c.tagger, c.source, rule.CatID, c.wantCat, canonicalCatIDs[c.wantCat])
+			}
+			if rule.Name != c.wantName {
+				t.Errorf("%s/%s name = %q, want %q", c.tagger, c.source, rule.Name, c.wantName)
+			}
+		})
+	}
+}

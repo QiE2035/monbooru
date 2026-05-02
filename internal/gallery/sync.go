@@ -84,8 +84,8 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 
 	maxBytes := int64(maxFileSizeMB) * 1024 * 1024
 
-	// Phase 1: walk filesystem and build path → sha256.
-	progress(0, 0, "Phase 1: scanning filesystem…")
+	// Phase 1: walk filesystem and build path -> sha256.
+	progress(0, 0, "Phase 1: scanning filesystem...")
 	type fileInfo struct {
 		path     string
 		sha256   string
@@ -175,9 +175,8 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 		return result, fmt.Errorf("walking gallery: %w", err)
 	}
 
-	// Phase 2: reconcile.
 	total := len(found)
-	progress(0, total, "Phase 2: reconciling…")
+	progress(0, total, "Phase 2: reconciling...")
 
 	foundPaths := map[string]struct{}{}
 	for _, fi := range found {
@@ -227,7 +226,7 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 		// Throttle progress emissions so Update's lock traffic stays
 		// bounded on large libraries.
 		if i%50 == 0 || i == total-1 {
-			progress(i, total, "Phase 2: reconciling…")
+			progress(i, total, "Phase 2: reconciling...")
 		}
 
 		row, ok := bySHA[fi.sha256]
@@ -338,7 +337,6 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 		return result, ctx.Err()
 	}
 
-	// Mark missing: DB entries whose canonical path is gone from disk.
 	rows, err := database.Read.Query(
 		`SELECT id, canonical_path FROM images WHERE is_missing = 0`,
 	)
@@ -400,8 +398,8 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 	// that could change them. Duplicates alone never do, so an idle sync on
 	// a large library skips this step.
 	if result.Added > 0 || result.Removed > 0 || result.Moved > 0 || reactivated > 0 {
-		progress(0, 0, "Recalculating tag counts…")
-		tags.RecalcAndPruneDB(database)
+		progress(0, 0, "Recalculating tag counts...")
+		tags.RecalcDB(database)
 	}
 
 	// Phase 3: report. Files gone from disk are flagged is_missing rather

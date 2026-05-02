@@ -64,6 +64,87 @@ func TestServerStartsAndServesStatic(t *testing.T) {
 	}
 }
 
+func TestCustomCSS_NotFoundWhenUnset(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+
+	req := httptest.NewRequest("GET", "/custom.css", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("default config: GET /custom.css expected 404, got %d", w.Code)
+	}
+}
+
+func TestCustomCSS_ServesConfiguredFile(t *testing.T) {
+	srv := newTestServer(t)
+	cssPath := filepath.Join(t.TempDir(), "custom.css")
+	body := `:root { --bg: #112233; }`
+	if err := os.WriteFile(cssPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.Server.CustomCSS = cssPath
+
+	req := httptest.NewRequest("GET", "/custom.css", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /custom.css expected 200, got %d", w.Code)
+	}
+	if got := w.Body.String(); got != body {
+		t.Errorf("body = %q, want %q", got, body)
+	}
+}
+
+// Walks every full-layout page so a handler that hand-copies baseData
+// fields into a map and forgets CustomCSS fails loudly here, instead of
+// silently dropping the override link on whichever page it forgot.
+func TestCustomCSS_LinkRenderedWhenConfigured(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.Server.CustomCSS = "/some/path/custom.css"
+
+	pages := []string{"/", "/tags", "/categories", "/settings", "/help", "/upload"}
+	for _, page := range pages {
+		req := httptest.NewRequest("GET", page, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("GET %s expected 200, got %d", page, w.Code)
+			continue
+		}
+		body := w.Body.String()
+		mainIdx := strings.Index(body, `href="/static/main.css"`)
+		customIdx := strings.Index(body, `href="/custom.css"`)
+		if mainIdx < 0 {
+			t.Errorf("%s: main.css link missing", page)
+			continue
+		}
+		if customIdx < 0 {
+			t.Errorf("%s: /custom.css link missing when CustomCSS configured", page)
+			continue
+		}
+		if customIdx < mainIdx {
+			t.Errorf("%s: custom.css link must follow main.css; main=%d custom=%d",
+				page, mainIdx, customIdx)
+		}
+	}
+}
+
+func TestCustomCSS_LinkOmittedByDefault(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if strings.Contains(w.Body.String(), `href="/custom.css"`) {
+		t.Error("layout should not include /custom.css link when CustomCSS is unset")
+	}
+}
+
 func TestLoginPageRendersWithoutAuth(t *testing.T) {
 	srv := newTestServer(t)
 	// Auth disabled by default → /login now renders an informational

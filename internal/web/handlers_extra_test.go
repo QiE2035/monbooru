@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +125,347 @@ func TestFoldersSuggest_PrefixFilter(t *testing.T) {
 	}
 	if strings.Contains(body, "2025/mar") {
 		t.Errorf("2025/mar must not match prefix=2024, got %s", body)
+	}
+}
+
+// system: cheat-sheet branch: typing the bare prefix should surface every
+// real filter keyword and tag the rows with the dim "system" category
+// label. The trailing colon on each row is what the JS keys off to keep
+// the cursor parked for the value the user is about to type.
+func TestSearchSuggest_System_TopLevel(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`data-tag-name="fav:"`,
+		`data-tag-name="source:"`,
+		`data-tag-name="date:"`,
+		`data-tag-name="rating:"`,
+		`class="suggest-category">system<`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("system: top-level dropdown missing %q\nbody: %s", want, body)
+		}
+	}
+	// The count column belongs to tag rows only; system rows must not carry it.
+	if strings.Contains(body, `class="suggest-count"`) {
+		t.Errorf("system: rows must not render .suggest-count, got: %s", body)
+	}
+}
+
+func TestSearchSuggest_System_TopLevelPrefixFilter(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:fa", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `data-tag-name="fav:"`) {
+		t.Errorf("expected fav: row when prefix=fa, body: %s", body)
+	}
+	if strings.Contains(body, `data-tag-name="date:"`) {
+		t.Errorf("date: must not match prefix=fa, body: %s", body)
+	}
+}
+
+func TestSearchSuggest_System_Level2_Operators(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:date:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`data-tag-name="date:&gt;"`,
+		`data-tag-name="date:&lt;"`,
+		`data-tag-name="date:..`,
+		`data-tag-name="date:&gt;="`,
+		`data-tag-name="date:&lt;="`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("date: level-2 dropdown missing %q\nbody: %s", want, body)
+		}
+	}
+}
+
+func TestSearchSuggest_System_Level2_Values(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:source:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`data-tag-name="source:a1111"`,
+		`data-tag-name="source:comfyui"`,
+		`data-tag-name="source:none"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("source: level-2 dropdown missing %q\nbody: %s", want, body)
+		}
+	}
+}
+
+// cat: is data-driven from tag_categories; the cheat-sheet must list both
+// builtin (e.g. character) and custom rows that the operator created.
+func TestSearchSuggest_System_Level2_Categories(t *testing.T) {
+	srv := newTestServer(t)
+	if _, err := srv.tagSvc().CreateCategory("custom_pal", "#aabbcc"); err != nil {
+		t.Fatalf("seed custom category: %v", err)
+	}
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:cat:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`data-tag-name="cat:character"`,
+		`data-tag-name="cat:custom_pal"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("cat: level-2 dropdown missing %q\nbody: %s", want, body)
+		}
+	}
+}
+
+// A small dot separator sits between the description and the dim
+// "system" column so the cheat-sheet reads as `name  description · system`.
+// Rows without a description (rating values, fav:true, etc.) and tag
+// rows skip the separator.
+func TestSearchSuggest_System_DescriptionSeparator(t *testing.T) {
+	srv := newTestServer(t)
+
+	// System row with a description: separator must be present.
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	withDesc := w.Body.String()
+	if !strings.Contains(withDesc, `<span class="suggest-description">favorite images</span><span class="suggest-sep">·</span>`) {
+		t.Errorf("expected description+separator pair on system row, got: %s", withDesc)
+	}
+
+	// Level-2 row without a description (rating values are bare): no
+	// separator and no description span.
+	req2 := httptest.NewRequest("GET", "/internal/search/suggest?q=system:rating:", nil)
+	w2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w2, req2)
+	bare := w2.Body.String()
+	if strings.Contains(bare, `class="suggest-sep"`) {
+		t.Errorf("rows without a description must not render the separator, got: %s", bare)
+	}
+}
+
+// Cheat-sheet rows carry a short English label between the name and the
+// dim "system" column so the dropdown reads as a discoverable reference.
+func TestSearchSuggest_System_TopLevel_DescriptionColumn(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`<span class="suggest-description">favorite images</span>`,
+		`<span class="suggest-description">image width</span>`,
+		`<span class="suggest-description">ingestion date</span>`,
+		// Category rows wear a generic label.
+		`<span class="suggest-description">tag category</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("level-1 dropdown missing description %q\nbody: %s", want, body)
+		}
+	}
+}
+
+func TestSearchSuggest_System_Level2_OperatorDescriptions(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:date:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	body := w.Body.String()
+	for _, want := range []string{
+		`<span class="suggest-description">after</span>`,
+		`<span class="suggest-description">before</span>`,
+		`<span class="suggest-description">range</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("date: level-2 dropdown missing description %q\nbody: %s", want, body)
+		}
+	}
+}
+
+func TestSearchSuggest_System_Level2_SourceDescriptions(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:source:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	body := w.Body.String()
+	for _, want := range []string{
+		`<span class="suggest-description">A1111 / Forge</span>`,
+		`<span class="suggest-description">ComfyUI</span>`,
+		`<span class="suggest-description">no metadata</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("source: level-2 dropdown missing description %q\nbody: %s", want, body)
+		}
+	}
+}
+
+// Real categories should surface in the level-1 cheat-sheet alongside
+// filter keywords so the user can discover the `<category>:<tag>` form.
+func TestSearchSuggest_System_TopLevel_IncludesCategories(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`data-tag-name="character:"`,
+		`data-tag-name="artist:"`,
+		`data-tag-name="copyright:"`,
+		`data-tag-name="general:"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("level-1 dropdown missing category %q\nbody: %s", want, body)
+		}
+	}
+	// `rating` is both a filter keyword and a builtin category. Only the
+	// filter-keyword row should appear; the category copy is folded in.
+	if got := strings.Count(body, `data-tag-name="rating:"`); got != 1 {
+		t.Errorf("expected exactly one rating: row, got %d\nbody: %s", got, body)
+	}
+}
+
+// Bare filter key (no `system:` prefix) is the natural state after
+// picking a row from the cheat-sheet. The dropdown must surface the
+// level-2 hint there too, otherwise the user has to type a throwaway
+// character to wake autocomplete back up.
+func TestSearchSuggest_BareFilterKey_SurfacesValueHint(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=fav:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`data-tag-name="fav:true"`,
+		`data-tag-name="fav:false"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("bare fav: dropdown missing %q\nbody: %s", want, body)
+		}
+	}
+}
+
+func TestSearchSuggest_BareDateKey_SurfacesOperators(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=date:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`data-tag-name="date:&gt;"`,
+		`data-tag-name="date:&lt;"`,
+		`data-tag-name="date:..`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("bare date: dropdown missing %q\nbody: %s", want, body)
+		}
+	}
+}
+
+func TestSearchSuggest_BareCatKey_SurfacesCategories(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=cat:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `data-tag-name="cat:character"`) {
+		t.Errorf("bare cat: dropdown missing cat:character\nbody: %s", body)
+	}
+}
+
+// system:<category>: drills into tags in that category, mirroring what
+// the existing `<category>:<prefix>` autocomplete returns. These rows
+// are real tag data, not static cheat-sheet hints, so they wear a
+// usage count instead of the dim "system" label.
+func TestSearchSuggest_System_Level2_RealCategoryDrillIn(t *testing.T) {
+	srv := newTestServer(t)
+	id := insertTestImage(t, srv.db())
+	cats, err := srv.tagSvc().ListCategories()
+	if err != nil {
+		t.Fatalf("list categories: %v", err)
+	}
+	var charCatID int64
+	for _, c := range cats {
+		if c.Name == "character" {
+			charCatID = c.ID
+			break
+		}
+	}
+	if charCatID == 0 {
+		t.Fatal("character category missing from seed")
+	}
+	tag, err := srv.tagSvc().GetOrCreateTag("bocchi_the_rock", charCatID)
+	if err != nil {
+		t.Fatalf("create tag: %v", err)
+	}
+	if err := srv.tagSvc().AddTagToImage(id, tag.ID, false, nil); err != nil {
+		t.Fatalf("attach tag: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:character:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `data-tag-name="character:bocchi_the_rock"`) {
+		t.Errorf("expected character:bocchi_the_rock in level-2 dropdown, got: %s", body)
+	}
+	// Real-data rows render a usage count column, not the dim system label.
+	if !strings.Contains(body, `class="suggest-count"`) {
+		t.Errorf("expected suggest-count column on real category drill-in\nbody: %s", body)
 	}
 }
 
@@ -346,7 +688,7 @@ func imageTagCategory(t *testing.T, srv *Server, id int64, want string) string {
 
 func TestAddTagToImage_ColonFallbackLiteral(t *testing.T) {
 	// `nier` is not a category, so the token must fall through to a literal
-	// tag-name insert and land whole in general — not be rejected as an
+	// tag-name insert and land whole in general - not be rejected as an
 	// unknown category.
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "colon_literal.png", 10, 10)
@@ -364,6 +706,145 @@ func TestAddTagToImage_ColonFallbackLiteral(t *testing.T) {
 	}
 	if cat := imageTagCategory(t, srv, id, "nier:automata"); cat != "general" {
 		t.Errorf("nier:automata category = %q, want general", cat)
+	}
+}
+
+// TestGalleryHandler_RandomSeedFitsInt32 pins the auto-generated random
+// seed range. SQLite's `(i.id * seed) & 2147483647` ordering coerces to
+// REAL when the product overflows int64, and the low bits then track id
+// monotonically; the audit reproduced this with 19-digit auto-seeds. A
+// 32-bit seed keeps the product in int64 for any plausible image id.
+func TestGalleryHandler_RandomSeedFitsInt32(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/?sort=random", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect for sort=random with no seed, got %d", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	parsed, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("parse Location %q: %v", loc, err)
+	}
+	seedStr := parsed.Query().Get("seed")
+	if seedStr == "" {
+		t.Fatalf("Location missing seed: %q", loc)
+	}
+	seed, err := strconv.ParseInt(seedStr, 10, 64)
+	if err != nil {
+		t.Fatalf("parse seed %q: %v", seedStr, err)
+	}
+	if seed <= 0 || seed > (1<<32)-1 {
+		t.Errorf("seed %d outside [1, 2^32-1]; multiplication can overflow int64", seed)
+	}
+	if seed&1 == 0 {
+		t.Errorf("seed %d is even; (id*seed) mod 2^31 is not a permutation", seed)
+	}
+}
+
+// TestCreateSavedSearch_RejectsDuplicateName pins the no-overwrite
+// promise: a second save under an existing name surfaces an error
+// instead of silently clobbering the previous saved search's query.
+func TestCreateSavedSearch_RejectsDuplicateName(t *testing.T) {
+	srv := newTestServer(t)
+	csrf := srv.csrfToken("anon")
+
+	post := func(name, query string) *httptest.ResponseRecorder {
+		t.Helper()
+		form := url.Values{"_csrf": {csrf}, "name": {name}, "query": {query}}
+		req := httptest.NewRequest("POST", "/search/saved", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("X-CSRF-Token", csrf)
+		req.Header.Set("HX-Request", "true")
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	if w := post("girls", "1girl"); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "flash-ok") {
+		t.Fatalf("first save: code=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w := post("girls", "blue_eyes")
+	if !strings.Contains(w.Body.String(), "flash-err") {
+		t.Errorf("duplicate save should surface flash-err, got %q", w.Body.String())
+	}
+
+	cx := srv.Active()
+	var stored string
+	if err := cx.DB.Read.QueryRow(`SELECT query FROM saved_searches WHERE name = 'girls'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "1girl" {
+		t.Errorf("original query should survive duplicate-name attempt, got %q", stored)
+	}
+}
+
+// TestRenameTag_HTMXCollisionSurfacesError pins the rename dialog's
+// "name already exists" round trip: an HTMX rename to a colliding name
+// returns 200 with a flash payload htmx swaps into #rename-error,
+// instead of a bare 400 the dialog can't see.
+func TestRenameTag_HTMXCollisionSurfacesError(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	var generalID int64
+	cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
+	first, _ := cx.TagSvc.GetOrCreateTag("first", generalID)
+	if _, err := cx.TagSvc.GetOrCreateTag("second", generalID); err != nil {
+		t.Fatal(err)
+	}
+
+	csrf := srv.csrfToken("anon")
+	form := url.Values{"_csrf": {csrf}, "name": {"second"}}
+	req := httptest.NewRequest("POST", fmt.Sprintf("/tags/%d/rename", first.ID), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 (so htmx swaps the flash), got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "flash-err") {
+		t.Errorf("response missing flash-err: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "second") {
+		t.Errorf("flash should name the colliding name: %s", w.Body.String())
+	}
+	var stillName string
+	cx.DB.Read.QueryRow(`SELECT name FROM tags WHERE id = ?`, first.ID).Scan(&stillName)
+	if stillName != "first" {
+		t.Errorf("collision should leave tag untouched, got name %q", stillName)
+	}
+}
+
+// TestRenameTag_HTMXSuccessRedirects pins the success branch: the
+// handler emits HX-Redirect so the client navigates to /tags rather
+// than swapping the empty body into #rename-error.
+func TestRenameTag_HTMXSuccessRedirects(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	var generalID int64
+	cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
+	tag, _ := cx.TagSvc.GetOrCreateTag("renameme", generalID)
+
+	csrf := srv.csrfToken("anon")
+	form := url.Values{"_csrf": {csrf}, "name": {"renamed"}}
+	req := httptest.NewRequest("POST", fmt.Sprintf("/tags/%d/rename", tag.ID), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204 on HTMX rename, got %d", w.Code)
+	}
+	if w.Header().Get("HX-Redirect") != "/tags" {
+		t.Errorf("HX-Redirect = %q, want /tags", w.Header().Get("HX-Redirect"))
 	}
 }
 

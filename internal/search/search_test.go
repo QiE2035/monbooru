@@ -149,6 +149,27 @@ func TestParse_Empty(t *testing.T) {
 	}
 }
 
+// A bare `*` would otherwise become TagExpr{Tag:"", Wildcard:"prefix"}
+// and the executor would emit `LIKE '%' ESCAPE '\'`, matching every
+// tag - a "select all" alias the documented syntax doesn't expose.
+// The parser collapses it to a literal-no-match so it composes
+// predictably with the rest of the query.
+func TestParse_BareWildcard_NoMatch(t *testing.T) {
+	for _, in := range []string{"*", "**"} {
+		e, err := Parse(in)
+		if err != nil {
+			t.Fatalf("parse %q: %v", in, err)
+		}
+		tag, ok := e.(TagExpr)
+		if !ok {
+			t.Fatalf("expected TagExpr for %q, got %T", in, e)
+		}
+		if tag.Tag != "" || tag.Wildcard == "prefix" {
+			t.Errorf("Parse(%q) = %+v, want empty literal-no-match", in, tag)
+		}
+	}
+}
+
 func TestBuildWhere_FolderFilter(t *testing.T) {
 	// folder:PATH is recursive: images in PATH or any subfolder under it.
 	expr := FilterExpr{Key: "folder", Val: "2024/jan"}
@@ -420,6 +441,137 @@ func TestExecute_TagAliasResolvesToCanonical(t *testing.T) {
 	}
 	if result.Total != 1 {
 		t.Errorf("Total = %d, want 1 (alias should resolve to canonical)", result.Total)
+	}
+}
+
+// ratingTagID looks up a seeded rating tag by name; the schema bootstrap
+// inserts the four canonical rows so they're always available in tests.
+func ratingTagID(t *testing.T, database *db.DB, name string) int64 {
+	t.Helper()
+	var id int64
+	if err := database.Read.QueryRow(
+		`SELECT t.id FROM tags t JOIN tag_categories tc ON tc.id = t.category_id
+		 WHERE tc.name = 'rating' AND t.name = ?`, name,
+	).Scan(&id); err != nil {
+		t.Fatalf("rating tag %q not seeded: %v", name, err)
+	}
+	return id
+}
+
+// attachTag attaches an image_tags row and bumps usage_count to match.
+func attachTag(t *testing.T, database *db.DB, imageID, tagID int64) {
+	t.Helper()
+	if _, err := database.Write.Exec(
+		`INSERT INTO image_tags (image_id, tag_id, is_auto) VALUES (?, ?, 0)`, imageID, tagID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(
+		`UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?`, tagID,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecute_RatingHighestWins(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "rating_a.png")
+	ingestTestImage(t, database, env, "rating_b.png")
+
+	var idA, idB int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%rating_a.png'`).Scan(&idA)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%rating_b.png'`).Scan(&idB)
+
+	// idA carries general only; idB carries general+explicit. Only idB
+	// should match rating:explicit; only idA should match rating:general.
+	attachTag(t, database, idA, ratingTagID(t, database, "general"))
+	attachTag(t, database, idB, ratingTagID(t, database, "general"))
+	attachTag(t, database, idB, ratingTagID(t, database, "explicit"))
+
+	cases := []struct {
+		val   string
+		want  int64
+		count int
+	}{
+		{"general", idA, 1},
+		{"explicit", idB, 1},
+		{"sensitive", 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.val, func(t *testing.T) {
+			result, err := Execute(database, Query{
+				Expr:  FilterExpr{Key: "rating", Val: tc.val},
+				Page:  1,
+				Limit: 40,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Total != tc.count {
+				t.Fatalf("Total = %d, want %d", result.Total, tc.count)
+			}
+			if tc.count == 1 && result.Results[0].ID != tc.want {
+				t.Errorf("matched id = %d, want %d", result.Results[0].ID, tc.want)
+			}
+		})
+	}
+}
+
+func TestExecute_RatingCeilingHidesHigher(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "ceil_safe.png")
+	ingestTestImage(t, database, env, "ceil_explicit.png")
+	ingestTestImage(t, database, env, "ceil_untagged.png")
+
+	var safeID, expID, untagID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_safe.png'`).Scan(&safeID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_explicit.png'`).Scan(&expID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_untagged.png'`).Scan(&untagID)
+
+	attachTag(t, database, safeID, ratingTagID(t, database, "general"))
+	attachTag(t, database, expID, ratingTagID(t, database, "explicit"))
+
+	// Ceiling = sensitive: NOT rating:questionable AND NOT rating:explicit.
+	expr := AndExpr{
+		Left:  NotExpr{Expr: FilterExpr{Key: "rating", Val: "questionable"}},
+		Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
+	}
+	result, err := Execute(database, Query{Expr: expr, Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 2 {
+		t.Errorf("Total = %d, want 2 (general + untagged pass; explicit hidden)", result.Total)
+	}
+	for _, img := range result.Results {
+		if img.ID == expID {
+			t.Errorf("explicit image %d leaked through the ceiling", expID)
+		}
+	}
+}
+
+func TestFastCountCeiling_MatchesSlowPath(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "fc_general.png")
+	ingestTestImage(t, database, env, "fc_explicit.png")
+	ingestTestImage(t, database, env, "fc_untagged.png")
+
+	var genID, expID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fc_general.png'`).Scan(&genID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fc_explicit.png'`).Scan(&expID)
+	attachTag(t, database, genID, ratingTagID(t, database, "general"))
+	attachTag(t, database, expID, ratingTagID(t, database, "explicit"))
+
+	expr := AndExpr{
+		Left:  NotExpr{Expr: FilterExpr{Key: "rating", Val: "questionable"}},
+		Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
+	}
+	got, ok := fastCountCeiling(database, expr)
+	if !ok {
+		t.Fatal("fastCountCeiling should recognise the ceiling AST")
+	}
+	if got != 2 {
+		t.Errorf("fastCountCeiling = %d, want 2", got)
 	}
 }
 
@@ -949,6 +1101,123 @@ func TestExecute_FastTagTotal_EmptyShortCircuits(t *testing.T) {
 	}
 }
 
+func TestExecute_AndDriverMultiTag(t *testing.T) {
+	// 3-AND of literal tags: the AND-driver replaces the smallest tag's
+	// correlated EXISTS with a non-correlated IN subquery. The set of
+	// matching images must be unchanged from the slow path.
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "and_match.png")
+	ingestTestImage(t, database, env, "and_pair_only.png")
+	ingestTestImage(t, database, env, "and_single.png")
+
+	var matchID, pairID, singleID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%and_match.png'`).Scan(&matchID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%and_pair_only.png'`).Scan(&pairID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%and_single.png'`).Scan(&singleID)
+
+	var generalID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+
+	mkTag := func(name string) int64 {
+		var id int64
+		database.Write.QueryRow(
+			`INSERT INTO tags (name, category_id) VALUES (?, ?) RETURNING id`, name, generalID,
+		).Scan(&id)
+		return id
+	}
+	tagA := mkTag("alpha")
+	tagB := mkTag("bravo")
+	tagC := mkTag("charlie")
+
+	// match: A,B,C ; pair: A,B ; single: A. Smallest carrier set is C
+	// (one image), so the driver should pick C and the slow EXISTS for
+	// A and B run on that singleton.
+	attachTag(t, database, matchID, tagA)
+	attachTag(t, database, matchID, tagB)
+	attachTag(t, database, matchID, tagC)
+	attachTag(t, database, pairID, tagA)
+	attachTag(t, database, pairID, tagB)
+	attachTag(t, database, singleID, tagA)
+
+	expr := AndExpr{
+		Left:  AndExpr{Left: TagExpr{Tag: "alpha"}, Right: TagExpr{Tag: "bravo"}},
+		Right: TagExpr{Tag: "charlie"},
+	}
+	result, err := Execute(database, Query{Expr: expr, Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 1 {
+		t.Fatalf("Total = %d, want 1", result.Total)
+	}
+	if len(result.Results) != 1 || result.Results[0].ID != matchID {
+		t.Errorf("matched = %v, want only %d", result.Results, matchID)
+	}
+}
+
+func TestExecute_AndDriverPreservesOrAndNot(t *testing.T) {
+	// The driver only fires on AND-only paths from the root. A literal
+	// tag inside OR or NOT must keep its correlated EXISTS so semantics
+	// stay intact.
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "or_a.png")
+	ingestTestImage(t, database, env, "or_b.png")
+	ingestTestImage(t, database, env, "or_c.png")
+
+	var idA, idB, idC int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%or_a.png'`).Scan(&idA)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%or_b.png'`).Scan(&idB)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%or_c.png'`).Scan(&idC)
+
+	var generalID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+
+	mkTag := func(name string) int64 {
+		var id int64
+		database.Write.QueryRow(
+			`INSERT INTO tags (name, category_id) VALUES (?, ?) RETURNING id`, name, generalID,
+		).Scan(&id)
+		return id
+	}
+	tagX := mkTag("xray")
+	tagY := mkTag("yankee")
+
+	attachTag(t, database, idA, tagX)
+	attachTag(t, database, idB, tagY)
+	// idC has neither.
+
+	// X OR Y matches A and B only. Driver must not fire because the
+	// leaves live under OrExpr.
+	expr := OrExpr{Left: TagExpr{Tag: "xray"}, Right: TagExpr{Tag: "yankee"}}
+	result, err := Execute(database, Query{Expr: expr, Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 2 {
+		t.Errorf("Total = %d, want 2", result.Total)
+	}
+}
+
+func TestExecute_RatingUnusedShortCircuits(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "rating_unused.png")
+
+	// No image carries any rating tag. The positive form must return zero
+	// matches without paying the full image scan that the EXISTS predicate
+	// would otherwise force on the LIMIT-bounded data path.
+	result, err := Execute(database, Query{
+		Expr:  FilterExpr{Key: "rating", Val: "explicit"},
+		Page:  1,
+		Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 0 || len(result.Results) != 0 {
+		t.Errorf("Total = %d, Results = %d, want both 0", result.Total, len(result.Results))
+	}
+}
+
 func TestExecute_FullSync(t *testing.T) {
 	database, env := setupSearchDB(t)
 	ingestTestImage(t, database, env, "a.png")
@@ -1119,7 +1388,7 @@ func TestBuildWhere_Height(t *testing.T) {
 
 func TestBuildWhere_WidthNonNumericRejected(t *testing.T) {
 	// A non-numeric width comparand must produce `1=0`, not bind the string
-	// into the SQL — SQLite would coerce it to 0 and match every row with
+	// into the SQL - SQLite would coerce it to 0 and match every row with
 	// width >= 0, which is worse than returning nothing.
 	expr := FilterExpr{Key: "width", Val: ">=abc"}
 	where, args, _ := buildWhere(expr)
@@ -1729,6 +1998,50 @@ func TestExecuteAdjacent_RandomBucketBound(t *testing.T) {
 	}
 }
 
+func TestExecuteAdjacent_RatingCeiling(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "adj_safe.png")
+	ingestTestImage(t, database, env, "adj_explicit.png")
+	ingestTestImage(t, database, env, "adj_safe2.png")
+
+	var safeID, expID, safe2ID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%adj_safe.png'`).Scan(&safeID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%adj_explicit.png'`).Scan(&expID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%adj_safe2.png'`).Scan(&safe2ID)
+
+	attachTag(t, database, safeID, ratingTagID(t, database, "general"))
+	attachTag(t, database, expID, ratingTagID(t, database, "explicit"))
+	attachTag(t, database, safe2ID, ratingTagID(t, database, "general"))
+
+	// Ceiling = sensitive: NOT rating:questionable AND NOT rating:explicit.
+	expr := AndExpr{
+		Left:  NotExpr{Expr: FilterExpr{Key: "rating", Val: "questionable"}},
+		Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
+	}
+	q := Query{Expr: expr, Sort: "newest", Order: "desc"}
+
+	// Display order is [safe2 (newest), explicit, safe (oldest)]. In desc
+	// sort `prev` is the newer neighbour, so safe.prev without the ceiling
+	// is the explicit middle row; with the ceiling it must skip the hidden
+	// row and land on safe2.
+	prev, next, err := ExecuteAdjacent(database, q, safeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prev == nil {
+		t.Fatal("ceiling adjacency: prev = nil, want safe2ID")
+	}
+	if *prev == expID {
+		t.Errorf("ceiling adjacency leaked the explicit image: prev = %d", *prev)
+	}
+	if *prev != safe2ID {
+		t.Errorf("ceiling adjacency: prev = %d, want %d", *prev, safe2ID)
+	}
+	if next != nil {
+		t.Errorf("oldest next under ceiling: got %v, want nil", next)
+	}
+}
+
 func TestExecutePosition_Newest(t *testing.T) {
 	database, cfg := setupSearchDB(t)
 	ingestTestImage(t, database, cfg, "pos_a.png")
@@ -1894,6 +2207,48 @@ func TestExecutePosition_TagPredicateSkipped(t *testing.T) {
 	}
 }
 
+func TestExecutePosition_RatingCeiling(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "pos_safe.png")
+	ingestTestImage(t, database, env, "pos_explicit.png")
+	ingestTestImage(t, database, env, "pos_safe2.png")
+
+	var safeID, expID, safe2ID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%pos_safe.png'`).Scan(&safeID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%pos_explicit.png'`).Scan(&expID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%pos_safe2.png'`).Scan(&safe2ID)
+
+	attachTag(t, database, safeID, ratingTagID(t, database, "general"))
+	attachTag(t, database, expID, ratingTagID(t, database, "explicit"))
+	attachTag(t, database, safe2ID, ratingTagID(t, database, "general"))
+
+	expr := AndExpr{
+		Left:  NotExpr{Expr: FilterExpr{Key: "rating", Val: "questionable"}},
+		Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
+	}
+	q := Query{Expr: expr, Sort: "newest", Order: "desc"}
+
+	// Under the ceiling the visible set is {safe2, safe}, so safe2 is #1/2
+	// and safe is #2/2; the explicit image must not appear in the total.
+	pos, total, err := ExecutePosition(database, q, safe2ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Errorf("ceiling total = %d, want 2 (explicit hidden)", total)
+	}
+	if pos != 1 {
+		t.Errorf("safe2 pos = %d, want 1", pos)
+	}
+	pos, total, err = ExecutePosition(database, q, safeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pos != 2 || total != 2 {
+		t.Errorf("safe pos = %d/%d, want 2/2", pos, total)
+	}
+}
+
 func TestBuildWhere_DateFilter(t *testing.T) {
 	where, args, _ := buildWhere(FilterExpr{Key: "date", Val: ">2024-01-01"})
 	if !strings.Contains(where, "ingested_at") {
@@ -1901,6 +2256,31 @@ func TestBuildWhere_DateFilter(t *testing.T) {
 	}
 	if len(args) == 0 {
 		t.Error("expected args for date filter")
+	}
+}
+
+// Malformed date input must emit `1=0` rather than passing the value
+// straight into the SQL comparison; the latter silently returned zero
+// rows, indistinguishable from a real "no images on that date". The
+// regex accepts YYYY, YYYY-MM, and YYYY-MM-DD per HELP.md examples.
+func TestBuildWhere_DateFilter_RejectsBadInput(t *testing.T) {
+	for _, in := range []string{"abcd", "abcd..xyz", "2024-01..bogus", "2024/01/01", ">notadate", "<not", "20240101"} {
+		where, args, _ := buildWhere(FilterExpr{Key: "date", Val: in})
+		if !strings.Contains(where, "1=0") {
+			t.Errorf("bad date %q: expected 1=0, got %q", in, where)
+		}
+		if len(args) != 0 {
+			t.Errorf("bad date %q: expected no args, got %v", in, args)
+		}
+	}
+}
+
+func TestBuildWhere_DateFilter_AcceptsYearMonth(t *testing.T) {
+	for _, in := range []string{"2024", "2024-06", "2024-06-15", ">2024-01", "<2099-12", "2000-01..2099-12"} {
+		where, _, _ := buildWhere(FilterExpr{Key: "date", Val: in})
+		if strings.Contains(where, "1=0") {
+			t.Errorf("good date %q rejected: %q", in, where)
+		}
 	}
 }
 

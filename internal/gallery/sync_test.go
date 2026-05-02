@@ -116,6 +116,126 @@ func TestIngest_RecordsOrigin(t *testing.T) {
 	}
 }
 
+// TestIngest_ReactivationRestoresUsageCount pins the visible-only
+// invariant: a missing-then-reappeared image must lift its tags back
+// into usage_count, otherwise the next unrelated mutation that
+// triggers RecalcIDs would silently agree with a different number.
+func TestIngest_ReactivationRestoresUsageCount(t *testing.T) {
+	database, env, galleryDir := setupSyncTest(t)
+
+	path := createTestPNGFile(t, galleryDir, "reappear.png")
+	rec, _, err := Ingest(database, galleryDir, env.thumbnailsPath, path, "png", "")
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	// Attach a tag and simulate the watcher's mark-missing path: drop
+	// the file's row from visible, decrement the tag's usage_count.
+	var generalID int64
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
+	var tagID int64
+	if err := database.Write.QueryRow(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES ('reappear_tag', ?, 1) RETURNING id`,
+		generalID,
+	).Scan(&tagID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(
+		`INSERT INTO image_tags (image_id, tag_id, is_auto, is_implied) VALUES (?, ?, 0, 0)`, rec.ID, tagID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`UPDATE images SET is_missing = 1 WHERE id = ?`, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`UPDATE tags SET usage_count = 0 WHERE id = ?`, tagID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-ingest the same content; the duplicate-by-SHA branch should
+	// reactivate and lift the tag back into the visible count.
+	if _, _, err := Ingest(database, galleryDir, env.thumbnailsPath, path, "png", ""); err != nil {
+		t.Fatalf("re-Ingest: %v", err)
+	}
+	var got int
+	if err := database.Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, tagID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != 1 {
+		t.Errorf("usage_count after reactivation = %d, want 1", got)
+	}
+}
+
+// TestIngest_PromotesAliasWhenCanonicalGone simulates a watcher-observed
+// mv: a file is ingested, removed from disk, and the same content is
+// re-ingested at a new path. The new path must become canonical so the
+// folder filter (which keys off canonical_path) sees the file at its
+// real location.
+func TestIngest_PromotesAliasWhenCanonicalGone(t *testing.T) {
+	database, env, galleryDir := setupSyncTest(t)
+
+	oldPath := createTestPNGFile(t, galleryDir, "before.png")
+	rec, _, err := Ingest(database, galleryDir, env.thumbnailsPath, oldPath, "png", "")
+	if err != nil {
+		t.Fatalf("initial Ingest: %v", err)
+	}
+
+	// fsnotify on Linux reports IN_MOVED_FROM as a Rename event without
+	// firing a Remove, so the watcher never marks the file missing. To
+	// model the duplicate-on-new-path branch, copy the bytes to the new
+	// location and remove the original before re-ingest.
+	movedDir := filepath.Join(galleryDir, "relocated")
+	if err := os.MkdirAll(movedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bytes, err := os.ReadFile(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(movedDir, "before.png")
+	if err := os.WriteFile(newPath, bytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(oldPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, isDup, err := Ingest(database, galleryDir, env.thumbnailsPath, newPath, "png", ""); err != nil {
+		t.Fatalf("re-Ingest: %v", err)
+	} else if isDup {
+		t.Errorf("expected promotion (not isDup) when canonical was gone")
+	}
+
+	var canonPath, folderPath string
+	var isMissing int
+	if err := database.Read.QueryRow(
+		`SELECT canonical_path, folder_path, is_missing FROM images WHERE id = ?`, rec.ID,
+	).Scan(&canonPath, &folderPath, &isMissing); err != nil {
+		t.Fatal(err)
+	}
+	if canonPath != newPath {
+		t.Errorf("canonical_path = %q, want %q", canonPath, newPath)
+	}
+	if folderPath != "relocated" {
+		t.Errorf("folder_path = %q, want %q", folderPath, "relocated")
+	}
+	if isMissing != 0 {
+		t.Errorf("is_missing = %d, want 0", isMissing)
+	}
+
+	var newRow, oldRow int
+	database.Read.QueryRow(`SELECT is_canonical FROM image_paths WHERE path = ?`, newPath).Scan(&newRow)
+	database.Read.QueryRow(`SELECT is_canonical FROM image_paths WHERE path = ?`, oldPath).Scan(&oldRow)
+	if newRow != 1 {
+		t.Errorf("new path is_canonical = %d, want 1", newRow)
+	}
+	if oldRow != 0 {
+		t.Errorf("old path is_canonical = %d, want 0 (or row gone)", oldRow)
+	}
+}
+
 func TestSync_NoChange(t *testing.T) {
 	database, env, galleryDir := setupSyncTest(t)
 	createTestPNGFile(t, galleryDir, "test.png")
@@ -424,4 +544,173 @@ func TestWatcher_IngestsFile(t *testing.T) {
 	var count int
 	database.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&count)
 	t.Errorf("watcher did not ingest within 8 s; count = %d", count)
+}
+
+// TestWatcher_DecrementsTagsOnMissing pins that mark-missing decrements
+// the usage_count of every tag the image carried. Tag rows persist at
+// zero usage so user-declared aliases and implications survive a removed
+// image; explicit deletion via the Tags page is the only way to drop them.
+func TestWatcher_DecrementsTagsOnMissing(t *testing.T) {
+	database, env, galleryDir := setupSyncTest(t)
+
+	w, err := NewWatcher("", env.galleryPath, env.thumbnailsPath, env.maxFileSizeMB, database, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), "too many open files") {
+			t.Skip("skipping: system file descriptor limit reached")
+		}
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go w.Run(ctx)
+
+	path := createTestPNGFile(t, galleryDir, "tagged.png")
+	deadline := time.Now().Add(8 * time.Second)
+	var imgID int64
+	for time.Now().Before(deadline) {
+		if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path = ?`, path).Scan(&imgID); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if imgID == 0 {
+		t.Fatal("watcher did not ingest the file")
+	}
+
+	// "shared" is seeded at usage=2 so the decrement leaves it positive;
+	// "solo" is seeded at usage=1 so the decrement drives it to zero. Both
+	// rows must survive: zero-usage tags persist after mark-missing.
+	var generalID int64
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
+	var sharedID, soloID int64
+	if err := database.Write.QueryRow(`INSERT INTO tags (name, category_id, usage_count) VALUES ('shared', ?, 2) RETURNING id`, generalID).Scan(&sharedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Write.QueryRow(`INSERT INTO tags (name, category_id, usage_count) VALUES ('solo', ?, 1) RETURNING id`, generalID).Scan(&soloID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`INSERT INTO image_tags (image_id, tag_id, is_auto) VALUES (?, ?, 0), (?, ?, 0)`, imgID, sharedID, imgID, soloID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline = time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		var isMissing int
+		database.Read.QueryRow(`SELECT is_missing FROM images WHERE id = ?`, imgID).Scan(&isMissing)
+		if isMissing == 1 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	var sharedCount int
+	if err := database.Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, sharedID).Scan(&sharedCount); err != nil {
+		t.Fatalf("shared tag should still exist with decremented count: %v", err)
+	}
+	if sharedCount != 1 {
+		t.Errorf("shared usage_count = %d, want 1 (was 2 before mark-missing)", sharedCount)
+	}
+	var soloCount int
+	if err := database.Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, soloID).Scan(&soloCount); err != nil {
+		t.Fatalf("solo tag should persist at zero usage: %v", err)
+	}
+	if soloCount != 0 {
+		t.Errorf("solo usage_count = %d, want 0", soloCount)
+	}
+}
+
+// TestWatcher_AliasPathRemovalDoesNotMarkMissing pins that deleting a
+// non-canonical duplicate does not flip the parent image to is_missing or
+// decrement its tag counts. The mark-missing fallback must restrict to
+// canonical image_paths rows.
+func TestWatcher_AliasPathRemovalDoesNotMarkMissing(t *testing.T) {
+	database, env, galleryDir := setupSyncTest(t)
+
+	w, err := NewWatcher("", env.galleryPath, env.thumbnailsPath, env.maxFileSizeMB, database, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), "too many open files") {
+			t.Skip("skipping: system file descriptor limit reached")
+		}
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go w.Run(ctx)
+
+	canonicalPath := createTestPNGFile(t, galleryDir, "canonical.png")
+	deadline := time.Now().Add(8 * time.Second)
+	var imgID int64
+	for time.Now().Before(deadline) {
+		if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path = ?`, canonicalPath).Scan(&imgID); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if imgID == 0 {
+		t.Fatal("watcher did not ingest the canonical file")
+	}
+
+	var generalID int64
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
+	var tagID int64
+	if err := database.Write.QueryRow(`INSERT INTO tags (name, category_id, usage_count) VALUES ('alias_check', ?, 1) RETURNING id`, generalID).Scan(&tagID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`INSERT INTO image_tags (image_id, tag_id, is_auto) VALUES (?, ?, 0)`, imgID, tagID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drop a duplicate file in the watched tree and let the watcher ingest
+	// it; the second copy should land as a non-canonical image_paths row
+	// against the same image id.
+	aliasPath := createTestPNGFile(t, galleryDir, "duplicate.png")
+	deadline = time.Now().Add(8 * time.Second)
+	var aliasID int64
+	for time.Now().Before(deadline) {
+		if err := database.Read.QueryRow(
+			`SELECT id FROM image_paths WHERE path = ? AND image_id = ? AND is_canonical = 0`,
+			aliasPath, imgID,
+		).Scan(&aliasID); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if aliasID == 0 {
+		t.Fatal("watcher did not register the duplicate as a non-canonical alias")
+	}
+
+	if err := os.Remove(aliasPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Give the debounce + mark-missing path time to fire (or wrongly fire).
+	// A negative assertion needs a settle window; mirror the positive
+	// test's 8-second budget so a slow CI doesn't false-pass.
+	time.Sleep(2 * time.Second)
+
+	var isMissing int
+	if err := database.Read.QueryRow(`SELECT is_missing FROM images WHERE id = ?`, imgID).Scan(&isMissing); err != nil {
+		t.Fatal(err)
+	}
+	if isMissing != 0 {
+		t.Errorf("image marked missing after alias-path removal; is_missing = %d, want 0", isMissing)
+	}
+
+	var tagCount int
+	if err := database.Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, tagID).Scan(&tagCount); err != nil {
+		t.Fatal(err)
+	}
+	if tagCount != 1 {
+		t.Errorf("tag usage_count = %d, want 1 (alias removal must not touch tag counts)", tagCount)
+	}
 }

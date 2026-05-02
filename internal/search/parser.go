@@ -74,20 +74,17 @@ func tokenize(query string) []token {
 
 	i := 0
 	for i < len(query) {
-		// Skip whitespace
 		if query[i] == ' ' || query[i] == '\t' {
 			i++
 			continue
 		}
 
-		// NOT keyword (case-insensitive)
 		if i+4 <= len(query) && strings.EqualFold(query[i:i+4], "not ") {
 			tokens = append(tokens, token{kind: tokNot, val: "NOT"})
 			i += 4
 			continue
 		}
 
-		// Negation prefix
 		if query[i] == '-' && i+1 < len(query) && query[i+1] != ' ' {
 			tokens = append(tokens, token{kind: tokNot, val: "-"})
 			i++
@@ -113,7 +110,6 @@ func tokenize(query string) []token {
 		term := query[i:j]
 		i = j
 
-		// OR keyword
 		if strings.EqualFold(term, "or") {
 			tokens = append(tokens, token{kind: tokOR, val: "OR"})
 			continue
@@ -161,7 +157,6 @@ func (p *parser) parseAll() []Expr {
 			break
 		}
 
-		// Handle NOT
 		if t.kind == tokNot {
 			p.next()
 			next := p.peek()
@@ -175,7 +170,6 @@ func (p *parser) parseAll() []Expr {
 			continue
 		}
 
-		// Parse a term
 		left := p.parseTerm()
 		if left == nil {
 			break
@@ -228,6 +222,14 @@ func (p *parser) parseTerm() Expr {
 
 	case tokTag:
 		tag := strings.ToLower(t.val)
+		// All-asterisks tokens (`*`, `**`, `***`...) would otherwise
+		// build a `LIKE '%' ESCAPE '\'` and match every tag - a
+		// "select all" alias the documented syntax doesn't expose.
+		// Collapse to a literal-no-match so they compose predictably
+		// with the rest of the query.
+		if strings.Trim(tag, "*") == "" {
+			return TagExpr{Tag: "", Wildcard: ""}
+		}
 		if strings.HasPrefix(tag, "*") && strings.HasSuffix(tag, "*") && len(tag) > 2 {
 			return TagExpr{Tag: trimWildcards(tag), Wildcard: "substring"}
 		}

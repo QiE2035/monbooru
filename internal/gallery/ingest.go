@@ -68,10 +68,6 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 			existingID,
 		).Scan(&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType, &img.FileSize, &isMissingInt)
 		if scanErr != nil {
-			// Surface the scan failure to the caller. The previous (nil, true,
-			// nil) return shape implied "duplicate but I couldn't load it",
-			// indistinguishable at the call site from "duplicate loaded OK"
-			// and a nil-deref waiting to happen if a future caller used img.
 			return nil, true, fmt.Errorf("looking up duplicate image %d: %w", existingID, scanErr)
 		}
 		img.IsMissing = isMissingInt == 1
@@ -102,6 +98,16 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 			); err != nil {
 				return nil, false, fmt.Errorf("insert path row: %w", err)
 			}
+			// Restore the usage_count slots markFileMissing decremented
+			// when the file vanished. usage_count tracks visible images,
+			// so a reactivated row owes +1 to every tag still attached.
+			if _, err := tx.Exec(
+				`UPDATE tags SET usage_count = usage_count + 1
+				 WHERE id IN (SELECT tag_id FROM image_tags WHERE image_id = ?)`,
+				existingID,
+			); err != nil {
+				return nil, false, fmt.Errorf("restore usage counts: %w", err)
+			}
 			if err := tx.Commit(); err != nil {
 				return nil, false, fmt.Errorf("commit reactivation: %w", err)
 			}
@@ -110,6 +116,46 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 			img.CanonicalPath = path
 			img.FolderPath = newFolder
 			logx.Infof("ingest: reactivated previously missing image id=%d path=%q", existingID, path)
+			return &img, false, nil
+		}
+
+		// Watcher-observed mv inside the gallery: fsnotify emits a Create
+		// for the new path while the old canonical_path is already gone
+		// from disk. Without promotion the row would stay pinned to the
+		// vanished location and the file would disappear from folder
+		// filters. Mirrors the alias-promotion branch in Sync.
+		if _, statErr := os.Stat(img.CanonicalPath); statErr != nil {
+			newFolder := FolderPath(galleryPath, path)
+			tx, txErr := database.Write.Begin()
+			if txErr != nil {
+				return nil, false, fmt.Errorf("begin promote tx: %w", txErr)
+			}
+			defer tx.Rollback()
+			if _, err := tx.Exec(
+				`UPDATE images SET canonical_path = ?, folder_path = ? WHERE id = ?`,
+				path, newFolder, existingID,
+			); err != nil {
+				return nil, false, fmt.Errorf("promote canonical path: %w", err)
+			}
+			if _, err := tx.Exec(
+				`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ? AND path = ?`,
+				existingID, img.CanonicalPath,
+			); err != nil {
+				return nil, false, fmt.Errorf("demote old canonical: %w", err)
+			}
+			if _, err := tx.Exec(
+				`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 1)
+				 ON CONFLICT(path) DO UPDATE SET is_canonical = 1`,
+				existingID, path,
+			); err != nil {
+				return nil, false, fmt.Errorf("install new canonical: %w", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return nil, false, fmt.Errorf("commit promote: %w", err)
+			}
+			img.CanonicalPath = path
+			img.FolderPath = newFolder
+			logx.Infof("ingest: promoted alias to canonical for image id=%d (old path gone) %q", existingID, path)
 			return &img, false, nil
 		}
 
@@ -127,7 +173,6 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 		return nil, false, fmt.Errorf("checking sha256: %w", err)
 	}
 
-	// New file: gather size + dimensions.
 	fi, err := os.Stat(path)
 	if err != nil {
 		return nil, false, fmt.Errorf("stat file: %w", err)

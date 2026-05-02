@@ -71,6 +71,9 @@ func Bootstrap(db *DB) error {
 	if err := ensureColumn(db, "images", "origin", `ALTER TABLE images ADD COLUMN origin TEXT NOT NULL DEFAULT 'ingest'`); err != nil {
 		return err
 	}
+	if err := ensureColumn(db, "image_tags", "is_implied", `ALTER TABLE image_tags ADD COLUMN is_implied INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
 	return nil
 }
 

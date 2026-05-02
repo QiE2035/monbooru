@@ -90,6 +90,13 @@ func translateHydrus(entries []NormalizedEntry) (Result, error) {
 // readHydrusSidecar parses one tag per line; blank lines and `#`-prefixed
 // comments are ignored. Tokens already in `category:tag` form pass
 // through unchanged so the apply path's category resolver routes them.
+// A few Hydrus namespaces are rewritten to their Monbooru counterparts
+// since they share the same semantic; without the rewrite they would
+// land as literal `<prefix>:name` tags in `general`:
+//
+//	creator: → artist:
+//	series:  → copyright:
+//	studio:  → copyright:
 func readHydrusSidecar(f *zip.File) ([]string, error) {
 	rc, err := f.Open()
 	if err != nil {
@@ -102,6 +109,14 @@ func readHydrusSidecar(f *zip.File) ([]string, error) {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "creator:"):
+			line = "artist:" + line[len("creator:"):]
+		case strings.HasPrefix(line, "series:"):
+			line = "copyright:" + line[len("series:"):]
+		case strings.HasPrefix(line, "studio:"):
+			line = "copyright:" + line[len("studio:"):]
 		}
 		tagsList = append(tagsList, line)
 	}

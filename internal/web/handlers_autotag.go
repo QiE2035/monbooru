@@ -12,6 +12,7 @@ import (
 	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
+	"github.com/leqwin/monbooru/internal/search"
 	"github.com/leqwin/monbooru/internal/tagger"
 )
 
@@ -27,11 +28,14 @@ func (s *Server) uploadPage(w http.ResponseWriter, r *http.Request) {
 		"Version":         base.Version,
 		"RepoURL":         base.RepoURL,
 		"Variant":         base.Variant,
+		"CustomCSS":       base.CustomCSS,
 		"ActiveGallery":   base.ActiveGallery,
 		"Galleries":       s.galleryList(),
 		"VisibleCount":    base.VisibleCount,
 		"TagCount":        base.TagCount,
 		"SavedCount":      base.SavedCount,
+		"RatingLevels":    base.RatingLevels,
+		"ActiveRating":    base.ActiveRating,
 		"AcceptFileTypes": gallery.SupportedMIMETypes,
 		"TaggerAvailable": tagger.IsAvailable(s.cfg),
 		"EnabledTaggers":  tagger.EnabledTaggers(s.cfg),
@@ -47,7 +51,12 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	maxBytes := int64(s.cfg.Gallery.MaxFileSizeMB) * 1024 * 1024
-	r.Body = http.MaxBytesReader(w, r.Body, maxBytes*10+4096) // allow multiple files
+	// MaxFileSizeMB <= 0 disables the per-file cap (Sync and the watcher
+	// treat it the same way); skip MaxBytesReader entirely so a single
+	// 4 KiB total-body cap doesn't make every upload fail.
+	if maxBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes*10+4096) // allow multiple files
+	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		w.Write([]byte(`<div class="flash flash-err">Upload too large or invalid.</div>`))
 		return
@@ -179,9 +188,11 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		} else {
 			ids := addedIDs
 			database := s.db()
+			cx := s.Active()
 			go func() {
 				ctx := s.jobs.Context()
 				skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.UseCUDA)
+				cx.InvalidateCaches()
 				if ctx.Err() != nil {
 					s.jobs.Complete(fmt.Sprintf("auto-tagging cancelled (%d image(s) queued)", len(ids)))
 					return
@@ -202,109 +213,6 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`<div class="flash ` + cssClass + `">` + html.EscapeString(msg) + `</div>`))
 }
 
-// bulkTaggerRow is one row in the Settings → Tag actions → Bulk
-// auto-tagging actions table. CanRun is true for taggers currently
-// enabled+available (full action set); when false we still surface the
-// row so the user can clean leftover image_tags rows produced by that
-// tagger before disabling/removing it.
-type bulkTaggerRow struct {
-	Name   string
-	CanRun bool
-}
-
-// bulkTaggerRows returns the taggers shown in the Bulk auto-tagging
-// actions table: every enabled+available tagger (with all three actions),
-// plus every disabled / unavailable / orphaned tagger that still has
-// at least one auto-tag row in image_tags (with Remove only). Orphaned
-// names — present in image_tags but no longer in the configured tagger
-// set — are surfaced so users can purge them after a folder rename.
-func (s *Server) bulkTaggerRows(discovered []tagger.TaggerStatus) []bulkTaggerRow {
-	canRun := map[string]bool{}
-	var out []bulkTaggerRow
-	for _, t := range discovered {
-		if t.Enabled && t.Available {
-			canRun[t.Name] = true
-			out = append(out, bulkTaggerRow{Name: t.Name, CanRun: true})
-		}
-	}
-	autoNames := map[string]bool{}
-	if cx := s.Active(); cx != nil {
-		if names, err := cx.AutoTaggerNames(); err == nil {
-			for _, n := range names {
-				autoNames[n] = true
-			}
-		}
-	}
-	configured := map[string]bool{}
-	for _, t := range discovered {
-		configured[t.Name] = true
-		if canRun[t.Name] || !autoNames[t.Name] {
-			continue
-		}
-		out = append(out, bulkTaggerRow{Name: t.Name, CanRun: false})
-	}
-	for n := range autoNames {
-		if configured[n] {
-			continue
-		}
-		out = append(out, bulkTaggerRow{Name: n, CanRun: false})
-	}
-	return out
-}
-
-// removeAutotaggedPost deletes every auto-tagged image_tags row across the
-// library. An optional tagger_name form field restricts the deletion to
-// rows produced by that one tagger.
-func (s *Server) removeAutotaggedPost(w http.ResponseWriter, r *http.Request) {
-	if !parseFormOK(w, r) {
-		return
-	}
-	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
-	var names []string
-	if taggerName != "" {
-		names = []string{taggerName}
-	}
-	removed, err := s.tagSvc().RemoveAllAutoTags(names)
-	if err != nil {
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
-		return
-	}
-	label := "all auto-taggers"
-	if taggerName != "" {
-		label = taggerName
-	}
-	w.Write([]byte(fmt.Sprintf(
-		`<div class="flash flash-ok">Removed %d auto-tag(s) from %s.</div>`,
-		removed, html.EscapeString(label),
-	)))
-}
-
-// removeAllUserTagsPost deletes every manual (is_auto=0) image_tags row
-// across the library.
-func (s *Server) removeAllUserTagsPost(w http.ResponseWriter, r *http.Request) {
-	removed, err := s.tagSvc().RemoveAllUserTags()
-	if err != nil {
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
-		return
-	}
-	w.Write([]byte(fmt.Sprintf(
-		`<div class="flash flash-ok">Removed %d user tag(s) from the library.</div>`, removed,
-	)))
-}
-
-// removeAllTagsPost deletes every image_tags row across the library
-// (both manual and auto-tagged).
-func (s *Server) removeAllTagsPost(w http.ResponseWriter, r *http.Request) {
-	removed, err := s.tagSvc().RemoveAllTags()
-	if err != nil {
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
-		return
-	}
-	w.Write([]byte(fmt.Sprintf(
-		`<div class="flash flash-ok">Removed %d tag(s) from the library.</div>`, removed,
-	)))
-}
-
 func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 	if !tagger.IsAvailable(s.cfg) {
 		http.Error(w, "auto-tagger not available: "+tagger.UnavailableReason(s.cfg), http.StatusServiceUnavailable)
@@ -314,8 +222,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
-	mode := r.FormValue("mode") // "never", "all", or empty for checked IDs
-	idStrs := r.Form["ids"]
+	scope := strings.TrimSpace(r.FormValue("scope"))
 	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
 
 	selected, selErr := selectTaggers(s.cfg, taggerName)
@@ -329,52 +236,37 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var ids []int64
-	switch mode {
-	case "never":
-		// "Untagged" means "currently has no auto-tags from the taggers
-		// about to run". Scoping by tagger_name when one is supplied lets a
-		// per-tagger run pick up images missing only that tagger's output.
-		query := `SELECT id FROM images WHERE is_missing = 0
-		          AND NOT EXISTS (SELECT 1 FROM image_tags it
-		                          WHERE it.image_id = images.id AND it.is_auto = 1`
-		args := []any{}
-		if taggerName != "" {
-			query += ` AND it.tagger_name = ?`
-			args = append(args, taggerName)
-		}
-		query += `)`
-		rows, err := s.db().Read.QueryContext(r.Context(), query, args...)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+	if scope == "search" {
+		// Mirror batchTag's search-side materialisation: parse q, stream
+		// matching ids off ExecuteForDeleteStream so the cursor walks the
+		// result set without buffering an extra copy.
+		expr, parseErr := search.Parse(r.FormValue("q"))
+		if parseErr != nil {
+			if isHTMXRequest(r) {
+				w.Write([]byte(`<div class="flash flash-err">Could not parse search: ` +
+					html.EscapeString(parseErr.Error()) + `</div>`))
+				return
+			}
+			http.Error(w, parseErr.Error(), http.StatusBadRequest)
 			return
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				logx.Warnf("autotag untagged scan: %v", err)
-				continue
-			}
-			ids = append(ids, id)
-		}
-	case "all":
-		rows, err := s.db().Read.QueryContext(r.Context(), `SELECT id FROM images WHERE is_missing = 0`)
+		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
+			ids = append(ids, t.ID)
+			return nil
+		})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			logx.Errorf("autotag search: %v", err)
+			if isHTMXRequest(r) {
+				w.Write([]byte(`<div class="flash flash-err">Search error.</div>`))
+				return
+			}
+			http.Error(w, "search error", http.StatusInternalServerError)
 			return
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				logx.Warnf("autotag all scan: %v", err)
-				continue
-			}
-			ids = append(ids, id)
-		}
-	default:
-		for _, s := range idStrs {
-			if id, err := strconv.ParseInt(s, 10, 64); err == nil {
+	} else {
+		// scope=selection or empty: read the checked ids from the form.
+		for _, idStr := range r.Form["ids"] {
+			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
 				ids = append(ids, id)
 			}
 		}
@@ -403,9 +295,14 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 	s.jobs.Update(0, len(ids), "starting (loading model may take a few seconds)…")
 
 	database := s.db()
+	cx := s.Active()
 	go func() {
 		ctx := s.jobs.Context()
 		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.UseCUDA)
+		// New tags are commonly created by a tagger run, so the cached
+		// tag count is stale once the worker returns regardless of
+		// outcome (cancelled runs still wrote rows for completed images).
+		cx.InvalidateCaches()
 		if ctx.Err() != nil {
 			s.jobs.Complete(fmt.Sprintf("auto-tagging cancelled (%d image(s) queued)", len(ids)))
 			return
@@ -470,6 +367,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	database := s.db()
+	cx := s.Active()
 	go func() {
 		// Force CPU inference for one-shot detail-page runs: spinning up the
 		// CUDA session and loading the model onto the GPU dwarfs the tagging
@@ -477,6 +375,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 		// global toggle is on.
 		ctx := s.jobs.Context()
 		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, []int64{id}, selected, s.jobs, false)
+		cx.InvalidateCaches()
 		if ctx.Err() != nil {
 			s.jobs.Complete("auto-tagging cancelled")
 			return

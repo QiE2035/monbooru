@@ -56,7 +56,7 @@ func (m *Manager) StartScheduled(jobType string) error {
 	return m.startLocked(jobType)
 }
 
-// startLocked registers a new job; caller must hold m.mu.
+// startLocked: caller must hold m.mu.
 func (m *Manager) startLocked(jobType string) error {
 	if m.state != nil && m.state.Running {
 		return ErrJobRunning
@@ -71,7 +71,7 @@ func (m *Manager) startLocked(jobType string) error {
 		Running:   true,
 		JobType:   jobType,
 		StartedAt: time.Now().UTC(),
-		Message:   "Starting…",
+		Message:   "Starting...",
 	}
 	return nil
 }

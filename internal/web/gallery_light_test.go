@@ -386,6 +386,35 @@ func TestMergeGalleryLightJSON_AppliesTagsBySha(t *testing.T) {
 	}
 }
 
+// TestApplyLightReplace_NoFiles_PreservesGalleryDir pins the safety rail
+// covering tags.json-only payloads (and translators that emit empty Files
+// maps): the DB resets, but the on-disk image tree must survive so the
+// manifest can be rebuilt against files already there.
+func TestApplyLightReplace_NoFiles_PreservesGalleryDir(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+	cx := srv.Get("stock")
+
+	keepBytes := makePNGBytes(t, 8, 8, 5, 6, 7)
+	keepPath := filepath.Join(cx.GalleryPath, "untouched.png")
+	if err := os.WriteFile(keepPath, keepBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := cx.DBPath
+	thumbsPath := cx.ThumbnailsPath
+	galleryPath := cx.GalleryPath
+	cx.close()
+
+	mf := lightManifest{Version: galleryExportVersion}
+	if err := applyLightReplace(mf, nil, dbPath, thumbsPath, galleryPath, importSourceNative, 0); err != nil {
+		t.Fatalf("applyLightReplace: %v", err)
+	}
+
+	if _, err := os.Stat(keepPath); err != nil {
+		t.Errorf("manifest-only replace wiped gallery file: %v", err)
+	}
+}
+
 // makeImportReq builds an /settings/galleries/{name}/import multipart POST
 // with mode=replace and the uploaded file.
 func makeImportReq(t *testing.T, srv *Server, gallery, filename string, body []byte) *http.Request {

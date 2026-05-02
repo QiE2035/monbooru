@@ -3,12 +3,14 @@ package search
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/models"
+	"github.com/leqwin/monbooru/internal/searchkw"
 )
 
 // Query holds a parsed query and pagination parameters.
@@ -30,7 +32,9 @@ type Query struct {
 
 // Execute runs the query against the DB and returns paginated results.
 func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
-	where, args, hasMissingFilter := buildWhereDB(q.Expr, database)
+	driverIDs, driverTag, _ := pickAndDriverTag(database, q.Expr)
+	where, args, hasMissingFilter := buildWhereDBDriver(q.Expr, database, driverTag)
+	where, args = applyAndDriver(where, args, driverIDs)
 
 	if !hasMissingFilter {
 		if where == "" {
@@ -151,7 +155,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 }
 
 // isPureTagExpr reports whether expr is composed only of tag-style
-// predicates - TagExpr leaves and the cat:/category-qualified
+// predicates - TagExpr leaves and the cat:/rating:/category-qualified
 // FilterExpr leaves. Mixed expressions (fav, source, folder, ...)
 // have their own selective column indexes that the planner picks.
 func isPureTagExpr(expr Expr) bool {
@@ -166,7 +170,7 @@ func isPureTagExpr(expr Expr) bool {
 		return true
 	case FilterExpr:
 		// keys whose buildFilterExpr branch emits image_tags EXISTS.
-		return e.Key == "cat" || !IsFilterKeyword(e.Key)
+		return e.Key == "cat" || e.Key == "rating" || !searchkw.IsKeyword(e.Key)
 	}
 	return false
 }
@@ -190,7 +194,7 @@ func containsTagPredicate(expr Expr) bool {
 		case "cat", "tagged", "autotagged", "folder", "folderonly":
 			return true
 		}
-		return !IsFilterKeyword(e.Key)
+		return !searchkw.IsKeyword(e.Key)
 	}
 	return false
 }
@@ -216,6 +220,9 @@ func containsTagPredicate(expr Expr) bool {
 // Pagination's totalPages may over-shoot when the bound is loose;
 // rendered pages past the actual end come back empty.
 func fastTagTotal(database *db.DB, expr Expr) (int, bool) {
+	if n, ok := fastCountCeiling(database, expr); ok {
+		return n, true
+	}
 	switch e := expr.(type) {
 	case TagExpr:
 		return fastCountTag(database, e)
@@ -231,6 +238,99 @@ func fastTagTotal(database *db.DB, expr Expr) (int, bool) {
 	return 0, false
 }
 
+// fastCountCeiling matches the cookie-ceiling AST shape: a chain of
+// NotExpr{FilterExpr{Key:"rating"}} ANDed together. The total visible
+// count minus the distinct-image count of any rating tag in the
+// excluded set hits idx_image_tags_tag and avoids the per-row EXISTS
+// scan the slow path would do for every visible image.
+func fastCountCeiling(database *db.DB, expr Expr) (int, bool) {
+	excluded, ok := extractCeilingLevels(expr)
+	if !ok || len(excluded) == 0 {
+		return 0, false
+	}
+	rows, err := database.Read.Query(
+		`SELECT t.name, t.id FROM tags t
+		 JOIN tag_categories tc ON tc.id = t.category_id
+		 WHERE tc.name = 'rating' AND t.is_alias = 0
+		   AND t.name IN ('general','sensitive','questionable','explicit')`,
+	)
+	if err != nil {
+		return 0, false
+	}
+	idsByName := make(map[string]int64, 4)
+	for rows.Next() {
+		var name string
+		var id int64
+		if err := rows.Scan(&name, &id); err == nil {
+			idsByName[name] = id
+		}
+	}
+	rows.Close()
+
+	excludedIDs := make([]int64, 0, len(excluded))
+	for _, name := range excluded {
+		if id, ok := idsByName[name]; ok {
+			excludedIDs = append(excludedIDs, id)
+		}
+	}
+	if len(excludedIDs) == 0 {
+		return 0, false
+	}
+	visible, ok := fastVisibleCount(database)
+	if !ok {
+		return 0, false
+	}
+	placeholders := strings.Repeat("?,", len(excludedIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(excludedIDs))
+	for i, id := range excludedIDs {
+		args[i] = id
+	}
+	var hidden int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(DISTINCT it.image_id) FROM image_tags it
+		 JOIN images i ON i.id = it.image_id
+		 WHERE it.tag_id IN (`+placeholders+`) AND i.is_missing = 0`,
+		args...,
+	).Scan(&hidden); err != nil {
+		return 0, false
+	}
+	n := visible - hidden
+	if n < 0 {
+		n = 0
+	}
+	return n, true
+}
+
+// extractCeilingLevels walks a chain of NotExpr{FilterExpr{Key:"rating",
+// Val:X}} leaves ANDed together and returns the X values. ok=false when
+// the AST holds anything else, including any other filter or tag.
+func extractCeilingLevels(expr Expr) ([]string, bool) {
+	if expr == nil {
+		return nil, false
+	}
+	var out []string
+	var walk func(e Expr) bool
+	walk = func(e Expr) bool {
+		switch v := e.(type) {
+		case AndExpr:
+			return walk(v.Left) && walk(v.Right)
+		case NotExpr:
+			f, ok := v.Expr.(FilterExpr)
+			if !ok || f.Key != "rating" {
+				return false
+			}
+			out = append(out, strings.ToLower(f.Val))
+			return true
+		}
+		return false
+	}
+	if !walk(expr) {
+		return nil, false
+	}
+	return out, true
+}
+
 // fastApproxThreshold gates the fast-path approximations on the slow
 // path actually being slow. The slow EXISTS-AND-EXISTS / per-row scan
 // is bounded by the smallest matching tag's image_tags rows, so for
@@ -238,6 +338,123 @@ func fastTagTotal(database *db.DB, expr Expr) (int, bool) {
 // per-query budget and remains exact. Above the cap (popular tags on
 // large libraries) the upper-bound short-circuit kicks in.
 const fastApproxThreshold = 50000
+
+// andDriverThreshold caps how many image_tags rows the AND-driver shape
+// is willing to materialise as a non-correlated IN(...) subquery. The
+// driver replaces the smallest ANDed tag's correlated EXISTS with a
+// pre-bounded image_id set so the planner stops walking the
+// ingested-at index row by row and instead joins against that set.
+// Above the cap, materialising the driver costs more than it saves;
+// the slow path stays as is.
+const andDriverThreshold = 50000
+
+// collectAndedLiteralTags returns the positive non-wildcard TagExpr
+// leaves that are reachable from the root through AndExpr nodes only.
+// Leaves under OrExpr, NotExpr, or any FilterExpr are skipped because
+// dropping their EXISTS in favour of a top-level IN(...) driver would
+// flip semantics.
+func collectAndedLiteralTags(expr Expr) []TagExpr {
+	var out []TagExpr
+	var walk func(Expr)
+	walk = func(e Expr) {
+		switch v := e.(type) {
+		case AndExpr:
+			walk(v.Left)
+			walk(v.Right)
+		case TagExpr:
+			if v.Wildcard == "" && v.Tag != "" {
+				out = append(out, v)
+			}
+		}
+	}
+	walk(expr)
+	return out
+}
+
+// pickAndDriverTag picks the ANDed literal tag with the smallest total
+// canonical usage_count and returns its canonical IDs plus name. The
+// caller emits `i.id IN (SELECT image_id FROM image_tags WHERE tag_id
+// IN (...))` against those IDs and tells the where builder to drop the
+// matching TagExpr's correlated EXISTS so the predicate isn't paid
+// twice. Returns ok=false when fewer than two ANDed literal tags are
+// present, when canonical resolution fails, when any chosen tag is
+// unknown (the slow EXISTS already returns zero), or when the smallest
+// tag still exceeds andDriverThreshold.
+func pickAndDriverTag(database *db.DB, expr Expr) ([]int64, string, bool) {
+	if database == nil {
+		return nil, "", false
+	}
+	leaves := collectAndedLiteralTags(expr)
+	if len(leaves) < 2 {
+		return nil, "", false
+	}
+	var bestIDs []int64
+	var bestName string
+	bestUsage := int64(-1)
+	seen := make(map[string]bool, len(leaves))
+	for _, leaf := range leaves {
+		if seen[leaf.Tag] {
+			continue
+		}
+		seen[leaf.Tag] = true
+		rows, err := database.Read.Query(
+			`SELECT canon.id, canon.usage_count
+			 FROM tags t
+			 JOIN tags canon ON canon.id = COALESCE(t.canonical_tag_id, t.id)
+			 WHERE t.name = ?`,
+			leaf.Tag,
+		)
+		if err != nil {
+			return nil, "", false
+		}
+		var ids []int64
+		var usage int64
+		for rows.Next() {
+			var id, count int64
+			if err := rows.Scan(&id, &count); err == nil {
+				ids = append(ids, id)
+				usage += count
+			}
+		}
+		rows.Close()
+		if len(ids) == 0 {
+			// Unknown name; the slow path's EXISTS would return zero
+			// matches anyway. Don't pick it as driver - the caller still
+			// needs an empty-result fast exit elsewhere.
+			continue
+		}
+		if bestUsage < 0 || usage < bestUsage {
+			bestIDs = ids
+			bestName = leaf.Tag
+			bestUsage = usage
+		}
+	}
+	if bestUsage < 0 || bestUsage > andDriverThreshold {
+		return nil, "", false
+	}
+	return bestIDs, bestName, true
+}
+
+// applyAndDriver prepends a non-correlated image_tags filter to where
+// using the canonical tag ids picked by pickAndDriverTag. The driver
+// replaces the smallest ANDed literal tag's correlated EXISTS, which
+// the where builder has already skipped via driverTag.
+func applyAndDriver(where string, args []any, driverIDs []int64) (string, []any) {
+	if len(driverIDs) == 0 {
+		return where, args
+	}
+	placeholders := strings.Repeat("?,", len(driverIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	driverArgs := make([]any, len(driverIDs))
+	for i, id := range driverIDs {
+		driverArgs[i] = id
+	}
+	driverWhere := "i.id IN (SELECT image_id FROM image_tags WHERE tag_id IN (" + placeholders + "))"
+	if where == "" || where == "1=1" {
+		return driverWhere, driverArgs
+	}
+	return driverWhere + " AND " + where, append(driverArgs, args...)
+}
 
 // randomAdjacencyBucketSize caps the id range ExecuteAdjacent scans
 // when Sort=="random" carries a tag predicate. The random key has no
@@ -413,7 +630,7 @@ func fastCountFilter(database *db.DB, e FilterExpr) (int, bool) {
 		}
 		return n, true
 	}
-	if IsFilterKeyword(e.Key) {
+	if searchkw.IsKeyword(e.Key) {
 		// Other filter keywords (fav, source, folder, ...) have their
 		// own selective indexes that the planner picks; no fast path
 		// shortcut is needed.
@@ -472,7 +689,9 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		return nil, nil, nil
 	}
 
-	where, args, hasMissingFilter := buildWhereDB(q.Expr, database)
+	driverIDs, driverTag, _ := pickAndDriverTag(database, q.Expr)
+	where, args, hasMissingFilter := buildWhereDBDriver(q.Expr, database, driverTag)
+	where, args = applyAndDriver(where, args, driverIDs)
 	if !hasMissingFilter {
 		if where == "" {
 			where = "i.is_missing = 0"
@@ -641,7 +860,9 @@ type DeleteTarget struct {
 // directly off the cursor so very large result sets never materialise.
 // visit returning a non-nil error aborts iteration.
 func ExecuteForDeleteStream(database *db.DB, expr Expr, visit func(DeleteTarget) error) error {
-	where, args, hasMissingFilter := buildWhereDB(expr, database)
+	driverIDs, driverTag, _ := pickAndDriverTag(database, expr)
+	where, args, hasMissingFilter := buildWhereDBDriver(expr, database, driverTag)
+	where, args = applyAndDriver(where, args, driverIDs)
 	if !hasMissingFilter {
 		if where == "" {
 			where = "i.is_missing = 0"
@@ -743,9 +964,11 @@ func SidebarTagsWithGlobalCount(database *db.DB, imageIDs []int64) ([]models.Tag
 // just to discard all but the top 10. Bounding by global usage_count is
 // safe because COUNT(DISTINCT i.id) ≤ tags.usage_count, so a candidate
 // outside the cap cannot outrank one inside it on combo count. The
-// dropdown surfaces 10 results, so 5x headroom absorbs the prefix-then-
+// dropdown surfaces 10 results, so 2.5x headroom absorbs the prefix-then-
 // substring de-dup pass without dragging tail candidates into the join.
-const suggestCandidateCap = 50
+// The per-candidate image_tags probe scales the with-context shape under
+// concurrency; halving the cap halves the join work each request pays.
+const suggestCandidateCap = 25
 
 // suggestContextCap bounds the materialised context-image set. The combo
 // count for hot context tags becomes a lower bound past the cap, but
@@ -863,7 +1086,6 @@ func SuggestTagsWithFilter(database *db.DB, expr Expr, prefix, categoryName stri
 		return nil, err
 	}
 	if len(out) < limit {
-		// Reuse original arg slice; run copies it internally.
 		out, err = run(substrPat, out, limit-len(out), prefixPat)
 		if err != nil {
 			return out, err
@@ -977,6 +1199,59 @@ type whereBuilder struct {
 	// `nier:automata` remain searchable. A nil db (test path) keeps
 	// the always-category-qualified behaviour.
 	db *db.DB
+	// ratingIDs caches the four canonical rating tag IDs for the
+	// duration of one buildExpr walk. Resolved on first `rating:`
+	// encounter so a query without rating predicates pays nothing.
+	// Keyed by tag name; `ratingResolved` tracks "queried, cache is
+	// authoritative even if some entries are missing". ratingUsage
+	// carries usage_count for the same rows so a positive `rating:X`
+	// against a level no image yet carries can short-circuit instead
+	// of paying a full image scan to find zero matches.
+	ratingIDs      map[string]int64
+	ratingUsage    map[string]int64
+	ratingResolved bool
+	// driverTag, when non-empty, names the ANDed literal tag whose
+	// correlated EXISTS is suppressed because the caller has prepended
+	// a non-correlated `i.id IN (...)` driver covering the same rows.
+	// Only applies to literal (non-wildcard) TagExpr leaves matching the
+	// name exactly.
+	driverTag string
+}
+
+// resolveRatingIDs queries the four canonical rating tag rows and caches
+// the result on the builder. A row missing from the result (e.g. the tag
+// was pruned at runtime) leaves the entry absent from the map; callers
+// fall back to a no-match predicate when their target name is unmapped.
+func (b *whereBuilder) resolveRatingIDs() {
+	if b.ratingResolved {
+		return
+	}
+	b.ratingResolved = true
+	if b.db == nil {
+		return
+	}
+	rows, err := b.db.Read.Query(
+		`SELECT t.name, t.id, t.usage_count FROM tags t
+		 JOIN tag_categories tc ON tc.id = t.category_id
+		 WHERE tc.name = 'rating' AND t.is_alias = 0
+		   AND t.name IN ('general','sensitive','questionable','explicit')`,
+	)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	ids := make(map[string]int64, 4)
+	usage := make(map[string]int64, 4)
+	for rows.Next() {
+		var name string
+		var id, count int64
+		if err := rows.Scan(&name, &id, &count); err == nil {
+			ids[name] = id
+			usage[name] = count
+		}
+	}
+	b.ratingIDs = ids
+	b.ratingUsage = usage
 }
 
 // imageIDExists builds an EXISTS predicate against the per-image-ids
@@ -1001,6 +1276,25 @@ func (b *whereBuilder) imageTagsPredicate(where string, negate bool) string {
 
 func buildWhere(expr Expr) (string, []any, bool) {
 	return buildWhereDB(expr, nil)
+}
+
+// buildWhereDBDriver is buildWhereDB with a driverTag hint: literal
+// non-wildcard TagExpr leaves whose Tag matches driverTag emit no SQL,
+// because the caller has prepended a non-correlated IN(...) predicate
+// covering the same rows. Empty driverTag is the default behaviour.
+func buildWhereDBDriver(expr Expr, database *db.DB, driverTag string) (string, []any, bool) {
+	b := &whereBuilder{db: database, driverTag: driverTag}
+	if expr != nil {
+		part := b.buildExpr(expr)
+		if part != "" {
+			b.parts = append(b.parts, part)
+		}
+	}
+	where := strings.Join(b.parts, " AND ")
+	if where == "" {
+		where = "1=1"
+	}
+	return where, b.args, b.hasMissingFilter
 }
 
 // categoryExists reports whether name matches a tag_categories row.
@@ -1073,6 +1367,13 @@ func (b *whereBuilder) buildTagExpr(e TagExpr) string {
 	// Wildcard branches escape `_` and `%` in the user-supplied portion
 	// so a tag literal containing those characters (legal: `[a-z0-9_…]`)
 	// matches itself instead of acting as a LIKE wildcard.
+	if b.driverTag != "" && e.Wildcard == "" && e.Tag == b.driverTag {
+		// Caller prepended a non-correlated IN(...) covering this leaf.
+		// Returning "" lets AndExpr collapse this branch (only AND-only
+		// paths from root were eligible to be marked as the driver, so
+		// the empty result never lands inside an OR or NOT).
+		return ""
+	}
 	switch e.Wildcard {
 	case "prefix":
 		b.args = append(b.args, escapeLike(e.Tag)+"%")
@@ -1095,32 +1396,17 @@ func escapeLike(s string) string {
 	return r.Replace(s)
 }
 
-// FilterKeywords is the canonical set of `key:value` filter prefixes the
-// query language understands. Use IsFilterKeyword to test membership; both
-// the search-suggest dropdown and the typed-tag de-duplication helper in
-// internal/web reference this so they don't drift out of sync with the
-// executor's switch below.
-var FilterKeywords = map[string]struct{}{
-	"fav":        {},
-	"source":     {},
-	"cat":        {},
-	"width":      {},
-	"height":     {},
-	"date":       {},
-	"missing":    {},
-	"animated":   {},
-	"tagged":     {},
-	"autotagged": {},
-	"folder":     {},
-	"folderonly": {},
-	"generated":  {},
-}
+// ratingLevels is the canonical rating vocabulary, ordered low to high.
+// Highest-wins resolution and the cookie ceiling rely on this order.
+var ratingLevels = []string{"general", "sensitive", "questionable", "explicit"}
 
-// IsFilterKeyword reports whether key is one of the recognized search
-// filter keywords. Returns false for tag-name colons like "nier:automata".
-func IsFilterKeyword(key string) bool {
-	_, ok := FilterKeywords[key]
-	return ok
+func ratingRank(name string) int {
+	for i, l := range ratingLevels {
+		if l == name {
+			return i
+		}
+	}
+	return -1
 }
 
 func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
@@ -1216,6 +1502,43 @@ func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
 		cm := b.imageIDExists("comfyui_metadata cm", "cm", "cm.generation_hash = ?", false)
 		return "(" + sm + " OR " + cm + ")"
 
+	case "rating":
+		// Highest-wins: an image matches `rating:X` only when it carries X
+		// AND no rating ranked above X. Self uses EXISTS, the strictly-
+		// higher levels are NOT EXISTS, all keyed on the cached rating
+		// tag IDs so the predicates hit idx_image_tags_image directly.
+		val := strings.ToLower(e.Val)
+		rank := ratingRank(val)
+		if rank < 0 {
+			return "1=0"
+		}
+		b.resolveRatingIDs()
+		selfID, ok := b.ratingIDs[val]
+		if !ok {
+			return "1=0"
+		}
+		// No image carries this level yet (fresh install state). Skip the
+		// EXISTS predicate so the LIMIT-bounded data path stops on the
+		// ingested-at index instead of scanning every visible row to find
+		// zero matches.
+		if b.ratingUsage[val] == 0 {
+			return "1=0"
+		}
+		b.args = append(b.args, selfID)
+		parts := []string{b.imageTagsPredicate("it.tag_id = ?", false)}
+		for i := rank + 1; i < len(ratingLevels); i++ {
+			higherID, ok := b.ratingIDs[ratingLevels[i]]
+			if !ok {
+				continue
+			}
+			b.args = append(b.args, higherID)
+			parts = append(parts, b.imageTagsPredicate("it.tag_id = ?", true))
+		}
+		if len(parts) == 1 {
+			return parts[0]
+		}
+		return "(" + strings.Join(parts, " AND ") + ")"
+
 	default:
 		// Unknown key is either a category-qualified tag search
 		// ("character:cat") or a literal colon-bearing tag name
@@ -1234,22 +1557,45 @@ func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
 	}
 }
 
+// dateFilterRe matches the documented date filter shapes: YYYY,
+// YYYY-MM, or YYYY-MM-DD. The HELP.md examples show YYYY-MM ranges
+// (`date:2024-01..2024-06`) which lexicographically string-compare
+// correctly against the ISO-8601 ingested_at column.
+// `buildDateFilter` accepts each component (after stripping the
+// optional comparison or range syntax) and rejects malformed input
+// with `1=0` rather than passing it into a SQL comparison verbatim,
+// which produced silent zero-result answers indistinguishable from a
+// real "no images on that date" result.
+var dateFilterRe = regexp.MustCompile(`^\d{4}(-\d{2}(-\d{2})?)?$`)
+
 func (b *whereBuilder) buildDateFilter(val string) string {
 	if strings.HasPrefix(val, ">") {
 		date := val[1:]
+		if !dateFilterRe.MatchString(date) {
+			return "1=0"
+		}
 		b.args = append(b.args, date)
 		return "i.ingested_at > ?"
 	}
 	if strings.HasPrefix(val, "<") {
 		date := val[1:]
+		if !dateFilterRe.MatchString(date) {
+			return "1=0"
+		}
 		b.args = append(b.args, date)
 		return "i.ingested_at < ?"
 	}
 	if idx := strings.Index(val, ".."); idx >= 0 {
 		from := val[:idx]
 		to := val[idx+2:]
+		if !dateFilterRe.MatchString(from) || !dateFilterRe.MatchString(to) {
+			return "1=0"
+		}
 		b.args = append(b.args, from, to)
 		return "i.ingested_at BETWEEN ? AND ?"
+	}
+	if !dateFilterRe.MatchString(val) {
+		return "1=0"
 	}
 	b.args = append(b.args, val, val+"T23:59:59Z")
 	return "i.ingested_at BETWEEN ? AND ?"

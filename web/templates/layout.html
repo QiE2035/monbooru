@@ -8,6 +8,7 @@
   <meta name="csrf-token" content="{{.CSRFToken}}">
   <link rel="icon" type="image/png" href="/static/favicon.png">
   <link rel="stylesheet" href="/static/main.css">
+  {{if .CustomCSS}}<link rel="stylesheet" href="/custom.css">{{end}}
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/main.js" defer></script>
 </head>
@@ -85,6 +86,9 @@
       <span class="footer-sep">·</span>
       <span>{{.SavedCount}} saved</span>
       {{if .Degraded}}<span class="footer-sep">·</span><span class="footer-degraded">degraded</span>{{end}}
+      <span class="footer-sep-strong">::</span>
+      <span class="footer-rating-label">rating:</span>
+      {{$active := .ActiveRating}}{{$csrf := .CSRFToken}}{{range $i, $lv := .RatingLevels}}{{if $i}}<span class="footer-sep">·</span>{{end}}{{if eq $lv.Value $active}}<span class="footer-rating-active">[{{$lv.Label}}]</span>{{else}}<form hx-post="/internal/rating-ceiling?level={{$lv.Value}}" hx-swap="none" hx-on::after-request="window.location.reload()" style="display:inline"><input type="hidden" name="_csrf" value="{{$csrf}}"><button type="submit" class="footer-rating-link">{{$lv.Label}}</button></form>{{end}}{{end}}
     </div>
     <div id="footer-right">
       <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="/api/v1/docs" target="_blank" rel="noopener">API</a>

@@ -77,6 +77,68 @@ func TestAddTagToImage_UsageCount(t *testing.T) {
 	}
 }
 
+// usage_count tracks the visible-image count for the tag (RecalcDB
+// rebuilds it that way). Adds/removes against missing images must not
+// change it, otherwise the count silently drifts the next time an
+// unrelated mutation triggers RecalcIDs.
+func TestAddTagToMissingImage_DoesNotIncrementUsage(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	imgID := insertTestImage(t, database, "missing-add")
+	if _, err := database.Write.Exec(`UPDATE images SET is_missing = 1 WHERE id = ?`, imgID); err != nil {
+		t.Fatal(err)
+	}
+
+	tag, err := svc.GetOrCreateTag("phantom", catID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(imgID, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := svc.GetTag(tag.ID)
+	if got.UsageCount != 0 {
+		t.Errorf("UsageCount = %d, want 0 after add to missing image", got.UsageCount)
+	}
+}
+
+func TestRemoveTagFromMissingImage_DoesNotDecrementUsage(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	visible := insertTestImage(t, database, "remove-visible")
+	missing := insertTestImage(t, database, "remove-missing")
+	// Mark the second image missing before the add so the visible-only
+	// invariant holds at add time too. Mirrors the watcher's mark-missing
+	// → user-initiated remove sequence the audit reproduced.
+	if _, err := database.Write.Exec(`UPDATE images SET is_missing = 1 WHERE id = ?`, missing); err != nil {
+		t.Fatal(err)
+	}
+
+	tag, err := svc.GetOrCreateTag("dual", catID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(visible, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(missing, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := svc.GetTag(tag.ID)
+	if got.UsageCount != 1 {
+		t.Fatalf("preflight UsageCount = %d, want 1 (visible-only)", got.UsageCount)
+	}
+	if err := svc.RemoveTagFromImage(missing, tag.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = svc.GetTag(tag.ID)
+	if got.UsageCount != 1 {
+		t.Errorf("UsageCount = %d after remove from missing, want 1", got.UsageCount)
+	}
+}
+
 func TestAddTagTwice_NoDouble(t *testing.T) {
 	database, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
@@ -128,10 +190,15 @@ func TestRemoveTag_DecrementUsageCount(t *testing.T) {
 	svc.AddTagToImage(imgID, tag.ID, false, nil)
 	svc.RemoveTagFromImage(imgID, tag.ID)
 
-	// Tags with 0 usage are automatically deleted, so GetTag should return nil.
-	got, _ := svc.GetTag(tag.ID)
-	if got != nil {
-		t.Errorf("tag should be deleted when usage_count reaches 0, got UsageCount = %d", got.UsageCount)
+	// Removing the last image leaves the tag at usage_count=0; the row
+	// itself sticks around so user-declared aliases and implications keep
+	// resolving against an empty library.
+	got, err := svc.GetTag(tag.ID)
+	if err != nil {
+		t.Fatalf("tag should persist at zero usage, got err=%v", err)
+	}
+	if got.UsageCount != 0 {
+		t.Errorf("UsageCount = %d, want 0", got.UsageCount)
 	}
 }
 
@@ -173,6 +240,17 @@ func TestDeleteBuiltinCategory_Rejected(t *testing.T) {
 	err := svc.DeleteCategoryMoveOrDelete(catID, "move", 0)
 	if err != ErrBuiltinCategory {
 		t.Errorf("expected ErrBuiltinCategory, got %v", err)
+	}
+}
+
+// "system" is reserved because the search-bar autocomplete uses it as a
+// virtual cheat-sheet namespace; a real category by that name would
+// hijack `system:foo` into a category-qualified search.
+func TestCreateCategory_RejectsSystemReservedName(t *testing.T) {
+	_, svc := setupTestDB(t)
+
+	if _, err := svc.CreateCategory("system", "#aabbcc"); err != ErrReservedCategoryName {
+		t.Errorf("CreateCategory(system) err = %v, want ErrReservedCategoryName", err)
 	}
 }
 
@@ -390,7 +468,7 @@ func TestRelatedImages(t *testing.T) {
 	svc.AddTagToImage(img2, tagB.ID, false, nil)
 	svc.AddTagToImage(img3, tagC.ID, false, nil)
 
-	related, err := svc.RelatedImages(img1, 10)
+	related, err := svc.RelatedImages(img1, 10, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +497,7 @@ func TestRelatedImages_DropsPopularTags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	related, err := svc.RelatedImages(img1, 10)
+	related, err := svc.RelatedImages(img1, 10, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +513,9 @@ func TestListTags_All(t *testing.T) {
 	svc.GetOrCreateTag("list_a", catID)
 	svc.GetOrCreateTag("list_b", catID)
 
-	tags, total, err := svc.ListTags(TagFilter{Limit: 100})
+	// GetOrCreateTag without an image_tags row leaves usage_count=0; the
+	// listing now hides those by default, so opt in with ShowZero.
+	tags, total, err := svc.ListTags(TagFilter{Limit: 100, ShowZero: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -453,7 +533,7 @@ func TestListTags_WithPrefix(t *testing.T) {
 	svc.GetOrCreateTag("prefix_xyz", catID)
 	svc.GetOrCreateTag("other_tag", catID)
 
-	tags, total, err := svc.ListTags(TagFilter{Prefix: "prefix", Limit: 100})
+	tags, total, err := svc.ListTags(TagFilter{Prefix: "prefix", Limit: 100, ShowZero: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +555,7 @@ func TestListTags_WithCategoryFilter(t *testing.T) {
 	svc.GetOrCreateTag("cat_tag", custom.ID)
 	svc.GetOrCreateTag("gen_tag", catID)
 
-	tags, total, err := svc.ListTags(TagFilter{CategoryID: &custom.ID, Limit: 100})
+	tags, total, err := svc.ListTags(TagFilter{CategoryID: &custom.ID, Limit: 100, ShowZero: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +608,7 @@ func tagNames(ts []models.Tag) []string {
 	return out
 }
 
-func TestRecalcAndPrune_CountsOnlyNonMissing(t *testing.T) {
+func TestRecalc_CountsOnlyNonMissing(t *testing.T) {
 	database, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
 
@@ -547,12 +627,9 @@ func TestRecalcAndPrune_CountsOnlyNonMissing(t *testing.T) {
 	// Poison the counts so the recalc has work to do.
 	database.Write.Exec(`UPDATE tags SET usage_count = 99 WHERE id IN (?, ?)`, shared.ID, onlyGone.ID)
 
-	updated, pruned := svc.RecalcAndPruneCount()
+	updated := svc.RecalcCount()
 	if updated < 2 {
 		t.Errorf("updated = %d, want >= 2", updated)
-	}
-	if pruned < 1 {
-		t.Errorf("pruned = %d, want >= 1 (only_gone should be dropped)", pruned)
 	}
 
 	got, err := svc.GetTag(shared.ID)
@@ -562,8 +639,12 @@ func TestRecalcAndPrune_CountsOnlyNonMissing(t *testing.T) {
 	if got.UsageCount != 1 {
 		t.Errorf("shared UsageCount = %d, want 1 (only live image counts)", got.UsageCount)
 	}
-	if _, err := svc.GetTag(onlyGone.ID); err != ErrTagNotFound {
-		t.Errorf("only_gone should be pruned, got err=%v", err)
+	gone, err := svc.GetTag(onlyGone.ID)
+	if err != nil {
+		t.Fatalf("only_gone should persist at zero usage, got err=%v", err)
+	}
+	if gone.UsageCount != 0 {
+		t.Errorf("only_gone UsageCount = %d, want 0", gone.UsageCount)
 	}
 }
 
@@ -638,10 +719,16 @@ func TestRemoveAllTagsFromImage(t *testing.T) {
 		t.Errorf("expected 0 tags after RemoveAllTagsFromImage, got %d", len(imgTags))
 	}
 
-	// Tags with 0 usage are automatically deleted.
-	got, _ := svc.GetTag(tagA.ID)
-	if got != nil {
-		t.Errorf("tag should be deleted when usage_count reaches 0, got UsageCount = %d", got.UsageCount)
+	// Both tag rows persist at usage_count=0 so user-declared aliases and
+	// implications keep resolving against the empty image set.
+	for _, id := range []int64{tagA.ID, tagB.ID} {
+		got, err := svc.GetTag(id)
+		if err != nil {
+			t.Fatalf("tag %d should persist at zero usage, got err=%v", id, err)
+		}
+		if got.UsageCount != 0 {
+			t.Errorf("tag %d UsageCount = %d, want 0", id, got.UsageCount)
+		}
 	}
 }
 
@@ -730,7 +817,10 @@ func TestListTags_AllIncludesAliasesAndCanonicals(t *testing.T) {
 	if err := svc.MergeTags(alias.ID, canon.ID); err != nil {
 		t.Fatal(err)
 	}
-	list, _, err := svc.ListTags(TagFilter{Limit: 40})
+	// MergeTags leaves both rows at usage_count=0 here (no image carried
+	// the alias) so opt into ShowZero to surface the canonical alongside
+	// the alias in this scenario.
+	list, _, err := svc.ListTags(TagFilter{Limit: 40, ShowZero: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -861,9 +951,9 @@ func TestRemoveTagFromImage_NotOnImage(t *testing.T) {
 	if err := svc.RemoveTagFromImage(imgID, tag.ID); err != nil {
 		t.Errorf("removing absent tag must be a no-op, got err %v", err)
 	}
-	// No image_tags row existed so the auto-prune branch is never entered;
-	// the tag sits at usage_count=0 and is still retrievable. Callers that
-	// want the tag gone entirely must call svc.RecalcAndPruneCount.
+	// Tags persist at usage_count=0; the row only goes away on an explicit
+	// DeleteTag call. This lets users pre-declare tags and aliases against
+	// images that don't yet exist.
 	got, err := svc.GetTag(tag.ID)
 	if err != nil {
 		t.Fatalf("tag lookup: %v", err)
@@ -903,7 +993,7 @@ func TestListTags_DefaultLimit(t *testing.T) {
 	catID := generalCategoryID(t, svc)
 	svc.GetOrCreateTag("default_lim_test", catID)
 
-	tags, total, err := svc.ListTags(TagFilter{Limit: 0}) // Limit=0 triggers default
+	tags, total, err := svc.ListTags(TagFilter{Limit: 0, ShowZero: true}) // Limit=0 triggers default
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -922,7 +1012,7 @@ func TestListTags_WithPage(t *testing.T) {
 	svc.GetOrCreateTag("page_tag_b", catID)
 	svc.GetOrCreateTag("page_tag_c", catID)
 
-	p0, total, err := svc.ListTags(TagFilter{Prefix: "page_tag_", Sort: "name", Limit: 1, PageIndex: 0})
+	p0, total, err := svc.ListTags(TagFilter{Prefix: "page_tag_", Sort: "name", Limit: 1, PageIndex: 0, ShowZero: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -932,7 +1022,7 @@ func TestListTags_WithPage(t *testing.T) {
 	if len(p0) != 1 {
 		t.Fatalf("page 0 len = %d, want 1", len(p0))
 	}
-	p1, _, err := svc.ListTags(TagFilter{Prefix: "page_tag_", Sort: "name", Limit: 1, PageIndex: 1})
+	p1, _, err := svc.ListTags(TagFilter{Prefix: "page_tag_", Sort: "name", Limit: 1, PageIndex: 1, ShowZero: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1012,7 +1102,7 @@ func TestListTags_SortByName(t *testing.T) {
 	svc.GetOrCreateTag("name_zzz", catID)
 	svc.GetOrCreateTag("name_aaa", catID)
 
-	tags, _, err := svc.ListTags(TagFilter{Sort: "name", Prefix: "name_", Limit: 100})
+	tags, _, err := svc.ListTags(TagFilter{Sort: "name", Prefix: "name_", Limit: 100, ShowZero: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1129,5 +1219,331 @@ func TestChangeTagCategory_SameCategoryNoop(t *testing.T) {
 	a, _ := svc.GetOrCreateTag("cute", generalID)
 	if err := svc.ChangeTagCategory(a.ID, generalID); err != nil {
 		t.Errorf("expected no error moving to same category, got %v", err)
+	}
+}
+
+// ratingTagID returns the seeded rating tag id for one of the four
+// canonical names.
+func ratingTagIDByName(t *testing.T, database *db.DB, name string) int64 {
+	t.Helper()
+	var id int64
+	if err := database.Read.QueryRow(
+		`SELECT t.id FROM tags t JOIN tag_categories tc ON tc.id = t.category_id
+		 WHERE tc.name = 'rating' AND t.name = ?`, name,
+	).Scan(&id); err != nil {
+		t.Fatalf("rating tag %q not seeded: %v", name, err)
+	}
+	return id
+}
+
+func TestGetOrCreateTag_RejectsNonCanonicalRating(t *testing.T) {
+	_, svc := setupTestDB(t)
+	if svc.RatingCategoryID() == 0 {
+		t.Fatal("rating category not seeded")
+	}
+	if _, err := svc.GetOrCreateTag("ambiguous", svc.RatingCategoryID()); err != ErrNonCanonicalRating {
+		t.Errorf("err = %v, want ErrNonCanonicalRating", err)
+	}
+	// Canonical name is allowed and resolves to the seeded row.
+	tag, err := svc.GetOrCreateTag("explicit", svc.RatingCategoryID())
+	if err != nil {
+		t.Fatalf("canonical name should be allowed: %v", err)
+	}
+	if tag.CategoryID != svc.RatingCategoryID() {
+		t.Errorf("tag.CategoryID = %d, want %d", tag.CategoryID, svc.RatingCategoryID())
+	}
+}
+
+func TestRenameTag_RejectedOnRating(t *testing.T) {
+	database, svc := setupTestDB(t)
+	id := ratingTagIDByName(t, database, "explicit")
+	if err := svc.RenameTag(id, "very_explicit"); err != ErrRatingTagImmutable {
+		t.Errorf("err = %v, want ErrRatingTagImmutable", err)
+	}
+}
+
+func TestDeleteTag_RatingStripsUsageButKeepsRow(t *testing.T) {
+	database, svc := setupTestDB(t)
+	ratingID := ratingTagIDByName(t, database, "general")
+	// Seed an image that carries the rating tag so DeleteTag has rows to strip.
+	imageID := insertTestImage(t, database, "rated.png")
+	if err := svc.AddTagToImage(imageID, ratingID, false, nil); err != nil {
+		t.Fatalf("seed AddTagToImage: %v", err)
+	}
+	if err := svc.DeleteTag(ratingID); err != nil {
+		t.Fatalf("DeleteTag: %v", err)
+	}
+	// The catalog row stays (immutable rating vocabulary).
+	if _, err := svc.GetTag(ratingID); err != nil {
+		t.Errorf("rating tag row should still exist, got err: %v", err)
+	}
+	// Every image_tags row for it is gone and usage_count is zeroed.
+	tags, err := svc.GetImageTags(imageID)
+	if err != nil {
+		t.Fatalf("GetImageTags: %v", err)
+	}
+	for _, tg := range tags {
+		if tg.TagID == ratingID {
+			t.Errorf("rating row still on image %d", imageID)
+		}
+	}
+	tag, _ := svc.GetTag(ratingID)
+	if tag.UsageCount != 0 {
+		t.Errorf("usage_count = %d, want 0", tag.UsageCount)
+	}
+}
+
+func TestMergeTags_RejectedOnRating(t *testing.T) {
+	database, svc := setupTestDB(t)
+	gen := ratingTagIDByName(t, database, "general")
+	exp := ratingTagIDByName(t, database, "explicit")
+	if err := svc.MergeTags(gen, exp); err != ErrRatingTagImmutable {
+		t.Errorf("err = %v, want ErrRatingTagImmutable", err)
+	}
+	// Merging a non-rating tag into a rating tag is also refused.
+	other, _ := svc.GetOrCreateTag("ordinary", generalCategoryID(t, svc))
+	if err := svc.MergeTags(other.ID, exp); err != ErrRatingTagImmutable {
+		t.Errorf("merge into rating canonical: err = %v, want ErrRatingTagImmutable", err)
+	}
+}
+
+func TestChangeTagCategory_RejectedOnRating(t *testing.T) {
+	database, svc := setupTestDB(t)
+	expID := ratingTagIDByName(t, database, "explicit")
+	if err := svc.ChangeTagCategory(expID, generalCategoryID(t, svc)); err != ErrRatingTagImmutable {
+		t.Errorf("moving rating tag out: err = %v, want ErrRatingTagImmutable", err)
+	}
+	other, _ := svc.GetOrCreateTag("not_a_rating", generalCategoryID(t, svc))
+	if err := svc.ChangeTagCategory(other.ID, svc.RatingCategoryID()); err != ErrRatingTagImmutable {
+		t.Errorf("moving in to rating: err = %v, want ErrRatingTagImmutable", err)
+	}
+}
+
+// Merging a parent tag must move its tag_implications onto the canonical
+// so a later removal of the canonical from an image doesn't leave the
+// formerly-implied row orphaned with no parent justifying it.
+func TestMergeTags_RepointsImplicationsAndKeepsImpliedRowsCleanable(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	imgID := insertTestImage(t, database, "merge_implication_repoint")
+
+	a, _ := svc.GetOrCreateTag("merge_a", catID)
+	b, _ := svc.GetOrCreateTag("merge_b", catID)
+	c, _ := svc.GetOrCreateTag("merge_c", catID)
+
+	if _, err := svc.AddImplication(a.ID, c.ID); err != nil {
+		t.Fatalf("AddImplication: %v", err)
+	}
+	if err := svc.AddTagToImage(imgID, a.ID, false, nil); err != nil {
+		t.Fatalf("AddTagToImage: %v", err)
+	}
+
+	if err := svc.MergeTags(a.ID, b.ID); err != nil {
+		t.Fatalf("MergeTags: %v", err)
+	}
+
+	var parent, implied int64
+	if err := database.Read.QueryRow(
+		`SELECT parent_tag_id, implied_tag_id FROM tag_implications WHERE implied_tag_id = ?`, c.ID,
+	).Scan(&parent, &implied); err != nil {
+		t.Fatalf("expected one implication after merge: %v", err)
+	}
+	if parent != b.ID {
+		t.Errorf("implication parent = %d, want %d (canonical)", parent, b.ID)
+	}
+
+	var aliasEdges int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM tag_implications WHERE parent_tag_id = ? OR implied_tag_id = ?`, a.ID, a.ID,
+	).Scan(&aliasEdges); err != nil {
+		t.Fatal(err)
+	}
+	if aliasEdges != 0 {
+		t.Errorf("alias still referenced by %d tag_implications row(s)", aliasEdges)
+	}
+
+	if err := svc.RemoveTagFromImage(imgID, b.ID); err != nil {
+		t.Fatalf("RemoveTagFromImage: %v", err)
+	}
+
+	imgTags, err := svc.GetImageTags(imgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imgTags) != 0 {
+		t.Errorf("image still carries %d tag(s) after removing the only user tag: %+v", len(imgTags), imgTags)
+	}
+}
+
+// Merging a tag whose name is also the implied side of an edge must move
+// the inbound edge onto the canonical so future fan-outs don't insert
+// an alias as is_implied=1.
+func TestMergeTags_RepointsInboundImplications(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	parent, _ := svc.GetOrCreateTag("merge_in_parent", catID)
+	a, _ := svc.GetOrCreateTag("merge_in_a", catID)
+	b, _ := svc.GetOrCreateTag("merge_in_b", catID)
+
+	if _, err := svc.AddImplication(parent.ID, a.ID); err != nil {
+		t.Fatalf("AddImplication: %v", err)
+	}
+	if err := svc.MergeTags(a.ID, b.ID); err != nil {
+		t.Fatalf("MergeTags: %v", err)
+	}
+
+	var implied int64
+	if err := database.Read.QueryRow(
+		`SELECT implied_tag_id FROM tag_implications WHERE parent_tag_id = ?`, parent.ID,
+	).Scan(&implied); err != nil {
+		t.Fatalf("expected one implication after merge: %v", err)
+	}
+	if implied != b.ID {
+		t.Errorf("implied = %d, want %d (canonical)", implied, b.ID)
+	}
+	var aliasEdges int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM tag_implications WHERE parent_tag_id = ? OR implied_tag_id = ?`, a.ID, a.ID,
+	).Scan(&aliasEdges); err != nil {
+		t.Fatal(err)
+	}
+	if aliasEdges != 0 {
+		t.Errorf("alias still referenced by %d tag_implications row(s)", aliasEdges)
+	}
+}
+
+// Merging an alias whose canonical is already on the image as is_implied=1
+// must promote the canonical row to user-owned. The common trigger is
+// "user adds A which implies B, then merges A into B": without the
+// promotion the row-move loop just deletes the alias side and leaves
+// the image carrying only an implied B with no user tag.
+func TestMergeTags_PromotesCanonicalImpliedRow(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	imgID := insertTestImage(t, database, "merge_promote_implied")
+
+	a, _ := svc.GetOrCreateTag("merge_promote_a", catID)
+	c, _ := svc.GetOrCreateTag("merge_promote_c", catID)
+
+	if _, err := svc.AddImplication(a.ID, c.ID); err != nil {
+		t.Fatalf("AddImplication: %v", err)
+	}
+	if err := svc.AddTagToImage(imgID, a.ID, false, nil); err != nil {
+		t.Fatalf("AddTagToImage: %v", err)
+	}
+	if err := svc.MergeTags(a.ID, c.ID); err != nil {
+		t.Fatalf("MergeTags: %v", err)
+	}
+
+	var isImplied, isAuto int
+	if err := database.Read.QueryRow(
+		`SELECT is_implied, is_auto FROM image_tags WHERE image_id = ? AND tag_id = ?`,
+		imgID, c.ID,
+	).Scan(&isImplied, &isAuto); err != nil {
+		t.Fatalf("expected canonical on image: %v", err)
+	}
+	if isImplied != 0 {
+		t.Errorf("canonical row is_implied = %d, want 0 (user-owned)", isImplied)
+	}
+	if isAuto != 0 {
+		t.Errorf("canonical row is_auto = %d, want 0 (matches alias side)", isAuto)
+	}
+}
+
+// Deleting a parent tag must sweep its implied closure on every carrier
+// image. The image_tags FK cascade alone drops the parent row but
+// leaves the rows it implied with is_implied=1 and no on-image parent
+// justifying them.
+func TestDeleteTag_SweepsImpliedClosureOnCarrierImages(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	imgID := insertTestImage(t, database, "delete_implied_sweep")
+
+	parent, _ := svc.GetOrCreateTag("delete_parent", catID)
+	implied, _ := svc.GetOrCreateTag("delete_implied", catID)
+
+	if _, err := svc.AddImplication(parent.ID, implied.ID); err != nil {
+		t.Fatalf("AddImplication: %v", err)
+	}
+	if err := svc.AddTagToImage(imgID, parent.ID, false, nil); err != nil {
+		t.Fatalf("AddTagToImage: %v", err)
+	}
+
+	if err := svc.DeleteTag(parent.ID); err != nil {
+		t.Fatalf("DeleteTag: %v", err)
+	}
+
+	imgTags, err := svc.GetImageTags(imgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imgTags) != 0 {
+		t.Errorf("image still carries %d tag(s) after deleting the only parent: %+v", len(imgTags), imgTags)
+	}
+
+	got, err := svc.GetTag(implied.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UsageCount != 0 {
+		t.Errorf("implied tag usage_count = %d, want 0", got.UsageCount)
+	}
+}
+
+// CreateAlias's upgrade-in-place branch (zero-usage tag becomes an alias)
+// must move tag_implications off the existing row for the same reason
+// MergeTags does: AddImplication refuses aliases, so any dangling
+// alias-keyed edge would only ever fire from a tag the resolver no
+// longer exposes.
+func TestCreateAlias_UpgradeInPlace_RepointsImplications(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	a, _ := svc.GetOrCreateTag("alias_up_a", catID)
+	b, _ := svc.GetOrCreateTag("alias_up_b", catID)
+	c, _ := svc.GetOrCreateTag("alias_up_c", catID)
+
+	if _, err := svc.AddImplication(a.ID, c.ID); err != nil {
+		t.Fatalf("AddImplication: %v", err)
+	}
+
+	if _, err := svc.CreateAlias("alias_up_a", catID, b.ID); err != nil {
+		t.Fatalf("CreateAlias: %v", err)
+	}
+
+	var parent, implied int64
+	if err := database.Read.QueryRow(
+		`SELECT parent_tag_id, implied_tag_id FROM tag_implications WHERE implied_tag_id = ?`, c.ID,
+	).Scan(&parent, &implied); err != nil {
+		t.Fatalf("expected one implication after alias: %v", err)
+	}
+	if parent != b.ID {
+		t.Errorf("implication parent = %d, want %d (canonical)", parent, b.ID)
+	}
+	var aliasEdges int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM tag_implications WHERE parent_tag_id = ? OR implied_tag_id = ?`, a.ID, a.ID,
+	).Scan(&aliasEdges); err != nil {
+		t.Fatal(err)
+	}
+	if aliasEdges != 0 {
+		t.Errorf("alias still referenced by %d tag_implications row(s)", aliasEdges)
+	}
+}
+
+func TestRatingTagIDsAbove(t *testing.T) {
+	_, svc := setupTestDB(t)
+	if got := svc.RatingTagIDsAbove("explicit"); len(got) != 0 {
+		t.Errorf("explicit ceiling: got %d ids, want 0", len(got))
+	}
+	if got := svc.RatingTagIDsAbove("general"); len(got) != 3 {
+		t.Errorf("general ceiling: got %d ids, want 3 (sensitive/questionable/explicit)", len(got))
+	}
+	if got := svc.RatingTagIDsAbove("sensitive"); len(got) != 2 {
+		t.Errorf("sensitive ceiling: got %d ids, want 2 (questionable/explicit)", len(got))
+	}
+	if got := svc.RatingTagIDsAbove(""); len(got) != 0 {
+		t.Errorf("empty ceiling: got %d ids, want 0", len(got))
 	}
 }

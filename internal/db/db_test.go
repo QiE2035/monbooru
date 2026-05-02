@@ -44,6 +44,73 @@ func TestBootstrap(t *testing.T) {
 	}
 }
 
+func TestBootstrapBuiltinCategories(t *testing.T) {
+	db := openTestDB(t)
+	if err := Bootstrap(db); err != nil {
+		t.Fatalf("Bootstrap failed: %v", err)
+	}
+	want := []struct {
+		name  string
+		color string
+	}{
+		{"general", "#3d90e3"},
+		{"character", "#00aa00"},
+		{"artist", "#cc0000"},
+		{"copyright", "#aa00aa"},
+		{"meta", "#ffaa00"},
+		{"rating", "#996666"},
+		{"medium", "#7d4fbf"},
+		{"person", "#b85c9e"},
+		{"year", "#4a8fa8"},
+	}
+	for _, w := range want {
+		var color string
+		var isBuiltin int
+		err := db.Read.QueryRow(
+			`SELECT color, is_builtin FROM tag_categories WHERE name = ?`, w.name,
+		).Scan(&color, &isBuiltin)
+		if err != nil {
+			t.Errorf("category %q: %v", w.name, err)
+			continue
+		}
+		if color != w.color {
+			t.Errorf("category %q color = %q, want %q", w.name, color, w.color)
+		}
+		if isBuiltin != 1 {
+			t.Errorf("category %q is_builtin = %d, want 1", w.name, isBuiltin)
+		}
+	}
+}
+
+// A library predating the medium/person/year seed may have a custom row
+// of the same name with is_builtin = 0. The schema's UPDATE statement
+// must promote it on the next bootstrap so it stops being deletable.
+func TestBootstrapPromotesExistingCustomBuiltins(t *testing.T) {
+	db := openTestDB(t)
+	if err := Bootstrap(db); err != nil {
+		t.Fatalf("Bootstrap failed: %v", err)
+	}
+	if _, err := db.Write.Exec(
+		`UPDATE tag_categories SET is_builtin = 0 WHERE name IN ('medium', 'person', 'year')`,
+	); err != nil {
+		t.Fatalf("downgrade: %v", err)
+	}
+	if err := Bootstrap(db); err != nil {
+		t.Fatalf("re-Bootstrap failed: %v", err)
+	}
+	for _, name := range []string{"medium", "person", "year"} {
+		var isBuiltin int
+		if err := db.Read.QueryRow(
+			`SELECT is_builtin FROM tag_categories WHERE name = ?`, name,
+		).Scan(&isBuiltin); err != nil {
+			t.Fatalf("read %q: %v", name, err)
+		}
+		if isBuiltin != 1 {
+			t.Errorf("category %q is_builtin = %d after re-bootstrap, want 1", name, isBuiltin)
+		}
+	}
+}
+
 func TestBootstrapIdempotent(t *testing.T) {
 	db := openTestDB(t)
 

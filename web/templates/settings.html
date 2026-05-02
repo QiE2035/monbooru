@@ -5,7 +5,6 @@
     <a href="#general">General</a>
     <a href="#galleries">Galleries</a>
     <a href="#tagger">Tagger</a>
-    <a href="#tags">Tag actions</a>
     <a href="#auth">Auth</a>
     <a href="#maintenance">Maintenance</a>
     <a href="#schedule">Schedule</a>
@@ -17,7 +16,6 @@
 {{$cfg  := index . "Config"}}
 {{$galleries := index . "Galleries"}}
 {{$active := index . "ActiveGallery"}}
-{{$enabledCount := index . "EnabledCount"}}
 
 <div id="settings-page">
   <h2>Settings</h2>
@@ -31,15 +29,15 @@
         <div class="settings-sub">
           <h4>Files</h4>
           <div class="field">
+            <label>Max file size (MB)</label>
+            <input type="number" name="max_file_size_mb" value="{{$cfg.Gallery.MaxFileSizeMB}}" min="1">
+            <span class="field-hint">Files larger than this are skipped during sync.</span>
+          </div>
+          <div class="field">
             <label>
               <input type="checkbox" name="watch_enabled" {{if $cfg.Gallery.WatchEnabled}}checked{{end}}>
               Watch gallery for new files automatically
             </label>
-          </div>
-          <div class="field">
-            <label>Max file size (MB)</label>
-            <input type="number" name="max_file_size_mb" value="{{$cfg.Gallery.MaxFileSizeMB}}" min="1">
-            <span class="field-hint">Files larger than this are skipped during sync.</span>
           </div>
         </div>
         <div class="settings-sub">
@@ -263,9 +261,9 @@
          neutral style. -->
     <form id="gallery-import-form" hx-post="" hx-target="#flash-gallery-import" hx-swap="innerHTML"
           hx-encoding="multipart/form-data"
+          hx-headers='{"X-CSRF-Token": "{{$csrf}}"}'
           hx-on::before-request="setImportBusy(this, true)"
           hx-on::after-request="onImportResponse(this)">
-      <input type="hidden" name="_csrf" value="{{$csrf}}">
       <p>Import into gallery <strong id="gallery-import-src"></strong></p>
       <div class="field">
         <label><input type="radio" name="mode" value="merge" checked> Merge: add new images and tags from the uploaded file</label>
@@ -274,13 +272,13 @@
         <label><input type="radio" name="mode" value="replace"> Replace: wipe this gallery and restore from the uploaded file</label>
       </div>
       <p id="gallery-import-danger" class="confirm-dialog-danger">Destructive: replaces the current database. If the uploaded file is a .zip with images, the source folder is replaced as well.</p>
-      <div class="field">
-        <label>File (.db, .json, or .zip)</label>
-        <input type="file" name="file" accept=".db,.sqlite,.json,.zip" required>
-      </div>
       <div class="field" id="gallery-import-confirm-row">
         <label>Type the gallery name to confirm</label>
         <input type="text" name="confirm_name" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>File (.db, .json, or .zip)</label>
+        <input type="file" name="file" accept=".db,.sqlite,.json,.zip" required>
       </div>
       <p id="gallery-import-wait" class="field-hint" hidden>Uploading and restoring the database. On large galleries this can take a few minutes; keep this tab open.</p>
       <div id="flash-gallery-import"></div>
@@ -540,200 +538,6 @@
     {{end}}{{end}}
   </section>
 
-  {{$bulkTaggers := index . "BulkTaggerRows"}}
-  <section id="tags" class="settings-section">
-    <h3>Tag actions (current gallery only)</h3>
-    <div id="flash-tags"></div>
-    <div class="settings-sub">
-      <h4>Add/Remove specific tag(s)</h4>
-      <p class="field-hint">Add or remove a list of tags to every image in this gallery.</p>
-      <button type="button" onclick="openSettingsTagDialog()">Add/Remove specific tag(s)…</button>
-    </div>
-    {{if $bulkTaggers}}
-    <div class="settings-sub">
-      <h4>Bulk auto-tagging actions</h4>
-      <p class="field-hint">Run the auto-tagger on every image in this gallery, or remove auto-tags it produced.</p>
-      <div class="table-scroll">
-      <table class="tagger-table">
-        <thead>
-          <tr><th>Tagger</th><th>Run untagged</th><th>Run all</th><th>Remove auto-tagged</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><strong>All enabled taggers</strong></td>
-            <td>
-              {{if $enabledCount}}
-              <form hx-post="/internal/autotag" hx-target="#flash-tags" hx-swap="innerHTML"
-                    hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}"
-                    style="display:inline">
-                <input type="hidden" name="_csrf" value="{{$csrf}}">
-                <input type="hidden" name="mode" value="never">
-                <button type="submit" class="btn-autotag">Run untagged</button>
-              </form>
-              {{end}}
-            </td>
-            <td>
-              {{if $enabledCount}}
-              <form hx-post="/internal/autotag" hx-target="#flash-tags" hx-swap="innerHTML"
-                    hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}"
-                    hx-confirm="Re-tag ALL images? This will overwrite existing auto-tags."
-                    data-confirm-ok="Re-tag"
-                    style="display:inline">
-                <input type="hidden" name="_csrf" value="{{$csrf}}">
-                <input type="hidden" name="mode" value="all">
-                <button type="submit" class="btn-autotag">Run all</button>
-              </form>
-              {{end}}
-            </td>
-            <td>
-              <form hx-post="/settings/tagger/remove-autotagged" hx-target="#flash-tags" hx-swap="innerHTML"
-                    hx-confirm="Remove every auto-tag from every image? Manual tags are kept."
-                    data-confirm-ok="Remove"
-                    style="display:inline">
-                <input type="hidden" name="_csrf" value="{{$csrf}}">
-                <button type="submit" class="btn-sm btn-warning">Remove auto-tagged</button>
-              </form>
-            </td>
-          </tr>
-          {{range $bulkTaggers}}
-          <tr>
-            <td><strong>{{.Name}}</strong>{{if not .CanRun}} <span class="field-hint">(disabled / unavailable)</span>{{end}}</td>
-            <td>
-              {{if .CanRun}}
-              <button type="button" class="btn-autotag"
-                      hx-post="/internal/autotag" hx-target="#flash-tags" hx-swap="innerHTML"
-                      hx-vals='{"mode":"never","tagger_name":"{{.Name}}","_csrf":"{{$csrf}}"}'
-                      hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}">Run untagged</button>
-              {{end}}
-            </td>
-            <td>
-              {{if .CanRun}}
-              <button type="button" class="btn-autotag"
-                      hx-post="/internal/autotag" hx-target="#flash-tags" hx-swap="innerHTML"
-                      hx-vals='{"mode":"all","tagger_name":"{{.Name}}","_csrf":"{{$csrf}}"}'
-                      hx-confirm="Re-tag ALL images with {{.Name}}? This will overwrite its existing auto-tags."
-                      data-confirm-ok="Re-tag"
-                      hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}">Run all</button>
-              {{end}}
-            </td>
-            <td>
-              <button type="button" class="btn-sm btn-warning"
-                      hx-post="/settings/tagger/remove-autotagged" hx-target="#flash-tags" hx-swap="innerHTML"
-                      hx-vals='{"tagger_name":"{{.Name}}","_csrf":"{{$csrf}}"}'
-                      hx-confirm="Remove all auto-tags produced by {{.Name}} from every image?"
-                      data-confirm-ok="Remove">Remove auto-tagged</button>
-            </td>
-          </tr>
-          {{end}}
-        </tbody>
-      </table>
-      </div>
-    </div>
-    {{end}}
-    <div class="settings-sub">
-      <h4>Bulk tag removal</h4>
-      <div class="tagger-bulk-actions">
-        <form hx-post="/settings/tagger/remove-autotagged" hx-target="#flash-tags" hx-swap="innerHTML"
-              hx-confirm="Remove every auto-tag from every image? Manual tags are kept."
-              data-confirm-ok="Remove">
-          <input type="hidden" name="_csrf" value="{{$csrf}}">
-          <button type="submit" class="btn-warning">Remove all auto-tags</button>
-        </form>
-        <form hx-post="/settings/tagger/remove-user-tags" hx-target="#flash-tags" hx-swap="innerHTML"
-              hx-confirm="Remove every user (manual) tag from every image? Auto-tags are kept."
-              data-confirm-ok="Remove">
-          <input type="hidden" name="_csrf" value="{{$csrf}}">
-          <button type="submit" class="btn-warning">Remove all user tags</button>
-        </form>
-        <form hx-post="/settings/tagger/remove-all-tags" hx-target="#flash-tags" hx-swap="innerHTML"
-              hx-confirm="Remove EVERY tag (user and auto) from every image? This cannot be undone."
-              data-confirm-ok="Remove">
-          <input type="hidden" name="_csrf" value="{{$csrf}}">
-          <button type="submit" class="btn-warning">Remove all tags</button>
-        </form>
-      </div>
-    </div>
-  </section>
-
-  {{/* Add/Remove specific tag(s) dialog. Mirrors the gallery's batch-tag
-       dialog so the UX is identical; on submit it posts to /internal/batch-tag
-       with scope=search and an empty query so every visible image is matched
-       (the search executor's hidden is_missing=0 default still applies). */}}
-  <dialog id="settings-tag-dialog">
-    <p>Add or remove tags on every image in <strong>{{$active}}</strong>.</p>
-    <form id="settings-tag-form" onsubmit="event.preventDefault(); confirmSettingsTag();">
-      <input type="hidden" name="_csrf" value="{{$csrf}}">
-      <div class="field batch-tag-radios">
-        <label><input type="radio" name="op" value="add" checked> Add tags</label>
-        <label><input type="radio" name="op" value="remove"> Remove tags</label>
-      </div>
-      <div class="field" style="position:relative">
-        <label>Tags (space-separated, <code>category:name</code> for non-general)</label>
-        <input type="text" name="tags" id="settings-tag-input" class="upload-wide-input" data-multi-tags="1"
-               placeholder="Add/remove tag(s)..." autocomplete="off"
-               hx-get="/internal/tags/suggest"
-               hx-trigger="input changed delay:200ms"
-               hx-target="#settings-tag-suggest"
-               hx-swap="innerHTML"
-               hx-vals='js:{tag: document.getElementById("settings-tag-input").value.split(/\s+/).pop()}'
-               onkeydown="handleSuggestKey(event, 'settings-tag-suggest', 'settings-tag-input')">
-        <div id="settings-tag-suggest" class="suggest-dropdown tag-suggest-dropdown"></div>
-      </div>
-      <div id="settings-tag-flash"></div>
-      <div class="dialog-actions">
-        <button type="submit">Apply</button>
-        <button type="button" onclick="document.getElementById('settings-tag-dialog').close()">Cancel</button>
-      </div>
-    </form>
-  </dialog>
-
-  <script>
-  function openSettingsTagDialog() {
-    var input = document.getElementById('settings-tag-input');
-    if (input) input.value = '';
-    var sg = document.getElementById('settings-tag-suggest');
-    if (sg) sg.innerHTML = '';
-    var flash = document.getElementById('settings-tag-flash');
-    if (flash) flash.innerHTML = '';
-    var add = document.querySelector('#settings-tag-form input[name="op"][value="add"]');
-    if (add) add.checked = true;
-    document.getElementById('settings-tag-dialog').showModal();
-    if (input) input.focus();
-  }
-  function confirmSettingsTag() {
-    var form = document.getElementById('settings-tag-form');
-    if (!form) return;
-    var op = (form.querySelector('input[name="op"]:checked') || {}).value;
-    var tags = (document.getElementById('settings-tag-input').value || '').trim();
-    var flash = document.getElementById('settings-tag-flash');
-    if (flash) flash.innerHTML = '';
-    if (!tags) { if (flash) flash.innerHTML = '<div class="flash flash-err">No tags provided.</div>'; return; }
-    var csrf = form.querySelector('[name="_csrf"]').value;
-    var body = '_csrf=' + encodeURIComponent(csrf)
-      + '&scope=search&q='
-      + '&op=' + encodeURIComponent(op)
-      + '&tags=' + encodeURIComponent(tags);
-    fetch('/internal/batch-tag', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
-      body: body
-    }).then(function(res) {
-      if (res.ok) {
-        document.getElementById('settings-tag-dialog').close();
-        var t = document.getElementById('flash-tags');
-        if (t) t.innerHTML = '<div class="flash flash-ok">Tag job queued. Watch the job status bar above.</div>';
-        if (typeof refreshJobStatus === 'function') refreshJobStatus();
-      } else {
-        res.text().then(function(t) {
-          if (flash) flash.innerHTML = t || '<div class="flash flash-err">Tag operation failed.</div>';
-        });
-      }
-    }).catch(function() {
-      if (flash) flash.innerHTML = '<div class="flash flash-err">Request failed.</div>';
-    });
-  }
-  </script>
-
   <section id="auth" class="settings-section">
     <h3>Authentication</h3>
     <div id="flash-auth"></div>
@@ -792,7 +596,7 @@
           </td>
         </tr>
         <tr>
-          <td><strong>Tag counts</strong> <span class="field-hint">- recompute usage counts and prune zero-usage tags</span></td>
+          <td><strong>Tag counts</strong> <span class="field-hint">- recompute usage counts</span></td>
           <td>
             <form hx-post="/settings/maintenance/recalc-tags" hx-target="#flash-maintenance" hx-swap="innerHTML" style="display:inline">
               <input type="hidden" name="_csrf" value="{{$csrf}}">
@@ -876,7 +680,7 @@
     <form hx-post="/settings/schedule" hx-target="#flash-schedule" hx-swap="innerHTML">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
       <div class="field">
-        <label>Time of day <input type="time" name="time" value="{{$sched.Time}}" required></label>
+        <label>Time of day <input type="time" name="time" value="{{$sched.Time}}" lang="en-GB" required></label>
       </div>
       <div class="schedule-grid">
         <div class="field">
@@ -889,13 +693,7 @@
           <label><input type="checkbox" name="run_auto_taggers"{{if $sched.RunAutoTaggers}} checked{{end}}> Run enabled auto-taggers</label>
         </div>
         <div class="field">
-          <label><input type="checkbox" name="recompute_tags"{{if $sched.RecomputeTags}} checked{{end}}> Recompute tag counts</label>
-        </div>
-        <div class="field">
           <label><input type="checkbox" name="merge_general_tags"{{if $sched.MergeGeneralTags}} checked{{end}}> Merge general tags</label>
-        </div>
-        <div class="field">
-          <label><input type="checkbox" name="vacuum_db"{{if $sched.VacuumDB}} checked{{end}}> Vacuum database</label>
         </div>
       </div>
       <button type="submit">Save</button>

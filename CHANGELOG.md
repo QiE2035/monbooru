@@ -1,5 +1,46 @@
 # Changelog
 
+## [v1.5.0] - 2026-05-02
+### Added
+- Tag implications: declare `parent → child` so adding the parent stamps the child on every image carrying the parent, and removing the parent walks the transitive closure to strip children that were only justified by it. Declaring or deleting an implication runs a chunked background propagation job. 
+- /tags page rework: create-tag button and dialog; ascending/descending order filter; direct alias CRUD with category change; zero-usage filter (`Show` / `Only` / `Hide`) for declared-but-unused triage; danger button to delete every tag in the current search.
+- Built-in `rating` tag category with canonical tags `general`, `sensitive`, `questionable`, `explicit`. The category is reserved, locked (no rename / merge / delete / move-category), and accepts only the four canonical names. Search supports `rating:explicit` with highest-wins semantics: an image carrying multiple ratings matches only the highest. The detail-page sidebar lifts the rating group to the top.
+- Footer rating-ceiling selector. The footer cluster `rating: sfw . sensitive . questionable . explicit` posts to `/internal/rating-ceiling` and writes the `monbooru_rating_ceiling` cookie; gallery, sidebar, related-images, and detail-page adjacency then hide images carrying any rating above the ceiling. The first label `sfw` is a display alias for `general`. Folder tree, source counts, and the cached visible-count deliberately ignore the ceiling.
+- Built-in tag categories `medium`, `person`, and `year`, so Hydrus-style `medium:digital`, `person:alice`, `year:2026` tokens round-trip into typed categories instead of landing as literal `general` tokens. Pre-existing user-created custom categories with these names are promoted to built-in on the next bootstrap. Hydrus `creator:` is rewritten to `artist:`, and `series:` / `studio:` to `copyright:`, on sidecar import.
+- Operator-supplied `custom.css` override loaded after the built-in stylesheet, so a self-hoster can tweak the look without forking the binary.
+- Gallery Actions chooser collapses Tag all / Remove tags / Auto-tag / Move / Delete behind one button, with arrow-key focus cycling, sub-dialogs (Remove tags strip, Auto-tag), and Escape / Cancel popping back to the chooser.
+- Batch operations on the current search: auto-tag all, and move all to a folder. 
+- Gallery batch-selection keyboard shortcuts: Space toggles, `a` adds tags, `r` removes tags, `t` opens auto-tag, `Ctrl+A` selects all, `Esc` clears.
+- Detail page: tag-focus mode (`r` enters, arrows cycle on-image tags, Enter removes); a dim Aliases group lists aliases pointing at on-image tags; `t` opens the per-image Auto-tag dialog.
+- Search: `system:` cheat-sheet autocomplete covers filter keywords and category drill-ins, with a description column on cheat-sheet rows.
+
+### Changed
+- Auto-tagger: WD14 rating labels (`general`, `sensitive`, `questionable`, `explicit`, plus the `rating:*` variants) now route to the `rating` category instead of `meta`. Pre-existing libraries with `meta:general`/`meta:sensitive`/etc. tags are not migrated automatically; re-run the tagger or move tags manually to switch them over.
+- Zero-usage tags are no longer auto-pruned. Use the /tags Zero-usage filter for manual cleanup.
+- Delete on a rating tag strips its usage from every image but keeps the row, since the four canonical ratings are reserved.
+
+### Fixed
+- Tag implications integrity: `MergeTags` repoints `tag_implications` to the canonical and promotes the canonical row when the alias was user-owned but the canonical was implied; `DeleteTag` sweeps the implied closure on every carrier image before dropping; `CreateAlias` repoints `tag_implications` when upgrading or repointing an existing row.
+- Watcher: marking a file missing decrements `usage_count` of every tag the image carried and prunes any that hit zero, in the same write transaction as the is_missing flip. Tag counts no longer drift between watcher events and the next manual recompute. Alias paths are ignored in the mark-missing fallback, and the alias is promoted to canonical when the canonical's old path is gone.
+- Search: `date:` filter accepts `YYYY` and `YYYY-MM` and is now validated; bare wildcard tokens become no-match instead of a full scan; random-sort seed is clamped to 31 bits.
+- Saved searches: duplicate names are rejected.
+- Import: type-to-confirm is validated before the upload is buffered; imported DB is bootstrapped before sanitisers run; per-entry decompressed size on zip archives is capped; light merge skips the wipe when the archive carries no files.
+- Config: non-bcrypt `password_hash` is rejected on startup; non-positive `SessionLifetimeDays` is clamped to the default; `MaxFileSizeMB <= 0` is treated as no per-file cap.
+- Auth: same-origin Referer check rejects non-http(s) schemes.
+- API: trailing slash on `base_url` is trimmed before the CORS check.
+- Footer: cached counts are invalidated on tag and saved-search mutations.
+
+### Removed
+- Daily schedule: the Recompute tag counts and Vacuum database toggles. Vacuum stays available as a manual button under Settings → Maintenance. Existing `recompute_tags` / `vacuum_db` keys in `monbooru.toml` are ignored on load and dropped on the next save.
+- Settings → Tag actions: Run untagged / Run all (rolled into the gallery Actions chooser).
+- `MONBOORU_UI_PAGE_SIZE` env override.
+
+### Internal
+- Search: multi-AND drives off the smallest tag's `image_tags` rows; `rating:` filter short-circuits when no image carries the level; suggest candidate cap halved to lower with-context contention; partial index for alias rows on `canonical_tag_id`.
+- Tags: `MergeTags` folded into three set-based statements; `DeleteTag` bulk-deletes instead of per-image looping.
+- Auto-tagger: per-model label dispatch tables embedded in the binary.
+- Single source of truth for filter-keyword vocabulary across search and autocomplete.
+
 ## [v1.4.3] - 2026-04-29
 ### Fixed
 - Auto-tagger: ORT environment and per-tagger sessions are cached across runs so back-to-back jobs no longer leak ~440 MB of glibc-arena memory each. The cache is torn down after `tagger.idle_release_after_minutes` (default 30) of inactivity, on Settings save, and on `use_cuda` flips.

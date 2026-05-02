@@ -72,7 +72,7 @@ func main() {
 	}()
 
 	<-quit
-	logx.Infof("shutting down…")
+	logx.Infof("shutting down...")
 	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	httpSrv.Shutdown(shutCtx) //nolint:errcheck

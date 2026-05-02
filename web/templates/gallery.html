@@ -43,10 +43,12 @@
   <span id="batch-count">0 selected</span>
   <form id="batch-delete-form">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <button type="button" class="batch-bar-right" onclick="openTagSelectedDialog()">Tag selected</button>
+    <button type="button" class="batch-bar-right" onclick="openTagSelectedDialog()">Add tags manually</button>
+    <button type="button" onclick="openStripSelectedDialog()">Remove tags</button>
+    {{if .EnabledTaggers}}<button type="button" class="btn-autotag" onclick="openAutotagSelectedDialog()">Auto-tag</button>{{end}}
     <span class="batch-bar-sep" aria-hidden="true"></span>
-    <button type="button" onclick="openMoveSelectedDialog()">Move selected</button>
-    <button type="button" class="btn-danger" onclick="batchDeleteSelected()">Delete selected</button>
+    <button type="button" onclick="openMoveSelectedDialog()">Move</button>
+    <button type="button" class="btn-danger" onclick="batchDeleteSelected()">Delete</button>
   </form>
 </div>
 
@@ -70,7 +72,7 @@
     <div id="save-search-result"></div>
     <div class="dialog-actions">
       <button type="submit">Save</button>
-      <button type="button" onclick="document.getElementById('save-search-dialog').close()">Cancel</button>
+      <button type="button" onclick="closeDialogAndRestoreParent('save-search-dialog')">Cancel</button>
     </div>
   </form>
 </dialog>
@@ -82,7 +84,7 @@
   <div id="delete-search-flash"></div>
   <div class="dialog-actions">
     <button type="button" class="btn-danger" onclick="confirmDeleteSearch()">Delete</button>
-    <button type="button" onclick="document.getElementById('delete-search-dialog').close()">Cancel</button>
+    <button type="button" onclick="closeDialogAndRestoreParent('delete-search-dialog')">Cancel</button>
   </div>
 </dialog>
 
@@ -97,24 +99,41 @@
   </div>
 </dialog>
 
-<!-- Tag dialog (shared by Tag all and Tag selected) -->
+<!-- Actions chooser. Density-relief surface: every search-scoped operation
+     hangs off this one button. Picking an entry closes the chooser and opens
+     the matching action dialog (close-then-open, not innerHTML swap). The
+     scope is announced once by the dialog header; each entry's label is
+     just the action verb. Number keys 1-9 pick the corresponding visible
+     entry (assigned dynamically at open time). The `a` shortcut in main.js
+     opens this chooser.
+     Each <button> carries data-action so openBatchActionsDialog can wire
+     onclick once and update visibility on every open without rebinding. -->
+<dialog id="batch-actions-dialog">
+  {{/* Body wrapped in #batch-actions-body so HTMX search responses can OOB-swap
+       the entries when .Query / .Result.Total change without disturbing the
+       <dialog> wrapper or its open state. */}}
+  <div id="batch-actions-body">{{template "partials/batch_actions_body.html" .}}</div>
+  <div class="dialog-actions">
+    <button type="button" onclick="document.getElementById('batch-actions-dialog').close()">Cancel</button>
+  </div>
+</dialog>
+
+<!-- Add-tags dialog (shared by chooser's "Add tags" and the batch-bar's
+     Add-tags button). op is hardcoded to "add" - bulk-strip lives in
+     #batch-strip-dialog instead. -->
 <dialog id="batch-tag-dialog">
   <p>
-    <span id="batch-tag-scope-label">Tag</span>
-    <strong id="batch-tag-count-display"></strong>
-    <span id="batch-tag-noun"></span>
+    Add tags to <strong id="batch-tag-count-display"></strong>
+    <span id="batch-tag-noun"></span>:
   </p>
   <form id="batch-tag-form" onsubmit="event.preventDefault(); confirmBatchTag();">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <input type="hidden" name="scope" id="batch-tag-scope">
-    <div class="field batch-tag-radios">
-      <label><input type="radio" name="op" value="add" checked> Add tags</label>
-      <label><input type="radio" name="op" value="remove"> Remove tags</label>
-    </div>
+    <input type="hidden" name="op" value="add">
     <div class="field" style="position:relative">
       <label>Tags (space-separated, <code>category:name</code> for non-general)</label>
       <input type="text" name="tags" id="batch-tag-input" class="upload-wide-input" data-multi-tags="1"
-             placeholder="Add/remove tag(s)..." autocomplete="off"
+             placeholder="Add tag(s)..." autocomplete="off"
              hx-get="/internal/tags/suggest"
              hx-trigger="input changed delay:200ms"
              hx-target="#batch-tag-suggest"
@@ -126,7 +145,100 @@
     <div id="batch-tag-flash"></div>
     <div class="dialog-actions">
       <button type="submit">Apply</button>
-      <button type="button" onclick="document.getElementById('batch-tag-dialog').close()">Cancel</button>
+      <button type="button" onclick="closeDialogAndRestoreParent('batch-tag-dialog')">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+{{if .EnabledTaggers}}
+<!-- Auto-tag dialog (current search). Posts /internal/autotag with scope=search
+     plus q/sort/order so the handler streams matching ids off the executor. -->
+<dialog id="autotag-search-dialog">
+  <p>
+    Auto-tag <strong id="autotag-search-count-display"></strong>
+    <span id="autotag-search-noun"></span>. Pick which tagger to run.
+  </p>
+  <form id="autotag-search-form" onsubmit="event.preventDefault(); confirmAutotagSearch();">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <div class="field">
+      <label style="display:block"><input type="radio" name="tagger_name" value="" checked> All enabled taggers</label>
+      {{range .EnabledTaggers}}<label style="display:block"><input type="radio" name="tagger_name" value="{{.Name}}"> {{.Name}}</label>{{end}}
+    </div>
+    <div id="autotag-search-flash"></div>
+    <div class="dialog-actions">
+      <button type="submit" class="btn-autotag">Auto-tag</button>
+      <button type="button" onclick="closeDialogAndRestoreParent('autotag-search-dialog')">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Auto-tag dialog (selected). Same picker; posts scope=selection plus the
+     ids[] read from the checked thumbnails at submit time. -->
+<dialog id="autotag-selected-dialog">
+  <p>
+    Auto-tag <strong id="autotag-selected-count">0</strong> selected
+    <span id="autotag-selected-noun">images</span>. Pick which tagger to run.
+  </p>
+  <form id="autotag-selected-form" onsubmit="event.preventDefault(); confirmAutotagSelected();">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <div class="field">
+      <label style="display:block"><input type="radio" name="tagger_name" value="" checked> All enabled taggers</label>
+      {{range .EnabledTaggers}}<label style="display:block"><input type="radio" name="tagger_name" value="{{.Name}}"> {{.Name}}</label>{{end}}
+    </div>
+    <div id="autotag-selected-flash"></div>
+    <div class="dialog-actions">
+      <button type="submit" class="btn-autotag">Auto-tag</button>
+      <button type="button" onclick="document.getElementById('autotag-selected-dialog').close()">Cancel</button>
+    </div>
+  </form>
+</dialog>
+{{end}}
+
+<!-- Remove tags dialog (shared by chooser's "Remove tags" and the batch-bar's
+     Remove-tags button). Five radio modes:
+       specific            → POST /internal/batch-tag with op=remove + tags=...
+       user / auto / all   → POST /internal/batch-strip with the matching predicate
+                             (is_auto=0 / is_auto=1 / no extra clause).
+       auto + tagger_name  → mode=auto plus a single tagger filter (the
+                             "Specific auto-tagger" entry sets the same form
+                             field and adds tagger_name to the body). -->
+<dialog id="batch-strip-dialog">
+  <p>
+    Remove tags from <strong id="batch-strip-count-display"></strong>
+    <span id="batch-strip-noun"></span>:
+  </p>
+  <form id="batch-strip-form" onsubmit="event.preventDefault(); confirmBatchStrip();">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <input type="hidden" name="scope" id="batch-strip-scope">
+    <div class="field">
+      <label style="display:block"><input type="radio" name="mode" value="specific" checked> Specific tags by name</label>
+      <div class="field" style="position:relative; margin: 4px 0 8px 22px" id="batch-strip-specific-row">
+        <input type="text" name="tags" id="batch-strip-input" class="upload-wide-input" data-multi-tags="1"
+               placeholder="Tags to remove (space-separated, category:name)" autocomplete="off"
+               hx-get="/internal/tags/suggest"
+               hx-trigger="input changed delay:200ms"
+               hx-target="#batch-strip-suggest"
+               hx-swap="innerHTML"
+               hx-vals='js:{tag: document.getElementById("batch-strip-input").value.split(/\s+/).pop()}'
+               onkeydown="handleSuggestKey(event, 'batch-strip-suggest', 'batch-strip-input')">
+        <div id="batch-strip-suggest" class="suggest-dropdown tag-suggest-dropdown"></div>
+      </div>
+      {{if .EnabledTaggers}}
+      <label style="display:block"><input type="radio" name="mode" value="auto-specific"> Specific auto-tagger</label>
+      <div class="field" style="margin: 4px 0 8px 22px" id="batch-strip-tagger-row">
+        <select name="tagger_name" id="batch-strip-tagger" class="upload-wide-input">
+          {{range .EnabledTaggers}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+        </select>
+      </div>
+      {{end}}
+      <label style="display:block"><input type="radio" name="mode" value="user"> All user tags</label>
+      <label style="display:block"><input type="radio" name="mode" value="auto"> All auto-tagger tags</label>
+      <label style="display:block"><input type="radio" name="mode" value="all"> All tags</label>
+    </div>
+    <div id="batch-strip-flash"></div>
+    <div class="dialog-actions">
+      <button type="submit" class="btn-warning">Remove</button>
+      <button type="button" onclick="closeDialogAndRestoreParent('batch-strip-dialog')">Cancel</button>
     </div>
   </form>
 </dialog>
@@ -152,6 +264,31 @@
     <div class="dialog-actions">
       <button type="submit">Move</button>
       <button type="button" onclick="document.getElementById('move-selected-dialog').close()">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Move search dialog -->
+<dialog id="move-search-dialog">
+  <p>Move <strong id="move-search-count-display">0</strong> <span id="move-search-noun">images</span> in current search to folder:</p>
+  <p class="field-hint">Path (leave blank for gallery root)</p>
+  <form id="move-search-form" onsubmit="event.preventDefault(); confirmMoveSearch();">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <div class="field" style="position:relative">
+      <input type="text" name="folder" id="move-search-folder" class="upload-wide-input"
+             placeholder="Destination path..." autocomplete="off"
+             hx-get="/internal/folders/suggest"
+             hx-trigger="input changed delay:200ms"
+             hx-target="#move-search-suggest"
+             hx-swap="innerHTML"
+             hx-vals='js:{prefix: document.getElementById("move-search-folder").value}'
+             onkeydown="handleSuggestKey(event, 'move-search-suggest', 'move-search-folder')">
+      <div id="move-search-suggest" class="suggest-dropdown folder-suggest-dropdown"></div>
+    </div>
+    <div id="move-search-flash"></div>
+    <div class="dialog-actions">
+      <button type="submit">Move</button>
+      <button type="button" onclick="closeDialogAndRestoreParent('move-search-dialog')">Cancel</button>
     </div>
   </form>
 </dialog>
@@ -256,9 +393,436 @@ function confirmMoveSelected() {
   });
 }
 
-// Open the Tag dialog scoped to the current search. The match count is read
-// from the same #result-count span the Delete-all dialog uses, and the
-// scope/op fields are reset so reopening keeps the dialog clean.
+// Open the Actions chooser. The header announces the scope once (count +
+// noun); each entry's label is just the verb. Each visible entry gets a
+// leading "[N] " prefix so the 1-9 number keys are discoverable without a
+// tooltip. Auto-focuses the first visible entry.
+function openBatchActionsDialog() {
+  var dlg = document.getElementById('batch-actions-dialog');
+  if (!dlg) return;
+  var rcEl = document.querySelector('.result-count');
+  var n = 0;
+  if (rcEl) {
+    var m = rcEl.textContent.match(/(\d+)/);
+    if (m) n = parseInt(m[1], 10);
+  }
+  document.getElementById('batch-actions-count').textContent = n;
+  document.getElementById('batch-actions-noun').textContent = n === 1 ? 'image' : 'images';
+
+  var items = dlg.querySelectorAll('li.actions-menu-item');
+  items.forEach(function(li, idx) {
+    var btn = li.querySelector('button');
+    if (!btn) return;
+    var pos = idx + 1;
+    btn.dataset.shortcut = pos <= 9 ? String(pos) : '';
+    if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+    if (pos <= 9) {
+      btn.textContent = '[' + pos + '] ' + btn.dataset.label;
+    } else {
+      btn.textContent = btn.dataset.label;
+    }
+    btn.onclick = function() { pickBatchAction(btn.dataset.action); };
+  });
+  dlg.showModal();
+  var first = items[0] && items[0].querySelector('button');
+  if (first) first.focus();
+}
+
+// Wire number keys 1-9 plus ArrowUp/ArrowDown inside the chooser. Bound on
+// the dialog so it only fires while the chooser is open; closes don't leave
+// the listener around. Arrow keys cycle focus across the entry buttons with
+// clamp-at-ends, matching the suggest-dropdown shape in handleSuggestKey.
+(function () {
+  var dlg = document.getElementById('batch-actions-dialog');
+  if (!dlg) return;
+  dlg.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      var items = Array.prototype.slice.call(dlg.querySelectorAll('li.actions-menu-item button'));
+      if (items.length === 0) return;
+      var idx = items.indexOf(document.activeElement);
+      if (idx < 0) idx = 0;
+      else if (e.key === 'ArrowDown') idx = Math.min(idx + 1, items.length - 1);
+      else idx = Math.max(idx - 1, 0);
+      e.preventDefault();
+      items[idx].focus();
+      return;
+    }
+    if (e.key < '1' || e.key > '9') return;
+    var btn = dlg.querySelector('button[data-shortcut="' + e.key + '"]');
+    if (!btn) return;
+    e.preventDefault();
+    btn.click();
+  });
+})();
+
+function pickBatchAction(action) {
+  var dlg = document.getElementById('batch-actions-dialog');
+  if (dlg) dlg.close();
+  var subId = '';
+  switch (action) {
+    case 'save':
+      var si = document.getElementById('search-input');
+      var sq = document.getElementById('save-search-query');
+      var sp = document.getElementById('save-search-preview');
+      if (si && sq) sq.value = si.value;
+      if (si && sp) sp.textContent = si.value || '(empty)';
+      document.getElementById('save-search-dialog').showModal();
+      subId = 'save-search-dialog';
+      break;
+    case 'add':
+      openTagSearchDialog('add');
+      subId = 'batch-tag-dialog';
+      break;
+    case 'strip':
+      openStripSearchDialog();
+      subId = 'batch-strip-dialog';
+      break;
+    case 'autotag':
+      openAutotagSearchDialog();
+      subId = 'autotag-search-dialog';
+      break;
+    case 'move':
+      openMoveSearchDialog();
+      subId = 'move-search-dialog';
+      break;
+    case 'delete':
+      openDeleteSearchDialog();
+      subId = 'delete-search-dialog';
+      break;
+  }
+  // Mark the sub-dialog so Escape / Cancel pop one level back to the chooser
+  // instead of dropping out to the gallery. Cleared by the batch-bar open
+  // paths on shared dialogs (#batch-tag-dialog, #batch-strip-dialog) so the
+  // marker doesn't linger across non-chooser opens.
+  if (subId) {
+    var sub = document.getElementById(subId);
+    if (sub) sub.dataset.returnTo = 'batch-actions-dialog';
+  }
+}
+
+// Open the Move dialog scoped to the current search. Mirrors openMoveSelectedDialog
+// but reads q/sort/order from the search form at submit time and posts
+// scope=search so the handler streams matching ids off ExecuteForDeleteStream.
+function openMoveSearchDialog() {
+  var rcEl = document.querySelector('.result-count');
+  var n = 0;
+  if (rcEl) {
+    var m = rcEl.textContent.match(/(\d+)/);
+    if (m) n = parseInt(m[1], 10);
+  }
+  var countEl = document.getElementById('move-search-count-display');
+  if (countEl) countEl.textContent = n;
+  var nounEl = document.getElementById('move-search-noun');
+  if (nounEl) nounEl.textContent = n === 1 ? 'image' : 'images';
+  var flash = document.getElementById('move-search-flash');
+  if (flash) flash.innerHTML = '';
+  var input = document.getElementById('move-search-folder');
+  if (input) input.value = '';
+  var sg = document.getElementById('move-search-suggest');
+  if (sg) sg.innerHTML = '';
+  document.getElementById('move-search-dialog').showModal();
+  if (input) input.focus();
+}
+
+function confirmMoveSearch() {
+  var form = document.getElementById('move-search-form');
+  if (!form) return;
+  var csrfEl = form.querySelector('[name="_csrf"]');
+  var csrf = csrfEl ? csrfEl.value : '';
+  var folder = document.getElementById('move-search-folder').value;
+  var si = document.getElementById('search-input');
+  var sortEl = document.getElementById('search-sort');
+  var orderEl = document.querySelector('#search-form select[name="order"]');
+  var body = '_csrf=' + encodeURIComponent(csrf)
+    + '&scope=search'
+    + '&folder=' + encodeURIComponent(folder)
+    + '&q=' + encodeURIComponent(si ? si.value : '')
+    + '&sort=' + encodeURIComponent(sortEl ? sortEl.value : 'newest')
+    + '&order=' + encodeURIComponent(orderEl ? orderEl.value : 'desc');
+  var flash = document.getElementById('move-search-flash');
+  if (flash) flash.innerHTML = '';
+  fetch('/internal/batch-move', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
+    body: body
+  }).then(function(res) {
+    if (res.ok) {
+      document.getElementById('move-search-dialog').close();
+      _pendingGalleryReload = true;
+      refreshJobStatus();
+    } else {
+      res.text().then(function(t) {
+        if (flash) flash.innerHTML = t || '<div class="flash flash-err">Move failed.</div>';
+      });
+    }
+  }).catch(function() {
+    if (flash) flash.innerHTML = '<div class="flash flash-err">Move request failed.</div>';
+  });
+}
+
+// Open the Remove-tags dialog scoped to the current search. Three radio
+// modes (user / auto / all) drive the runBatchStrip predicate; on submit
+// the body carries scope=search plus q/sort/order so the handler streams
+// matching ids through search.ExecuteForDeleteStream.
+function openStripSearchDialog() {
+  var rcEl = document.querySelector('.result-count');
+  var n = 0;
+  if (rcEl) {
+    var m = rcEl.textContent.match(/(\d+)/);
+    if (m) n = parseInt(m[1], 10);
+  }
+  resetBatchStripDialog();
+  document.getElementById('batch-strip-scope').value = 'search';
+  document.getElementById('batch-strip-count-display').textContent = n;
+  document.getElementById('batch-strip-noun').textContent = (n === 1 ? 'image' : 'images') + ' in current search';
+  document.getElementById('batch-strip-dialog').showModal();
+}
+
+function openStripSelectedDialog() {
+  var checked = document.querySelectorAll('.thumb-checkbox:checked');
+  if (checked.length === 0) return;
+  resetBatchStripDialog();
+  document.getElementById('batch-strip-scope').value = 'selection';
+  document.getElementById('batch-strip-count-display').textContent = checked.length;
+  document.getElementById('batch-strip-noun').textContent = 'selected ' + (checked.length === 1 ? 'image' : 'images');
+  document.getElementById('batch-strip-dialog').showModal();
+}
+
+function resetBatchStripDialog() {
+  var dflt = document.querySelector('#batch-strip-form input[name="mode"][value="specific"]');
+  if (dflt) dflt.checked = true;
+  var input = document.getElementById('batch-strip-input');
+  if (input) input.value = '';
+  var sg = document.getElementById('batch-strip-suggest');
+  if (sg) sg.innerHTML = '';
+  var flash = document.getElementById('batch-strip-flash');
+  if (flash) flash.innerHTML = '';
+  // Drop any stale chooser back-link from a prior open; pickBatchAction
+  // re-applies it on the chooser-open path after this reset runs.
+  var dlg = document.getElementById('batch-strip-dialog');
+  if (dlg) delete dlg.dataset.returnTo;
+  updateBatchStripRow();
+}
+
+// Show only the input row that matches the currently-selected mode. The
+// "specific" radio reveals the tag-name input; "auto-specific" reveals the
+// tagger picker. The bulk modes (user / auto / all) reveal nothing.
+//
+// Inactive rows stay in flow with .row-inactive (visibility:hidden) so the
+// dialog dimensions and the radio positions don't shift when the user flips
+// modes. Inputs/selects inside an inactive row are disabled so tab focus
+// skips them while invisible.
+function updateBatchStripRow() {
+  var picked = (document.querySelector('#batch-strip-form input[name="mode"]:checked') || {}).value;
+  toggleStripModeRow('batch-strip-specific-row', picked !== 'specific');
+  toggleStripModeRow('batch-strip-tagger-row', picked !== 'auto-specific');
+}
+
+function toggleStripModeRow(id, inactive) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.classList.toggle('row-inactive', inactive);
+  el.querySelectorAll('input, select').forEach(function(field) {
+    field.disabled = inactive;
+  });
+}
+
+(function () {
+  var form = document.getElementById('batch-strip-form');
+  if (!form) return;
+  form.querySelectorAll('input[name="mode"]').forEach(function(r) {
+    r.addEventListener('change', updateBatchStripRow);
+  });
+})();
+
+function confirmBatchStrip() {
+  var form = document.getElementById('batch-strip-form');
+  if (!form) return;
+  var csrfEl = form.querySelector('[name="_csrf"]');
+  var csrf = csrfEl ? csrfEl.value : '';
+  var scope = document.getElementById('batch-strip-scope').value;
+  var mode = (form.querySelector('input[name="mode"]:checked') || {}).value || 'specific';
+  var flash = document.getElementById('batch-strip-flash');
+  if (flash) flash.innerHTML = '';
+
+  // mode=specific dispatches through the existing batch-tag handler with
+  // op=remove; the bulk modes go through batch-strip with the matching
+  // predicate. mode=auto-specific is a UI shorthand for mode=auto plus a
+  // tagger_name filter; the server only knows mode=auto, so unwrap before
+  // sending.
+  var url, parts;
+  if (mode === 'specific') {
+    var tags = (document.getElementById('batch-strip-input').value || '').trim();
+    if (!tags) {
+      if (flash) flash.innerHTML = '<div class="flash flash-err">No tags provided.</div>';
+      return;
+    }
+    url = '/internal/batch-tag';
+    parts = ['_csrf=' + encodeURIComponent(csrf),
+             'scope=' + encodeURIComponent(scope),
+             'op=remove',
+             'tags=' + encodeURIComponent(tags)];
+  } else {
+    url = '/internal/batch-strip';
+    var serverMode = mode === 'auto-specific' ? 'auto' : mode;
+    parts = ['_csrf=' + encodeURIComponent(csrf),
+             'scope=' + encodeURIComponent(scope),
+             'mode=' + encodeURIComponent(serverMode)];
+    if (mode === 'auto-specific') {
+      var taggerEl = document.getElementById('batch-strip-tagger');
+      var taggerName = taggerEl ? taggerEl.value : '';
+      if (!taggerName) {
+        if (flash) flash.innerHTML = '<div class="flash flash-err">Pick an auto-tagger.</div>';
+        return;
+      }
+      parts.push('tagger_name=' + encodeURIComponent(taggerName));
+    }
+  }
+  if (scope === 'search') {
+    var si = document.getElementById('search-input');
+    var sortEl = document.getElementById('search-sort');
+    var orderEl = document.querySelector('#search-form select[name="order"]');
+    parts.push('q=' + encodeURIComponent(si ? si.value : ''));
+    parts.push('sort=' + encodeURIComponent(sortEl ? sortEl.value : 'newest'));
+    parts.push('order=' + encodeURIComponent(orderEl ? orderEl.value : 'desc'));
+  } else {
+    var checked = document.querySelectorAll('.thumb-checkbox:checked');
+    if (checked.length === 0) {
+      if (flash) flash.innerHTML = '<div class="flash flash-err">No images selected.</div>';
+      return;
+    }
+    Array.prototype.forEach.call(checked, function(cb) {
+      parts.push('ids=' + encodeURIComponent(cb.value));
+    });
+  }
+  fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
+    body: parts.join('&')
+  }).then(function(res) {
+    if (res.ok) {
+      document.getElementById('batch-strip-dialog').close();
+      if (scope === 'selection') clearSelection();
+      _pendingGalleryReload = true;
+      refreshJobStatus();
+    } else {
+      res.text().then(function(t) {
+        if (flash) flash.innerHTML = t || '<div class="flash flash-err">Remove failed.</div>';
+      });
+    }
+  }).catch(function() {
+    if (flash) flash.innerHTML = '<div class="flash flash-err">Request failed.</div>';
+  });
+}
+
+// Open the Auto-tag dialog scoped to the current search. The picker mirrors
+// the detail page's autotag-dialog and on submit fans out to /internal/autotag
+// with scope=search plus q/sort/order so the handler streams matching ids
+// through search.ExecuteForDeleteStream (same idiom as Tag-all / Delete-all).
+function openAutotagSearchDialog() {
+  var rcEl = document.querySelector('.result-count');
+  var n = 0;
+  if (rcEl) {
+    var m = rcEl.textContent.match(/(\d+)/);
+    if (m) n = parseInt(m[1], 10);
+  }
+  resetAutotagSearchDialog();
+  document.getElementById('autotag-search-count-display').textContent = n;
+  document.getElementById('autotag-search-noun').textContent = (n === 1 ? 'image' : 'images') + ' in current search';
+  document.getElementById('autotag-search-dialog').showModal();
+}
+
+function openAutotagSelectedDialog() {
+  var checked = document.querySelectorAll('.thumb-checkbox:checked');
+  if (checked.length === 0) return;
+  resetAutotagSelectedDialog();
+  document.getElementById('autotag-selected-count').textContent = checked.length;
+  document.getElementById('autotag-selected-noun').textContent = checked.length === 1 ? 'image' : 'images';
+  document.getElementById('autotag-selected-dialog').showModal();
+}
+
+function resetAutotagSearchDialog() {
+  var dflt = document.querySelector('#autotag-search-form input[name="tagger_name"][value=""]');
+  if (dflt) dflt.checked = true;
+  var flash = document.getElementById('autotag-search-flash');
+  if (flash) flash.innerHTML = '';
+}
+
+function resetAutotagSelectedDialog() {
+  var dflt = document.querySelector('#autotag-selected-form input[name="tagger_name"][value=""]');
+  if (dflt) dflt.checked = true;
+  var flash = document.getElementById('autotag-selected-flash');
+  if (flash) flash.innerHTML = '';
+}
+
+function confirmAutotagSearch() {
+  var form = document.getElementById('autotag-search-form');
+  if (!form) return;
+  var csrfEl = form.querySelector('[name="_csrf"]');
+  var csrf = csrfEl ? csrfEl.value : '';
+  var tagger = (form.querySelector('input[name="tagger_name"]:checked') || {}).value || '';
+  var si = document.getElementById('search-input');
+  var sortEl = document.getElementById('search-sort');
+  var orderEl = document.querySelector('#search-form select[name="order"]');
+  var parts = ['_csrf=' + encodeURIComponent(csrf),
+               'scope=search',
+               'tagger_name=' + encodeURIComponent(tagger),
+               'q=' + encodeURIComponent(si ? si.value : ''),
+               'sort=' + encodeURIComponent(sortEl ? sortEl.value : 'newest'),
+               'order=' + encodeURIComponent(orderEl ? orderEl.value : 'desc')];
+  postAutotag(parts.join('&'), csrf, 'autotag-search-dialog', 'autotag-search-flash', false);
+}
+
+function confirmAutotagSelected() {
+  var form = document.getElementById('autotag-selected-form');
+  if (!form) return;
+  var checked = document.querySelectorAll('.thumb-checkbox:checked');
+  var flash = document.getElementById('autotag-selected-flash');
+  if (checked.length === 0) {
+    if (flash) flash.innerHTML = '<div class="flash flash-err">No images selected.</div>';
+    return;
+  }
+  var csrfEl = form.querySelector('[name="_csrf"]');
+  var csrf = csrfEl ? csrfEl.value : '';
+  var tagger = (form.querySelector('input[name="tagger_name"]:checked') || {}).value || '';
+  var parts = ['_csrf=' + encodeURIComponent(csrf),
+               'scope=selection',
+               'tagger_name=' + encodeURIComponent(tagger)];
+  Array.prototype.forEach.call(checked, function(cb) {
+    parts.push('ids=' + encodeURIComponent(cb.value));
+  });
+  postAutotag(parts.join('&'), csrf, 'autotag-selected-dialog', 'autotag-selected-flash', true);
+}
+
+// postAutotag fires the /internal/autotag request, closes the dialog on
+// success, clears the selection (when scoped to selection), and pokes the
+// job-status widget so the running job surfaces without waiting for the next
+// poll tick. Errors land back in the dialog flash.
+function postAutotag(body, csrf, dialogId, flashId, clearSelectionOnOk) {
+  var flash = document.getElementById(flashId);
+  if (flash) flash.innerHTML = '';
+  fetch('/internal/autotag', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
+    body: body
+  }).then(function(res) {
+    if (res.ok) {
+      var dlg = document.getElementById(dialogId);
+      if (dlg) dlg.close();
+      if (clearSelectionOnOk) clearSelection();
+      refreshJobStatus();
+    } else {
+      res.text().then(function(t) {
+        if (flash) flash.innerHTML = t || '<div class="flash flash-err">Auto-tag failed.</div>';
+      });
+    }
+  }).catch(function() {
+    if (flash) flash.innerHTML = '<div class="flash flash-err">Request failed.</div>';
+  });
+}
+
+// Open the Add-tags dialog scoped to the current search. The match count
+// is read from the same #result-count span the Delete-all dialog uses.
 function openTagSearchDialog() {
   var rcEl = document.querySelector('.result-count');
   var n = 0;
@@ -268,21 +832,19 @@ function openTagSearchDialog() {
   }
   resetBatchTagDialog();
   document.getElementById('batch-tag-scope').value = 'search';
-  document.getElementById('batch-tag-scope-label').textContent = 'Tag';
   document.getElementById('batch-tag-count-display').textContent = n;
   document.getElementById('batch-tag-noun').textContent = (n === 1 ? 'image' : 'images') + ' in current search';
   document.getElementById('batch-tag-dialog').showModal();
   document.getElementById('batch-tag-input').focus();
 }
 
-// Open the Tag dialog scoped to the checked thumbnails. Mirrors openTagSearchDialog
-// but reads ids from .thumb-checkbox:checked at submit time.
+// Open the Add-tags dialog scoped to the checked thumbnails. Mirrors
+// openTagSearchDialog but reads ids from .thumb-checkbox:checked at submit.
 function openTagSelectedDialog() {
   var checked = document.querySelectorAll('.thumb-checkbox:checked');
   if (checked.length === 0) return;
   resetBatchTagDialog();
   document.getElementById('batch-tag-scope').value = 'selection';
-  document.getElementById('batch-tag-scope-label').textContent = 'Tag';
   document.getElementById('batch-tag-count-display').textContent = checked.length;
   document.getElementById('batch-tag-noun').textContent = 'selected ' + (checked.length === 1 ? 'image' : 'images');
   document.getElementById('batch-tag-dialog').showModal();
@@ -296,15 +858,16 @@ function resetBatchTagDialog() {
   if (sg) sg.innerHTML = '';
   var flash = document.getElementById('batch-tag-flash');
   if (flash) flash.innerHTML = '';
-  var add = document.querySelector('#batch-tag-form input[name="op"][value="add"]');
-  if (add) add.checked = true;
+  // Drop any stale chooser back-link from a prior open; pickBatchAction
+  // re-applies it on the chooser-open path after this reset runs.
+  var dlg = document.getElementById('batch-tag-dialog');
+  if (dlg) delete dlg.dataset.returnTo;
 }
 
 function confirmBatchTag() {
   var form = document.getElementById('batch-tag-form');
   if (!form) return;
   var scope = document.getElementById('batch-tag-scope').value;
-  var op = (form.querySelector('input[name="op"]:checked') || {}).value;
   var tags = (document.getElementById('batch-tag-input').value || '').trim();
   var flash = document.getElementById('batch-tag-flash');
   if (flash) flash.innerHTML = '';
@@ -316,7 +879,7 @@ function confirmBatchTag() {
   var csrf = csrfEl ? csrfEl.value : '';
   var parts = ['_csrf=' + encodeURIComponent(csrf),
                'scope=' + encodeURIComponent(scope),
-               'op=' + encodeURIComponent(op),
+               'op=add',
                'tags=' + encodeURIComponent(tags)];
   if (scope === 'search') {
     var si = document.getElementById('search-input');

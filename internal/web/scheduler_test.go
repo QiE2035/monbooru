@@ -38,7 +38,7 @@ func TestNextScheduledFire_TodayPassedRollsToTomorrow(t *testing.T) {
 	t.Parallel()
 	srv := newTestServer(t)
 	srv.cfgMu.Lock()
-	srv.cfg.Schedule = config.ScheduleConfig{Time: "01:00", VacuumDB: true}
+	srv.cfg.Schedule = config.ScheduleConfig{Time: "01:00", MergeGeneralTags: true}
 	srv.cfgMu.Unlock()
 
 	// "Now" at 10:00 → today's 01:00 is behind; should roll to tomorrow 01:00.
@@ -176,36 +176,6 @@ func TestScheduledRemoveOrphans_RemovesStrayFiles(t *testing.T) {
 	}
 }
 
-func TestScheduledRecalcTags_FixesBadCounts(t *testing.T) {
-	srv := newTestServer(t)
-	id := seedImage(t, srv, "recalc.png", 12, 12)
-
-	cx := srv.Active()
-	var catID int64
-	cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&catID)
-	tag, err := cx.TagSvc.GetOrCreateTag("recalc_tag", catID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cx.TagSvc.AddTagToImage(id, tag.ID, false, nil); err != nil {
-		t.Fatal(err)
-	}
-	// Corrupt the usage_count so recalc has real work.
-	if _, err := cx.DB.Write.Exec(`UPDATE tags SET usage_count = 99 WHERE id = ?`, tag.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	srv.scheduledRecalcTags(cx)
-
-	got, err := cx.TagSvc.GetTag(tag.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.UsageCount != 1 {
-		t.Errorf("recalc expected to fix usage_count=99 → 1, got %d", got.UsageCount)
-	}
-}
-
 func TestScheduledMergeGeneral_MergesAutoGeneralIntoCategorized(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "merge.png", 10, 10)
@@ -232,25 +202,6 @@ func TestScheduledMergeGeneral_MergesAutoGeneralIntoCategorized(t *testing.T) {
 	}
 }
 
-func TestScheduledVacuum_Runs(t *testing.T) {
-	srv := newTestServer(t)
-	seedImage(t, srv, "vac.png", 8, 8)
-	cx := srv.Active()
-
-	// Just confirm it runs without error on a live DB. Reclaimed-bytes
-	// accounting is covered by the `vacuum-db` handler's Playwright spec.
-	srv.scheduledVacuum(cx)
-
-	// A subsequent query must still succeed (DB file intact).
-	var count int
-	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&count); err != nil {
-		t.Fatalf("DB unusable after VACUUM: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("row count = %d, want 1", count)
-	}
-}
-
 func TestScheduledSync_IngestsNewFiles(t *testing.T) {
 	srv := newTestServer(t)
 	cx := srv.Active()
@@ -273,11 +224,11 @@ func TestScheduledSync_IngestsNewFiles(t *testing.T) {
 }
 
 // TestScheduleStatus_RecordsLastRun pins that runScheduledActions populates
-// schedLastRun so the Schedule settings section can show "Last run: …".
+// schedLastRun so the Schedule settings section can show "Last run: ...".
 func TestScheduleStatus_RecordsLastRun(t *testing.T) {
 	srv := newTestServer(t)
 	srv.cfgMu.Lock()
-	srv.cfg.Schedule = config.ScheduleConfig{Time: "01:00", RecomputeTags: true}
+	srv.cfg.Schedule = config.ScheduleConfig{Time: "01:00", RemoveOrphans: true}
 	srv.cfgMu.Unlock()
 
 	if got := srv.ScheduleStatus(); !got.LastRun.IsZero() {
@@ -305,9 +256,7 @@ func TestRunScheduledActions_SkipsWhenJobRunning(t *testing.T) {
 		Time:             "01:00",
 		SyncGallery:      true,
 		RemoveOrphans:    true,
-		RecomputeTags:    true,
 		MergeGeneralTags: true,
-		VacuumDB:         true,
 	}
 	srv.cfgMu.Unlock()
 
@@ -344,9 +293,7 @@ func TestRunScheduledActions_ExecutesEnabledPhases(t *testing.T) {
 		SyncGallery:      true,
 		RemoveOrphans:    true,
 		RunAutoTaggers:   true, // no-op in non-tagger builds (noop.IsAvailable returns false)
-		RecomputeTags:    true,
 		MergeGeneralTags: true,
-		VacuumDB:         true,
 	}
 	srv.cfgMu.Unlock()
 

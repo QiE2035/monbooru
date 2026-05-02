@@ -11,6 +11,7 @@ import (
 
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/models"
+	"github.com/leqwin/monbooru/internal/searchkw"
 )
 
 var (
@@ -18,7 +19,9 @@ var (
 	ErrTagNotFound          = errors.New("tag not found")
 	ErrCategoryNotFound     = errors.New("category not found")
 	ErrBuiltinCategory      = errors.New("cannot delete built-in category")
-	ErrReservedCategoryName = errors.New("this name is used by a search filter (e.g. fav:, source:, cat:, width:, height:, date:, missing:, folder:, folderonly:, generated:, animated:, tagged:, autotagged:)")
+	ErrReservedCategoryName = errors.New("this name is used by a search filter (e.g. " + reservedCategoryHint() + ")")
+	ErrNonCanonicalRating   = errors.New("rating category accepts only general, sensitive, questionable, explicit")
+	ErrRatingTagImmutable   = errors.New("rating category tags cannot be renamed, merged, deleted, or moved")
 
 	// Allowed tag name characters. The colon is kept despite doubling
 	// as the category:tag separator; the parser falls back to a literal
@@ -50,29 +53,56 @@ func SafeCategoryColor(s string) string {
 }
 
 var (
-	// reservedCategoryNames are search-filter keywords that would
-	// collide with a category-qualified tag search. Category names
-	// matching any of these are refused at create/rename time.
-	reservedCategoryNames = map[string]struct{}{
-		"fav":        {},
-		"source":     {},
-		"cat":        {},
-		"width":      {},
-		"height":     {},
-		"date":       {},
-		"missing":    {},
-		"folder":     {},
-		"folderonly": {},
-		"generated":  {},
-		"animated":   {},
-		"tagged":     {},
-		"autotagged": {},
+	// reservedCategoryList is the source of truth for category names
+	// refused at create/rename time: every search-filter keyword (which
+	// would collide with `category:tag` parsing) plus "system" (the
+	// search-bar cheat-sheet trigger; a real category by that name would
+	// hijack `system:foo` into a category-qualified search). The slice
+	// drives both reservedCategoryNames and ErrReservedCategoryName so
+	// adding a future filter is a single edit in internal/searchkw.
+	reservedCategoryList = append(append([]string{}, searchkw.Keywords...), "system")
+
+	reservedCategoryNames = func() map[string]struct{} {
+		m := make(map[string]struct{}, len(reservedCategoryList))
+		for _, n := range reservedCategoryList {
+			m[n] = struct{}{}
+		}
+		return m
+	}()
+
+	// RatingLevels is the canonical rating vocabulary, ordered low to high.
+	// Highest-wins resolution and the cookie ceiling both rely on this order.
+	RatingLevels = []string{"general", "sensitive", "questionable", "explicit"}
+
+	ratingCanonicalSet = map[string]struct{}{
+		"general":      {},
+		"sensitive":    {},
+		"questionable": {},
+		"explicit":     {},
 	}
 )
+
+// IsCanonicalRating reports whether name is one of the four allowed
+// rating tag names. The rating category refuses any other name.
+func IsCanonicalRating(name string) bool {
+	_, ok := ratingCanonicalSet[name]
+	return ok
+}
 
 func isReservedCategoryName(name string) bool {
 	_, ok := reservedCategoryNames[name]
 	return ok
+}
+
+// reservedCategoryHint formats reservedCategoryList as a human-readable
+// "fav:, source:, cat:, ..." list for the inline error message. Computed
+// at package init so the error string stays a single sentinel value.
+func reservedCategoryHint() string {
+	parts := make([]string, len(reservedCategoryList))
+	for i, n := range reservedCategoryList {
+		parts[i] = n + ":"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // TagFilter controls listing behavior.
@@ -80,38 +110,66 @@ type TagFilter struct {
 	CategoryID *int64
 	Prefix     string
 	Sort       string // "name" | "usage"
+	Order      string // "asc" | "desc" - flips the primary sort direction
 	// PageIndex is 0-based - callers supply the requested page number minus
 	// one. ListTags multiplies by Limit to derive the SQL OFFSET.
 	PageIndex int
 	Limit     int
-	Origin    string // "" | "user" | "auto"
+	Origin    string // "" | "user" | "auto" | "alias"
+	// ShowZero opts in to surfacing non-alias tags whose usage_count is 0.
+	// Default behaviour hides them so the listing reflects what is actually
+	// applied to images; alias rows always render regardless because their
+	// usage_count is 0 by construction.
+	ShowZero bool
+	// ZeroOnly narrows the listing to non-alias zero-usage tags only.
+	// Implies ShowZero. Used by the /tags Zero-usage Only filter to find
+	// declared-but-unused tags for triage.
+	ZeroOnly bool
 }
 
 // Service provides tag and category CRUD with usage_count and co-occurrence maintenance.
 type Service struct {
 	db *db.DB
+	// ratingCatID is the resolved id of the built-in `rating` category,
+	// cached at New time so the GetOrCreateTag guard and the
+	// rename/merge/delete/move-category refusals don't pay a SELECT per
+	// call. The category row is built-in and never deleted, so this
+	// never becomes stale; the four canonical rating tag IDs are
+	// resolved per-call (they can be pruned on zero-usage and re-created
+	// via GetOrCreateTag, so a long-lived cache would drift).
+	ratingCatID int64
 }
 
 // New creates a new Service.
 func New(database *db.DB) *Service {
-	return &Service{db: database}
+	s := &Service{db: database}
+	_ = database.Read.QueryRow(
+		`SELECT id FROM tag_categories WHERE name = 'rating'`,
+	).Scan(&s.ratingCatID)
+	return s
 }
 
-// RecalcAndPruneDB recomputes usage_count from image_tags (non-missing
-// images only) and deletes any tags that drop to zero usage. Call after
-// bulk deletes or sync.
-func RecalcAndPruneDB(database *db.DB) {
-	_, _ = RecalcAndPruneDBCount(database)
+// RatingCategoryID returns the cached id of the rating category, or 0
+// when the category is missing (only possible on a pre-bootstrap DB).
+func (s *Service) RatingCategoryID() int64 { return s.ratingCatID }
+
+// RecalcDB recomputes usage_count from image_tags (non-missing images
+// only). Call after bulk deletes, imports, or sync. Tag rows are kept
+// even at zero usage so user-declared aliases and implications survive
+// against an empty library.
+func RecalcDB(database *db.DB) {
+	_ = RecalcDBCount(database)
 }
 
-// RecalcAndPruneDBCount is RecalcAndPruneDB with row counts.
+// RecalcDBCount is RecalcDB with the count of rows whose usage_count
+// changed.
 //
-// A naïve correlated-subquery UPDATE recomputes the count twice per
+// A naive correlated-subquery UPDATE recomputes the count twice per
 // tag and dominates sync time on tag-heavy libraries. This impl zeros
 // out tags whose remaining usages all point at missing images, then
 // fills in the rest with one GROUP BY pass over image_tags, chunked
 // by tag_id range so the single writer is released between chunks.
-func RecalcAndPruneDBCount(database *db.DB) (updated int64, pruned int64) {
+func RecalcDBCount(database *db.DB) (updated int64) {
 	const chunkSize = 2000
 
 	var maxID int64
@@ -147,30 +205,23 @@ func RecalcAndPruneDBCount(database *db.DB) (updated int64, pruned int64) {
 			n, _ := res.RowsAffected()
 			updated += n
 		}
-		if res, err := database.Write.Exec(
-			`DELETE FROM tags WHERE usage_count <= 0 AND id >= ? AND id < ?`,
-			start, end,
-		); err == nil {
-			n, _ := res.RowsAffected()
-			pruned += n
-		}
 	}
 	return
 }
 
-func (s *Service) RecalcAndPrune() {
-	RecalcAndPruneDB(s.db)
+func (s *Service) Recalc() {
+	RecalcDB(s.db)
 }
 
-func (s *Service) RecalcAndPruneCount() (updated int64, pruned int64) {
-	return RecalcAndPruneDBCount(s.db)
+func (s *Service) RecalcCount() (updated int64) {
+	return RecalcDBCount(s.db)
 }
 
-// RecalcAndPruneIDs recomputes usage_count for the given tag IDs and
-// prunes any that drop to zero usage. Lets bulk callers scope the work
-// to tags they actually touched instead of walking the whole table.
-// IDs are processed in chunks to stay under the SQLite parameter limit.
-func (s *Service) RecalcAndPruneIDs(ids []int64) error {
+// RecalcIDs recomputes usage_count for the given tag IDs. Lets bulk
+// callers scope the work to tags they actually touched instead of
+// walking the whole table. IDs are processed in chunks to stay under
+// the SQLite parameter limit.
+func (s *Service) RecalcIDs(ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -193,9 +244,6 @@ func (s *Service) RecalcAndPruneIDs(ids []int64) error {
 			WHERE it.tag_id = tags.id AND i.is_missing = 0
 		) WHERE id IN (`+placeholders+`)`, args...); err != nil {
 			return fmt.Errorf("recalc usage_count chunk: %w", err)
-		}
-		if _, err := s.db.Write.Exec(`DELETE FROM tags WHERE usage_count <= 0 AND id IN (`+placeholders+`)`, args...); err != nil {
-			return fmt.Errorf("prune zero-usage chunk: %w", err)
 		}
 	}
 	return nil
@@ -369,7 +417,7 @@ func ValidateTagName(name string) (string, error) {
 	name = strings.ToLower(name)
 
 	if len(name) == 0 || len(name) > 200 {
-		return "", fmt.Errorf("%w: length must be 1–200 characters", ErrInvalidTagName)
+		return "", fmt.Errorf("%w: length must be 1-200 characters", ErrInvalidTagName)
 	}
 
 	if !tagNameRe.MatchString(name) {
@@ -397,6 +445,9 @@ func (s *Service) GetOrCreateTag(name string, categoryID int64) (*models.Tag, er
 	normalized, err := ValidateTagName(name)
 	if err != nil {
 		return nil, err
+	}
+	if s.ratingCatID != 0 && categoryID == s.ratingCatID && !IsCanonicalRating(normalized) {
+		return nil, ErrNonCanonicalRating
 	}
 
 	tx, err := s.db.Write.Begin()
@@ -461,7 +512,9 @@ func getOrCreateTagTx(tx *sql.Tx, name string, categoryID int64) (*models.Tag, e
 	return &tag, nil
 }
 
-func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
+// tagFilterWhere builds the WHERE clause and bound args shared by
+// ListTags and ListTagIDs so both views see exactly the same set.
+func tagFilterWhere(filter TagFilter) (string, []any) {
 	args := []any{}
 	where := "1=1"
 
@@ -475,16 +528,43 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 	}
 	switch filter.Origin {
 	case "auto":
-		where += " AND t.is_alias = 0 AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.tag_id = t.id AND it.is_auto = 0)"
+		// Require at least one row so a zero-usage tag (no rows at all) is
+		// not silently classified as auto-only by the negative existential.
+		where += " AND t.is_alias = 0 AND t.usage_count > 0 AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.tag_id = t.id AND it.is_auto = 0)"
 	case "user":
 		where += " AND t.is_alias = 0 AND EXISTS (SELECT 1 FROM image_tags it WHERE it.tag_id = t.id AND it.is_auto = 0)"
 	case "alias":
 		where += " AND t.is_alias = 1"
 	}
+	switch {
+	case filter.ZeroOnly:
+		// Strictly zero-usage non-alias rows. Aliases are excluded because
+		// their usage_count is 0 by construction and would otherwise drown
+		// the actual triage targets.
+		where += " AND t.usage_count = 0 AND t.is_alias = 0"
+	case !filter.ShowZero:
+		// Hide non-alias zero-usage rows. Aliases always pass because
+		// their usage_count is 0 by construction.
+		where += " AND (t.usage_count > 0 OR t.is_alias = 1)"
+	}
+	return where, args
+}
 
-	orderBy := "t.name ASC"
+func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
+	where, args := tagFilterWhere(filter)
+
+	dir := "ASC"
+	if strings.EqualFold(filter.Order, "desc") {
+		dir = "DESC"
+	}
+	orderBy := "t.name " + dir
 	if filter.Sort == "usage" {
-		orderBy = "t.usage_count DESC, t.name ASC"
+		// Default usage to DESC when no order is set (most-used first).
+		dir = "DESC"
+		if strings.EqualFold(filter.Order, "asc") {
+			dir = "ASC"
+		}
+		orderBy = "t.usage_count " + dir + ", t.name ASC"
 	}
 
 	var total int
@@ -501,7 +581,7 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 	offset := filter.PageIndex * limit
 
 	// LEFT JOIN pulls the canonical name/category when t.is_alias = 1
-	// so the caller can render "alias → canonical" without a second
+	// so the caller can render "alias -> canonical" without a second
 	// round trip.
 	query := fmt.Sprintf(
 		`SELECT t.id, t.name, t.category_id, tc.name, tc.color,
@@ -556,7 +636,6 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 		return nil, 0, err
 	}
 
-	// Resolve IsAutoOnly in one batch keyed on canonical rows only.
 	// Aliases have no image_tags of their own; the origin badge for
 	// them is "alias", not "auto-only".
 	var ids []any
@@ -598,6 +677,27 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 	return tagList, total, nil
 }
 
+// ListTagIDs returns every tag id matching the filter, ignoring
+// PageIndex / Limit. Used by /tags' bulk delete-in-current-search so
+// the dialog count and the actual delete set agree.
+func (s *Service) ListTagIDs(filter TagFilter) ([]int64, error) {
+	where, args := tagFilterWhere(filter)
+	rows, err := s.db.Read.Query(`SELECT t.id FROM tags t WHERE `+where+` ORDER BY t.id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Service) GetTag(id int64) (*models.Tag, error) {
 	var t models.Tag
 	var isAlias int
@@ -629,10 +729,68 @@ func (s *Service) GetTag(id int64) (*models.Tag, error) {
 	return &t, nil
 }
 
+// AliasesForTagIDs returns alias rows keyed by the canonical tag id
+// they point at, with display fields joined for chip rendering on the
+// detail page (where viewers benefit from seeing which alternate names
+// also surface this image in search). One query regardless of input
+// size, chunked at the SQLite parameter cap.
+func (s *Service) AliasesForTagIDs(canonicalIDs []int64) (map[int64][]models.Tag, error) {
+	out := make(map[int64][]models.Tag, len(canonicalIDs))
+	if len(canonicalIDs) == 0 {
+		return out, nil
+	}
+	const chunk = 500
+	for start := 0; start < len(canonicalIDs); start += chunk {
+		end := start + chunk
+		if end > len(canonicalIDs) {
+			end = len(canonicalIDs)
+		}
+		batch := canonicalIDs[start:end]
+		placeholders := strings.Repeat("?,", len(batch))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			args[i] = id
+		}
+		rows, err := s.db.Read.Query(
+			`SELECT a.id, a.name, a.category_id, ac.name, ac.color,
+			        a.canonical_tag_id,
+			        c.name, cc.name, cc.color
+			 FROM tags a
+			 JOIN tag_categories ac ON ac.id = a.category_id
+			 JOIN tags c ON c.id = a.canonical_tag_id
+			 JOIN tag_categories cc ON cc.id = c.category_id
+			 WHERE a.is_alias = 1 AND a.canonical_tag_id IN (`+placeholders+`)
+			 ORDER BY a.name`,
+			args...,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var t models.Tag
+			var canonicalID int64
+			if err := rows.Scan(
+				&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.CategoryColor,
+				&canonicalID,
+				&t.CanonicalName, &t.CanonicalCategoryName, &t.CanonicalCategoryColor,
+			); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			t.IsAlias = true
+			t.CanonicalTagID = &canonicalID
+			out[canonicalID] = append(out[canonicalID], t)
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
 func (s *Service) GetImageTags(imageID int64) ([]models.ImageTag, error) {
 	rows, err := s.db.Read.Query(
 		`SELECT it.image_id, it.tag_id, t.name, tc.name, tc.color, t.usage_count,
-		        it.is_auto, it.confidence, it.tagger_name, it.created_at
+		        it.is_auto, it.is_implied, it.confidence, it.tagger_name, it.created_at
 		 FROM image_tags it
 		 JOIN tags t ON t.id = it.tag_id
 		 JOIN tag_categories tc ON tc.id = t.category_id
@@ -647,17 +805,18 @@ func (s *Service) GetImageTags(imageID int64) ([]models.ImageTag, error) {
 	var result []models.ImageTag
 	for rows.Next() {
 		var it models.ImageTag
-		var isAuto int
+		var isAuto, isImplied int
 		var conf sql.NullFloat64
 		var taggerName sql.NullString
 		var createdAt string
 		if err := rows.Scan(
 			&it.ImageID, &it.TagID, &it.TagName, &it.Category, &it.Color, &it.UsageCount,
-			&isAuto, &conf, &taggerName, &createdAt,
+			&isAuto, &isImplied, &conf, &taggerName, &createdAt,
 		); err != nil {
 			return nil, err
 		}
 		it.IsAuto = isAuto == 1
+		it.IsImplied = isImplied == 1
 		if conf.Valid {
 			it.Confidence = &conf.Float64
 		}
@@ -671,7 +830,7 @@ func (s *Service) GetImageTags(imageID int64) ([]models.ImageTag, error) {
 }
 
 func (s *Service) AddTagToImage(imageID, tagID int64, isAuto bool, confidence *float64) error {
-	_, err := s.AddTagToImageReportingDup(imageID, tagID, isAuto, confidence, "")
+	_, _, err := s.AddTagToImageReportingDup(imageID, tagID, isAuto, confidence, "")
 	return err
 }
 
@@ -679,32 +838,33 @@ func (s *Service) AddTagToImage(imageID, tagID int64, isAuto bool, confidence *f
 // stored alongside the row (auto-tagger subfolder name when isAuto, or
 // any caller-supplied string for manual/API adds).
 func (s *Service) AddTagToImageFromTagger(imageID, tagID int64, isAuto bool, confidence *float64, taggerName string) error {
-	_, err := s.AddTagToImageReportingDup(imageID, tagID, isAuto, confidence, taggerName)
+	_, _, err := s.AddTagToImageReportingDup(imageID, tagID, isAuto, confidence, taggerName)
 	return err
 }
 
 // AddTagToImageReportingDup runs INSERT OR IGNORE inside a write-pool
-// transaction and returns whether a new row was inserted. Lets a
-// caller atomically distinguish "added" from "already on image"
-// without the read-then-write race of doing it across pools.
-func (s *Service) AddTagToImageReportingDup(imageID, tagID int64, isAuto bool, confidence *float64, taggerName string) (bool, error) {
+// transaction. The first bool reports whether a brand-new row was
+// inserted; the second reports whether an existing implied row was
+// promoted to user-owned (is_implied flipped 1 → 0). Both false means
+// the row already existed as user-owned.
+func (s *Service) AddTagToImageReportingDup(imageID, tagID int64, isAuto bool, confidence *float64, taggerName string) (bool, bool, error) {
 	tx, err := s.db.Write.Begin()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	defer tx.Rollback()
 
-	added, err := addTagToImageTxReportingDup(tx, imageID, tagID, isAuto, confidence, taggerName)
+	added, promoted, err := addTagToImageTxReportingDup(tx, imageID, tagID, isAuto, confidence, taggerName)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return false, false, err
 	}
-	return added, nil
+	return added, promoted, nil
 }
 
-func addTagToImageTxReportingDup(tx *sql.Tx, imageID, tagID int64, isAuto bool, confidence *float64, taggerName string) (bool, error) {
+func addTagToImageTxReportingDup(tx *sql.Tx, imageID, tagID int64, isAuto bool, confidence *float64, taggerName string) (bool, bool, error) {
 	isAutoInt := 0
 	if isAuto {
 		isAutoInt = 1
@@ -718,23 +878,106 @@ func addTagToImageTxReportingDup(tx *sql.Tx, imageID, tagID int64, isAuto bool, 
 	}
 
 	res, err := tx.Exec(
-		`INSERT OR IGNORE INTO image_tags (image_id, tag_id, is_auto, confidence, tagger_name) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO image_tags (image_id, tag_id, is_auto, is_implied, confidence, tagger_name) VALUES (?, ?, ?, 0, ?, ?)`,
 		imageID, tagID, isAutoInt, confidence, tname,
 	)
 	if err != nil {
-		return false, fmt.Errorf("inserting image_tag: %w", err)
+		return false, false, fmt.Errorf("inserting image_tag: %w", err)
 	}
-	rows, _ := res.RowsAffected()
-	if rows == 0 {
-		return false, nil
+	added, _ := res.RowsAffected()
+	var promoted int64
+	if added == 0 {
+		// Row already present. If it was an implication-side row, the
+		// caller's explicit add converts it to user-owned so removing a
+		// parent later won't sweep it out from under them.
+		upd, err := tx.Exec(
+			`UPDATE image_tags SET is_implied = 0, is_auto = ?, confidence = ?, tagger_name = ?
+			 WHERE image_id = ? AND tag_id = ? AND is_implied = 1`,
+			isAutoInt, confidence, tname, imageID, tagID,
+		)
+		if err != nil {
+			return false, false, err
+		}
+		promoted, _ = upd.RowsAffected()
+	} else {
+		// usage_count is the visible-image count for the tag; RecalcDB
+		// rebuilds it that way. Adding a tag to a missing image must
+		// not bump it, otherwise the next unrelated mutation that
+		// triggers RecalcIDs silently drops the count back down.
+		if _, err := tx.Exec(
+			`UPDATE tags SET usage_count = usage_count + 1
+			 WHERE id = ? AND (SELECT is_missing FROM images WHERE id = ?) = 0`,
+			tagID, imageID,
+		); err != nil {
+			return false, false, err
+		}
 	}
 
-	if _, err := tx.Exec(
-		`UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?`, tagID,
-	); err != nil {
-		return false, err
+	if err := fanOutImpliedTxImpl(tx, imageID, tagID, isAutoInt); err != nil {
+		return false, false, err
 	}
-	return true, nil
+
+	if added == 0 {
+		return false, promoted > 0, nil
+	}
+	return true, false, nil
+}
+
+// TransitiveImpliedTx is the exported entrypoint for callers outside
+// the tags package (the implication propagation job in internal/web)
+// that need to walk the implication graph inside the same transaction
+// they already hold open. Mirrors Service.ImpliedTagIDs but tx-bound
+// so a freshly-added edge is visible to the walk.
+func TransitiveImpliedTx(tx *sql.Tx, parents []int64) ([]int64, error) {
+	return transitiveImpliedTx(tx, parents)
+}
+
+// transitiveImpliedTx is the package-internal twin of
+// Service.ImpliedTagIDs: the implication graph walked inside the same
+// transaction the caller already holds open, so a freshly-added edge
+// is visible.
+func transitiveImpliedTx(tx *sql.Tx, parents []int64) ([]int64, error) {
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	seen := make(map[int64]struct{}, len(parents))
+	for _, p := range parents {
+		seen[p] = struct{}{}
+	}
+	frontier := append([]int64(nil), parents...)
+	var out []int64
+	for depth := 0; depth < MaxImplicationDepth && len(frontier) > 0; depth++ {
+		placeholders := strings.Repeat("?,", len(frontier))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := make([]any, len(frontier))
+		for i, id := range frontier {
+			args[i] = id
+		}
+		rows, err := tx.Query(
+			`SELECT DISTINCT implied_tag_id FROM tag_implications WHERE parent_tag_id IN (`+placeholders+`)`,
+			args...,
+		)
+		if err != nil {
+			return nil, err
+		}
+		var next []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			next = append(next, id)
+			out = append(out, id)
+		}
+		rows.Close()
+		frontier = next
+	}
+	return out, nil
 }
 
 func (s *Service) RemoveTagFromImage(imageID, tagID int64) error {
@@ -751,6 +994,15 @@ func (s *Service) RemoveTagFromImage(imageID, tagID int64) error {
 }
 
 func removeTagFromImageTx(tx *sql.Tx, imageID, tagID int64) error {
+	// Walk the parent's implication closure before deleting so we know
+	// which implied rows might lose their last justifying parent. The
+	// closure only matters when the row being removed is itself a
+	// parent in the graph; for ordinary tags the SELECT comes back empty.
+	implied, err := transitiveImpliedTx(tx, []int64{tagID})
+	if err != nil {
+		return err
+	}
+
 	res, err := tx.Exec(
 		`DELETE FROM image_tags WHERE image_id = ? AND tag_id = ?`, imageID, tagID,
 	)
@@ -759,109 +1011,56 @@ func removeTagFromImageTx(tx *sql.Tx, imageID, tagID int64) error {
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
-		// Tag wasn't on the image; nothing to decrement.
 		return nil
 	}
 
+	// Symmetric to the add path: a missing image was never counted in
+	// usage_count, so removing the row must not decrement it either.
 	if _, err := tx.Exec(
-		`UPDATE tags SET usage_count = MAX(0, usage_count - 1) WHERE id = ?`, tagID,
+		`UPDATE tags SET usage_count = MAX(0, usage_count - 1)
+		 WHERE id = ? AND (SELECT is_missing FROM images WHERE id = ?) = 0`,
+		tagID, imageID,
 	); err != nil {
 		return err
 	}
 
-	// Surface the prune error so the surrounding tx can roll back rather
-	// than commit a zero-usage tag that would leak into the sidebar.
-	if _, err := tx.Exec(`DELETE FROM tags WHERE id = ? AND usage_count <= 0`, tagID); err != nil {
-		return fmt.Errorf("prune zero-usage tag %d: %w", tagID, err)
+	// For every transitively implied tag still sitting on the image as
+	// is_implied=1, drop it unless another parent currently on the image
+	// still implies it. is_implied=0 rows are user-owned and untouched.
+	for _, impID := range implied {
+		var rowImplied int
+		err := tx.QueryRow(
+			`SELECT is_implied FROM image_tags WHERE image_id = ? AND tag_id = ?`, imageID, impID,
+		).Scan(&rowImplied)
+		if err == sql.ErrNoRows {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if rowImplied != 1 {
+			continue
+		}
+		stillImplied, err := implicationParentsOnImageExcluding(tx, imageID, impID, tagID)
+		if err != nil {
+			return err
+		}
+		if len(stillImplied) > 0 {
+			continue
+		}
+		if _, err := tx.Exec(
+			`DELETE FROM image_tags WHERE image_id = ? AND tag_id = ?`, imageID, impID,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`UPDATE tags SET usage_count = MAX(0, usage_count - 1)
+			 WHERE id = ? AND (SELECT is_missing FROM images WHERE id = ?) = 0`,
+			impID, imageID,
+		); err != nil {
+			return err
+		}
 	}
 	return nil
-}
-
-// RemoveAllAutoTags deletes every auto-tagged image_tags row across the
-// library. A non-empty taggerNames restricts the deletion to rows whose
-// tagger_name matches. Affected tag usage counts are recomputed (scoped
-// to the rows we actually touched) and zero-usage tags pruned afterwards.
-func (s *Service) RemoveAllAutoTags(taggerNames []string) (int, error) {
-	where := `is_auto = 1`
-	args := []any{}
-	if len(taggerNames) > 0 {
-		placeholders := strings.Repeat("?,", len(taggerNames))
-		placeholders = placeholders[:len(placeholders)-1]
-		where += ` AND tagger_name IN (` + placeholders + `)`
-		for _, n := range taggerNames {
-			args = append(args, n)
-		}
-	}
-	touched, err := s.collectTagIDs(`SELECT DISTINCT tag_id FROM image_tags WHERE `+where, args...)
-	if err != nil {
-		return 0, err
-	}
-	res, err := s.db.Write.Exec(`DELETE FROM image_tags WHERE `+where, args...)
-	if err != nil {
-		return 0, err
-	}
-	removed, _ := res.RowsAffected()
-	if err := s.RecalcAndPruneIDs(touched); err != nil {
-		return int(removed), err
-	}
-	return int(removed), nil
-}
-
-// RemoveAllUserTags deletes every manual image_tags row across the
-// library, then recomputes usage counts for the touched tags.
-func (s *Service) RemoveAllUserTags() (int, error) {
-	touched, err := s.collectTagIDs(`SELECT DISTINCT tag_id FROM image_tags WHERE is_auto = 0`)
-	if err != nil {
-		return 0, err
-	}
-	res, err := s.db.Write.Exec(`DELETE FROM image_tags WHERE is_auto = 0`)
-	if err != nil {
-		return 0, err
-	}
-	removed, _ := res.RowsAffected()
-	if err := s.RecalcAndPruneIDs(touched); err != nil {
-		return int(removed), err
-	}
-	return int(removed), nil
-}
-
-// RemoveAllTags deletes every image_tags row across the library, both
-// manual and auto-tagged, then recomputes usage counts for the touched
-// tags.
-func (s *Service) RemoveAllTags() (int, error) {
-	touched, err := s.collectTagIDs(`SELECT DISTINCT tag_id FROM image_tags`)
-	if err != nil {
-		return 0, err
-	}
-	res, err := s.db.Write.Exec(`DELETE FROM image_tags`)
-	if err != nil {
-		return 0, err
-	}
-	removed, _ := res.RowsAffected()
-	if err := s.RecalcAndPruneIDs(touched); err != nil {
-		return int(removed), err
-	}
-	return int(removed), nil
-}
-
-// collectTagIDs runs the given SELECT and returns the resulting tag_id
-// list. Used by the bulk-removal helpers to scope their post-delete
-// RecalcAndPruneIDs call to the tags actually touched.
-func (s *Service) collectTagIDs(query string, args ...any) ([]int64, error) {
-	rows, err := s.db.Read.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
 }
 
 // RemoveUserTagsFromImage drops every manual image_tags row for one
@@ -968,19 +1167,26 @@ func (s *Service) RemoveAllTagsFromImage(imageID int64) error {
 	rows.Close()
 
 	if len(tagIDs) > 0 {
-		placeholders := strings.Repeat("?,", len(tagIDs))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, len(tagIDs))
-		for i, id := range tagIDs {
-			args[i] = id
-		}
-		if _, err := tx.Exec(
-			`UPDATE tags SET usage_count = MAX(0, usage_count - 1) WHERE id IN (`+placeholders+`)`,
-			args...,
-		); err != nil {
+		// Skip the bulk decrement when the image was missing: its rows
+		// were never counted in usage_count to begin with.
+		var isMissing int
+		if err := tx.QueryRow(`SELECT is_missing FROM images WHERE id = ?`, imageID).Scan(&isMissing); err != nil && err != sql.ErrNoRows {
 			return err
 		}
-		tx.Exec(`DELETE FROM tags WHERE usage_count <= 0 AND id IN (`+placeholders+`)`, args...)
+		if isMissing == 0 {
+			placeholders := strings.Repeat("?,", len(tagIDs))
+			placeholders = placeholders[:len(placeholders)-1]
+			args := make([]any, len(tagIDs))
+			for i, id := range tagIDs {
+				args[i] = id
+			}
+			if _, err := tx.Exec(
+				`UPDATE tags SET usage_count = MAX(0, usage_count - 1) WHERE id IN (`+placeholders+`)`,
+				args...,
+			); err != nil {
+				return err
+			}
+		}
 	}
 
 	if _, err := tx.Exec(`DELETE FROM image_tags WHERE image_id = ?`, imageID); err != nil {
@@ -996,6 +1202,53 @@ func (s *Service) RemoveAllTagsFromImage(imageID int64) error {
 // categories pass through uncapped because they carry distinguishing
 // signal worth the scan even when common.
 const relatedGeneralTagsCap = 15
+
+// RatingTagIDsAbove returns the canonical rating tag ids whose level
+// ranks strictly above ceiling (e.g. ceiling="sensitive" returns the ids
+// of "questionable" and "explicit"). An empty or unknown ceiling, or
+// "explicit" (the no-ceiling sentinel), returns nil. The lookup runs a
+// fresh SELECT each call so a tag pruned and re-created at runtime is
+// resolved to its current id.
+func (s *Service) RatingTagIDsAbove(ceiling string) []int64 {
+	if s.ratingCatID == 0 {
+		return nil
+	}
+	rank := -1
+	for i, l := range RatingLevels {
+		if l == ceiling {
+			rank = i
+			break
+		}
+	}
+	if rank < 0 || rank >= len(RatingLevels)-1 {
+		return nil
+	}
+	above := RatingLevels[rank+1:]
+	placeholders := strings.Repeat("?,", len(above))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, 0, len(above)+1)
+	args = append(args, s.ratingCatID)
+	for _, n := range above {
+		args = append(args, n)
+	}
+	rows, err := s.db.Read.Query(
+		`SELECT id FROM tags WHERE category_id = ? AND name IN (`+placeholders+`)`,
+		args...,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
 
 // relatedMaxTagUsage drops seed tags whose global usage_count exceeds
 // the cap. A tag carried by more than this many images doesn't add
@@ -1017,7 +1270,29 @@ const relatedMaxTagUsage = 10000
 // The SELECT only fetches what partials/related_images.html actually
 // consumes (currently `.ID`), since the rest of the row would be
 // unused payload across the SQL boundary.
-func (s *Service) RelatedImages(imageID int64, limit int) ([]models.Image, error) {
+//
+// ratingCeiling, when non-empty, drops candidates carrying any rating
+// tag above the ceiling level (highest-wins). Pass "" or "explicit" to
+// disable the filter.
+func (s *Service) RelatedImages(imageID int64, limit int, ratingCeiling string) ([]models.Image, error) {
+	excluded := s.RatingTagIDsAbove(ratingCeiling)
+
+	candidatesExtra := ""
+	args := []any{imageID, relatedMaxTagUsage, relatedGeneralTagsCap, imageID}
+	if len(excluded) > 0 {
+		placeholders := strings.Repeat("?,", len(excluded))
+		placeholders = placeholders[:len(placeholders)-1]
+		candidatesExtra = ` AND NOT EXISTS (
+		         SELECT 1 FROM image_tags x
+		         WHERE x.image_id = theirs.image_id
+		           AND x.tag_id IN (` + placeholders + `)
+		     )`
+		for _, id := range excluded {
+			args = append(args, id)
+		}
+	}
+	args = append(args, limit*2+5, limit)
+
 	rows, err := s.db.Read.Query(
 		`WITH my_tags AS (
 		     SELECT tag_id FROM (
@@ -1036,7 +1311,7 @@ func (s *Service) RelatedImages(imageID int64, limit int) ([]models.Image, error
 		     SELECT theirs.image_id, COUNT(*) AS shared
 		     FROM image_tags theirs
 		     WHERE theirs.tag_id IN (SELECT tag_id FROM my_tags)
-		       AND theirs.image_id != ?
+		       AND theirs.image_id != ?`+candidatesExtra+`
 		     GROUP BY theirs.image_id
 		     ORDER BY shared DESC, theirs.image_id DESC
 		     LIMIT ?
@@ -1047,7 +1322,7 @@ func (s *Service) RelatedImages(imageID int64, limit int) ([]models.Image, error
 		 WHERE i.is_missing = 0
 		 ORDER BY c.shared DESC, c.image_id DESC
 		 LIMIT ?`,
-		imageID, relatedMaxTagUsage, relatedGeneralTagsCap, imageID, limit*2+5, limit,
+		args...,
 	)
 	if err != nil {
 		return nil, err
@@ -1155,13 +1430,62 @@ func (s *Service) SuggestTagsInCategory(prefix, categoryName string, limit int) 
 
 // DeleteTag removes a tag from every image and drops the tag row. Alias
 // rows pointing at it are removed too (their canonical_tag_id would
-// otherwise dangle). image_tags rows cascade on the tags FK.
+// otherwise dangle). image_tags rows cascade on the tags FK, but the
+// per-image removal runs first so the implied closure is swept - the
+// FK cascade alone would drop the parent row and leave its
+// is_implied=1 dependents on every carrier image with nothing on the
+// image to justify them.
+//
+// Implementation: one bulk DELETE for the parent's image_tags rows,
+// then a tier-by-tier sweep of the transitive implied closure where
+// each tier deletes is_implied=1 rows whose only justification was the
+// (now-gone) parent or an upstream implied. Same end-state as the
+// per-image walk but linear in the number of distinct implied tags
+// rather than the number of carrier images. Final RecalcIDs reconciles
+// usage_count for every tag the cascade touched.
+//
+// Rating-category tags are immutable in the catalog (the four canonical
+// names are part of the data model) so the row itself stays. Delete on
+// one of them strips its image_tags rows instead - the user-visible
+// "remove this rating from every image" the UI exposes.
 func (s *Service) DeleteTag(id int64) error {
+	if s.isRatingTag(id) {
+		return s.stripTagFromAllImages(id)
+	}
 	tx, err := s.db.Write.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+
+	closure, err := transitiveImpliedTx(tx, []int64{id})
+	if err != nil {
+		return fmt.Errorf("walk implied closure: %w", err)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM image_tags WHERE tag_id = ?`, id); err != nil {
+		return fmt.Errorf("strip parent image_tags: %w", err)
+	}
+
+	// Tier order: transitiveImpliedTx returns BFS, so dropping rows in
+	// that order makes deeper tiers see the now-gone upstream rows when
+	// they re-check whether any remaining parent on the image still
+	// justifies them.
+	for _, impID := range closure {
+		if _, err := tx.Exec(
+			`DELETE FROM image_tags
+			 WHERE tag_id = ? AND is_implied = 1
+			   AND NOT EXISTS (
+			       SELECT 1 FROM tag_implications ti
+			       JOIN image_tags it_p ON it_p.tag_id = ti.parent_tag_id
+			       WHERE ti.implied_tag_id = ? AND it_p.image_id = image_tags.image_id
+			   )`,
+			impID, impID,
+		); err != nil {
+			return fmt.Errorf("sweep implied %d: %w", impID, err)
+		}
+	}
+
 	if _, err := tx.Exec(`DELETE FROM tags WHERE canonical_tag_id = ?`, id); err != nil {
 		return fmt.Errorf("delete aliases: %w", err)
 	}
@@ -1172,7 +1496,47 @@ func (s *Service) DeleteTag(id int64) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrTagNotFound
 	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Recompute usage_count over the swept set so the cached value
+	// reflects the post-state without a full Recalc.
+	if len(closure) > 0 {
+		return s.RecalcIDs(closure)
+	}
+	return nil
+}
+
+// stripTagFromAllImages clears every image_tags row for tagID and zeros
+// the tag's usage_count. Used by DeleteTag's rating-tag branch where
+// the catalog row must stay intact.
+func (s *Service) stripTagFromAllImages(tagID int64) error {
+	tx, err := s.db.Write.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM image_tags WHERE tag_id = ?`, tagID); err != nil {
+		return fmt.Errorf("strip image_tags: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE tags SET usage_count = 0 WHERE id = ?`, tagID); err != nil {
+		return fmt.Errorf("zero usage: %w", err)
+	}
 	return tx.Commit()
+}
+
+// isRatingTag reports whether the tag with this id lives in the rating
+// category. Returns false on lookup error so a missing row falls through
+// to the existing ErrTagNotFound path in the caller.
+func (s *Service) isRatingTag(id int64) bool {
+	if s.ratingCatID == 0 {
+		return false
+	}
+	var catID int64
+	if err := s.db.Read.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, id).Scan(&catID); err != nil {
+		return false
+	}
+	return catID == s.ratingCatID
 }
 
 // RenameTag renames a tag. The new name must pass validation and must
@@ -1184,6 +1548,9 @@ func (s *Service) RenameTag(id int64, newName string) error {
 	}
 	var catID int64
 	s.db.Read.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, id).Scan(&catID)
+	if s.ratingCatID != 0 && catID == s.ratingCatID {
+		return ErrRatingTagImmutable
+	}
 	var existing int64
 	if err := s.db.Read.QueryRow(
 		`SELECT id FROM tags WHERE name = ? AND category_id = ? AND id != ?`, normalized, catID, id,
@@ -1257,6 +1624,9 @@ func (s *Service) ChangeTagCategory(tagID, newCategoryID int64) error {
 	}
 	if currentCatID == newCategoryID {
 		return nil
+	}
+	if s.ratingCatID != 0 && (currentCatID == s.ratingCatID || newCategoryID == s.ratingCatID) {
+		return ErrRatingTagImmutable
 	}
 	var catExists int
 	if err := s.db.Read.QueryRow(

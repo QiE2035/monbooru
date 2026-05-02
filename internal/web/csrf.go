@@ -24,10 +24,8 @@ func mustRandBytes(n int) []byte {
 	return b
 }
 
-// csrfToken computes a token for the given session ID using HMAC-SHA256 with
-// the Server's own secret. Kept as a method so the secret travels with the
-// server instance - tests can now stand up a fresh Server without relying on
-// a package-level global set at init time.
+// csrfToken computes a token for the given session ID using HMAC-SHA256
+// with the Server's per-instance secret.
 func (s *Server) csrfToken(sessionID string) string {
 	mac := hmac.New(sha256.New, s.csrfSecret)
 	mac.Write([]byte(sessionID))
@@ -49,6 +47,7 @@ func (s *Server) validateCSRF(sessionID, token string) bool {
 func parseFormOK(w http.ResponseWriter, r *http.Request) bool {
 	if err := r.ParseForm(); err != nil {
 		if isHTMXRequest(r) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusBadRequest)
 			fmt.Fprintf(w, `<div class="flash flash-err">Bad form data: %s</div>`, html.EscapeString(err.Error()))
 			return false
@@ -77,11 +76,14 @@ func (s *Server) CSRFMiddleware(next http.Handler) http.Handler {
 
 		sessID := sessionFromContext(r.Context())
 
-		var token string
-		if t := r.FormValue("_csrf"); t != "" {
-			token = t
-		} else {
-			token = r.Header.Get("X-CSRF-Token")
+		// Header first so a caller can skip implicit form parsing, which
+		// would otherwise drain the entire body before the handler can
+		// validate sensitive fields (the gallery import path's
+		// type-to-confirm gate is the canonical example). Fall back to
+		// the hidden form input so existing form submissions still work.
+		token := r.Header.Get("X-CSRF-Token")
+		if token == "" {
+			token = r.FormValue("_csrf")
 		}
 
 		if !s.validateCSRF(sessID, token) {

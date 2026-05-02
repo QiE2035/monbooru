@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -48,14 +49,15 @@ type galleryExport struct {
 	Version         int                `json:"version"`
 	GalleryName     string             `json:"gallery_name"`
 	GalleryPath     string             `json:"gallery_path"`
-	TagCategories   []tagCategoryRow   `json:"tag_categories"`
-	Tags            []tagRow           `json:"tags"`
-	Images          []imageRow         `json:"images"`
-	ImagePaths      []imagePathRow     `json:"image_paths"`
-	ImageTags       []imageTagRow      `json:"image_tags"`
-	SDMetadata      []sdMetadataRow    `json:"sd_metadata"`
-	ComfyUIMetadata []comfyMetadataRow `json:"comfyui_metadata"`
-	SavedSearches   []savedSearchRow   `json:"saved_searches"`
+	TagCategories   []tagCategoryRow    `json:"tag_categories"`
+	Tags            []tagRow            `json:"tags"`
+	TagImplications []tagImplicationRow `json:"tag_implications"`
+	Images          []imageRow          `json:"images"`
+	ImagePaths      []imagePathRow      `json:"image_paths"`
+	ImageTags       []imageTagRow       `json:"image_tags"`
+	SDMetadata      []sdMetadataRow     `json:"sd_metadata"`
+	ComfyUIMetadata []comfyMetadataRow  `json:"comfyui_metadata"`
+	SavedSearches   []savedSearchRow    `json:"saved_searches"`
 }
 
 type tagCategoryRow struct {
@@ -103,9 +105,16 @@ type imageTagRow struct {
 	ImageID    int64           `json:"image_id"`
 	TagID      int64           `json:"tag_id"`
 	IsAuto     int             `json:"is_auto"`
+	IsImplied  int             `json:"is_implied,omitempty"`
 	Confidence sql.NullFloat64 `json:"confidence"`
 	TaggerName sql.NullString  `json:"tagger_name"`
 	CreatedAt  string          `json:"created_at"`
+}
+
+type tagImplicationRow struct {
+	ParentTagID  int64  `json:"parent_tag_id"`
+	ImpliedTagID int64  `json:"implied_tag_id"`
+	CreatedAt    string `json:"created_at"`
 }
 
 type sdMetadataRow struct {
@@ -201,6 +210,15 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 		}); err != nil {
 		return err
 	}
+	if err := streamRows(bw, "tag_implications", cx.DB,
+		`SELECT parent_tag_id, implied_tag_id, created_at FROM tag_implications ORDER BY parent_tag_id, implied_tag_id`,
+		func(rows *sql.Rows) (any, error) {
+			var r tagImplicationRow
+			err := rows.Scan(&r.ParentTagID, &r.ImpliedTagID, &r.CreatedAt)
+			return r, err
+		}); err != nil {
+		return err
+	}
 	if err := streamRows(bw, "images", cx.DB,
 		`SELECT id, sha256, canonical_path, folder_path, file_type, width, height,
 		        file_size, is_missing, is_favorited, auto_tagged_at, source_type, origin, ingested_at
@@ -224,10 +242,10 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 		return err
 	}
 	if err := streamRows(bw, "image_tags", cx.DB,
-		`SELECT image_id, tag_id, is_auto, confidence, tagger_name, created_at FROM image_tags`,
+		`SELECT image_id, tag_id, is_auto, is_implied, confidence, tagger_name, created_at FROM image_tags`,
 		func(rows *sql.Rows) (any, error) {
 			var r imageTagRow
-			err := rows.Scan(&r.ImageID, &r.TagID, &r.IsAuto, &r.Confidence, &r.TaggerName, &r.CreatedAt)
+			err := rows.Scan(&r.ImageID, &r.TagID, &r.IsAuto, &r.IsImplied, &r.Confidence, &r.TaggerName, &r.CreatedAt)
 			return r, err
 		}); err != nil {
 		return err
@@ -398,7 +416,7 @@ func (s *Server) ImportGallery(name, format string, upload io.Reader) error {
 	// Close the target DB and stop its watcher before touching on-disk state.
 	cx.close()
 
-	applyErr := applyImport(format, tmpPath, dbPath, thumbsPath, galleryPath)
+	applyErr := applyImport(format, tmpPath, dbPath, thumbsPath, galleryPath, s.cfg.Gallery.MaxFileSizeMB)
 
 	// Reopen regardless so we leave the gallery usable even after a failed import.
 	newCx, openErr := openGalleryCtx(config.Gallery{
@@ -445,8 +463,9 @@ func (s *Server) ImportGallery(name, format string, upload io.Reader) error {
 
 // applyImport runs the destructive file-system work outside ctxMu so the
 // caller can defer lock release around it. Kept as a package function so the
-// early-return error paths are linear.
-func applyImport(format, tmpPath, dbPath, thumbsPath, galleryPath string) error {
+// early-return error paths are linear. maxFileSizeMB caps each archive
+// entry's decompressed size; <= 0 disables the cap.
+func applyImport(format, tmpPath, dbPath, thumbsPath, galleryPath string, maxFileSizeMB int) error {
 	switch format {
 	case "db":
 		return replaceDBFromFile(tmpPath, dbPath, thumbsPath, galleryPath)
@@ -463,7 +482,7 @@ func applyImport(format, tmpPath, dbPath, thumbsPath, galleryPath string) error 
 		}
 		return replaceDBFromJSON(tmpPath, dbPath, thumbsPath, galleryPath)
 	case "zip":
-		return replaceFromArchive(tmpPath, dbPath, thumbsPath, galleryPath)
+		return replaceFromArchive(tmpPath, dbPath, thumbsPath, galleryPath, maxFileSizeMB)
 	}
 	return fmt.Errorf("unknown import format %q", format)
 }
@@ -518,6 +537,13 @@ func replaceDBFromFile(srcPath, dbPath, thumbsPath, galleryPath string) error {
 		return fmt.Errorf("reopen installed db: %w", err)
 	}
 	defer database.Close()
+	// Bring the imported snapshot up to current schema before any sanitisation
+	// pass touches it. Today's sanitisers happen to query columns present in
+	// every monbooru release; a future helper that touches a newer column
+	// would otherwise hit `no such column` only on imports of older DBs.
+	if err := db.Bootstrap(database); err != nil {
+		return fmt.Errorf("bootstrap imported db: %w", err)
+	}
 	if err := sanitizeImportedCategoryColors(database); err != nil {
 		return fmt.Errorf("sanitize colors: %w", err)
 	}
@@ -612,8 +638,10 @@ func replaceDBFromJSON(srcPath, dbPath, thumbsPath, galleryPath string) error {
 
 // replaceFromArchive opens the uploaded ZIP, extracts the inner DB or JSON
 // via the matching replaceDBFrom* helper, and when `gallery/` entries are
-// present wipes the source folder and extracts them into it.
-func replaceFromArchive(srcPath, dbPath, thumbsPath, galleryPath string) error {
+// present wipes the source folder and extracts them into it. maxFileSizeMB
+// caps each entry's decompressed size; <= 0 disables the cap.
+func replaceFromArchive(srcPath, dbPath, thumbsPath, galleryPath string, maxFileSizeMB int) error {
+	maxBytes := int64(maxFileSizeMB) * 1024 * 1024
 	zr, err := zip.OpenReader(srcPath)
 	if err != nil {
 		return fmt.Errorf("open zip: %w", err)
@@ -640,7 +668,7 @@ func replaceFromArchive(srcPath, dbPath, thumbsPath, galleryPath string) error {
 		// route through the same wipe+ingest path the native light replacer
 		// uses, so the import flow stays identical past this point.
 		if format := detectCompatFormat(zr.File); format != "" {
-			return replaceFromCompatArchive(zr.File, format, dbPath, thumbsPath, galleryPath)
+			return replaceFromCompatArchive(zr.File, format, dbPath, thumbsPath, galleryPath, maxFileSizeMB)
 		}
 		return fmt.Errorf("archive missing monbooru.db, monbooru.json, or tags.json")
 	}
@@ -649,7 +677,7 @@ func replaceFromArchive(srcPath, dbPath, thumbsPath, galleryPath string) error {
 	// archive takes priority when both a monbooru.{db,json} and a tags.json
 	// are present - that combination is unusual but the full payload wins.
 	if innerDB == nil && innerJSON == nil {
-		return replaceFromLightArchive(innerLight, galleryFiles, dbPath, thumbsPath, galleryPath)
+		return replaceFromLightArchive(innerLight, galleryFiles, dbPath, thumbsPath, galleryPath, maxFileSizeMB)
 	}
 
 	// Extract the inner DB/JSON to a temp file alongside the upload, then
@@ -672,17 +700,10 @@ func replaceFromArchive(srcPath, dbPath, thumbsPath, galleryPath string) error {
 		innerFile = innerJSON
 		applyInner = replaceDBFromJSON
 	}
-	rc, err := innerFile.Open()
-	if err != nil {
+	if err := copyZipEntry(innerTmp, innerFile, maxBytes); err != nil {
 		innerTmp.Close()
 		return err
 	}
-	if _, err := io.Copy(innerTmp, rc); err != nil {
-		rc.Close()
-		innerTmp.Close()
-		return err
-	}
-	rc.Close()
 	innerTmp.Close()
 	if err := applyInner(innerTmpPath, dbPath, thumbsPath, galleryPath); err != nil {
 		return err
@@ -707,22 +728,9 @@ func replaceFromArchive(srcPath, dbPath, thumbsPath, galleryPath string) error {
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}
-		rc, err := f.Open()
-		if err != nil {
+		if err := copyZipFile(f, dst, maxBytes); err != nil {
 			return err
 		}
-		out, err := os.Create(dst)
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		if _, err := io.Copy(out, rc); err != nil {
-			rc.Close()
-			out.Close()
-			return err
-		}
-		rc.Close()
-		out.Close()
 	}
 	return nil
 }
@@ -898,10 +906,25 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		return fmt.Errorf("defer fk: %w", err)
 	}
 
-	// Bootstrap's INSERT OR IGNORE seeded the built-in categories; replace
-	// them so the caller's color overrides survive.
-	if _, err := tx.Exec(`DELETE FROM tag_categories`); err != nil {
-		return fmt.Errorf("reset tag_categories: %w", err)
+	// Wipe every table the export populates so seeded rows from
+	// db.Bootstrap (built-in categories, canonical rating tags, anything
+	// future seeds add) can't collide with imported ids. Order respects
+	// FK dependencies and `defer_foreign_keys = ON` smooths over the
+	// rest until commit.
+	for _, stmt := range []string{
+		`DELETE FROM image_tags`,
+		`DELETE FROM tag_implications`,
+		`DELETE FROM image_paths`,
+		`DELETE FROM sd_metadata`,
+		`DELETE FROM comfyui_metadata`,
+		`DELETE FROM saved_searches`,
+		`DELETE FROM images`,
+		`DELETE FROM tags`,
+		`DELETE FROM tag_categories`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("reset table: %w", err)
+		}
 	}
 	for _, r := range exp.TagCategories {
 		// Imported colours haven't been through CreateCategory's regex; coerce
@@ -930,6 +953,14 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 			r.ID, r.Name, r.CategoryID, r.UsageCount, r.IsAlias, canonical, r.CreatedAt,
 		); err != nil {
 			return fmt.Errorf("insert tag %d: %w", r.ID, err)
+		}
+	}
+	for _, r := range exp.TagImplications {
+		if _, err := tx.Exec(
+			`INSERT INTO tag_implications (parent_tag_id, implied_tag_id, created_at) VALUES (?, ?, ?)`,
+			r.ParentTagID, r.ImpliedTagID, r.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert tag_implication (%d→%d): %w", r.ParentTagID, r.ImpliedTagID, err)
 		}
 	}
 	for _, r := range exp.Images {
@@ -970,9 +1001,9 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 			tname = r.TaggerName.String
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO image_tags (image_id, tag_id, is_auto, confidence, tagger_name, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-			r.ImageID, r.TagID, r.IsAuto, conf, tname, r.CreatedAt,
+			`INSERT INTO image_tags (image_id, tag_id, is_auto, is_implied, confidence, tagger_name, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.ImageID, r.TagID, r.IsAuto, r.IsImplied, conf, tname, r.CreatedAt,
 		); err != nil {
 			return fmt.Errorf("insert image_tag (%d,%d): %w", r.ImageID, r.TagID, err)
 		}
@@ -1178,7 +1209,6 @@ func (s *Server) settingsGalleryExport(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		logx.Warnf("gallery export %q: %v", name, err)
-		// Can't change headers after Write; the browser will see a truncated file.
 	}
 }
 
@@ -1202,18 +1232,59 @@ func exportFilename(name, format string, withImages bool) (string, string) {
 }
 
 // settingsGalleryImport serves POST /settings/galleries/{name}/import.
-// Expects a multipart form with `file` and `confirm_name` (must equal the
-// target gallery name so accidental drops don't wipe the database).
+// Expects a multipart form with `mode`, `confirm_name` (replace only),
+// and `file`. The handler reads parts in order with MultipartReader so
+// the type-to-confirm gate runs before the (possibly multi-GB) file
+// part is consumed; this requires the dialog template to put mode and
+// confirm_name fields ahead of the file input. CSRF is validated by
+// the middleware off the X-CSRF-Token header so it never triggers
+// implicit form parsing on this route.
 func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
 	const maxImport = 16 << 30 // 16 GiB cap; protects against runaway uploads on a LAN setup.
 	r.Body = http.MaxBytesReader(w, r.Body, maxImport)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeFlash(w, "err", "upload too large or malformed")
+
+	mr, err := r.MultipartReader()
+	if err != nil {
+		writeFlash(w, "err", "expected multipart/form-data")
 		return
 	}
-	mode := strings.TrimSpace(r.FormValue("mode"))
+
+	const maxFieldBytes = 1 << 20 // 1 MiB per form field; values are short
+	fields := map[string]string{}
+	var filePart *multipart.Part
+	var fileFilename string
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			writeFlash(w, "err", "malformed upload")
+			return
+		}
+		if part.FileName() == "" {
+			body, readErr := io.ReadAll(io.LimitReader(part, maxFieldBytes))
+			part.Close()
+			if readErr != nil {
+				writeFlash(w, "err", "malformed upload")
+				return
+			}
+			fields[part.FormName()] = strings.TrimSpace(string(body))
+			continue
+		}
+		filePart = part
+		fileFilename = part.FileName()
+		break
+	}
+	if filePart == nil {
+		writeFlash(w, "err", "missing file")
+		return
+	}
+	defer filePart.Close()
+
+	mode := fields["mode"]
 	if mode == "" {
 		mode = "replace"
 	}
@@ -1221,30 +1292,20 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 		writeFlash(w, "err", "mode must be replace or merge")
 		return
 	}
-	// Replace wipes the target gallery, so keep the type-to-confirm gate.
-	// Merge is additive; the confirm is waived.
 	if mode == "replace" {
-		confirm := strings.TrimSpace(r.FormValue("confirm_name"))
-		if confirm != name {
+		if fields["confirm_name"] != name {
 			writeFlash(w, "err", "type-to-confirm name does not match")
 			return
 		}
 	}
-	file, fh, err := r.FormFile("file")
-	if err != nil {
-		writeFlash(w, "err", "missing file")
-		return
-	}
-	defer file.Close()
-
-	format := formatFromExt(fh.Filename)
+	format := formatFromExt(fileFilename)
 	if format == "" {
 		writeFlash(w, "err", "file must be .db, .json, or .zip")
 		return
 	}
 
 	if mode == "merge" {
-		if err := s.MergeGallery(name, format, file); err != nil {
+		if err := s.MergeGallery(name, format, filePart); err != nil {
 			writeFlash(w, "err", err.Error())
 			return
 		}
@@ -1257,7 +1318,7 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 		writeFlash(w, "ok", "Gallery "+name+" merged.")
 		return
 	}
-	if err := s.ImportGallery(name, format, file); err != nil {
+	if err := s.ImportGallery(name, format, filePart); err != nil {
 		writeFlash(w, "err", err.Error())
 		return
 	}

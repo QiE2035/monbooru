@@ -1,7 +1,7 @@
 package tagger
 
 import (
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +11,15 @@ import (
 
 //go:embed catalog_default.json
 var defaultCatalogJSON []byte
+
+// defaultDispatchFS holds the per-tagger label dispatch tables shipped
+// with the binary (one JSON per CatalogEntry.Name under
+// dispatch_default/). Consumed by LoadDispatch in the tagger build;
+// embedded unconditionally so the data is available without a build-tag
+// dance.
+//
+//go:embed dispatch_default/*.json
+var defaultDispatchFS embed.FS
 
 // CatalogEntry describes one downloadable tagger: a target subfolder name
 // under paths.model_path plus the URLs the user fetches the model and tags

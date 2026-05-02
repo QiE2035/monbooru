@@ -47,7 +47,7 @@ func TestParseA1111Parameters_Empty(t *testing.T) {
 }
 
 func TestParseA1111Parameters_NotA1111(t *testing.T) {
-	// Third-party writers (GIMP, Paint Tool SAI, LEAD Technologies, …) drop
+	// Third-party writers (GIMP, Paint Tool SAI, LEAD Technologies, ...) drop
 	// short identifiers into EXIF UserComment. Without an A1111 marker
 	// ("Negative prompt:" or a "Steps:" line) these must not be accepted
 	// as A1111 metadata.

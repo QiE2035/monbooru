@@ -69,7 +69,7 @@ var ErrUnsupportedType = errors.New("unsupported file type")
 const SupportedMIMETypes = "image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm"
 
 // UniqueDestPath returns a path under destDir that does not currently
-// exist, appending `_1`, `_2`, … to the stem on collision. Shared by
+// exist, appending `_1`, `_2`, ... to the stem on collision. Shared by
 // the upload form, API createImage, and merge-extract paths so the
 // rename rule is consistent. The stat check is racy (TOCTOU); callers
 // needing stronger guarantees should O_CREATE|O_EXCL themselves.
@@ -165,9 +165,15 @@ func detectMagic(buf []byte) (string, error) {
 		buf[8] == 0x57 && buf[9] == 0x45 && buf[10] == 0x42 && buf[11] == 0x50 {
 		return models.FileTypeWEBP, nil
 	}
-	// MP4: ftyp box at offset 4 (66 74 79 70)
-	if len(buf) >= 8 && buf[4] == 0x66 && buf[5] == 0x74 && buf[6] == 0x79 && buf[7] == 0x70 {
-		return models.FileTypeMP4, nil
+	// MP4: ftyp box at offset 4 (66 74 79 70). The ftyp brand at
+	// offset 8..11 disambiguates ISO base-media containers; without
+	// the brand check `.mov`, `.3gp`, and `.heic` files would be
+	// accepted as MP4 and then fail to decode in the browser.
+	if len(buf) >= 12 && buf[4] == 0x66 && buf[5] == 0x74 && buf[6] == 0x79 && buf[7] == 0x70 {
+		switch string(buf[8:12]) {
+		case "mp42", "mp41", "isom", "iso2", "avc1":
+			return models.FileTypeMP4, nil
+		}
 	}
 	// WEBM: 1A 45 DF A3 (EBML header)
 	if buf[0] == 0x1A && buf[1] == 0x45 && buf[2] == 0xDF && buf[3] == 0xA3 {

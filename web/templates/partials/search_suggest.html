@@ -3,11 +3,12 @@
 <div class="suggest-list">
   {{range .Suggestions}}
   <button type="button" class="suggest-item"
-          style="color:{{.CategoryColor}}"
+          {{if .CategoryColor}}style="color:{{.CategoryColor}}"{{end}}
           data-tag-name="{{.Name}}"
           onclick="applySearchSuggest(this.dataset.tagName)">
     <span class="suggest-name">{{.Name}}</span>
-    <span class="suggest-count">{{.UsageCount}}</span>
+    {{if .Description}}<span class="suggest-description">{{.Description}}</span><span class="suggest-sep">·</span>{{end}}
+    {{if .Category}}<span class="suggest-category">{{.Category}}</span>{{else}}<span class="suggest-count">{{.UsageCount}}</span>{{end}}
   </button>
   {{end}}
 </div>

@@ -2,11 +2,13 @@ package gallery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -69,7 +71,14 @@ func NewWatcher(galleryName, galleryPath, thumbnailsPath string, maxFileSizeMB i
 			return filepath.SkipAll
 		}
 		if addErr := fsw.Add(path); addErr != nil {
-			if strings.Contains(addErr.Error(), "no space left") ||
+			// Prefer typed errno detection so localised glibc and a
+			// future fsnotify version that wraps the syscall error
+			// differently don't silently break inotify-limit handling.
+			// Fall back to the substring match because some wrappers
+			// stringify and don't unwrap to syscall.Errno.
+			if errors.Is(addErr, syscall.ENOSPC) ||
+				errors.Is(addErr, syscall.EMFILE) ||
+				strings.Contains(addErr.Error(), "no space left") ||
 				strings.Contains(addErr.Error(), "too many open files") {
 				logx.Warnf("fsnotify: inotify limit hit at %d dirs. "+
 					"Increase: echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p", watchCount)
@@ -212,7 +221,11 @@ func (w *Watcher) ingestFile(path string) {
 	}
 }
 
-// markFileMissing marks a file as is_missing=true in the DB if it exists.
+// markFileMissing flips is_missing=1 and rebalances the usage_count of
+// every tag the image was carrying, in one write transaction. usage_count
+// is the visible-image count for a tag, so removing an image from the
+// visible set has to decrement (and prune zero-usage tags) the same way
+// the manual recalc does.
 func (w *Watcher) markFileMissing(path string) {
 	// filepath.Rel containment so a sibling directory sharing a prefix
 	// (/data/gallery vs /data/gallery_backup) is correctly rejected.
@@ -236,17 +249,56 @@ func (w *Watcher) markFileMissing(path string) {
 		err2 := w.db.Read.QueryRow(
 			`SELECT ip.image_id FROM image_paths ip
 			 JOIN images i ON i.id = ip.image_id
-			 WHERE ip.path = ? AND i.is_missing = 0`, path,
+			 WHERE ip.path = ? AND ip.is_canonical = 1 AND i.is_missing = 0`, path,
 		).Scan(&imgID)
 		if err2 != nil {
 			return
 		}
 	}
 
-	if _, err := w.db.Write.Exec(`UPDATE images SET is_missing = 1 WHERE id = ?`, imgID); err != nil {
+	tx, err := w.db.Write.Begin()
+	if err != nil {
+		logx.Warnf("watcher mark missing %q: begin tx: %v", path, err)
+		return
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`UPDATE images SET is_missing = 1 WHERE id = ?`, imgID); err != nil {
 		logx.Warnf("watcher mark missing %q: %v", path, err)
 		return
 	}
+
+	rows, err := tx.Query(`SELECT tag_id FROM image_tags WHERE image_id = ?`, imgID)
+	if err != nil {
+		logx.Warnf("watcher mark missing %q: list tags: %v", path, err)
+		return
+	}
+	var tagIDs []int64
+	for rows.Next() {
+		var tid int64
+		if scanErr := rows.Scan(&tid); scanErr != nil {
+			rows.Close()
+			logx.Warnf("watcher mark missing %q: scan tag: %v", path, scanErr)
+			return
+		}
+		tagIDs = append(tagIDs, tid)
+	}
+	rows.Close()
+
+	for _, tid := range tagIDs {
+		if _, err := tx.Exec(
+			`UPDATE tags SET usage_count = MAX(0, usage_count - 1) WHERE id = ?`, tid,
+		); err != nil {
+			logx.Warnf("watcher mark missing %q: decrement tag %d: %v", path, tid, err)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		logx.Warnf("watcher mark missing %q: commit: %v", path, err)
+		return
+	}
+
 	logx.Infof("watcher: marked missing %q (id=%d)", path, imgID)
 	if w.OnEvent != nil {
 		w.OnEvent(w.eventPrefix() + "removed " + filepath.Base(path))

@@ -1,0 +1,38 @@
+{{define "partials/implications_dialog.html"}}
+<p>Tags implied by <strong style="color:{{.Parent.CategoryColor}}">{{.Parent.Name}}</strong>:</p>
+<ul class="tag-list">
+  {{range .Implications}}
+  <li class="tag-item" style="color:{{.ImpliedCategoryColor}}">
+    <a href="/?q={{.ImpliedCategoryName}}:{{.ImpliedName}}" class="tag-chip-name">{{.ImpliedName}}</a>
+    <button class="tag-remove-btn"
+            hx-delete="/tags/{{.ParentID}}/implications/{{.ImpliedID}}"
+            hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+            hx-on::after-request="if(event.detail.successful){this.closest('li').remove(); implicationsDialogDirty = true;}"
+            title="Remove this implication">×</button>
+  </li>
+  {{else}}
+  <li class="no-tags">No implications declared.</li>
+  {{end}}
+</ul>
+<div class="add-tag-wrapper" style="position:relative">
+  <form id="implication-add-form" class="add-tag-form"
+        hx-post="/tags/{{.Parent.ID}}/implications"
+        hx-target="#implication-add-flash"
+        hx-swap="innerHTML"
+        hx-on::after-request="handleImplicationAdded(event)">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <input type="text" name="implied_id" id="implication-add-input"
+           placeholder="Imply tag(s)..." required autocomplete="off"
+           data-multi-tags="1"
+           hx-get="/internal/tags/suggest"
+           hx-trigger="input changed delay:200ms"
+           hx-target="#implication-add-suggest"
+           hx-swap="innerHTML"
+           hx-vals='js:{q: (document.getElementById("implication-add-input").value || "").split(/\s+/).pop()}'
+           onkeydown="handleSuggestKey(event, 'implication-add-suggest', 'implication-add-input')">
+    <button type="submit" class="btn-sm">Add</button>
+  </form>
+  <div id="implication-add-suggest" class="suggest-dropdown tag-suggest-dropdown"></div>
+</div>
+<div id="implication-add-flash"></div>
+{{end}}

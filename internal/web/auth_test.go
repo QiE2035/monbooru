@@ -584,3 +584,33 @@ func TestCSRFMiddleware_GETBypasses(t *testing.T) {
 		t.Errorf("GET must bypass CSRF, got %d", w.Code)
 	}
 }
+
+func TestSameOriginReferer(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		host string
+		ref  string
+		want string
+	}{
+		{"no_referer", "host.local", "", "/"},
+		{"same_host", "host.local", "http://host.local/foo", "http://host.local/foo"},
+		{"different_host", "host.local", "http://other.local/foo", "/"},
+		{"javascript_scheme", "host.local", "javascript:alert(1)", "/"},
+		{"data_scheme", "host.local", "data:text/html,<script>alert(1)</script>", "/"},
+		{"relative", "host.local", "/some/path", "/some/path"},
+		{"protocol_relative", "host.local", "//evil.com/", "/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/internal/sync", nil)
+			req.Host = tc.host
+			if tc.ref != "" {
+				req.Header.Set("Referer", tc.ref)
+			}
+			if got := sameOriginReferer(req); got != tc.want {
+				t.Errorf("sameOriginReferer(%q) = %q, want %q", tc.ref, got, tc.want)
+			}
+		})
+	}
+}

@@ -41,13 +41,27 @@ What lands in Monbooru:
 - When the basename is a 64-hex-char string, Monbooru reuses that as
   the recorded SHA-256; otherwise the actual hash is computed at
   ingest.
-- Each sidecar's tags are attached to the image. Tokens with a
-  `category:` prefix that matches a known Monbooru category land in
-  that category; everything else lands in `general`. Lines starting
-  with `#` and blank lines are skipped.
+- Each sidecar's tags are attached to the image. Lines starting with
+  `#` and blank lines are skipped. Tokens are routed by their
+  Hydrus-style namespace prefix:
+
+  | Hydrus namespace | Lands in Monbooru as |
+  |---|---|
+  | `character:` | `character` category |
+  | `creator:` | `artist` category (rewritten on read; Hydrus's `creator` is Monbooru's `artist`) |
+  | `copyright:` | `copyright` category |
+  | `series:` | `copyright` category (rewritten on read; both `series` and `studio` are franchise/IP attribution in Monbooru) |
+  | `studio:` | `copyright` category (rewritten on read) |
+  | `meta:` | `meta` category |
+  | `medium:` | `medium` category |
+  | `person:` | `person` category |
+  | `year:` | `year` category |
+  | bare token | `general` category |
+  | any other prefix (`species:`, `title:`, `photoset:`, …) | literal `prefix:name` tag in `general` |
 
 What is not preserved: Hydrus URLs, ratings, notes, file relationships,
-and any per-tag namespace that Monbooru doesn't have a category for.
+and any per-tag namespace that Monbooru doesn't have a category for
+(those are kept verbatim as `general` tokens, so search still finds them).
 
 ---
 

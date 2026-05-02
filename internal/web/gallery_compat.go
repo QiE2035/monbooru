@@ -16,7 +16,7 @@ func detectCompatFormat(files []*zip.File) string {
 // replaceFromCompatArchive routes a foreign-format zip through the native
 // light-replacer path. format is propagated to applyLightReplace so the
 // detail page credits the originating app instead of the generic "import".
-func replaceFromCompatArchive(files []*zip.File, format, dbPath, thumbsPath, galleryPath string) error {
+func replaceFromCompatArchive(files []*zip.File, format, dbPath, thumbsPath, galleryPath string, maxFileSizeMB int) error {
 	result, err := compatibility.Translate(files, format)
 	if err != nil {
 		return err
@@ -24,13 +24,13 @@ func replaceFromCompatArchive(files []*zip.File, format, dbPath, thumbsPath, gal
 	return applyLightReplace(
 		toLightManifest(result.Manifest),
 		translatedFilesFromCompat(result.Files),
-		dbPath, thumbsPath, galleryPath, format,
+		dbPath, thumbsPath, galleryPath, format, maxFileSizeMB,
 	)
 }
 
 // mergeFromCompatArchive routes a foreign-format zip through the zip-merge
 // path: tags onto existing SHAs, ingest-and-tag for new SHAs.
-func mergeFromCompatArchive(cx *galleryCtx, files []*zip.File, format string) error {
+func mergeFromCompatArchive(cx *galleryCtx, files []*zip.File, format string, maxFileSizeMB int) error {
 	result, err := compatibility.Translate(files, format)
 	if err != nil {
 		return err
@@ -47,12 +47,10 @@ func mergeFromCompatArchive(cx *galleryCtx, files []*zip.File, format string) er
 		}
 		records = append(records, rec)
 	}
-	applyMergeRecords(cx, records, format)
+	applyMergeRecords(cx, records, format, maxFileSizeMB)
 	return nil
 }
 
-// Version is stamped to galleryExportVersion since the in-memory
-// translation has no notion of an on-disk format version.
 func toLightManifest(m compatibility.Manifest) lightManifest {
 	out := lightManifest{
 		Version: galleryExportVersion,

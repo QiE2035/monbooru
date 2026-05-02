@@ -22,10 +22,13 @@ func (s *Server) runScheduler() {
 		next, ok := s.nextScheduledFire(time.Now())
 		if !ok {
 			// No action enabled (or invalid time). Sleep an hour then re-check
-			// so Settings edits pick up without a server restart.
+			// so Settings edits pick up without a server restart - and wake
+			// early when a save signals via schedReload.
 			select {
 			case <-s.done:
 				return
+			case <-s.schedReload:
+				continue
 			case <-time.After(time.Hour):
 				continue
 			}
@@ -38,6 +41,8 @@ func (s *Server) runScheduler() {
 		select {
 		case <-s.done:
 			return
+		case <-s.schedReload:
+			continue
 		case <-time.After(d):
 			s.runScheduledActions()
 		}
@@ -58,11 +63,14 @@ func (s *Server) nextScheduledFire(now time.Time) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	year, month, day := now.Date()
-	today := time.Date(year, month, day, t.hour, t.minute, 0, 0, now.Location())
-	if !today.After(now) {
-		today = today.Add(24 * time.Hour)
+	fire := time.Date(year, month, day, t.hour, t.minute, 0, 0, now.Location())
+	if !fire.After(now) {
+		// time.Date normalises components, so passing day+1 walks the
+		// calendar through DST transitions correctly. Add(24h) would
+		// slip the local fire time by an hour twice a year.
+		fire = time.Date(year, month, day+1, t.hour, t.minute, 0, 0, now.Location())
 	}
-	return today, true
+	return fire, true
 }
 
 type schedTime struct{ hour, minute int }
@@ -85,16 +93,15 @@ func parseScheduleTime(v string) (schedTime, error) {
 
 func schedHasAnyEnabled(sc config.ScheduleConfig) bool {
 	return sc.SyncGallery || sc.RemoveOrphans || sc.RunAutoTaggers ||
-		sc.RecomputeTags || sc.MergeGeneralTags || sc.VacuumDB
+		sc.MergeGeneralTags
 }
 
 // runScheduledActions iterates every configured gallery and runs the enabled
 // maintenance actions in a fixed order: sync → remove orphans → autotag →
-// recompute tags → merge general tags → vacuum. Skips the whole run when a
-// user-triggered job is already holding the job manager. The reservation
-// blocks user-triggered Start() calls for the duration so the lock-less
-// phases below (RemoveOrphans, RecalcTags, MergeGeneral, Vacuum) can't be
-// raced by external handlers.
+// merge general tags. Skips the whole run when a user-triggered job is
+// already holding the job manager. The reservation blocks user-triggered
+// Start() calls for the duration so the lock-less phases below
+// (RemoveOrphans, MergeGeneral) can't be raced by external handlers.
 func (s *Server) runScheduledActions() {
 	if err := s.jobs.BeginSchedule(); err != nil {
 		logx.Warnf("scheduler: skipping run (a job is already running)")
@@ -103,7 +110,14 @@ func (s *Server) runScheduledActions() {
 	defer s.jobs.EndSchedule()
 
 	started := time.Now()
-	defer func() { s.recordScheduleRun(started, time.Since(started), "OK") }()
+	var failures []string
+	defer func() {
+		info := "OK"
+		if len(failures) > 0 {
+			info = strings.Join(failures, "; ")
+		}
+		s.recordScheduleRun(started, time.Since(started), info)
+	}()
 
 	s.cfgMu.Lock()
 	sched := s.cfg.Schedule
@@ -124,30 +138,32 @@ func (s *Server) runScheduledActions() {
 		logx.Infof("scheduler: running actions on gallery %q", name)
 
 		if sched.SyncGallery && !cx.Degraded {
-			s.scheduledSync(cx)
+			if err := s.scheduledSync(cx); err != nil {
+				failures = append(failures, "sync "+name+": "+err.Error())
+			}
 		}
 		if sched.RemoveOrphans {
-			s.scheduledRemoveOrphans(cx)
+			if err := s.scheduledRemoveOrphans(cx); err != nil {
+				failures = append(failures, "remove-orphans "+name+": "+err.Error())
+			}
 		}
 		if sched.RunAutoTaggers && tagger.IsAvailable(s.cfg) {
-			s.scheduledAutotag(cx)
-		}
-		if sched.RecomputeTags {
-			s.scheduledRecalcTags(cx)
+			if err := s.scheduledAutotag(cx); err != nil {
+				failures = append(failures, "autotag "+name+": "+err.Error())
+			}
 		}
 		if sched.MergeGeneralTags {
-			s.scheduledMergeGeneral(cx)
-		}
-		if sched.VacuumDB {
-			s.scheduledVacuum(cx)
+			if err := s.scheduledMergeGeneral(cx); err != nil {
+				failures = append(failures, "merge-general "+name+": "+err.Error())
+			}
 		}
 	}
 }
 
-func (s *Server) scheduledSync(cx *galleryCtx) {
+func (s *Server) scheduledSync(cx *galleryCtx) error {
 	if err := s.jobs.StartScheduled("sync"); err != nil {
 		logx.Warnf("scheduler sync %q: %v", cx.Name, err)
-		return
+		return err
 	}
 	ctx := s.jobs.Context()
 	result, err := gallery.Sync(ctx, cx.DB, cx.GalleryPath, cx.ThumbnailsPath,
@@ -158,34 +174,43 @@ func (s *Server) scheduledSync(cx *galleryCtx) {
 	if ctx.Err() != nil {
 		s.jobs.Complete(fmt.Sprintf("[%s] sync cancelled (%d added, %d missing, %d moved)",
 			cx.Name, result.Added, result.Removed, result.Moved))
-		return
+		return nil
 	}
 	if err != nil {
 		s.jobs.Fail(err.Error())
 		logx.Warnf("scheduler sync %q: %v", cx.Name, err)
-		return
+		return err
 	}
 	s.jobs.Complete(fmt.Sprintf("[%s] %d added, %d missing, %d moved",
 		cx.Name, result.Added, result.Removed, result.Moved))
+	return nil
 }
 
-func (s *Server) scheduledRemoveOrphans(cx *galleryCtx) {
+func (s *Server) scheduledRemoveOrphans(cx *galleryCtx) error {
 	entries, err := os.ReadDir(cx.ThumbnailsPath)
 	if err != nil {
 		logx.Warnf("scheduler orphans %q: read thumbnails dir: %v", cx.Name, err)
-		return
+		return err
 	}
 	known := map[int64]struct{}{}
 	rows, err := cx.DB.Read.Query(`SELECT id FROM images`)
 	if err != nil {
 		logx.Warnf("scheduler orphans %q: %v", cx.Name, err)
-		return
+		return err
 	}
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err == nil {
 			known[id] = struct{}{}
 		}
+	}
+	if iterErr := rows.Err(); iterErr != nil {
+		// A truncated cursor would shrink `known`, leaving the loop
+		// below to delete legit thumbnails as orphans. Bail loud
+		// rather than silently quiet.
+		rows.Close()
+		logx.Warnf("scheduler orphans %q: cursor error, skipping sweep: %v", cx.Name, iterErr)
+		return iterErr
 	}
 	rows.Close()
 	removed := 0
@@ -215,9 +240,10 @@ func (s *Server) scheduledRemoveOrphans(cx *galleryCtx) {
 		}
 	}
 	logx.Infof("scheduler: [%s] removed %d orphaned thumbnail(s)", cx.Name, removed)
+	return nil
 }
 
-func (s *Server) scheduledAutotag(cx *galleryCtx) {
+func (s *Server) scheduledAutotag(cx *galleryCtx) error {
 	var ids []int64
 	rows, err := cx.DB.Read.Query(
 		`SELECT i.id FROM images i WHERE i.is_missing = 0
@@ -225,7 +251,7 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) {
 	)
 	if err != nil {
 		logx.Warnf("scheduler autotag %q: %v", cx.Name, err)
-		return
+		return err
 	}
 	for rows.Next() {
 		var id int64
@@ -235,61 +261,48 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) {
 	}
 	rows.Close()
 	if len(ids) == 0 {
-		return
+		return nil
 	}
 	enabled := tagger.EnabledTaggers(s.cfg)
 	if len(enabled) == 0 {
-		return
+		return nil
 	}
 	if err := s.jobs.StartScheduled("autotag"); err != nil {
 		logx.Warnf("scheduler autotag %q: %v", cx.Name, err)
-		return
+		return err
 	}
 	ctx := s.jobs.Context()
 	skipped, err := tagger.RunWithTaggers(ctx, cx.DB, s.cfg, ids, enabled, s.jobs, s.cfg.Tagger.UseCUDA)
+	cx.InvalidateCaches()
 	if ctx.Err() != nil {
 		s.jobs.Complete(fmt.Sprintf("[%s] auto-tagging cancelled (%d image(s) queued)", cx.Name, len(ids)))
-		return
+		return nil
 	}
 	if err != nil {
 		s.jobs.Fail(err.Error())
 		logx.Warnf("scheduler autotag %q: %v", cx.Name, err)
-		return
+		return err
 	}
 	if skipped > 0 {
 		s.jobs.Complete(fmt.Sprintf("[%s] auto-tagged %d of %d image(s), %d skipped", cx.Name, len(ids)-skipped, len(ids), skipped))
-		return
+		return nil
 	}
 	s.jobs.Complete(fmt.Sprintf("[%s] auto-tagged %d image(s)", cx.Name, len(ids)))
+	return nil
 }
 
-func (s *Server) scheduledRecalcTags(cx *galleryCtx) {
-	updated, pruned := cx.TagSvc.RecalcAndPruneCount()
-	logx.Infof("scheduler: [%s] recalculated %d tag(s), pruned %d unused", cx.Name, updated, pruned)
-}
-
-func (s *Server) scheduledMergeGeneral(cx *galleryCtx) {
+func (s *Server) scheduledMergeGeneral(cx *galleryCtx) error {
 	merged, err := cx.TagSvc.MergeGeneralIntoCategorized()
 	if err != nil {
 		logx.Warnf("scheduler merge-general %q: %v", cx.Name, err)
-		return
+		return err
 	}
 	logx.Infof("scheduler: [%s] merged %d general tag(s)", cx.Name, merged)
-}
-
-func (s *Server) scheduledVacuum(cx *galleryCtx) {
-	if _, err := cx.DB.Write.Exec(`VACUUM`); err != nil {
-		logx.Warnf("scheduler vacuum %q: %v", cx.Name, err)
-		return
-	}
-	if _, err := cx.DB.Write.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
-		logx.Warnf("scheduler vacuum wal_checkpoint %q: %v", cx.Name, err)
-	}
-	logx.Infof("scheduler: [%s] vacuumed database", cx.Name)
+	return nil
 }
 
 // recordScheduleRun stores the completion of a scheduler run so the Schedule
-// settings section can show "Last run: … (OK, 3m12s)". info is a short
+// settings section can show "Last run: ... (OK, 3m12s)". info is a short
 // status string ("OK" or a failure summary).
 func (s *Server) recordScheduleRun(started time.Time, dur time.Duration, info string) {
 	s.schedMu.Lock()

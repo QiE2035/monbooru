@@ -111,14 +111,33 @@ func TestDetectMagic_WEBP(t *testing.T) {
 }
 
 func TestDetectMagic_MP4(t *testing.T) {
-	// ftyp box at offset 4
-	buf := []byte{0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 0x00, 0x00, 0x00, 0x00, 0, 0, 0, 0}
+	// ftyp box at offset 4 with the mp42 brand at offset 8.
+	buf := []byte{0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 'm', 'p', '4', '2', 0, 0, 0, 0}
 	got, err := detectMagic(buf)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != "mp4" {
 		t.Errorf("got %q, want mp4", got)
+	}
+}
+
+// Other ISO base-media containers share the ftyp box but use a brand
+// monbooru cannot decode. Accepting them as MP4 routes them into the
+// video pipeline where they fail; reject them at detection time so the
+// caller's "unsupported file" path runs instead.
+func TestDetectMagic_RejectsMOVHeader(t *testing.T) {
+	// QuickTime Movie carries the 'qt  ' brand.
+	buf := []byte{0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 'q', 't', ' ', ' ', 0, 0, 0, 0}
+	if _, err := detectMagic(buf); err != ErrUnsupportedType {
+		t.Errorf("expected ErrUnsupportedType for .mov header, got %v", err)
+	}
+}
+
+func TestDetectMagic_RejectsHEICHeader(t *testing.T) {
+	buf := []byte{0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 'h', 'e', 'i', 'c', 0, 0, 0, 0}
+	if _, err := detectMagic(buf); err != ErrUnsupportedType {
+		t.Errorf("expected ErrUnsupportedType for .heic header, got %v", err)
 	}
 }
 

@@ -113,20 +113,6 @@ func TestMissingTOMLCreatesDefaults(t *testing.T) {
 	}
 }
 
-func TestEnvVarOverride(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "monbooru.toml")
-	t.Setenv("MONBOORU_UI_PAGE_SIZE", "55")
-
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
-	if cfg.UI.PageSize != 55 {
-		t.Errorf("PageSize = %v, want 55", cfg.UI.PageSize)
-	}
-}
-
 func TestInvalidBindAddress(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "monbooru.toml")
@@ -136,6 +122,49 @@ bind_address = "notavalidaddress"
 `), 0644)
 	if _, err := Load(path); err == nil {
 		t.Errorf("expected error for invalid bind address")
+	}
+}
+
+func TestSessionLifetimeDaysClampsZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "monbooru.toml")
+	os.WriteFile(path, []byte(`
+[[galleries]]
+name = "default"
+gallery_path = "/gallery"
+
+[paths]
+data_path = "/data"
+
+[auth]
+session_lifetime_days = 0
+`), 0644)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Auth.SessionLifetimeDays != 7 {
+		t.Errorf("SessionLifetimeDays = %d, want 7 (clamped)", cfg.Auth.SessionLifetimeDays)
+	}
+}
+
+func TestPasswordHashRejectsNonBcrypt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "monbooru.toml")
+	os.WriteFile(path, []byte(`
+[[galleries]]
+name = "default"
+gallery_path = "/gallery"
+
+[paths]
+data_path = "/data"
+
+[auth]
+enable_password = true
+password_hash   = "not-a-bcrypt-hash"
+`), 0644)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "bcrypt") {
+		t.Errorf("expected bcrypt-shape error, got %v", err)
 	}
 }
 

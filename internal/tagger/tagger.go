@@ -26,6 +26,7 @@ import (
 	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/jobs"
 	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/leqwin/monbooru/internal/tags"
 	ort "github.com/yalue/onnxruntime_go"
 	"golang.org/x/image/draw"
 )
@@ -40,11 +41,15 @@ var wd14Category = map[int]string{
 	9: "copyright",
 }
 
-// wd14RatingTags are WD14 rating labels that should always go in the "meta" category.
+// wd14RatingTags are WD14 rating labels routed to the rating category.
+// Only the four canonical names are listed - the rating category accepts
+// only those, and storeResults inserts directly without going through
+// GetOrCreateTag's guard, so any non-canonical entry here would land a
+// stray row in the rating category. Variants like `rating:safe` or
+// `rating:nsfw` fall through to the standard wd14Category mapping
+// (defaulting to general for unknown WD14 category ids).
 var wd14RatingTags = map[string]bool{
 	"general": true, "sensitive": true, "questionable": true, "explicit": true,
-	"rating:general": true, "rating:sensitive": true, "rating:questionable": true, "rating:explicit": true,
-	"rating:safe": true, "rating:nsfw": true,
 }
 
 // tagLabel holds a parsed row from selected_tags.csv.
@@ -137,6 +142,7 @@ type loadedTagger struct {
 	session      *ort.DynamicAdvancedSession
 	labels       []tagLabel
 	joytagLayout bool
+	dispatch     *DispatchTable
 }
 
 // loadedSession is the cached half of loadedTagger: ORT state keyed by
@@ -148,6 +154,7 @@ type loadedSession struct {
 	session      *ort.DynamicAdvancedSession
 	labels       []tagLabel
 	joytagLayout bool
+	dispatch     *DispatchTable
 }
 
 // taggerCache holds the warm ORT environment and per-tagger sessions
@@ -188,8 +195,10 @@ func (c *taggerCache) satisfies(taggers []TaggerStatus, useCUDA bool) bool {
 
 // ensure populates the cache for (taggers, useCUDA). On signature
 // mismatch the existing cache is torn down first. Caller must hold
-// c.mu.
-func (c *taggerCache) ensure(cfg *config.Config, taggers []TaggerStatus, useCUDA bool) error {
+// c.mu. catIDs feeds dispatch resolution at session-build time so a
+// dispatch rule pointing at a renamed/deleted category surfaces as a
+// debug log instead of mis-routing labels.
+func (c *taggerCache) ensure(cfg *config.Config, taggers []TaggerStatus, useCUDA bool, catIDs map[string]int64) error {
 	if c.satisfies(taggers, useCUDA) {
 		return nil
 	}
@@ -253,6 +262,7 @@ func (c *taggerCache) ensure(cfg *config.Config, taggers []TaggerStatus, useCUDA
 			session:      session,
 			labels:       labels,
 			joytagLayout: !strings.EqualFold(filepath.Ext(t.TagsFile), ".csv"),
+			dispatch:     LoadDispatch(cfg.Paths.ModelPath, t.Name, catIDs),
 		}
 	}
 	return nil
@@ -317,8 +327,28 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 		return 0, fmt.Errorf("no tagger is enabled or available")
 	}
 
+	// Loaded ahead of cache.ensure so a fresh session set picks up the
+	// current tag_categories rows when LoadDispatch resolves rule
+	// targets. Reused below for the rating / wd14 / inferred chains.
+	catIDs := map[string]int64{}
+	catRows, err := database.Read.QueryContext(ctx, `SELECT id, name FROM tag_categories`)
+	if err == nil {
+		for catRows.Next() {
+			var id int64
+			var name string
+			if scanErr := catRows.Scan(&id, &name); scanErr != nil {
+				logx.Warnf("tagger: scan tag_categories: %v", scanErr)
+				continue
+			}
+			catIDs[name] = id
+		}
+		catRows.Close()
+	}
+	generalCatID := catIDs["general"]
+	ratingCatID := catIDs["rating"]
+
 	cache.mu.Lock()
-	if err := cache.ensure(cfg, taggers, useCUDA); err != nil {
+	if err := cache.ensure(cfg, taggers, useCUDA, catIDs); err != nil {
 		cache.mu.Unlock()
 		return 0, err
 	}
@@ -330,6 +360,7 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 			session:      s.session,
 			labels:       s.labels,
 			joytagLayout: s.joytagLayout,
+			dispatch:     s.dispatch,
 		}
 	}
 	cache.inUse = true
@@ -353,23 +384,6 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 	for _, lt := range loaded {
 		taggerNames = append(taggerNames, lt.cfg.Name)
 	}
-
-	catIDs := map[string]int64{}
-	catRows, err := database.Read.QueryContext(ctx, `SELECT id, name FROM tag_categories`)
-	if err == nil {
-		for catRows.Next() {
-			var id int64
-			var name string
-			if scanErr := catRows.Scan(&id, &name); scanErr != nil {
-				logx.Warnf("tagger: scan tag_categories: %v", scanErr)
-				continue
-			}
-			catIDs[name] = id
-		}
-		catRows.Close()
-	}
-	metaCatID := catIDs["meta"]
-	generalCatID := catIDs["general"]
 
 	// Inference map for label-only (.txt) taggers: tag name → catID
 	// for an existing non-general non-meta categorised tag. Ambiguous
@@ -472,25 +486,37 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 				if score < threshold || score < 0.001 {
 					continue
 				}
+				name := label.name
 				var catID int64
-				if wd14RatingTags[label.name] {
-					catID = metaCatID
+				// Dispatch wins over the rating / wd14 / inferred chain
+				// so operator overrides land regardless of what the
+				// label file declares for the source.
+				if rule, ok := lt.dispatch.Lookup(label.name); ok {
+					if rule.Drop {
+						continue
+					}
+					catID = rule.CatID
+					if rule.Name != "" {
+						name = rule.Name
+					}
+				} else if wd14RatingTags[label.name] {
+					catID = ratingCatID
 				} else {
 					monbooruCat := wd14Category[label.categoryID]
 					if monbooruCat == "" {
 						monbooruCat = "general"
 					}
 					catID = catIDs[monbooruCat]
-				}
-				// .txt taggers have no category info; if a unique
-				// categorised tag with this name already exists, attach
-				// to it instead of dropping into general.
-				if lt.joytagLayout && catID == generalCatID {
-					if inferred, ok := inferredCats[label.name]; ok {
-						catID = inferred
+					// .txt taggers have no category info; if a unique
+					// categorised tag with this name already exists,
+					// attach to it instead of dropping into general.
+					if lt.joytagLayout && catID == generalCatID {
+						if inferred, ok := inferredCats[label.name]; ok {
+							catID = inferred
+						}
 					}
 				}
-				k := tagKey{name: label.name, catID: catID}
+				k := tagKey{name: name, catID: catID}
 				if prev, ok := merged[k]; !ok || score > prev.score {
 					merged[k] = scored{score: score, taggerName: lt.cfg.Name}
 				}
@@ -727,7 +753,6 @@ func storeResults(
 		}
 	}
 
-	// Snapshot tags currently on the image, with attribution.
 	type rowInfo struct {
 		isAuto     bool
 		taggerName string
@@ -776,8 +801,6 @@ func storeResults(
 		}
 	}
 
-	// Apply removals. Roll back on failure rather than committing a
-	// half-replaced state.
 	for tid := range toRemove {
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM image_tags WHERE image_id = ? AND tag_id = ? AND is_auto = 1`, imageID, tid); err != nil {
@@ -789,7 +812,6 @@ func storeResults(
 		}
 	}
 
-	// Refresh confidence and attribution for tags that stay.
 	for tid, t := range targets {
 		info, exists := current[tid]
 		if !exists || !info.isAuto {
@@ -812,7 +834,7 @@ func storeResults(
 			tname = t.taggerName
 		}
 		res, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO image_tags (image_id, tag_id, is_auto, confidence, tagger_name) VALUES (?, ?, 1, ?, ?)`,
+			`INSERT OR IGNORE INTO image_tags (image_id, tag_id, is_auto, is_implied, confidence, tagger_name) VALUES (?, ?, 1, 0, ?, ?)`,
 			imageID, tid, t.score, tname)
 		if err != nil {
 			return fmt.Errorf("insert auto tag %d: %w", tid, err)
@@ -822,6 +844,9 @@ func storeResults(
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?`, tid); err != nil {
 			return fmt.Errorf("increment usage for tag %d: %w", tid, err)
+		}
+		if err := tags.ApplyImpliedFanoutTx(tx, imageID, tid, true); err != nil {
+			return fmt.Errorf("fan out implications for tag %d: %w", tid, err)
 		}
 	}
 

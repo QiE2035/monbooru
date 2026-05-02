@@ -1,5 +1,5 @@
-// Package compatibility translates foreign gallery exports 
-// (zipped Hydrus exports, …) into the same in-memory shape the
+// Package compatibility translates foreign gallery exports
+// (zipped Hydrus exports, ...) into the same in-memory shape the
 // monbooru-native light import consumes. Each supported application lives
 // in its own file and self-registers via init():
 //
@@ -14,7 +14,7 @@
 //	}
 //
 // Adding a new application is one new file (a Detect predicate plus a
-// Translate function) — nothing under internal/web's gallery_io.go or
+// Translate function) - nothing under internal/web's gallery_io.go or
 // gallery_merge.go has to change.
 package compatibility
 

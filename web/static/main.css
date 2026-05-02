@@ -118,7 +118,19 @@ button.footer-gallery {
 }
 button.footer-gallery:hover { color: var(--fg); }
 .footer-sep { color: var(--border); }
+.footer-sep-strong { color: var(--fg-dim); font-weight: bold; margin: 0 4px; }
 .footer-degraded { color: var(--warning); }
+.footer-rating-label { color: var(--fg-dim); }
+.footer-rating-active { color: var(--accent); }
+button.footer-rating-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+button.footer-rating-link:hover { color: var(--fg); }
 
 #nav {
   display: flex;
@@ -545,10 +557,44 @@ button.footer-gallery:hover { color: var(--fg); }
   border-bottom: 1px solid var(--border);
   margin-bottom: 12px;
 }
+/* Auto-tag uses the small (2px) detail-page padding by default so it
+   matches .btn-sm / .btn-fav in the detail action row; in the batch bar it
+   sits next to default-padding buttons (Add tags, Remove tags, Move,
+   Delete), so bump it back up to keep heights consistent. */
+#batch-bar .btn-autotag { padding: 4px 8px; }
 #batch-bar.visible { display: flex; }
 #batch-delete-form { display: flex; gap: 8px; flex: 1; align-items: center; }
 .batch-bar-right { margin-left: auto; }
 .batch-bar-sep { display: inline-block; width: 1px; height: 22px; background: var(--fg-dim); margin: 0 12px; align-self: center; flex-shrink: 0; }
+
+/* Actions chooser: a flat vertical stack of buttons inside a dialog. The
+   number-key prefix on each entry's label takes the place of any visual
+   accelerator, so the menu stays plain text.
+   - Plain entries: neutral border, fg text.
+   - .btn-autotag: neutral border at rest (matches plain entries) but indigo
+     text so the action is still readable as accent; full indigo invert on
+     hover/focus.
+   - .btn-danger: keeps its filled-red look at rest; the red is the warning. */
+.actions-menu { list-style: none; margin: 0 0 12px 0; padding: 0; min-width: 320px; }
+.actions-menu-item { margin: 0; }
+.actions-menu-item button {
+  display: block; width: 100%; text-align: left;
+  padding: 6px 10px; font: inherit; line-height: 1.4; cursor: pointer;
+}
+.actions-menu-item button:not(.btn-danger) {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+.actions-menu-item button:not(.btn-autotag):not(.btn-danger) { color: var(--fg); }
+.actions-menu-item button.btn-autotag { color: var(--indigo); }
+.actions-menu-item button:focus { outline: none; }
+.actions-menu-item button:not(.btn-autotag):not(.btn-danger):hover,
+.actions-menu-item button:not(.btn-autotag):not(.btn-danger):focus { border-color: var(--fg-dim); }
+.actions-menu-item button.btn-autotag:hover,
+.actions-menu-item button.btn-autotag:focus {
+  background: var(--indigo); color: var(--bg); border-color: var(--indigo);
+}
+.actions-menu-sep { height: 1px; background: var(--border); margin: 6px 0; }
 
 /* Detail page */
 .detail-main {
@@ -662,9 +708,20 @@ details summary:hover { color: var(--fg); }
 .tag-name-cell a:hover { text-decoration: underline; }
 .tag-id { color: var(--fg-dim); font-size: 11px; width: 50px; }
 .tag-table .tag-name-cell { min-width: 260px; }
-.tag-table th:nth-child(3), .tag-table td:nth-child(3) { width: 110px; }
-.tag-table th:nth-child(4), .tag-table td:nth-child(4) { width: 70px; }
+.tag-table th:nth-child(4), .tag-table td:nth-child(4) { width: 110px; }
 .tag-table th:nth-child(5), .tag-table td:nth-child(5) { width: 70px; }
+.tag-table th:nth-child(6), .tag-table td:nth-child(6) { width: 70px; }
+/* Implied column: stays on a single line, ellipsises overflow so the
+   row height never grows past the others. */
+.tag-implied-cell {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.tag-implied-cell a { text-decoration: none; }
+.tag-implied-cell a:hover { text-decoration: underline; }
 .tag-row:hover { background: var(--bg-surface); }
 .no-results { color: var(--fg-dim); font-style: italic; padding: 8px; }
 /* Tags page */
@@ -1058,6 +1115,7 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .tag-item::before { content: "["; }
 .tag-item::after  { content: "]"; }
 .tag-item { max-width: 100%; }
+.tag-item.focused { outline: 1px solid var(--accent); outline-offset: 2px; }
 .tag-chip-name {
   color: inherit;
   text-decoration: none;
@@ -1139,6 +1197,9 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .suggest-dropdown.suggest-fresh .suggest-item:hover { background: var(--bg-surface); }
 .suggest-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
 .suggest-count { color: var(--fg-dim); font-size: 11px; }
+.suggest-category { color: var(--fg-dim); font-size: 11px; }
+.suggest-description { color: var(--fg-dim); font-size: 11px; font-style: italic; }
+.suggest-sep { color: var(--fg-dim); font-size: 11px; }
 
 /* Aliases section */
 .aliases-section { margin-bottom: 16px; }
@@ -1177,6 +1238,24 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .tag-source-group { margin-bottom: 4px; }
 .tag-source-title { font-size: 11px; color: var(--fg-dim); margin: 4px 0 2px; font-weight: normal; }
 
+/* Implied rows are decorative on the per-image list - dim them so they
+   read as derived from the tags above, not as primary content. The
+   sidebar excludes them via groupByImageTags. */
+.tag-source-group[data-source="implied"] .tag-source-title,
+.tag-source-group[data-source="alias"] .tag-source-title { font-style: italic; }
+.tag-implied-entry,
+.tag-alias-entry { opacity: 0.55; }
+.tag-implied-entry:hover,
+.tag-alias-entry:hover { opacity: 0.85; }
+
+/* /tags page Implications dialog. */
+#implications-dialog { min-width: 480px; }
+#implications-dialog .add-tag-form { margin-top: 8px; }
+
+/* /tags page header: dense row of action buttons; danger pinned right. */
+#tags-page-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#tags-page-header #btn-delete-tags-search { margin-left: auto; }
+
 .settings-subseparator { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 
 .maintenance-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
@@ -1184,29 +1263,12 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .maintenance-table td:last-child { text-align: right; white-space: nowrap; }
 
 .tagger-actions { display: flex; gap: 4px; flex-wrap: wrap; }
-.tagger-bulk-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.tagger-bulk-actions button { padding: 2px 8px; font-size: 13px; line-height: 1.4; }
 
 .confirm-dialog-danger { color: var(--error); font-size: 12px; margin-top: 4px; }
 .confirm-dialog-danger:empty { display: none; }
 .tagger-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
 .tagger-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: normal; color: var(--fg-dim); }
 .tagger-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-/* The Bulk auto-tagging table (in #tags, 4 cols): Tagger absorbs leftover;
-   Run untagged / Run all / Remove auto-tagged shrink to fit and right-align
-   so the action buttons cluster at the table edge instead of floating in
-   the middle of wide cells. */
-section#tags .tagger-table th:nth-child(2),
-section#tags .tagger-table td:nth-child(2),
-section#tags .tagger-table th:nth-child(3),
-section#tags .tagger-table td:nth-child(3),
-section#tags .tagger-table th:nth-child(4),
-section#tags .tagger-table td:nth-child(4) { width: 1%; white-space: nowrap; text-align: right; }
-/* Header padding matches the auto-tagger table so labels sit above
-   the button text rather than the button's outer border. */
-section#tags .tagger-table th:nth-child(2),
-section#tags .tagger-table th:nth-child(3),
-section#tags .tagger-table th:nth-child(4) { padding-right: 17px; }
 /* The Auto-Tagger configuration table (7 cols): Tagger absorbs leftover
    horizontal space; Instructions / Downloaded / Enabled / Confidence
    shrink to fit and stay left-aligned right after it; Enable / Delete
@@ -1473,6 +1535,12 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
    the default block-level .field label stacking. */
 .batch-tag-radios { display: flex; gap: 12px; }
 .batch-tag-radios label { display: inline; margin-bottom: 0; }
+
+/* Layout-stable hide: keeps the slot in flow so siblings (and the surrounding
+   dialog) don't shift as the row toggles. Used by the Remove tags dialog so
+   flipping between Specific / Specific auto-tagger / bulk modes doesn't move
+   the radio list or resize the pop-in. */
+.row-inactive { visibility: hidden; }
 
 /* Settings sub sections */
 .settings-sub { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }

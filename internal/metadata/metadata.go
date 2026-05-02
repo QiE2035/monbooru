@@ -103,7 +103,6 @@ func collectEXIFTags(x *exif.Exif) []models.SDParam {
 	return out
 }
 
-// walkFunc adapts a closure to the exif.Walker interface.
 type walkFunc func(name exif.FieldName, tag *tiff.Tag) error
 
 func (w walkFunc) Walk(name exif.FieldName, tag *tiff.Tag) error { return w(name, tag) }

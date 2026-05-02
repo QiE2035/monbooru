@@ -36,6 +36,8 @@ func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {
 		Sort:      sortStr,
 		PageIndex: offset / limit,
 		Limit:     limit,
+		Origin:    q.Get("origin"),
+		ShowZero:  q.Get("show_zero") == "1",
 	}
 
 	if catName != "" {

@@ -140,7 +140,7 @@
       {{/* Tag editor */}}
       <div class="tag-editor-section">
         <h3>Tags</h3>
-        {{template "partials/tag_list.html" (dict "ImageID" .Image.ID "ImageTags" .ImageTags "CSRFToken" .CSRFToken)}}
+        {{template "partials/tag_list.html" (dict "ImageID" .Image.ID "ImageTags" .ImageTags "Aliases" .Aliases "CSRFToken" .CSRFToken)}}
         <div class="add-tag-wrapper" style="position:relative">
           <form id="add-tag-form" class="add-tag-form"
                 hx-post="/images/{{.Image.ID}}/tags"

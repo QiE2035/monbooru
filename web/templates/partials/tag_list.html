@@ -1,6 +1,7 @@
 {{define "partials/tag_list.html"}}
 <div id="image-tags" data-image-id="{{.ImageID}}">
   {{if .ErrMsg}}<div class="flash flash-err" style="margin-bottom:4px">{{.ErrMsg}}</div>{{end}}
+  {{if .OkMsg}}<div class="flash flash-ok" style="margin-bottom:4px">{{.OkMsg}}</div>{{end}}
   {{$groups := groupByImageSource .ImageTags}}
   {{if $groups}}
     {{range $groups}}
@@ -8,15 +9,17 @@
       <h4 class="tag-source-title">{{.Title}}</h4>
       <ul class="tag-list" data-source="{{.Source}}">
         {{range .Tags}}
-        <li class="tag-item" data-tag-id="{{.TagID}}" data-source="{{if .IsAuto}}auto{{else}}user{{end}}" style="color:{{.Color}}">
+        <li class="tag-item{{if .IsImplied}} tag-implied-entry{{end}}" data-tag-id="{{.TagID}}" data-source="{{if .IsImplied}}implied{{else if .IsAuto}}auto{{else}}user{{end}}" style="color:{{.Color}}">
           <a href="/?q={{.Category}}:{{.TagName}}" class="tag-chip-name">{{.TagName}}</a>
-          {{if .IsAuto}}{{with autoConfPct .Confidence}}<span class="auto-conf">{{.}}%</span>{{end}}{{end}}
+          {{if and .IsAuto (not .IsImplied)}}{{with autoConfPct .Confidence}}<span class="auto-conf">{{.}}%</span>{{end}}{{end}}
+          {{if not .IsImplied}}
           <button class="tag-remove-btn"
                   hx-delete="/images/{{$.ImageID}}/tags/{{.TagID}}"
                   hx-target="#image-tags"
                   hx-swap="outerHTML"
                   hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
                   title="Remove tag">×</button>
+          {{end}}
         </li>
         {{end}}
       </ul>
@@ -24,6 +27,20 @@
     {{end}}
   {{else}}
   <ul class="tag-list"><li class="no-tags">No tags yet.</li></ul>
+  {{end}}
+  {{if .Aliases}}
+  <div class="tag-source-group" data-source="alias">
+    <h4 class="tag-source-title">Aliases</h4>
+    <ul class="tag-list" data-source="alias">
+      {{range .Aliases}}
+      <li class="tag-item tag-alias-entry" data-tag-id="{{.ID}}" data-source="alias" style="color:{{.CategoryColor}}">
+        <a href="/?q={{.CanonicalCategoryName}}:{{.CanonicalName}}" class="tag-chip-name">{{.Name}}</a>
+        <span class="merge-arrow">→</span>
+        <span style="color:{{.CanonicalCategoryColor}}">{{.CanonicalName}}</span>
+      </li>
+      {{end}}
+    </ul>
+  </div>
   {{end}}
   <hr class="tag-list-divider" hidden>
   <h4 class="tag-list-added-title" hidden>Just added</h4>

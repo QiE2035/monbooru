@@ -182,14 +182,22 @@ func clientIP(r *http.Request) string {
 // sameOriginReferer returns the Referer when it points at the same Host as
 // r, falling back to "/". Used by handlers that 303-redirect on form submit
 // so a Referer pointing at a different origin can never bounce the user
-// off-site.
+// off-site. Schemes other than http(s) (or empty for relative refs) are
+// rejected so a `javascript:` or `data:` Referer can't round-trip into a
+// Location header.
 func sameOriginReferer(r *http.Request) string {
 	ref := r.Referer()
 	if ref == "" {
 		return "/"
 	}
 	u, err := url.Parse(ref)
-	if err != nil || u.Host != "" && u.Host != r.Host {
+	if err != nil {
+		return "/"
+	}
+	if u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https" {
+		return "/"
+	}
+	if u.Host != "" && u.Host != r.Host {
 		return "/"
 	}
 	return ref

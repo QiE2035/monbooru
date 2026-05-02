@@ -28,6 +28,11 @@ type Config struct {
 type ServerConfig struct {
 	BindAddress string `toml:"bind_address"`
 	BaseURL     string `toml:"base_url"`
+	// CustomCSS is an optional absolute path to a stylesheet that the
+	// operator drops next to monbooru.toml. When set, it is served at
+	// /custom.css and linked from the layout after the bundled main.css
+	// so :root overrides win the cascade.
+	CustomCSS string `toml:"custom_css"`
 }
 
 // PathsConfig holds process-wide paths. Per-gallery DB and thumbnails
@@ -92,9 +97,7 @@ type ScheduleConfig struct {
 	SyncGallery      bool   `toml:"sync_gallery"`
 	RemoveOrphans    bool   `toml:"remove_orphans"`
 	RunAutoTaggers   bool   `toml:"run_auto_taggers"`
-	RecomputeTags    bool   `toml:"recompute_tags"`
 	MergeGeneralTags bool   `toml:"merge_general_tags"`
-	VacuumDB         bool   `toml:"vacuum_db"`
 }
 
 // Default returns a fully populated config with all spec defaults.
@@ -132,9 +135,7 @@ func Default() *Config {
 			SyncGallery:      true,
 			RemoveOrphans:    true,
 			RunAutoTaggers:   false,
-			RecomputeTags:    true,
 			MergeGeneralTags: true,
-			VacuumDB:         true,
 		},
 	}
 }
@@ -144,7 +145,7 @@ var scheduleTimeRe = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
 // ValidateScheduleTime accepts "HH:MM" in 24-hour form.
 func ValidateScheduleTime(v string) error {
 	if !scheduleTimeRe.MatchString(v) {
-		return fmt.Errorf("schedule.time %q must be HH:MM (00:00–23:59)", v)
+		return fmt.Errorf("schedule.time %q must be HH:MM (00:00-23:59)", v)
 	}
 	return nil
 }
@@ -287,11 +288,6 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("MONBOORU_AUTH_API_TOKEN"); v != "" {
 		cfg.Auth.APIToken = v
 	}
-	if v := os.Getenv("MONBOORU_UI_PAGE_SIZE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.UI.PageSize = n
-		}
-	}
 	if v := os.Getenv("MONBOORU_LOG_LEVEL"); v != "" {
 		cfg.Log.Level = v
 	}
@@ -310,6 +306,13 @@ func validate(cfg *Config) error {
 	if cfg.Auth.EnablePassword && strings.TrimSpace(cfg.Auth.PasswordHash) == "" {
 		return fmt.Errorf("auth.enable_password is true but auth.password_hash is empty - " +
 			"run `monbooru -hash-password 'your-password'` and paste the result into monbooru.toml")
+	}
+	if cfg.Auth.EnablePassword {
+		h := strings.TrimSpace(cfg.Auth.PasswordHash)
+		if !strings.HasPrefix(h, "$2a$") && !strings.HasPrefix(h, "$2b$") && !strings.HasPrefix(h, "$2y$") {
+			return fmt.Errorf("auth.password_hash does not look like a bcrypt hash - " +
+				"run `monbooru -hash-password 'your-password'` and paste the result into monbooru.toml")
+		}
 	}
 	if len(cfg.Galleries) == 0 {
 		return fmt.Errorf("at least one gallery must be configured")
@@ -346,6 +349,12 @@ func validate(cfg *Config) error {
 	// config typo.
 	if cfg.UI.PageSize <= 0 {
 		cfg.UI.PageSize = 40
+	}
+	// MaxAge=0 in net/http means "session cookie", so a hand-edited TOML
+	// with session_lifetime_days = 0 would expire the user's session at
+	// every browser close instead of after the documented 7 days.
+	if cfg.Auth.SessionLifetimeDays <= 0 {
+		cfg.Auth.SessionLifetimeDays = 7
 	}
 	return nil
 }

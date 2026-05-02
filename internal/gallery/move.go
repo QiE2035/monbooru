@@ -62,10 +62,10 @@ func MoveImage(database *db.DB, galleryPath string, id int64, targetFolder strin
 
 	newPath := UniqueDestPath(destDir, filepath.Base(oldCanonical))
 
-	// DB first: once the row points at newPath the watcher's REMOVE on
-	// oldCanonical matches no row, and its CREATE on newPath collapses
-	// into an INSERT OR IGNORE against the already-canonical row. Move-job
-	// suppression in the watcher is belt-and-braces on top of that.
+	// Rename inside the open tx so a rename failure rolls the row updates
+	// back automatically. The watcher suppresses events while the move job
+	// runs, so the brief window where on-disk newPath exists but the tx
+	// has not committed yet does not race with concurrent ingest.
 	tx, err := database.Write.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("begin move tx: %w", err)
@@ -84,26 +84,18 @@ func MoveImage(database *db.DB, galleryPath string, id int64, targetFolder strin
 		tx.Rollback()
 		return nil, fmt.Errorf("update image_paths row: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit move tx: %w", err)
-	}
-
 	if err := os.Rename(oldCanonical, newPath); err != nil {
-		// Revert the DB rows so a retry sees consistent state. A revert
-		// failure leaves the library inconsistent, hence the loud log.
-		if _, rbErr := database.Write.Exec(
-			`UPDATE images SET canonical_path = ?, folder_path = ? WHERE id = ?`,
-			oldCanonical, oldFolder, id,
-		); rbErr != nil {
-			logx.Errorf("move: restore images row for %d: %v (original: %v)", id, rbErr, err)
-		}
-		if _, rbErr := database.Write.Exec(
-			`UPDATE image_paths SET path = ? WHERE image_id = ? AND is_canonical = 1`,
-			oldCanonical, id,
-		); rbErr != nil {
-			logx.Errorf("move: restore image_paths row for %d: %v (original: %v)", id, rbErr, err)
-		}
+		tx.Rollback()
 		return nil, fmt.Errorf("rename file: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		// Commit failure is rare (SQLite COMMIT is essentially an fsync).
+		// Reverse the rename so disk and DB stay consistent; if that
+		// fails the library is wedged and the operator needs a manual sync.
+		if rnErr := os.Rename(newPath, oldCanonical); rnErr != nil {
+			logx.Errorf("move: reverse rename for %d after commit fail: %v (original: %v)", id, rnErr, err)
+		}
+		return nil, fmt.Errorf("commit move tx: %w", err)
 	}
 
 	return &MoveImageResult{

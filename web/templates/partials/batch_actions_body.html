@@ -1,0 +1,15 @@
+{{define "partials/batch_actions_body.html"}}
+<p>Apply the following actions to <strong id="batch-actions-count">{{.Result.Total}}</strong> <span id="batch-actions-noun">{{plural .Result.Total "image" "images"}}</span> in current search:</p>
+<ul class="actions-menu">
+  {{if .Query}}<li class="actions-menu-item" data-action="save"><button type="button" data-action="save">Save search</button></li>{{end}}
+  {{if and (not .Degraded) (gt .Result.Total 0)}}
+  <li class="actions-menu-sep" aria-hidden="true"></li>
+  <li class="actions-menu-item" data-action="add"><button type="button" data-action="add">Add tag manually</button></li>
+  <li class="actions-menu-item" data-action="strip"><button type="button" data-action="strip">Remove tags</button></li>
+  {{if .EnabledTaggers}}<li class="actions-menu-item" data-action="autotag"><button type="button" class="btn-autotag" data-action="autotag">Auto-tag</button></li>{{end}}
+  <li class="actions-menu-item" data-action="move"><button type="button" data-action="move">Move</button></li>
+  <li class="actions-menu-sep" aria-hidden="true"></li>
+  <li class="actions-menu-item" data-action="delete"><button type="button" class="btn-danger" data-action="delete">Delete</button></li>
+  {{end}}
+</ul>
+{{end}}
