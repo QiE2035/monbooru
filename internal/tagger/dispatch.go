@@ -25,13 +25,16 @@ type DispatchTable struct {
 	rules map[string]DispatchRule
 }
 
-// DispatchRule is the resolved per-source decision. CatID is meaningful
-// only when Drop is false. An empty Name means "keep the source label as
-// the tag name".
+// DispatchRule is the resolved per-source decision. CatID and CatName
+// are meaningful only when Drop is false. An empty Name means "keep the
+// source label as the tag name". CatName mirrors the source rule's
+// `category` string so per-category threshold lookups can route a
+// dispatched label without an extra id→name reverse pass.
 type DispatchRule struct {
-	Drop  bool
-	CatID int64
-	Name  string
+	Drop    bool
+	CatID   int64
+	CatName string
+	Name    string
 }
 
 type dispatchDoc struct {
@@ -94,6 +97,7 @@ func compileDispatchRule(r dispatchEntry, catIDs map[string]int64) (DispatchRule
 			return DispatchRule{}, false
 		}
 		rule.CatID = cid
+		rule.CatName = r.Category
 	}
 	if r.Name != "" {
 		name, ok := sanitizeLabel(r.Name, 0)

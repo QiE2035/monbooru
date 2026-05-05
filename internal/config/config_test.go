@@ -247,6 +247,50 @@ gallery_path = "/gallery"
 	}
 }
 
+func TestTaggerGalleriesNilVsEmptyRoundTrip(t *testing.T) {
+	// Three persisted shapes must survive Save → Load:
+	//   - field absent      → nil   (legacy: applies to every gallery)
+	//   - galleries = []    → []    (no gallery)
+	//   - galleries = [...] → those (named subset)
+	// The encoder must not collapse nil and empty into the same wire
+	// shape, otherwise the "no galleries" choice degenerates back into
+	// "every gallery" silently.
+	cases := []struct {
+		name   string
+		input  []string
+		applies bool
+	}{
+		{name: "all-nil", input: nil, applies: true},
+		{name: "none", input: []string{}, applies: false},
+		{name: "named", input: []string{"default"}, applies: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "monbooru.toml")
+			cfg := Default()
+			cfg.Tagger.Taggers = []TaggerInstance{{Name: "wd-swinv2", Enabled: true, ConfidenceThreshold: 0.4, Galleries: c.input}}
+			if err := Save(cfg, path); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			loaded, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if len(loaded.Tagger.Taggers) != 1 {
+				t.Fatalf("len(Taggers) = %d", len(loaded.Tagger.Taggers))
+			}
+			got := loaded.Tagger.Taggers[0].Galleries
+			if (c.input == nil) != (got == nil) {
+				t.Errorf("nil-ness drift: input nil=%t, got nil=%t (%v)", c.input == nil, got == nil, got)
+			}
+			if loaded.Tagger.Taggers[0].AppliesToGallery("default") != c.applies {
+				t.Errorf("AppliesToGallery(default) = %t, want %t", !c.applies, c.applies)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsDuplicateGalleryNames(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "monbooru.toml")

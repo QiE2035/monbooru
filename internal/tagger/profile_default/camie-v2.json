@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "profile": {
+    "input_size": 0,
+    "layout": "nchw",
+    "channels": "rgb",
+    "normalize": "imagenet",
+    "pad": "mean_color_aspect",
+    "activation": "logits",
+    "label_format": "camie_json",
+    "category_scheme": "name_string",
+    "output_index": 1
+  }
+}

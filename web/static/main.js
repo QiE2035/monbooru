@@ -286,6 +286,44 @@ document.body.addEventListener('delete-go-back', function(e) {
   if (fallback) window.location.href = fallback;
 });
 
+// Per-tagger config dialogs (thresholds, galleries) close themselves on a
+// successful save. The server fires `tagger-saved` via HX-Trigger and
+// names the dialog id to close; the parent flash and the row summary
+// arrive as OOB swaps so the page state is already updated by the time
+// this listener runs.
+document.body.addEventListener('tagger-saved', function(e) {
+  var id = e.detail && e.detail.dialog;
+  if (!id) return;
+  var dlg = document.getElementById(id);
+  if (dlg && dlg.open) dlg.close();
+});
+
+// Per-tagger Galleries dialog helpers. taggerGalAllToggle disables and
+// force-checks the per-gallery boxes when "All galleries" is on so the
+// submitted state matches the rendered state. taggerGalSelect mass-sets
+// the per-gallery boxes (used by "Select all" / "Select none").
+function taggerGalAllToggle(cb) {
+  var form = cb.closest('form');
+  if (!form) return;
+  form.querySelectorAll('input[name=gallery_names]').forEach(function(c) {
+    c.disabled = cb.checked;
+    if (cb.checked) c.checked = true;
+  });
+}
+
+function taggerGalSelect(btn, on) {
+  var form = btn.closest('form');
+  if (!form) return;
+  var allCb = form.querySelector('input[name=all]');
+  if (allCb && allCb.checked) {
+    allCb.checked = false;
+    taggerGalAllToggle(allCb);
+  }
+  form.querySelectorAll('input[name=gallery_names]').forEach(function(c) {
+    c.checked = !!on;
+  });
+}
+
 // Returning from a detail page via a back-link with #img-N restores the
 // arrow-key cursor on the matching thumbnail.
 function restoreGalleryFocusFromHash() {
@@ -384,6 +422,26 @@ document.addEventListener('click', function(e) {
 // Batch selection: show/hide batch bar and keep checkboxes visible
 document.addEventListener('change', function(e) {
   if (!e.target.classList.contains('thumb-checkbox')) return;
+  updateBatchBar();
+});
+
+// While the batch bar is up, a plain left-click on a thumbnail toggles
+// its checkbox instead of opening the detail page. Modifier-clicks
+// (middle, ctrl/cmd, shift) keep the link's default so "open in tab"
+// still works. Esc / Cancel clears the selection and the link goes back
+// to navigating.
+document.addEventListener('click', function(e) {
+  if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+  var grid = document.getElementById('gallery-grid');
+  if (!grid || !grid.classList.contains('batch-active')) return;
+  var link = e.target.closest('.thumb-link');
+  if (!link) return;
+  var card = link.closest('.thumb-card');
+  if (!card) return;
+  var cb = card.querySelector('.thumb-checkbox');
+  if (!cb) return;
+  e.preventDefault();
+  cb.checked = !cb.checked;
   updateBatchBar();
 });
 

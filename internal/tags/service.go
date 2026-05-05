@@ -858,6 +858,17 @@ func (s *Service) AddTagToImageReportingDup(imageID, tagID int64, isAuto bool, c
 	if err != nil {
 		return false, false, err
 	}
+	// Highest-rank-wins among rating tags. The PK lookup is cheap and
+	// the prune is a no-op when the image carries 0 or 1 rating tags
+	// (the typical case after this rule has been applied to a row).
+	if (added || promoted) && s.ratingCatID != 0 {
+		var catID int64
+		if err := tx.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, tagID).Scan(&catID); err == nil && catID == s.ratingCatID {
+			if err := pruneLowerRatingsTx(tx, s.ratingCatID, imageID); err != nil {
+				return false, false, err
+			}
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return false, false, err
 	}
@@ -1202,6 +1213,88 @@ func (s *Service) RemoveAllTagsFromImage(imageID int64) error {
 // categories pass through uncapped because they carry distinguishing
 // signal worth the scan even when common.
 const relatedGeneralTagsCap = 15
+
+// ratingRank returns the position of name in RatingLevels (0-indexed,
+// general < sensitive < questionable < explicit). Returns -1 for any
+// non-canonical name. Mirrors the same helper in internal/search; kept
+// package-private here so tags doesn't depend on search.
+func ratingRank(name string) int {
+	for i, l := range RatingLevels {
+		if l == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// PruneLowerRatingsTx keeps only the highest-rank rating tag on imageID.
+// When the image carries multiple rating-category rows (general <
+// sensitive < questionable < explicit) the lower-rank rows are removed
+// via removeTagFromImageTx so usage_count adjustment and the implied
+// closure cleanup match the rest of the tag-removal path. Idempotent:
+// after the call the image carries at most one rating tag.
+//
+// Both the manual add path (AddTagToImageReportingDup) and the auto-
+// tagger's storeResults call this so highest-rank-wins is the durable
+// invariant a fresh write upholds. fastCountCeiling and fastCountRating
+// rely on the invariant for their constant-time bounds.
+//
+// ratingCatID is the rating category id; pass 0 to skip (only possible
+// against a pre-bootstrap DB, where the four canonical rating rows
+// don't yet exist).
+func PruneLowerRatingsTx(tx *sql.Tx, ratingCatID, imageID int64) error {
+	return pruneLowerRatingsTx(tx, ratingCatID, imageID)
+}
+
+func pruneLowerRatingsTx(tx *sql.Tx, ratingCatID, imageID int64) error {
+	if ratingCatID == 0 {
+		return nil
+	}
+	rows, err := tx.Query(
+		`SELECT it.tag_id, t.name FROM image_tags it
+		 JOIN tags t ON t.id = it.tag_id
+		 WHERE it.image_id = ? AND t.category_id = ? AND t.is_alias = 0`,
+		imageID, ratingCatID,
+	)
+	if err != nil {
+		return fmt.Errorf("scan rating rows for prune: %w", err)
+	}
+	type ratingRow struct {
+		tagID int64
+		name  string
+	}
+	var present []ratingRow
+	for rows.Next() {
+		var r ratingRow
+		if err := rows.Scan(&r.tagID, &r.name); err != nil {
+			rows.Close()
+			return err
+		}
+		present = append(present, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(present) <= 1 {
+		return nil
+	}
+	bestRank := -1
+	for _, r := range present {
+		if rank := ratingRank(r.name); rank > bestRank {
+			bestRank = rank
+		}
+	}
+	for _, r := range present {
+		if ratingRank(r.name) >= bestRank {
+			continue
+		}
+		if err := removeTagFromImageTx(tx, imageID, r.tagID); err != nil {
+			return fmt.Errorf("prune lower rating %d: %w", r.tagID, err)
+		}
+	}
+	return nil
+}
 
 // RatingTagIDsAbove returns the canonical rating tag ids whose level
 // ranks strictly above ceiling (e.g. ceiling="sensitive" returns the ids

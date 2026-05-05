@@ -36,6 +36,8 @@ func DiscoverTaggers(cfg *config.Config) []TaggerStatus {
 	byName := map[string]config.TaggerInstance{}
 	order := []string{}
 
+	catalogDefaults := catalogDefaultsByName(cfg.Paths.ModelPath)
+
 	// Start from disk so untouched subfolders show up even without
 	// config. TOML overlays override below. Completely empty
 	// subdirectories are skipped so they don't appear as permanently
@@ -49,11 +51,7 @@ func DiscoverTaggers(cfg *config.Config) []TaggerStatus {
 			if !hasTaggerFiles(filepath.Join(cfg.Paths.ModelPath, name)) {
 				continue
 			}
-			byName[name] = config.TaggerInstance{
-				Name:                name,
-				Enabled:             true,
-				ConfidenceThreshold: DefaultConfidenceThreshold,
-			}
+			byName[name] = SeedTaggerInstance(name, true, catalogDefaults[name])
 			order = append(order, name)
 		}
 	}
@@ -89,7 +87,10 @@ func DiscoverTaggers(cfg *config.Config) []TaggerStatus {
 
 // EnabledTaggers returns taggers that are both enabled in config and
 // available on disk. Returns nil on a noop build so the UI hides
-// affordances that depend on inference.
+// affordances that depend on inference. Used by surfaces that don't
+// know which gallery a tag job is about to run on (e.g. the Settings
+// page itself); per-gallery callers should use EnabledTaggersForGallery
+// instead.
 func EnabledTaggers(cfg *config.Config) []TaggerStatus {
 	if !buildSupportsInference() {
 		return nil
@@ -99,6 +100,28 @@ func EnabledTaggers(cfg *config.Config) []TaggerStatus {
 		if t.Enabled && t.Available {
 			out = append(out, t)
 		}
+	}
+	return out
+}
+
+// EnabledTaggersForGallery filters EnabledTaggers down to the rows whose
+// per-tagger Galleries list either is empty (applies to every gallery,
+// the legacy behaviour) or contains the named gallery. Used by every
+// per-job entry point so a tagger configured for `default` doesn't fire
+// on `stock` and vice versa.
+func EnabledTaggersForGallery(cfg *config.Config, gallery string) []TaggerStatus {
+	if !buildSupportsInference() {
+		return nil
+	}
+	var out []TaggerStatus
+	for _, t := range DiscoverTaggers(cfg) {
+		if !t.Enabled || !t.Available {
+			continue
+		}
+		if !t.AppliesToGallery(gallery) {
+			continue
+		}
+		out = append(out, t)
 	}
 	return out
 }
@@ -133,6 +156,13 @@ func resolveTaggerFiles(dir, explicitModel, explicitTags string) (string, string
 				if n == DefaultTextTagsFile {
 					hasTagsTXT = true
 				}
+			case ".json":
+				// `tagger.json` and `dispatch.json` are operator
+				// sidecars, never label files. Excluding them by name
+				// keeps the lone-label auto-pick honest.
+				if n != "tagger.json" && n != "dispatch.json" {
+					labelFiles = append(labelFiles, n)
+				}
 			}
 		}
 	}
@@ -166,7 +196,8 @@ func resolveTaggerFiles(dir, explicitModel, explicitTags string) (string, string
 
 // hasTaggerFiles reports whether dir contains at least one file with a
 // tagger-related extension, used to skip empty subdirectories during
-// discovery.
+// discovery. `tagger.json` / `dispatch.json` sidecars don't count: a
+// folder carrying only those is not a runnable tagger.
 func hasTaggerFiles(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -176,9 +207,14 @@ func hasTaggerFiles(dir string) bool {
 		if e.IsDir() {
 			continue
 		}
-		switch strings.ToLower(filepath.Ext(e.Name())) {
+		n := e.Name()
+		switch strings.ToLower(filepath.Ext(n)) {
 		case ".onnx", ".csv", ".txt":
 			return true
+		case ".json":
+			if n != "tagger.json" && n != "dispatch.json" {
+				return true
+			}
 		}
 	}
 	return false
@@ -191,4 +227,43 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// SeedTaggerInstance returns a fresh TaggerInstance with the given name
+// and enabled flag, prefilled from the catalog's default_threshold and
+// default_thresholds when a non-nil entry is supplied. Used both by the
+// discover-from-disk path and the per-row Enable handler so the same
+// catalog-supplied defaults land in either flow without restating them.
+func SeedTaggerInstance(name string, enabled bool, catalog *CatalogEntry) config.TaggerInstance {
+	t := config.TaggerInstance{
+		Name:                name,
+		Enabled:             enabled,
+		ConfidenceThreshold: DefaultConfidenceThreshold,
+	}
+	if catalog == nil {
+		return t
+	}
+	if catalog.DefaultThreshold > 0 {
+		t.ConfidenceThreshold = catalog.DefaultThreshold
+	}
+	if len(catalog.DefaultThresholds) > 0 {
+		t.CategoryThresholds = make(map[string]float64, len(catalog.DefaultThresholds))
+		for k, v := range catalog.DefaultThresholds {
+			t.CategoryThresholds[k] = v
+		}
+	}
+	return t
+}
+
+// catalogDefaultsByName indexes the merged catalog (embedded + on-disk
+// override) by tagger name so the discover loop can pick up
+// default_threshold / default_thresholds without reparsing the JSON
+// once per row.
+func catalogDefaultsByName(modelPath string) map[string]*CatalogEntry {
+	cat := LoadCatalog(modelPath)
+	out := make(map[string]*CatalogEntry, len(cat))
+	for i := range cat {
+		out[cat[i].Name] = &cat[i]
+	}
+	return out
 }

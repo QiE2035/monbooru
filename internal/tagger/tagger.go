@@ -3,19 +3,15 @@
 package tagger
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
-	"encoding/csv"
 	"fmt"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
-	"io"
 	"math"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,41 +24,7 @@ import (
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/tags"
 	ort "github.com/yalue/onnxruntime_go"
-	"golang.org/x/image/draw"
 )
-
-const modelSize = 448
-
-// wd14Category maps WD14 numeric category IDs to Monbooru built-in category names.
-var wd14Category = map[int]string{
-	0: "general",
-	1: "artist",
-	4: "character",
-	9: "copyright",
-}
-
-// wd14RatingTags are WD14 rating labels routed to the rating category.
-// Only the four canonical names are listed - the rating category accepts
-// only those, and storeResults inserts directly without going through
-// GetOrCreateTag's guard, so any non-canonical entry here would land a
-// stray row in the rating category. Variants like `rating:safe` or
-// `rating:nsfw` fall through to the standard wd14Category mapping
-// (defaulting to general for unknown WD14 category ids).
-var wd14RatingTags = map[string]bool{
-	"general": true, "sensitive": true, "questionable": true, "explicit": true,
-}
-
-// tagLabel holds a parsed row from selected_tags.csv.
-type tagLabel struct {
-	name       string
-	categoryID int // WD14 category ID
-	// placeholder is true when the label-file row had no usable name
-	// (e.g. only punctuation) and the slot was filled with an
-	// `_unsupported_<idx>` stub to keep the slice index aligned with
-	// the model's output channels. Inference must skip these slots so
-	// the stub never becomes a real tag.
-	placeholder bool
-}
 
 // IsAvailable reports whether at least one enabled tagger has its files.
 func IsAvailable(cfg *config.Config) bool {
@@ -138,23 +100,27 @@ type scored struct {
 // inference loop reads, so threshold edits take effect without
 // rebuilding the session.
 type loadedTagger struct {
-	cfg          config.TaggerInstance
-	session      *ort.DynamicAdvancedSession
-	labels       []tagLabel
-	joytagLayout bool
-	dispatch     *DispatchTable
+	cfg       config.TaggerInstance
+	session   *ort.DynamicAdvancedSession
+	labels    []tagLabel
+	profile   Profile
+	inputSize int
+	dispatch  *DispatchTable
 }
 
 // loadedSession is the cached half of loadedTagger: ORT state keyed by
 // tagger name. modelFile and tagsFile gate cache reuse - a TOML edit
-// that swaps either invalidates the entry.
+// that swaps either invalidates the entry; profileFP additionally
+// invalidates on a tagger.json sidecar edit.
 type loadedSession struct {
-	modelFile    string
-	tagsFile     string
-	session      *ort.DynamicAdvancedSession
-	labels       []tagLabel
-	joytagLayout bool
-	dispatch     *DispatchTable
+	modelFile  string
+	tagsFile   string
+	profileFP  string
+	session    *ort.DynamicAdvancedSession
+	labels     []tagLabel
+	profile    Profile
+	inputSize  int
+	dispatch   *DispatchTable
 }
 
 // taggerCache holds the warm ORT environment and per-tagger sessions
@@ -175,9 +141,11 @@ type taggerCache struct {
 var cache taggerCache
 
 // satisfies returns true when the cached set covers every requested
-// tagger with the same execution-provider mode and the same model /
-// tags filenames. Caller must hold c.mu.
-func (c *taggerCache) satisfies(taggers []TaggerStatus, useCUDA bool) bool {
+// tagger with the same execution-provider mode, the same model / tags
+// filenames, and the same profile fingerprint. The profile check picks
+// up tagger.json sidecar edits without a manual reload. Caller must
+// hold c.mu.
+func (c *taggerCache) satisfies(modelPath string, taggers []TaggerStatus, useCUDA bool) bool {
 	if !c.initialized || c.useCUDA != useCUDA {
 		return false
 	}
@@ -187,6 +155,13 @@ func (c *taggerCache) satisfies(taggers []TaggerStatus, useCUDA bool) bool {
 			return false
 		}
 		if s.modelFile != t.ModelFile || s.tagsFile != t.TagsFile {
+			return false
+		}
+		profile, err := ResolveProfile(modelPath, t.Name, t.TagsFile)
+		if err != nil {
+			return false
+		}
+		if profile.fingerprint() != s.profileFP {
 			return false
 		}
 	}
@@ -199,7 +174,7 @@ func (c *taggerCache) satisfies(taggers []TaggerStatus, useCUDA bool) bool {
 // dispatch rule pointing at a renamed/deleted category surfaces as a
 // debug log instead of mis-routing labels.
 func (c *taggerCache) ensure(cfg *config.Config, taggers []TaggerStatus, useCUDA bool, catIDs map[string]int64) error {
-	if c.satisfies(taggers, useCUDA) {
+	if c.satisfies(cfg.Paths.ModelPath, taggers, useCUDA) {
 		return nil
 	}
 	if c.initialized {
@@ -236,7 +211,12 @@ func (c *taggerCache) ensure(cfg *config.Config, taggers []TaggerStatus, useCUDA
 	for _, t := range taggers {
 		onnxPath := filepath.Join(cfg.Paths.ModelPath, t.Name, t.ModelFile)
 		tagsPath := filepath.Join(cfg.Paths.ModelPath, t.Name, t.TagsFile)
-		labels, err := loadLabels(tagsPath)
+		profile, err := ResolveProfile(cfg.Paths.ModelPath, t.Name, t.TagsFile)
+		if err != nil {
+			c.teardownLocked()
+			return fmt.Errorf("resolve profile for %q: %w", t.Name, err)
+		}
+		labels, err := loadLabels(tagsPath, profile)
 		if err != nil {
 			c.teardownLocked()
 			return fmt.Errorf("load labels for %q: %w", t.Name, err)
@@ -250,22 +230,61 @@ func (c *taggerCache) ensure(cfg *config.Config, taggers []TaggerStatus, useCUDA
 			c.teardownLocked()
 			return fmt.Errorf("ort model for %q has no input/output", t.Name)
 		}
+		outIdx := profile.OutputIndex
+		if outIdx < 0 || outIdx >= len(outputs) {
+			c.teardownLocked()
+			return fmt.Errorf("ort model for %q: profile output_index %d out of range (have %d)", t.Name, outIdx, len(outputs))
+		}
+		inputSize := profile.InputSize
+		if inputSize == 0 {
+			inputSize = inferInputSize(inputs[0].Dimensions, profile.Layout)
+			if inputSize <= 0 {
+				c.teardownLocked()
+				return fmt.Errorf("ort model for %q: cannot infer input size from dimensions %v", t.Name, inputs[0].Dimensions)
+			}
+		}
 		session, err := ort.NewDynamicAdvancedSession(onnxPath,
-			[]string{inputs[0].Name}, []string{outputs[0].Name}, c.sessionOpts)
+			[]string{inputs[0].Name}, []string{outputs[outIdx].Name}, c.sessionOpts)
 		if err != nil {
 			c.teardownLocked()
 			return fmt.Errorf("create ort session for %q: %w", t.Name, err)
 		}
 		c.sessions[t.Name] = &loadedSession{
-			modelFile:    t.ModelFile,
-			tagsFile:     t.TagsFile,
-			session:      session,
-			labels:       labels,
-			joytagLayout: !strings.EqualFold(filepath.Ext(t.TagsFile), ".csv"),
-			dispatch:     LoadDispatch(cfg.Paths.ModelPath, t.Name, catIDs),
+			modelFile: t.ModelFile,
+			tagsFile:  t.TagsFile,
+			profileFP: profile.fingerprint(),
+			session:   session,
+			labels:    labels,
+			profile:   profile,
+			inputSize: inputSize,
+			dispatch:  LoadDispatch(cfg.Paths.ModelPath, t.Name, catIDs),
 		}
 	}
 	return nil
+}
+
+// inferInputSize picks the spatial axis from an ONNX input's Dimensions
+// shape based on the profile's layout. Returns 0 when the shape is
+// degenerate (dynamic axis as -1, or unexpected rank). NHWC: shape is
+// [N,H,W,C]; NCHW: shape is [N,C,H,W]. We prefer H over W; the two are
+// equal for every square-input tagger we ship.
+func inferInputSize(dims ort.Shape, layout string) int {
+	if len(dims) != 4 {
+		return 0
+	}
+	var d int64
+	switch layout {
+	case "nhwc":
+		d = dims[1]
+	case "nchw":
+		d = dims[2]
+	default:
+		return 0
+	}
+	if d <= 0 {
+		return 0
+	}
+	return int(d)
 }
 
 // teardownLocked destroys every cached ORT object and asks glibc to
@@ -345,7 +364,6 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 		catRows.Close()
 	}
 	generalCatID := catIDs["general"]
-	ratingCatID := catIDs["rating"]
 
 	cache.mu.Lock()
 	if err := cache.ensure(cfg, taggers, useCUDA, catIDs); err != nil {
@@ -356,11 +374,12 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 	for i, t := range taggers {
 		s := cache.sessions[t.Name]
 		loaded[i] = loadedTagger{
-			cfg:          t.TaggerInstance,
-			session:      s.session,
-			labels:       s.labels,
-			joytagLayout: s.joytagLayout,
-			dispatch:     s.dispatch,
+			cfg:       t.TaggerInstance,
+			session:   s.session,
+			labels:    s.labels,
+			profile:   s.profile,
+			inputSize: s.inputSize,
+			dispatch:  s.dispatch,
 		}
 	}
 	cache.inUse = true
@@ -385,20 +404,22 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 		taggerNames = append(taggerNames, lt.cfg.Name)
 	}
 
-	// Inference map for label-only (.txt) taggers: tag name → catID
-	// for an existing non-general non-meta categorised tag. Ambiguous
-	// names (multiple categorised variants) are dropped and fall back
-	// to general. Lets joytag's `hakurei_reimu` attach to a pre-existing
+	// Inference map for taggers whose category scheme can't tell apart
+	// general from categorised counterparts (joytag's single_general,
+	// camie when its category is "general"). Maps tag name → catID for
+	// an existing non-general non-meta categorised tag. Ambiguous names
+	// (multiple categorised variants) are dropped and fall back to
+	// general. Lets joytag's `hakurei_reimu` attach to a pre-existing
 	// `character:hakurei_reimu` instead of going under general.
 	inferredCats := map[string]int64{}
-	hasTxt := false
+	hasSingleGeneral := false
 	for _, lt := range loaded {
-		if lt.joytagLayout {
-			hasTxt = true
+		if lt.profile.CategoryScheme == "single_general" {
+			hasSingleGeneral = true
 			break
 		}
 	}
-	if hasTxt && generalCatID != 0 {
+	if hasSingleGeneral && generalCatID != 0 {
 		// Skip names whose general counterpart already carries a manual
 		// image_tag - that's an explicit user choice.
 		infRows, err := database.Read.QueryContext(ctx, `
@@ -474,7 +495,7 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 					}
 				}
 			}
-			threshold := float32(lt.cfg.ConfidenceThreshold)
+			globalThreshold := float32(lt.cfg.ConfidenceThreshold)
 			for idx, score := range best {
 				if idx >= len(lt.labels) {
 					continue
@@ -483,37 +504,37 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 				if label.placeholder {
 					continue
 				}
-				if score < threshold || score < 0.001 {
+				// Cheap floor that drops the long tail of near-zero
+				// scores before we resolve the category for the
+				// per-category threshold lookup.
+				if score < 0.001 {
 					continue
 				}
+				res := resolveCategory(lt.profile, label, catIDs, lt.dispatch)
+				if res.skip {
+					continue
+				}
+				threshold := globalThreshold
+				if v, ok := lt.cfg.CategoryThresholds[res.catName]; ok {
+					threshold = float32(v)
+				}
+				if score < threshold {
+					continue
+				}
+				catID := res.catID
 				name := label.name
-				var catID int64
-				// Dispatch wins over the rating / wd14 / inferred chain
-				// so operator overrides land regardless of what the
-				// label file declares for the source.
-				if rule, ok := lt.dispatch.Lookup(label.name); ok {
-					if rule.Drop {
-						continue
-					}
-					catID = rule.CatID
-					if rule.Name != "" {
-						name = rule.Name
-					}
-				} else if wd14RatingTags[label.name] {
-					catID = ratingCatID
-				} else {
-					monbooruCat := wd14Category[label.categoryID]
-					if monbooruCat == "" {
-						monbooruCat = "general"
-					}
-					catID = catIDs[monbooruCat]
-					// .txt taggers have no category info; if a unique
-					// categorised tag with this name already exists,
-					// attach to it instead of dropping into general.
-					if lt.joytagLayout && catID == generalCatID {
-						if inferred, ok := inferredCats[label.name]; ok {
-							catID = inferred
-						}
+				if rule, ok := lt.dispatch.Lookup(label.name); ok && rule.Name != "" {
+					name = rule.Name
+				}
+				// single_general taggers have no category info; if a
+				// unique categorised tag with this name already exists,
+				// attach to it instead of dropping into general. Skip the
+				// lift when a dispatch rule already routed the label.
+				if !res.override &&
+					lt.profile.CategoryScheme == "single_general" &&
+					catID == generalCatID {
+					if inferred, ok := inferredCats[label.name]; ok {
+						catID = inferred
 					}
 				}
 				k := tagKey{name: name, catID: catID}
@@ -523,7 +544,7 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 			}
 		}
 
-		if err := storeResults(ctx, database, imageID, merged, taggerNames); err != nil {
+		if err := storeResults(ctx, database, imageID, merged, taggerNames, catIDs["rating"]); err != nil {
 			logx.Warnf("tagger: store results for image %d: %v", imageID, err)
 			skipped.Add(1)
 		}
@@ -589,10 +610,11 @@ func framesForTagging(canonPath, fileType string) ([]string, func()) {
 	return frames, cleanup
 }
 
-// inferImage loads, preprocesses, and runs inference on a single image.
-// WD14 wants NHWC f32 BGR 0..255 and emits sigmoid probabilities;
-// joytag wants NCHW f32 RGB CLIP-normalised and emits raw logits, so we
-// sigmoid the output ourselves.
+// inferImage loads, preprocesses, and runs inference on a single image
+// against the tagger's resolved profile. The profile drives every
+// preprocessing axis (pad, layout, channel order, normalisation) and
+// the output transform (raw logits get sigmoid'd; sigmoid_in_model
+// outputs pass through).
 func inferImage(lt loadedTagger, path string) ([]float32, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -605,8 +627,11 @@ func inferImage(lt loadedTagger, path string) ([]float32, error) {
 		return nil, err
 	}
 
-	processed := padAndResize(img, modelSize)
-	tensor, inputShape := buildTensor(processed, lt.joytagLayout)
+	processed := padAndResize(img, lt.inputSize, lt.profile)
+	tensor, inputShape, err := buildTensor(processed, lt.inputSize, lt.profile)
+	if err != nil {
+		return nil, err
+	}
 	inputTensor, err := ort.NewTensor(inputShape, tensor)
 	if err != nil {
 		return nil, err
@@ -625,7 +650,7 @@ func inferImage(lt loadedTagger, path string) ([]float32, error) {
 		return nil, fmt.Errorf("unexpected output type: %T", outputs[0])
 	}
 	data := outTensor.GetData()
-	if lt.joytagLayout {
+	if lt.profile.Activation == "logits" {
 		out := make([]float32, len(data))
 		for i, v := range data {
 			out[i] = float32(1 / (1 + math.Exp(-float64(v))))
@@ -635,84 +660,14 @@ func inferImage(lt loadedTagger, path string) ([]float32, error) {
 	return data, nil
 }
 
-// buildTensor fills the ORT input buffer from the resized RGBA image.
-// The two branches diverge on layout, channel order, and value range.
-// Reading Pix directly skips the per-pixel image.Image interface
-// dispatch that would otherwise keep the GPU idle between inferences.
-func buildTensor(img *image.RGBA, joytag bool) ([]float32, ort.Shape) {
-	pix := img.Pix
-	stride := img.Stride
-	if !joytag {
-		tensor := make([]float32, 1*modelSize*modelSize*3)
-		for y := 0; y < modelSize; y++ {
-			row := pix[y*stride:]
-			for x := 0; x < modelSize; x++ {
-				src := x * 4
-				dst := (y*modelSize + x) * 3
-				tensor[dst+0] = float32(row[src+2]) // B
-				tensor[dst+1] = float32(row[src+1]) // G
-				tensor[dst+2] = float32(row[src+0]) // R
-			}
-		}
-		return tensor, ort.NewShape(1, modelSize, modelSize, 3)
-	}
-
-	// CLIP mean/std from joytag's preprocess step.
-	mean := [3]float32{0.48145466, 0.4578275, 0.40821073}
-	std := [3]float32{0.26862954, 0.26130258, 0.27577711}
-	plane := modelSize * modelSize
-	tensor := make([]float32, 1*3*plane)
-	for y := 0; y < modelSize; y++ {
-		row := pix[y*stride:]
-		for x := 0; x < modelSize; x++ {
-			src := x * 4
-			off := y*modelSize + x
-			tensor[0*plane+off] = (float32(row[src+0])/255 - mean[0]) / std[0]
-			tensor[1*plane+off] = (float32(row[src+1])/255 - mean[1]) / std[1]
-			tensor[2*plane+off] = (float32(row[src+2])/255 - mean[2]) / std[2]
-		}
-	}
-	return tensor, ort.NewShape(1, 3, modelSize, modelSize)
-}
-
-// padAndResize pads src to a white square then resizes to size×size.
-// Returns *image.RGBA so the caller can read .Pix directly.
-func padAndResize(src image.Image, size int) *image.RGBA {
-	b := src.Bounds()
-	w, h := b.Max.X-b.Min.X, b.Max.Y-b.Min.Y
-	maxDim := w
-	if h > maxDim {
-		maxDim = h
-	}
-
-	square := image.NewRGBA(image.Rect(0, 0, maxDim, maxDim))
-	for i := range square.Pix {
-		square.Pix[i] = 0xFF
-	}
-	offX := (maxDim - w) / 2
-	offY := (maxDim - h) / 2
-	draw.Draw(square, image.Rect(offX, offY, offX+w, offY+h), src, b.Min, draw.Src)
-
-	dst := image.NewRGBA(image.Rect(0, 0, size, size))
-	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), square, square.Bounds(), draw.Src, nil)
-	// Force white where alpha is 0 (e.g. transparent PNG corners).
-	for i := 3; i < len(dst.Pix); i += 4 {
-		if dst.Pix[i] == 0 {
-			dst.Pix[i-3] = 0xFF
-			dst.Pix[i-2] = 0xFF
-			dst.Pix[i-1] = 0xFF
-			dst.Pix[i] = 0xFF
-		}
-	}
-	return dst
-}
-
 // storeResults commits the merged auto-tag set for one image and keeps
 // usage_count in sync. The replace step is scoped to taggerNames so
-// other taggers' rows survive.
+// other taggers' rows survive. ratingCatID gates the highest-rank-wins
+// rating prune that fires when any of merged's tags is a rating-category
+// row; pass 0 to skip (pre-bootstrap DB).
 func storeResults(
 	ctx context.Context, database *db.DB,
-	imageID int64, merged map[tagKey]scored, taggerNames []string,
+	imageID int64, merged map[tagKey]scored, taggerNames []string, ratingCatID int64,
 ) error {
 	tx, err := database.Write.BeginTx(ctx, nil)
 	if err != nil {
@@ -850,81 +805,31 @@ func storeResults(
 		}
 	}
 
+	// WD14 emits every rating label that beats its threshold, so a
+	// single image can pick up `sensitive` and `questionable` in one
+	// pass. Sweep lower-rank rating rows so highest-rank wins matches
+	// what search resolves to anyway.
+	if ratingCatID != 0 {
+		hasRating := false
+		for k := range merged {
+			if k.catID == ratingCatID {
+				hasRating = true
+				break
+			}
+		}
+		if hasRating {
+			if err := tags.PruneLowerRatingsTx(tx, ratingCatID, imageID); err != nil {
+				return fmt.Errorf("prune lower ratings: %w", err)
+			}
+		}
+	}
+
 	if _, err := tx.ExecContext(ctx, `UPDATE images SET auto_tagged_at = ? WHERE id = ?`,
 		time.Now().UTC().Format(time.RFC3339), imageID); err != nil {
 		return fmt.Errorf("stamp auto_tagged_at on image %d: %w", imageID, err)
 	}
 
 	return tx.Commit()
-}
-
-// loadLabels parses the tagger's label file. `.csv` follows the WD14
-// schema (id, name, category_id); any other extension is read one
-// label per line with every label mapped to WD14 category 0
-// (`general`). Names are sanitised for the tag allowlist; the slice
-// index always lines up 1:1 with the model's output channels, even for
-// placeholder labels.
-func loadLabels(path string) ([]tagLabel, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	if strings.EqualFold(filepath.Ext(path), ".csv") {
-		return loadLabelsCSV(f)
-	}
-	return loadLabelsText(f)
-}
-
-func loadLabelsCSV(f io.Reader) ([]tagLabel, error) {
-	r := csv.NewReader(f)
-	if _, err := r.Read(); err != nil {
-		return nil, err
-	}
-	var labels []tagLabel
-	for {
-		rec, err := r.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if len(rec) < 3 {
-			continue
-		}
-		catID, _ := strconv.Atoi(strings.TrimSpace(rec[2]))
-		name, ok := sanitizeLabel(rec[1], len(labels))
-		labels = append(labels, tagLabel{
-			name:        name,
-			categoryID:  catID,
-			placeholder: !ok,
-		})
-	}
-	return labels, nil
-}
-
-func loadLabelsText(f io.Reader) ([]tagLabel, error) {
-	var labels []tagLabel
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		raw := scanner.Text()
-		if strings.TrimSpace(raw) == "" {
-			continue
-		}
-		name, ok := sanitizeLabel(raw, len(labels))
-		labels = append(labels, tagLabel{
-			name:        name,
-			categoryID:  0,
-			placeholder: !ok,
-		})
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return labels, nil
 }
 
 // sanitizeLabel coerces a label-file name into the documented tag

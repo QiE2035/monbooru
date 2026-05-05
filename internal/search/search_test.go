@@ -575,6 +575,509 @@ func TestFastCountCeiling_MatchesSlowPath(t *testing.T) {
 	}
 }
 
+// TestFastCountCeiling_WrappedUserExpr exercises the cookie-applied
+// shape: AndExpr{userExpr, ceilingChain}. Without the wrap-aware path
+// fastCountCeiling rejects, the COUNT walks every visible image, and
+// every search the user types under an active rating ceiling pays the
+// slow path.
+func TestFastCountCeiling_WrappedUserExpr(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "wc_safe_blue.png")
+	ingestTestImage(t, database, env, "wc_safe_red.png")
+	ingestTestImage(t, database, env, "wc_explicit_blue.png")
+	ingestTestImage(t, database, env, "wc_untagged.png")
+
+	var safeBlueID, safeRedID, expBlueID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wc_safe_blue.png'`).Scan(&safeBlueID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wc_safe_red.png'`).Scan(&safeRedID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wc_explicit_blue.png'`).Scan(&expBlueID)
+
+	var generalID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	var blueID int64
+	database.Write.QueryRow(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES ('blue_eyes', ?, 0) RETURNING id`,
+		generalID,
+	).Scan(&blueID)
+	attachTag(t, database, safeBlueID, blueID)
+	attachTag(t, database, expBlueID, blueID)
+	attachTag(t, database, safeBlueID, ratingTagID(t, database, "general"))
+	attachTag(t, database, safeRedID, ratingTagID(t, database, "general"))
+	attachTag(t, database, expBlueID, ratingTagID(t, database, "explicit"))
+
+	// Ceiling = sensitive: drop questionable+explicit. User searched for
+	// blue_eyes. Expected match: just safeBlueID. Both bounds in play:
+	// blue_eyes carriers = 2; chain bound = visible(4) - hidden(1) = 3.
+	// min(2, 3) = 2 (upper bound, exact for this shape since the only
+	// blue_eyes image hidden by the chain is expBlueID).
+	expr := AndExpr{
+		Left: TagExpr{Tag: "blue_eyes"},
+		Right: AndExpr{
+			Left:  NotExpr{Expr: FilterExpr{Key: "rating", Val: "questionable"}},
+			Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
+		},
+	}
+	got, ok := fastCountCeiling(database, expr)
+	if !ok {
+		t.Fatal("fastCountCeiling should recognise the wrapped ceiling AST")
+	}
+	if got != 2 {
+		t.Errorf("fastCountCeiling = %d, want 2 (min of blue_eyes=2 and chain=3)", got)
+	}
+
+	// And Execute end-to-end resolves to the actual single match.
+	result, err := Execute(database, Query{Expr: expr, Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Results) != 1 || result.Results[0].ID != safeBlueID {
+		t.Errorf("Execute results = %+v, want only safeBlueID=%d", result.Results, safeBlueID)
+	}
+}
+
+// TestFastCountCeiling_WrappedNoFastBound covers an AndExpr{userExpr,
+// chain} where userExpr is a shape fastTagTotal can't bound (a fav:
+// filter here). The chain bound alone is still a valid upper bound.
+func TestFastCountCeiling_WrappedNoFastBound(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "nfb_a.png")
+	ingestTestImage(t, database, env, "nfb_b.png")
+	ingestTestImage(t, database, env, "nfb_c.png")
+
+	var aID, bID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%nfb_a.png'`).Scan(&aID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%nfb_b.png'`).Scan(&bID)
+	attachTag(t, database, aID, ratingTagID(t, database, "general"))
+	attachTag(t, database, bID, ratingTagID(t, database, "explicit"))
+
+	expr := AndExpr{
+		Left:  FilterExpr{Key: "fav", Val: "true"},
+		Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
+	}
+	got, ok := fastCountCeiling(database, expr)
+	if !ok {
+		t.Fatal("fastCountCeiling should fall back to chain bound for unbounded userExpr")
+	}
+	if got != 2 {
+		t.Errorf("fastCountCeiling = %d, want 2 (chain bound: visible 3 - explicit carrier 1)", got)
+	}
+}
+
+// TestFastCountGenerated_HashMatch verifies the helper resolves
+// generated:HASH via the metadata partial indexes. Both sd_metadata
+// and comfyui_metadata carriers count, dedup'd via UNION.
+func TestFastCountGenerated_HashMatch(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "fg_sd.png")
+	ingestTestImage(t, database, env, "fg_comfy.png")
+	ingestTestImage(t, database, env, "fg_both.png")
+	ingestTestImage(t, database, env, "fg_other.png")
+	ingestTestImage(t, database, env, "fg_missing.png")
+
+	var sdID, comfyID, bothID, otherID, missingID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_sd.png'`).Scan(&sdID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_comfy.png'`).Scan(&comfyID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_both.png'`).Scan(&bothID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_other.png'`).Scan(&otherID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_missing.png'`).Scan(&missingID)
+
+	insertSD := func(id int64, hash string) {
+		if _, err := database.Write.Exec(
+			`INSERT INTO sd_metadata (image_id, generation_hash) VALUES (?, ?)`, id, hash,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertComfy := func(id int64, hash string) {
+		if _, err := database.Write.Exec(
+			`INSERT INTO comfyui_metadata (image_id, generation_hash) VALUES (?, ?)`, id, hash,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertSD(sdID, "abc123")
+	insertComfy(comfyID, "abc123")
+	insertSD(bothID, "abc123")
+	insertComfy(bothID, "abc123")
+	insertSD(otherID, "deadbeef")
+	insertSD(missingID, "abc123")
+	if _, err := database.Write.Exec(`UPDATE images SET is_missing = 1 WHERE id = ?`, missingID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := fastCountGenerated(database, FilterExpr{Key: "generated", Val: "abc123"})
+	if !ok {
+		t.Fatal("fastCountGenerated should answer for a known hash")
+	}
+	if got != 3 {
+		t.Errorf("generated:abc123 = %d, want 3 (sd + comfy + both; missing excluded)", got)
+	}
+
+	got, ok = fastCountGenerated(database, FilterExpr{Key: "generated", Val: "true"})
+	if !ok {
+		t.Fatal("fastCountGenerated should answer for any value")
+	}
+	if got != 0 {
+		t.Errorf("generated:true = %d, want 0 (literal hash 'true' matches nothing)", got)
+	}
+}
+
+// TestFastCountRating verifies that rating:LEVEL short-circuits to the
+// rating tag's usage_count when the bound is large enough to matter.
+// The highest level (explicit) is always exact - usage_count is the
+// answer, no higher level can hide a carrier. Lower levels gate on
+// fastApproxThreshold so small/test fixtures stay on the slow path's
+// exact count and only large libraries pay the upper-bound trade.
+func TestFastCountRating(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "fr_general.png")
+	ingestTestImage(t, database, env, "fr_explicit.png")
+	ingestTestImage(t, database, env, "fr_untagged.png")
+
+	var genID, expID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fr_general.png'`).Scan(&genID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fr_explicit.png'`).Scan(&expID)
+	attachTag(t, database, genID, ratingTagID(t, database, "general"))
+	attachTag(t, database, expID, ratingTagID(t, database, "explicit"))
+
+	cases := []struct {
+		val  string
+		want int
+		ok   bool
+	}{
+		// Highest rank: always fast, count is exact.
+		{"explicit", 1, true},
+		// Lower ranks below fastApproxThreshold fall through; the slow
+		// path takes over and produces the highest-wins exact count.
+		{"general", 0, false},
+		// Empty rating tag (usage_count = 0) is exact at any size.
+		{"sensitive", 0, true},
+		{"questionable", 0, true},
+		// Out-of-vocabulary level matches nothing.
+		{"not_a_level", 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.val, func(t *testing.T) {
+			got, ok := fastCountRating(database, FilterExpr{Key: "rating", Val: tc.val})
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v", ok, tc.ok)
+			}
+			if got != tc.want {
+				t.Errorf("count = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFastCountFolder covers the recursive folder count: same match
+// set as the slow path's (folder = ? OR folder LIKE ?), but two
+// index-pinned seeks against the partial idx_images_folder_visible
+// instead of a SCAN. The half-open range trick rests on '0' (0x30)
+// being the codepoint immediately after '/' (0x2f).
+func TestFastCountFolder(t *testing.T) {
+	database, env := setupSearchDB(t)
+
+	for i, name := range []string{"root.png", "anime_a.png", "anime_b.png", "anime_sub.png", "deep_x.png", "deep_y.png", "anime_other.png"} {
+		ingestTestImage(t, database, env, name)
+		// Pin the folder_path of each image deterministically so the
+		// fixture exercises every shape: root, exact dir, nested dir,
+		// a sibling that should NOT match.
+		var folder string
+		switch i {
+		case 0:
+			folder = ""
+		case 1, 2:
+			folder = "anime"
+		case 3:
+			folder = "anime/girls"
+		case 4, 5:
+			folder = "anime/girls/blue_eyes"
+		case 6:
+			folder = "anime_other" // sibling sharing the prefix; must NOT match folder:anime
+		}
+		if _, err := database.Write.Exec(
+			`UPDATE images SET folder_path = ? WHERE canonical_path LIKE '%' || ? || '%'`,
+			folder, name,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cases := []struct {
+		val  string
+		want int
+		ok   bool
+	}{
+		// folder:anime should match the two anime/* images plus the
+		// nested anime/girls and anime/girls/blue_eyes images, but
+		// NOT the anime_other sibling.
+		{"anime", 5, true},
+		// folder:anime/girls catches its three (one direct, two nested).
+		{"anime/girls", 3, true},
+		// Empty folder: helper bails (slow path's "1=1" semantic).
+		{"", 0, false},
+		// Non-matching prefix returns exact 0.
+		{"missing_dir", 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.val, func(t *testing.T) {
+			got, ok := fastCountFolder(database, FilterExpr{Key: "folder", Val: tc.val})
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v", ok, tc.ok)
+			}
+			if got != tc.want {
+				t.Errorf("count = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFastCountFolder_MatchesSlowPath verifies the helper agrees with
+// Execute's count phase under the same expression - the slow OR-LIKE
+// shape and the helper's index seeks must produce the same total.
+func TestFastCountFolder_MatchesSlowPath(t *testing.T) {
+	database, env := setupSearchDB(t)
+
+	for _, name := range []string{"a.png", "b.png", "c.png", "d.png"} {
+		ingestTestImage(t, database, env, name)
+	}
+	if _, err := database.Write.Exec(`UPDATE images SET folder_path = ? WHERE canonical_path LIKE '%a.png'`, "movies"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`UPDATE images SET folder_path = ? WHERE canonical_path LIKE '%b.png'`, "movies/scifi"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`UPDATE images SET folder_path = ? WHERE canonical_path LIKE '%c.png'`, "movies_other"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Execute(database, Query{
+		Expr:  FilterExpr{Key: "folder", Val: "movies"},
+		Page:  1,
+		Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 2 {
+		t.Errorf("Execute Total = %d, want 2 (movies + movies/scifi; movies_other excluded)", result.Total)
+	}
+}
+
+// TestFastCountSource_Csv covers the comma-separated form: source_type
+// values matching the 4-LIKE pattern get summed via index-pinned
+// COUNT(*) WHERE source_type IN (...). Same match set as the slow
+// path; only the count query restructures.
+func TestFastCountSource_Csv(t *testing.T) {
+	database, env := setupSearchDB(t)
+
+	// Seed images with each source_type value the metadata extractor
+	// produces. The bulk-insert mirrors what ingestion would land.
+	for _, st := range []struct {
+		name       string
+		sourceType string
+	}{
+		{"src_a.png", "a1111"},
+		{"src_b.png", "comfyui"},
+		{"src_ab.png", "a1111,comfyui"},
+		{"src_none.png", "none"},
+	} {
+		ingestTestImage(t, database, env, st.name)
+		if _, err := database.Write.Exec(
+			`UPDATE images SET source_type = ? WHERE canonical_path LIKE '%' || ? || '%'`,
+			st.sourceType, st.name,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cases := []struct {
+		val  string
+		want int
+		ok   bool
+	}{
+		// CSV value matches both the exact "a1111,comfyui" image and
+		// nothing else (no values like "X,a1111,comfyui" exist).
+		{"a1111,comfyui", 1, true},
+		// Bare value: slow path already pins the index, helper bails.
+		{"a1111", 0, false},
+		// Special aliases stay on the slow path.
+		{"ai", 0, false},
+		{"none", 0, false},
+		{"sd", 0, false},
+		// CSV value matching nothing returns exact 0.
+		{"x,y", 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.val, func(t *testing.T) {
+			got, ok := fastCountSource(database, FilterExpr{Key: "source", Val: tc.val})
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v", ok, tc.ok)
+			}
+			if got != tc.want {
+				t.Errorf("count = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFastCountTagged_UpperBound verifies the fast-path returns the
+// visible-image count for tagged:true / autotagged:true. The bound is
+// exact when every visible image is tagged (the audit fixture's state
+// and any synced library's typical state) and over-shoots for fresh
+// imports - same trade-off the wildcard / AND helpers already accept.
+// The :false variants fall through so untagged-triage queries keep
+// their exact slow-path count.
+func TestFastCountTagged_UpperBound(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "ft_a.png")
+	ingestTestImage(t, database, env, "ft_b.png")
+
+	cases := []struct {
+		key  string
+		val  string
+		want int
+		ok   bool
+	}{
+		{"tagged", "true", 2, true},
+		{"autotagged", "true", 2, true},
+		// :false stays on the slow path so the count is exact.
+		{"tagged", "false", 0, false},
+		{"autotagged", "false", 0, false},
+		// Other keys never enter this helper.
+		{"rating", "true", 0, false},
+	}
+	for _, tc := range cases {
+		name := tc.key + ":" + tc.val
+		t.Run(name, func(t *testing.T) {
+			got, ok := fastCountTagged(database, FilterExpr{Key: tc.key, Val: tc.val})
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v", ok, tc.ok)
+			}
+			if got != tc.want {
+				t.Errorf("count = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFastCountRating_RoutesThroughExecute pins that the helper is
+// wired into Execute's count phase: an Execute against rating:explicit
+// returns the same total the helper would.
+func TestFastCountRating_RoutesThroughExecute(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "fre_a.png")
+	ingestTestImage(t, database, env, "fre_b.png")
+	var aID, bID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fre_a.png'`).Scan(&aID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fre_b.png'`).Scan(&bID)
+	attachTag(t, database, aID, ratingTagID(t, database, "explicit"))
+	attachTag(t, database, bID, ratingTagID(t, database, "explicit"))
+
+	result, err := Execute(database, Query{
+		Expr:  FilterExpr{Key: "rating", Val: "explicit"},
+		Page:  1,
+		Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 2 {
+		t.Errorf("Total = %d, want 2", result.Total)
+	}
+	if len(result.Results) != 2 {
+		t.Errorf("len(Results) = %d, want 2", len(result.Results))
+	}
+}
+
+func TestExtractCeilingShape(t *testing.T) {
+	tests := []struct {
+		name       string
+		expr       Expr
+		wantUser   Expr
+		wantLevels []string
+		wantOK     bool
+	}{
+		{
+			name:       "nil",
+			expr:       nil,
+			wantUser:   nil,
+			wantLevels: nil,
+			wantOK:     false,
+		},
+		{
+			name:       "single rating not",
+			expr:       NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
+			wantUser:   nil,
+			wantLevels: []string{"explicit"},
+			wantOK:     true,
+		},
+		{
+			name: "pure chain",
+			expr: AndExpr{
+				Left:  NotExpr{Expr: FilterExpr{Key: "rating", Val: "questionable"}},
+				Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
+			},
+			wantUser:   nil,
+			wantLevels: []string{"questionable", "explicit"},
+			wantOK:     true,
+		},
+		{
+			name: "wrapped tag",
+			expr: AndExpr{
+				Left:  TagExpr{Tag: "blue_eyes"},
+				Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
+			},
+			wantUser:   TagExpr{Tag: "blue_eyes"},
+			wantLevels: []string{"explicit"},
+			wantOK:     true,
+		},
+		{
+			name: "no rating predicates",
+			expr: AndExpr{
+				Left:  TagExpr{Tag: "a"},
+				Right: TagExpr{Tag: "b"},
+			},
+			wantUser:   nil,
+			wantLevels: nil,
+			wantOK:     false,
+		},
+		{
+			name:       "or-wrapped chain stays as user",
+			expr:       OrExpr{Left: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}}, Right: TagExpr{Tag: "a"}},
+			wantUser:   nil,
+			wantLevels: nil,
+			wantOK:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			user, levels, ok := extractCeilingShape(tt.expr)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !exprEqual(user, tt.wantUser) {
+				t.Errorf("user = %+v, want %+v", user, tt.wantUser)
+			}
+			if len(levels) != len(tt.wantLevels) {
+				t.Fatalf("levels = %v, want %v", levels, tt.wantLevels)
+			}
+			for i := range levels {
+				if levels[i] != tt.wantLevels[i] {
+					t.Errorf("levels[%d] = %q, want %q", i, levels[i], tt.wantLevels[i])
+				}
+			}
+		})
+	}
+}
+
+func exprEqual(a, b Expr) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a == b
+}
+
 func TestIsPureTagExpr(t *testing.T) {
 	tests := []struct {
 		name string
@@ -588,6 +1091,8 @@ func TestIsPureTagExpr(t *testing.T) {
 		{"or of tags", OrExpr{Left: TagExpr{Tag: "a"}, Right: TagExpr{Tag: "b"}}, true},
 		{"not tag", NotExpr{Expr: TagExpr{Tag: "a"}}, true},
 		{"cat: filter", FilterExpr{Key: "cat", Val: "character"}, true},
+		{"tagged: filter", FilterExpr{Key: "tagged", Val: "true"}, true},
+		{"autotagged: filter", FilterExpr{Key: "autotagged", Val: "true"}, true},
 		{"category-qualified (unknown key)", FilterExpr{Key: "character", Val: "miku"}, true},
 		{"colon tag fallback (unknown key)", FilterExpr{Key: "nier", Val: "automata"}, true},
 		{"fav filter", FilterExpr{Key: "fav", Val: "true"}, false},
@@ -821,7 +1326,9 @@ func TestFastTagTotal_WildcardEscapesMetacharacters(t *testing.T) {
 func TestFastTagTotal_RejectsNonRecognisedShapes(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	// Filter keywords with their own selective indexes still fall through.
-	for _, key := range []string{"fav", "source", "folder", "width", "date"} {
+	// (`folder` and `source` now have fast counts of their own; `tagged`,
+	// `autotagged`, `rating`, `generated` were already handled.)
+	for _, key := range []string{"fav", "width", "date"} {
 		if _, ok := fastTagTotal(database, FilterExpr{Key: key, Val: "true"}); ok {
 			t.Errorf("FilterExpr{%q} should fall through to slow path", key)
 		}
@@ -1195,6 +1702,304 @@ func TestExecute_AndDriverPreservesOrAndNot(t *testing.T) {
 	}
 	if result.Total != 2 {
 		t.Errorf("Total = %d, want 2", result.Total)
+	}
+}
+
+// TestPickAndDriverTag_SingleWildcard pins the wildcard-only branch of
+// the driver: a single prefix TagExpr at root (the F206 shape: the
+// detail page's random-sort adjacency rides this expression) gets the
+// driver, replacing the LIST SUBQUERY scan with a literal IN(...).
+func TestPickAndDriverTag_SingleWildcard(t *testing.T) {
+	database, _ := setupSearchDB(t)
+	var generalID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if _, err := database.Write.Exec(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES
+		    ('blue_eyes', ?, 12),
+		    ('blue_hair', ?, 7),
+		    ('red_hair',  ?, 5)`,
+		generalID, generalID, generalID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	legs, ok := pickAndDriverTag(database, TagExpr{Tag: "blue", Wildcard: "prefix"}, false)
+	if !ok {
+		t.Fatal("single wildcard should engage the driver")
+	}
+	if len(legs) != 1 {
+		t.Fatalf("legs = %d, want 1 single-leaf path", len(legs))
+	}
+	if legs[0].leaf.Tag != "blue" || legs[0].leaf.Wildcard != "prefix" {
+		t.Errorf("driver leaf = %+v, want {blue, prefix}", legs[0].leaf)
+	}
+	if len(legs[0].ids) != 2 {
+		t.Errorf("driver canonicals = %d, want 2 (blue_eyes + blue_hair)", len(legs[0].ids))
+	}
+}
+
+func TestPickAndDriverTag_SingleLiteralStillSkips(t *testing.T) {
+	// A single literal at root is one EXISTS the planner already
+	// handles well; the driver isn't useful there. Keeps the existing
+	// behaviour from before the wildcard generalisation.
+	database, _ := setupSearchDB(t)
+	var generalID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if _, err := database.Write.Exec(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES ('alpha', ?, 5)`, generalID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pickAndDriverTag(database, TagExpr{Tag: "alpha"}, false); ok {
+		t.Error("single literal at root should not engage the driver under indexed sort")
+	}
+	// Random sort is the override: single literal does engage so the
+	// materialised set bounds the temp-sort input.
+	if _, ok := pickAndDriverTag(database, TagExpr{Tag: "alpha"}, true); !ok {
+		t.Error("single literal at root should engage the driver under random sort")
+	}
+}
+
+// TestExecute_RandomSortSingleTagDriver pins F006: a random-sort query
+// with a single literal tag predicate engages the AND-driver so the
+// random-key TEMP B-TREE sort runs against the bounded image set
+// rather than every visible image carrying the predicate.
+func TestExecute_RandomSortSingleTagDriver(t *testing.T) {
+	database, env := setupSearchDB(t)
+	for _, name := range []string{"r_blue1.png", "r_blue2.png", "r_red.png"} {
+		ingestTestImage(t, database, env, name)
+	}
+	var blue1, blue2, red int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%r_blue1.png'`).Scan(&blue1)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%r_blue2.png'`).Scan(&blue2)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%r_red.png'`).Scan(&red)
+
+	var generalID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	var blueID, redID int64
+	database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES ('blue_eyes', ?) RETURNING id`, generalID).Scan(&blueID)
+	database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES ('red_eyes', ?) RETURNING id`, generalID).Scan(&redID)
+	attachTag(t, database, blue1, blueID)
+	attachTag(t, database, blue2, blueID)
+	attachTag(t, database, red, redID)
+
+	result, err := Execute(database, Query{
+		Expr:       TagExpr{Tag: "blue_eyes"},
+		Sort:       "random",
+		RandomSeed: 1234567890,
+		Page:       1,
+		Limit:      40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The matching set is exactly {blue1, blue2}; ordering is the
+	// random-seed permutation but membership is what we pin.
+	if result.Total != 2 {
+		t.Errorf("Total = %d, want 2", result.Total)
+	}
+	got := map[int64]bool{}
+	for _, img := range result.Results {
+		got[img.ID] = true
+	}
+	if !got[blue1] || !got[blue2] || got[red] {
+		t.Errorf("results = %+v, want exactly {blue1, blue2}", got)
+	}
+}
+
+// TestPickAndDriverTag_PopularIntersect pins the F001 path: every leaf
+// of an AND chain has usage_count above andDriverThreshold, so the
+// driver returns multiple legs that the caller will INTERSECT-bound.
+// The single-leg shape (smallest below threshold) keeps its old contract.
+func TestPickAndDriverTag_PopularIntersect(t *testing.T) {
+	database, _ := setupSearchDB(t)
+	var generalID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if _, err := database.Write.Exec(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES
+		    ('a_pop',  ?, ?),
+		    ('b_pop',  ?, ?),
+		    ('c_pop',  ?, ?),
+		    ('d_rare', ?, 5)`,
+		generalID, andDriverThreshold+10,
+		generalID, andDriverThreshold+20,
+		generalID, andDriverThreshold+30,
+		generalID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Three popular leaves AND'd: every leg above threshold, all three
+	// legs returned for INTERSECT.
+	popular := AndExpr{
+		Left: AndExpr{
+			Left:  TagExpr{Tag: "a_pop"},
+			Right: TagExpr{Tag: "b_pop"},
+		},
+		Right: TagExpr{Tag: "c_pop"},
+	}
+	legs, ok := pickAndDriverTag(database, popular, false)
+	if !ok {
+		t.Fatal("popular 3-AND should engage the driver via INTERSECT")
+	}
+	if len(legs) != 3 {
+		t.Errorf("legs = %d, want 3 (one per ANDed leaf)", len(legs))
+	}
+
+	// Same chain plus the rare leaf: smallest is below threshold so
+	// the driver picks the single-leg path against d_rare.
+	mixed := AndExpr{
+		Left:  popular,
+		Right: TagExpr{Tag: "d_rare"},
+	}
+	legs2, ok := pickAndDriverTag(database, mixed, false)
+	if !ok {
+		t.Fatal("rare-tag-wins shape should engage the single-leg driver")
+	}
+	if len(legs2) != 1 {
+		t.Fatalf("legs = %d, want 1 single-leg path on the rare leaf", len(legs2))
+	}
+	if legs2[0].leaf.Tag != "d_rare" {
+		t.Errorf("driver leaf = %q, want d_rare", legs2[0].leaf.Tag)
+	}
+}
+
+// TestApplyAndDriver_IntersectSQL pins the SQL shape applyAndDriver
+// emits for multi-leg legs: each leg's image_id stream is INTERSECTed
+// inside the i.id IN (...) wrap.
+func TestApplyAndDriver_IntersectSQL(t *testing.T) {
+	legs := []andDriverLeg{
+		{leaf: TagExpr{Tag: "a"}, ids: []int64{1, 2}},
+		{leaf: TagExpr{Tag: "b"}, ids: []int64{3, 4, 5}},
+	}
+	where, args := applyAndDriver("", nil, legs)
+	wantPrefix := "i.id IN (SELECT image_id FROM image_tags WHERE tag_id IN (?,?) INTERSECT SELECT image_id FROM image_tags WHERE tag_id IN (?,?,?))"
+	if where != wantPrefix {
+		t.Errorf("multi-leg SQL = %q, want %q", where, wantPrefix)
+	}
+	if len(args) != 5 {
+		t.Errorf("args len = %d, want 5", len(args))
+	}
+
+	// Single leg keeps the simpler IN-only shape, no INTERSECT keyword.
+	single := []andDriverLeg{{leaf: TagExpr{Tag: "a"}, ids: []int64{1, 2}}}
+	whereSingle, _ := applyAndDriver("", nil, single)
+	if strings.Contains(whereSingle, "INTERSECT") {
+		t.Errorf("single-leg SQL should not use INTERSECT, got %q", whereSingle)
+	}
+}
+
+// TestExecute_PopularAndIntersect runs the popular-3-AND end-to-end,
+// asserting the INTERSECT driver matches the slow-path's exact result
+// set on a small fixture (the slow path falls through this path for
+// usage > threshold; here we set the threshold via tag-row usage_count
+// so the path is exercised on test-sized data).
+func TestExecute_PopularAndIntersect(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "all_three.png")
+	ingestTestImage(t, database, env, "ab_only.png")
+	ingestTestImage(t, database, env, "a_only.png")
+
+	var allID, abID, aID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%all_three.png'`).Scan(&allID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ab_only.png'`).Scan(&abID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%a_only.png'`).Scan(&aID)
+
+	var generalID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	mkTag := func(name string, usage int) int64 {
+		var id int64
+		database.Write.QueryRow(
+			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, ?) RETURNING id`,
+			name, generalID, usage,
+		).Scan(&id)
+		return id
+	}
+	// Force every leaf above andDriverThreshold so the INTERSECT path
+	// fires on this small fixture.
+	a := mkTag("a_int", andDriverThreshold+1)
+	b := mkTag("b_int", andDriverThreshold+1)
+	c := mkTag("c_int", andDriverThreshold+1)
+	for _, p := range []struct {
+		img int64
+		tag int64
+	}{
+		{allID, a}, {allID, b}, {allID, c},
+		{abID, a}, {abID, b},
+		{aID, a},
+	} {
+		attachTag(t, database, p.img, p.tag)
+	}
+
+	expr := AndExpr{
+		Left: AndExpr{
+			Left:  TagExpr{Tag: "a_int"},
+			Right: TagExpr{Tag: "b_int"},
+		},
+		Right: TagExpr{Tag: "c_int"},
+	}
+	result, err := Execute(database, Query{Expr: expr, Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Results) != 1 || result.Results[0].ID != allID {
+		t.Errorf("Results = %+v, want only %d (all_three)", result.Results, allID)
+	}
+}
+
+// TestExecute_AndDriverWildcardReplacesListSubquery runs the F206 shape
+// end-to-end: a single wildcard predicate. Without the wildcard driver
+// the EXISTS body rides a LIST SUBQUERY scan of every tag matching
+// `blue%`. Asserting on results verifies the substitution preserves
+// semantics.
+func TestExecute_AndDriverWildcardReplacesListSubquery(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "wd_blue1.png")
+	ingestTestImage(t, database, env, "wd_blue2.png")
+	ingestTestImage(t, database, env, "wd_other.png")
+	ingestTestImage(t, database, env, "wd_none.png")
+
+	var blue1ID, blue2ID, otherID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wd_blue1.png'`).Scan(&blue1ID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wd_blue2.png'`).Scan(&blue2ID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wd_other.png'`).Scan(&otherID)
+
+	var generalID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	mkTag := func(name string) int64 {
+		var id int64
+		database.Write.QueryRow(
+			`INSERT INTO tags (name, category_id) VALUES (?, ?) RETURNING id`, name, generalID,
+		).Scan(&id)
+		return id
+	}
+	blueEyes := mkTag("blue_eyes")
+	blueHair := mkTag("blue_hair")
+	redHair := mkTag("red_hair")
+	attachTag(t, database, blue1ID, blueEyes)
+	attachTag(t, database, blue2ID, blueHair)
+	attachTag(t, database, otherID, redHair)
+
+	result, err := Execute(database, Query{
+		Expr:  TagExpr{Tag: "blue", Wildcard: "prefix"},
+		Page:  1,
+		Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 2 {
+		t.Errorf("Total = %d, want 2 (blue_eyes + blue_hair carriers)", result.Total)
+	}
+	matched := map[int64]bool{}
+	for _, img := range result.Results {
+		matched[img.ID] = true
+	}
+	if !matched[blue1ID] || !matched[blue2ID] {
+		t.Errorf("results missing blue carriers: %v", result.Results)
+	}
+	if matched[otherID] {
+		t.Errorf("non-blue image %d leaked into results", otherID)
 	}
 }
 
@@ -1998,6 +2803,128 @@ func TestExecuteAdjacent_RandomBucketBound(t *testing.T) {
 	}
 }
 
+// TestExecuteAdjacent_NewestSparseAndBucketBound pins F002: a 3-AND
+// back_q under newest sort gates prev/next to an id-window so a sparse
+// intersection late in the result set can't force a multi-second scan.
+// The 2-AND shape keeps the pre-existing unbounded behaviour because
+// the cursor walk is acceptable there.
+func TestExecuteAdjacent_NewestSparseAndBucketBound(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "ad_a.png")
+	ingestTestImage(t, database, env, "ad_b.png")
+	ingestTestImage(t, database, env, "ad_c.png")
+
+	rows, err := database.Read.Query(`SELECT id FROM images ORDER BY id ASC`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 images, got %d", len(ids))
+	}
+	nearA, nearB := ids[0], ids[1]
+	// Push the third image into a different id-bucket. With
+	// andAdjacencyBucketSize = 10000, ids 1-10000 share a bucket; jump
+	// past the next bucket boundary so far is unambiguously outside.
+	far := int64(andAdjacencyBucketSize) * 2
+	tx, err := database.Write.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`PRAGMA defer_foreign_keys = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE images SET id = ? WHERE id = ?`, far, ids[2]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE image_paths SET image_id = ? WHERE image_id = ?`, far, ids[2]); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var generalID int64
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
+	mkTag := func(name string) int64 {
+		var id int64
+		if err := database.Write.QueryRow(
+			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 3) RETURNING id`,
+			name, generalID,
+		).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	a := mkTag("ada")
+	b := mkTag("adb")
+	c := mkTag("adc")
+	for _, p := range []struct {
+		img int64
+		tag int64
+	}{
+		{nearA, a}, {nearA, b}, {nearA, c},
+		{nearB, a}, {nearB, b}, {nearB, c},
+		{far, a}, {far, b}, {far, c},
+	} {
+		if _, err := database.Write.Exec(
+			`INSERT INTO image_tags (image_id, tag_id, is_auto) VALUES (?, ?, 0)`, p.img, p.tag,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	expr := AndExpr{
+		Left: AndExpr{
+			Left:  TagExpr{Tag: "ada"},
+			Right: TagExpr{Tag: "adb"},
+		},
+		Right: TagExpr{Tag: "adc"},
+	}
+	q := Query{Expr: expr, Sort: "newest", Order: "desc"}
+
+	// nearA's bucket holds nearA + nearB; far sits in a later bucket.
+	prev, next, err := ExecuteAdjacent(database, q, nearA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []*int64{prev, next} {
+		if p != nil && *p == far {
+			t.Errorf("nearA reached far image %d across bucket boundary", far)
+		}
+	}
+	reachedNearB := (prev != nil && *prev == nearB) || (next != nil && *next == nearB)
+	if !reachedNearB {
+		t.Errorf("nearA did not reach in-bucket peer %d (prev=%v next=%v)", nearB, prev, next)
+	}
+
+	// far is alone in its own bucket; bucket gate stops prev/next there.
+	prev, next, _ = ExecuteAdjacent(database, q, far)
+	if prev != nil || next != nil {
+		t.Errorf("far alone in bucket: want nil/nil, got prev=%v next=%v", prev, next)
+	}
+
+	// Sanity: 2-AND back_q does NOT engage the gate (only 3+ ANDs
+	// trigger it), so far is reachable in the same fixture under a
+	// 2-AND query.
+	expr2 := AndExpr{Left: TagExpr{Tag: "ada"}, Right: TagExpr{Tag: "adb"}}
+	q2 := Query{Expr: expr2, Sort: "newest", Order: "desc"}
+	prev, next, _ = ExecuteAdjacent(database, q2, nearA)
+	if prev == nil && next == nil {
+		t.Errorf("2-AND adjacency on nearA returned nothing; expected to reach a peer")
+	}
+}
+
 func TestExecuteAdjacent_RatingCeiling(t *testing.T) {
 	database, env := setupSearchDB(t)
 	ingestTestImage(t, database, env, "adj_safe.png")
@@ -2039,213 +2966,6 @@ func TestExecuteAdjacent_RatingCeiling(t *testing.T) {
 	}
 	if next != nil {
 		t.Errorf("oldest next under ceiling: got %v, want nil", next)
-	}
-}
-
-func TestExecutePosition_Newest(t *testing.T) {
-	database, cfg := setupSearchDB(t)
-	ingestTestImage(t, database, cfg, "pos_a.png")
-	ingestTestImage(t, database, cfg, "pos_b.png")
-	ingestTestImage(t, database, cfg, "pos_c.png")
-
-	result, err := Execute(database, Query{Sort: "newest", Order: "desc", Page: 1, Limit: 40})
-	if err != nil || len(result.Results) != 3 {
-		t.Fatalf("setup Execute: err=%v len=%d", err, len(result.Results))
-	}
-	newest, middle, oldest := result.Results[0].ID, result.Results[1].ID, result.Results[2].ID
-
-	cases := []struct {
-		name    string
-		id      int64
-		wantPos int
-	}{
-		{"newest is #1", newest, 1},
-		{"middle is #2", middle, 2},
-		{"oldest is #3", oldest, 3},
-	}
-	for _, c := range cases {
-		pos, total, err := ExecutePosition(database, Query{Sort: "newest", Order: "desc"}, c.id)
-		if err != nil {
-			t.Fatalf("%s: %v", c.name, err)
-		}
-		if pos != c.wantPos {
-			t.Errorf("%s: pos = %d, want %d", c.name, pos, c.wantPos)
-		}
-		if total != 3 {
-			t.Errorf("%s: total = %d, want 3", c.name, total)
-		}
-	}
-}
-
-func TestExecutePosition_AscFlipsOrder(t *testing.T) {
-	database, cfg := setupSearchDB(t)
-	ingestTestImage(t, database, cfg, "pos_asc_a.png")
-	ingestTestImage(t, database, cfg, "pos_asc_b.png")
-	ingestTestImage(t, database, cfg, "pos_asc_c.png")
-
-	// Ascending ingestion order means the first-ingested image is #1.
-	result, _ := Execute(database, Query{Sort: "newest", Order: "asc", Page: 1, Limit: 40})
-	if len(result.Results) != 3 {
-		t.Fatalf("setup: got %d rows, want 3", len(result.Results))
-	}
-	first := result.Results[0].ID
-
-	pos, total, err := ExecutePosition(database, Query{Sort: "newest", Order: "asc"}, first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pos != 1 || total != 3 {
-		t.Errorf("asc first: pos=%d total=%d, want 1/3", pos, total)
-	}
-}
-
-func TestExecutePosition_Random(t *testing.T) {
-	database, cfg := setupSearchDB(t)
-	ingestTestImage(t, database, cfg, "pos_rnd_a.png")
-	ingestTestImage(t, database, cfg, "pos_rnd_b.png")
-	ingestTestImage(t, database, cfg, "pos_rnd_c.png")
-
-	const seed int64 = 1234567
-	q := Query{Sort: "random", RandomSeed: seed, Page: 1, Limit: 40}
-	result, err := Execute(database, q)
-	if err != nil || len(result.Results) != 3 {
-		t.Fatalf("setup Execute: err=%v len=%d", err, len(result.Results))
-	}
-	first, second, third := result.Results[0].ID, result.Results[1].ID, result.Results[2].ID
-
-	cases := []struct {
-		name    string
-		id      int64
-		wantPos int
-	}{
-		{"first", first, 1},
-		{"second", second, 2},
-		{"third", third, 3},
-	}
-	for _, c := range cases {
-		pos, total, err := ExecutePosition(database, q, c.id)
-		if err != nil {
-			t.Fatalf("%s: %v", c.name, err)
-		}
-		if pos != c.wantPos || total != 3 {
-			t.Errorf("%s: pos=%d total=%d, want %d/3", c.name, pos, total, c.wantPos)
-		}
-	}
-}
-
-func TestExecutePosition_RandomNoSeed(t *testing.T) {
-	database, cfg := setupSearchDB(t)
-	ingestTestImage(t, database, cfg, "pos_rnd_noseed.png")
-	pos, total, err := ExecutePosition(database, Query{Sort: "random"}, 1)
-	if err != nil || pos != 0 || total != 0 {
-		t.Errorf("random without seed must return 0/0, got pos=%d total=%d err=%v", pos, total, err)
-	}
-}
-
-func TestExecutePosition_UnknownID(t *testing.T) {
-	database, cfg := setupSearchDB(t)
-	ingestTestImage(t, database, cfg, "pos_unknown.png")
-	pos, total, err := ExecutePosition(database, Query{Sort: "newest", Order: "desc"}, 99999)
-	if err != nil || pos != 0 || total != 0 {
-		t.Errorf("unknown id must return 0/0, got pos=%d total=%d err=%v", pos, total, err)
-	}
-}
-
-func TestExecutePosition_TagPredicateSkipped(t *testing.T) {
-	database, cfg := setupSearchDB(t)
-	ingestTestImage(t, database, cfg, "pos_tag_a.png")
-	ingestTestImage(t, database, cfg, "pos_tag_b.png")
-
-	var imgID, generalID int64
-	database.Read.QueryRow(`SELECT id FROM images LIMIT 1`).Scan(&imgID)
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
-	var tagID int64
-	database.Write.QueryRow(
-		`INSERT INTO tags (name, category_id, usage_count) VALUES ('blue', ?, 1) RETURNING id`,
-		generalID,
-	).Scan(&tagID)
-	if _, err := database.Write.Exec(
-		`INSERT INTO image_tags (image_id, tag_id, is_auto) VALUES (?, ?, 0)`, imgID, tagID,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	cases := []struct {
-		name string
-		expr Expr
-	}{
-		{"literal tag", TagExpr{Tag: "blue"}},
-		{"wildcard tag", TagExpr{Tag: "blue", Wildcard: "prefix"}},
-		{"NOT tag", NotExpr{Expr: TagExpr{Tag: "blue"}}},
-		{"AND of tags", AndExpr{Left: TagExpr{Tag: "blue"}, Right: TagExpr{Tag: "red"}}},
-		{"cat filter", FilterExpr{Key: "cat", Val: "general"}},
-		{"category-qualified tag", FilterExpr{Key: "general", Val: "blue"}},
-		{"tagged filter", FilterExpr{Key: "tagged", Val: "true"}},
-		{"autotagged filter", FilterExpr{Key: "autotagged", Val: "false"}},
-		{"folder filter", FilterExpr{Key: "folder", Val: "anime"}},
-		{"folderonly filter", FilterExpr{Key: "folderonly", Val: "anime"}},
-	}
-	for _, c := range cases {
-		pos, total, err := ExecutePosition(database, Query{Expr: c.expr, Sort: "newest", Order: "desc"}, imgID)
-		if err != nil {
-			t.Errorf("%s: %v", c.name, err)
-			continue
-		}
-		if pos != 0 || total != 0 {
-			t.Errorf("%s: pos=%d total=%d, want 0/0", c.name, pos, total)
-		}
-	}
-
-	// Sanity: a non-tag-predicate expression still returns a real rank
-	// so the early-return is scoped to the slow shape only.
-	pos, total, err := ExecutePosition(database, Query{Expr: FilterExpr{Key: "fav", Val: "false"}, Sort: "newest", Order: "desc"}, imgID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pos == 0 || total == 0 {
-		t.Errorf("non-tag predicate skipped: pos=%d total=%d", pos, total)
-	}
-}
-
-func TestExecutePosition_RatingCeiling(t *testing.T) {
-	database, env := setupSearchDB(t)
-	ingestTestImage(t, database, env, "pos_safe.png")
-	ingestTestImage(t, database, env, "pos_explicit.png")
-	ingestTestImage(t, database, env, "pos_safe2.png")
-
-	var safeID, expID, safe2ID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%pos_safe.png'`).Scan(&safeID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%pos_explicit.png'`).Scan(&expID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%pos_safe2.png'`).Scan(&safe2ID)
-
-	attachTag(t, database, safeID, ratingTagID(t, database, "general"))
-	attachTag(t, database, expID, ratingTagID(t, database, "explicit"))
-	attachTag(t, database, safe2ID, ratingTagID(t, database, "general"))
-
-	expr := AndExpr{
-		Left:  NotExpr{Expr: FilterExpr{Key: "rating", Val: "questionable"}},
-		Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
-	}
-	q := Query{Expr: expr, Sort: "newest", Order: "desc"}
-
-	// Under the ceiling the visible set is {safe2, safe}, so safe2 is #1/2
-	// and safe is #2/2; the explicit image must not appear in the total.
-	pos, total, err := ExecutePosition(database, q, safe2ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 2 {
-		t.Errorf("ceiling total = %d, want 2 (explicit hidden)", total)
-	}
-	if pos != 1 {
-		t.Errorf("safe2 pos = %d, want 1", pos)
-	}
-	pos, total, err = ExecutePosition(database, q, safeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pos != 2 || total != 2 {
-		t.Errorf("safe pos = %d/%d, want 2/2", pos, total)
 	}
 }
 

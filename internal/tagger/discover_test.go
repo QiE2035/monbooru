@@ -178,6 +178,36 @@ func TestDiscoverTaggers_MissingFilesUnavailable(t *testing.T) {
 	}
 }
 
+func TestResolveTaggerFiles_LoneJSONLabel(t *testing.T) {
+	// Camie ships its labels in a JSON metadata file. With no .csv / .txt
+	// in the folder, a lone .json (other than the reserved sidecars)
+	// should be auto-picked.
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "camie-v2")
+	makeTaggerDir(t, tmp, "camie-v2", []string{"model.onnx", "camie-tagger-v2-metadata.json"})
+
+	model, tags := resolveTaggerFiles(dir, "", "")
+	if model != "model.onnx" {
+		t.Errorf("model = %q, want model.onnx", model)
+	}
+	if tags != "camie-tagger-v2-metadata.json" {
+		t.Errorf("tags = %q, want camie-tagger-v2-metadata.json", tags)
+	}
+}
+
+func TestResolveTaggerFiles_SidecarJSONIgnored(t *testing.T) {
+	// tagger.json and dispatch.json are sidecars, never label files.
+	// Folder with only those + an onnx should not auto-pick a label.
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "weird")
+	makeTaggerDir(t, tmp, "weird", []string{"model.onnx", "tagger.json", "dispatch.json"})
+
+	_, tags := resolveTaggerFiles(dir, "", "")
+	if tags != DefaultTagsFile {
+		t.Errorf("tags = %q, want fallback to %q (sidecars should not auto-pick)", tags, DefaultTagsFile)
+	}
+}
+
 func TestDiscoverTaggers_SkipsEmptyFolder(t *testing.T) {
 	tmp := t.TempDir()
 	makeTaggerDir(t, tmp, "wd", []string{"model.onnx", "tags.csv"})
@@ -192,6 +222,66 @@ func TestDiscoverTaggers_SkipsEmptyFolder(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "wd" {
 		t.Errorf("DiscoverTaggers = %+v, want only `wd`", got)
+	}
+}
+
+func TestEnabledTaggersForGallery_FiltersByGalleries(t *testing.T) {
+	if !buildSupportsInference() {
+		t.Skip("noop build: covered elsewhere")
+	}
+	tmp := t.TempDir()
+	makeTaggerDir(t, tmp, "ok-everywhere", []string{"model.onnx", "tags.csv"})
+	makeTaggerDir(t, tmp, "ok-default", []string{"model.onnx", "tags.csv"})
+	makeTaggerDir(t, tmp, "ok-stock", []string{"model.onnx", "tags.csv"})
+
+	cfg := &config.Config{
+		Paths: config.PathsConfig{ModelPath: tmp},
+		Tagger: config.TaggerConfig{
+			Taggers: []config.TaggerInstance{
+				// Empty Galleries → applies everywhere.
+				{Name: "ok-everywhere", Enabled: true, ConfidenceThreshold: 0.4},
+				// Restricted to default.
+				{Name: "ok-default", Enabled: true, ConfidenceThreshold: 0.4, Galleries: []string{"default"}},
+				// Restricted to stock only.
+				{Name: "ok-stock", Enabled: true, ConfidenceThreshold: 0.4, Galleries: []string{"stock"}},
+			},
+		},
+	}
+
+	gotDefault := EnabledTaggersForGallery(cfg, "default")
+	if len(gotDefault) != 2 {
+		t.Errorf("default: got %d taggers, want 2 (ok-everywhere + ok-default)", len(gotDefault))
+	}
+	gotStock := EnabledTaggersForGallery(cfg, "stock")
+	if len(gotStock) != 2 {
+		t.Errorf("stock: got %d taggers, want 2 (ok-everywhere + ok-stock)", len(gotStock))
+	}
+	gotPhantom := EnabledTaggersForGallery(cfg, "missing")
+	// ok-everywhere still fires even when the gallery name is unknown -
+	// empty Galleries means "every gallery" by spec, including future
+	// ones. ok-default and ok-stock filter out.
+	if len(gotPhantom) != 1 {
+		t.Errorf("phantom gallery: got %d taggers, want only ok-everywhere", len(gotPhantom))
+	}
+}
+
+func TestAppliesToGallery(t *testing.T) {
+	t1 := config.TaggerInstance{}
+	if !t1.AppliesToGallery("anything") {
+		t.Errorf("nil Galleries should apply everywhere")
+	}
+	t2 := config.TaggerInstance{Galleries: []string{"a", "b"}}
+	if !t2.AppliesToGallery("a") {
+		t.Errorf("matching name should apply")
+	}
+	if t2.AppliesToGallery("c") {
+		t.Errorf("non-matching name should not apply")
+	}
+	// Explicit-empty Galleries means "no gallery": the dormant case the
+	// dialog can persist when the operator picks zero galleries.
+	t3 := config.TaggerInstance{Galleries: []string{}}
+	if t3.AppliesToGallery("anything") {
+		t.Errorf("explicit-empty Galleries should apply to nothing")
 	}
 }
 

@@ -1547,3 +1547,140 @@ func TestRatingTagIDsAbove(t *testing.T) {
 		t.Errorf("empty ceiling: got %d ids, want 0", len(got))
 	}
 }
+
+// TestAddRating_PrunesLowerRanksOnAdd pins highest-rank-wins on the
+// manual add path: the four canonical levels are added in ascending
+// order, and after each step only the highest one survives on the image.
+func TestAddRating_PrunesLowerRanksOnAdd(t *testing.T) {
+	database, svc := setupTestDB(t)
+	imageID := insertTestImage(t, database, "ratings.png")
+
+	imageRatingNames := func() []string {
+		t.Helper()
+		rows, err := database.Read.Query(
+			`SELECT t.name FROM image_tags it
+			 JOIN tags t ON t.id = it.tag_id
+			 WHERE it.image_id = ? AND t.category_id = ?
+			 ORDER BY t.name`,
+			imageID, svc.RatingCategoryID(),
+		)
+		if err != nil {
+			t.Fatalf("query rating names: %v", err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, n)
+		}
+		return out
+	}
+
+	for _, level := range []string{"general", "sensitive", "questionable", "explicit"} {
+		id := ratingTagIDByName(t, database, level)
+		if err := svc.AddTagToImage(imageID, id, true, nil); err != nil {
+			t.Fatalf("AddTagToImage(%s): %v", level, err)
+		}
+		got := imageRatingNames()
+		if len(got) != 1 || got[0] != level {
+			t.Fatalf("after adding %s: image carries %v, want only [%s]", level, got, level)
+		}
+	}
+
+	// Adding a lower-rank rating to an image that already carries a
+	// higher one is a no-op: the prune drops the freshly-inserted lower
+	// row before commit so the higher rank wins.
+	genID := ratingTagIDByName(t, database, "general")
+	if err := svc.AddTagToImage(imageID, genID, true, nil); err != nil {
+		t.Fatalf("AddTagToImage(general after explicit): %v", err)
+	}
+	got := imageRatingNames()
+	if len(got) != 1 || got[0] != "explicit" {
+		t.Fatalf("lower-rank add should be pruned; image carries %v, want only [explicit]", got)
+	}
+}
+
+// TestAddRating_UsageCountsTrackPrune covers the usage_count side-effect
+// of the prune: when a higher rating displaces a lower one, the lower
+// tag's usage_count decrements (mirroring the remove path) so RecalcDB
+// stays a no-op.
+func TestAddRating_UsageCountsTrackPrune(t *testing.T) {
+	database, svc := setupTestDB(t)
+	imageID := insertTestImage(t, database, "ratings_usage.png")
+
+	genID := ratingTagIDByName(t, database, "general")
+	expID := ratingTagIDByName(t, database, "explicit")
+
+	if err := svc.AddTagToImage(imageID, genID, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	gen, _ := svc.GetTag(genID)
+	if gen.UsageCount != 1 {
+		t.Fatalf("general usage_count = %d after seed, want 1", gen.UsageCount)
+	}
+
+	if err := svc.AddTagToImage(imageID, expID, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	gen, _ = svc.GetTag(genID)
+	if gen.UsageCount != 0 {
+		t.Errorf("general usage_count = %d after prune, want 0", gen.UsageCount)
+	}
+	exp, _ := svc.GetTag(expID)
+	if exp.UsageCount != 1 {
+		t.Errorf("explicit usage_count = %d, want 1", exp.UsageCount)
+	}
+}
+
+// TestAddNonRating_DoesNotTriggerPrune verifies the cheap fast path:
+// a non-rating add does not run the prune query, even on an image that
+// already carries multiple rating tags from prior (legacy) state.
+func TestAddNonRating_DoesNotTriggerPrune(t *testing.T) {
+	database, svc := setupTestDB(t)
+	imageID := insertTestImage(t, database, "non_rating.png")
+
+	// Seed two rating rows directly so we can verify the prune is NOT
+	// fired by an unrelated add. Bypassing AddTagToImage skips the rule.
+	tx, err := database.Write.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"sensitive", "questionable"} {
+		id := ratingTagIDByName(t, database, name)
+		if _, err := tx.Exec(
+			`INSERT INTO image_tags (image_id, tag_id, is_auto, is_implied) VALUES (?, ?, 0, 0)`,
+			imageID, id,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(`UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A non-rating add must not opportunistically clean up.
+	catID := generalCategoryID(t, svc)
+	tag, err := svc.GetOrCreateTag("scenery", catID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(imageID, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	var ratingCount int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_tags it JOIN tags t ON t.id = it.tag_id WHERE it.image_id = ? AND t.category_id = ?`,
+		imageID, svc.RatingCategoryID(),
+	).Scan(&ratingCount); err != nil {
+		t.Fatal(err)
+	}
+	if ratingCount != 2 {
+		t.Errorf("rating rows after non-rating add = %d, want 2 (legacy multi-rating left untouched)", ratingCount)
+	}
+}

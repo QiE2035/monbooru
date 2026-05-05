@@ -72,6 +72,39 @@ type TaggerInstance struct {
 	ConfidenceThreshold float64 `toml:"confidence_threshold"`
 	ModelFile           string  `toml:"model_file"`
 	TagsFile            string  `toml:"tags_file"`
+	// CategoryThresholds overrides ConfidenceThreshold per destination
+	// category. A label whose resolved category name appears as a key
+	// uses that threshold; missing keys fall back to the global one.
+	// Operator-managed via Settings → Auto-Tagger → Configure.
+	CategoryThresholds map[string]float64 `toml:"category_thresholds,omitempty"`
+	// Galleries restricts this tagger to a named subset of galleries.
+	// Three persisted shapes:
+	//   - missing in TOML (decodes to nil) - applies to every gallery,
+	//     including ones added later. The legacy default.
+	//   - galleries = []                  - applies to no gallery; the
+	//     tagger stays configured but dormant.
+	//   - galleries = [...]               - applies only to those names.
+	// `omitempty` is intentionally absent so an explicit empty slice
+	// survives a write/read round-trip; without it BurntSushi collapses
+	// nil and empty into the same wire shape.
+	// Operator-managed via Settings → Auto-Tagger → Galleries.
+	Galleries []string `toml:"galleries"`
+}
+
+// AppliesToGallery reports whether this tagger should run on the named
+// gallery. Nil Galleries means "every gallery" (matches the pre-feature
+// behaviour); a non-nil slice gates by exact name match - including the
+// explicit-empty case, which means "no gallery".
+func (t TaggerInstance) AppliesToGallery(name string) bool {
+	if t.Galleries == nil {
+		return true
+	}
+	for _, g := range t.Galleries {
+		if g == name {
+			return true
+		}
+	}
+	return false
 }
 
 type AuthConfig struct {

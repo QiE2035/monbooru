@@ -588,6 +588,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/tagger/{name}/enable", s.settingsTaggerEnablePost)
 	mux.HandleFunc("POST /settings/tagger/{name}/disable", s.settingsTaggerDisablePost)
 	mux.HandleFunc("POST /settings/tagger/{name}/delete", s.settingsTaggerDeletePost)
+	mux.HandleFunc("GET /settings/tagger/{name}/thresholds", s.settingsTaggerThresholdsGet)
+	mux.HandleFunc("POST /settings/tagger/{name}/thresholds", s.settingsTaggerThresholdsPost)
+	mux.HandleFunc("POST /settings/tagger/{name}/thresholds/reset", s.settingsTaggerThresholdsResetPost)
+	mux.HandleFunc("GET /settings/tagger/{name}/galleries", s.settingsTaggerGalleriesGet)
+	mux.HandleFunc("POST /settings/tagger/{name}/galleries", s.settingsTaggerGalleriesPost)
 
 	// Saved searches are managed from the sidebar (no dedicated search page).
 	mux.HandleFunc("POST /search/saved", s.createSavedSearch)

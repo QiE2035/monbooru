@@ -444,14 +444,16 @@
             <p class="field-hint">Images tagged in parallel. Helps mostly on GPU, where preprocessing otherwise keeps the GPU idle.</p>
           </div>
         </div>
+        <button type="submit">Save</button>
       </div>
-      <div class="settings-sub">
-        <h4>Taggers</h4>
+    </form>
+    <div class="settings-sub">
+      <h4>Taggers</h4>
       {{if $rows}}
       <div class="table-scroll">
       <table class="tagger-table">
         <thead>
-          <tr><th>Tagger</th><th>Instructions</th><th>Downloaded</th><th>Enabled</th><th>Confidence</th><th>Enable</th><th>Delete</th></tr>
+          <tr><th>Tagger</th><th>Instructions</th><th>Status</th><th>Thresholds</th><th>Galleries</th><th>Enable</th><th>Delete</th></tr>
         </thead>
         <tbody>
           {{range $i, $r := $rows}}
@@ -459,32 +461,41 @@
           <tr class="tagger-sep"><td colspan="7">unsupported (not in catalog)</td></tr>
           {{end}}
           <tr>
-            <td><strong>{{$r.Name}}</strong>{{if and (not $r.Installed) $r.Description}} <span class="field-hint">- {{$r.Description}}</span>{{end}}</td>
+            <td>
+              <strong>{{$r.Name}}</strong>
+              {{if $r.Description}}<div class="field-hint tagger-row-desc">{{$r.Description}}</div>{{end}}
+            </td>
             <td>
               {{if $r.Supported}}
-              <button type="button" class="btn-sm" onclick="document.getElementById('tagger-cmd-{{$r.Name}}').showModal()">Show download instructions</button>
+              <button type="button" class="btn-sm" onclick="document.getElementById('tagger-cmd-{{$r.Name}}').showModal()">Show instructions</button>
               {{end}}
             </td>
             <td>
-              {{if $r.Installed}}
-                {{if $r.Available}}<span class="status-ok" title="Model files present">✓</span>{{else}}<span class="status-err" title="{{$r.Reason}}">-</span>{{end}}
+              {{if not $r.Installed}}<span class="status-dim" title="Not installed">not installed</span>
+              {{else if not $r.Available}}<span class="status-err" title="{{$r.Reason}}">unavailable</span>
+              {{else if $r.Enabled}}<span class="status-ok" title="Enabled">enabled</span>
+              {{else}}<span class="status-dim" title="Disabled">disabled</span>{{end}}
+            </td>
+            <td>
+              {{if and $r.Installed $r.Enabled}}
+              <button type="button" class="btn-sm"
+                      hx-get="/settings/tagger/{{$r.Name}}/thresholds"
+                      hx-target="#tagger-thresh-{{$r.Name}}-body"
+                      hx-trigger="click once"
+                      onclick="document.getElementById('tagger-thresh-{{$r.Name}}').showModal()">Configure</button>
+              <span id="tagger-thresh-summary-{{$r.Name}}" class="field-hint">{{$r.ThresholdSummary}}</span>
               {{else}}
-                <span class="status-err" title="Not installed">-</span>
+              <span class="status-dim">-</span>
               {{end}}
             </td>
             <td>
-              {{if $r.Installed}}
-              <input type="hidden" name="tagger_names" value="{{$r.Name}}">
-                {{if not $r.Available}}<span class="status-dim" title="Unavailable">-</span>
-                {{else if $r.Enabled}}<span class="status-ok" title="Enabled">✓</span>
-                {{else}}<span class="status-err" title="Disabled">✗</span>{{end}}
-              {{else}}
-              <span class="status-dim" title="Not installed">-</span>
-              {{end}}
-            </td>
-            <td>
-              {{if $r.Installed}}
-              <input type="number" name="tagger_{{$r.Name}}_threshold" value="{{$r.ConfidenceThreshold}}" min="0" max="1" step="0.01" style="width:6em">
+              {{if and $r.Installed $r.Enabled}}
+              <button type="button" class="btn-sm"
+                      hx-get="/settings/tagger/{{$r.Name}}/galleries"
+                      hx-target="#tagger-gal-{{$r.Name}}-body"
+                      hx-trigger="click once"
+                      onclick="document.getElementById('tagger-gal-{{$r.Name}}').showModal()">Configure</button>
+              <span id="tagger-gal-summary-{{$r.Name}}" class="field-hint">{{$r.GallerySummary}}</span>
               {{else}}
               <span class="status-dim">-</span>
               {{end}}
@@ -517,12 +528,20 @@
         </tbody>
       </table>
       </div>
-      {{if $taggers}}<button type="submit">Save</button>{{end}}
       {{else}}
       <p class="field-hint">No tagger subfolders found in <code>{{$cfg.Paths.ModelPath}}</code>.</p>
       {{end}}
-      </div>
-    </form>
+    </div>
+    {{range $rows}}{{if .Installed}}
+    <dialog id="tagger-thresh-{{.Name}}" class="tagger-thresh-dialog">
+      <h4>{{.Name}} - thresholds</h4>
+      <div id="tagger-thresh-{{.Name}}-body">Loading...</div>
+    </dialog>
+    <dialog id="tagger-gal-{{.Name}}" class="tagger-gal-dialog">
+      <h4>{{.Name}} - galleries</h4>
+      <div id="tagger-gal-{{.Name}}-body">Loading...</div>
+    </dialog>
+    {{end}}{{end}}
     {{range $rows}}{{if .Supported}}
     <dialog id="tagger-cmd-{{.Name}}">
       <p><strong>{{.Name}}</strong> - {{.Description}}</p>

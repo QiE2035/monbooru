@@ -339,7 +339,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		if !tagger.IsAvailable(h.cfg) {
 			autotagNote = "autotag skipped: tagger not available"
 		} else {
-			selected, selErr := h.selectedTaggers(taggerName)
+			selected, selErr := h.selectedTaggers(g.Name, taggerName)
 			if selErr != nil {
 				autotagNote = "autotag skipped: " + selErr.Error()
 			} else if err := h.jobs.Start("autotag"); err != nil {
@@ -390,9 +390,10 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 }
 
 // selectedTaggers resolves a caller-supplied tagger_name to a concrete
-// list of taggers; empty name means every enabled+available tagger.
-func (h *Handler) selectedTaggers(name string) ([]tagger.TaggerStatus, error) {
-	enabled := tagger.EnabledTaggers(h.cfg)
+// list of taggers running on the named gallery. Empty name means every
+// tagger enabled + available + applicable to that gallery.
+func (h *Handler) selectedTaggers(gallery, name string) ([]tagger.TaggerStatus, error) {
+	enabled := tagger.EnabledTaggersForGallery(h.cfg, gallery)
 	if name == "" {
 		return enabled, nil
 	}
@@ -401,7 +402,7 @@ func (h *Handler) selectedTaggers(name string) ([]tagger.TaggerStatus, error) {
 			return []tagger.TaggerStatus{t}, nil
 		}
 	}
-	return nil, fmt.Errorf("tagger %q is not enabled or available", name)
+	return nil, fmt.Errorf("tagger %q is not enabled or available for gallery %q", name, gallery)
 }
 
 func isTrue(v string) bool {

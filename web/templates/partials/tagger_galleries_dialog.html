@@ -1,0 +1,28 @@
+{{define "partials/tagger_galleries_dialog.html"}}
+<form hx-post="/settings/tagger/{{.Name}}/galleries"
+      hx-target="#flash-tagger-gal-{{.Name}}" hx-swap="innerHTML">
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+  <p class="field-hint">Galleries this tagger runs on.</p>
+  <div class="field tagger-gal-allrow">
+    <label><input type="checkbox" name="all" value="on"
+                  {{if .AllChecked}}checked{{end}}
+                  onchange="taggerGalAllToggle(this)"> All galleries
+      <span class="field-hint">(including ones added later)</span></label>
+  </div>
+  <div class="tagger-gal-actions">
+    <button type="button" class="btn-sm" onclick="taggerGalSelect(this, true)">Select all</button>
+    <button type="button" class="btn-sm" onclick="taggerGalSelect(this, false)">Select none</button>
+  </div>
+  <ul class="tagger-gal-list">
+    {{range .Rows}}
+    <li><label><input type="checkbox" name="gallery_names" value="{{.Name}}"
+                       {{if $.AllChecked}}checked disabled{{else if .Checked}}checked{{end}}> {{.Name}}</label></li>
+    {{end}}
+  </ul>
+  <div id="flash-tagger-gal-{{.Name}}"></div>
+  <div class="dialog-actions">
+    <button type="submit">Save</button>
+    <button type="button" onclick="this.closest('dialog').close()">Close</button>
+  </div>
+</form>
+{{end}}

@@ -1,5 +1,28 @@
 # Changelog
 
+## [v1.5.1] - 2026-05-05
+### Added
+- Camie v2 auto-tagger as a third catalog entry (`camie-v2`). 789 MB ONNX, 70k+ tags across 7 categories. It's currently the only supported model that natively predicts artist (~7k tags) and copyright (~5k tags). 
+- Per-gallery enabling for auto-taggers. Each tagger gains an optional `galleries = [...]` TOML key; empty / missing means every gallery (the legacy default), a non-empty list restricts the tagger to the named subset. Managed via Settings → Auto-Tagger → Galleries; Per-job entry points (gallery, detail page, upload, scheduler, REST API) all honour the per-gallery filter. 
+- Newly discovered tagger model folders are persisted as enabled instead of staying implicit; the operator can disable from the table afterwards.
+- Gallery batch-mode click toggle: while the batch bar is up, a plain left-click on a thumbnail toggles its checkbox.
+- Manual and auto-tagger rating-tag adds prune lower-rank rating rows from the same image inside the write transaction. Pre-existing multi-rating rows from older data are left alone; only writes that fire the rule clean up.
+
+### Changed
+- Auto-tagger thresholds are now per-category: each tagger has a global threshold plus an optional `category_thresholds` map. Catalog rows ship with sensible defaults (wd-swinv2 carries `character = 0.85`; joytag stays single-knob since its profile only emits `general`). Edit per-tagger via Settings → Auto-Tagger → Configure;
+- Settings → Auto-Tagger table redesigned: Downloaded and Enabled fold into a single Status column; the Confidence number-input is replaced by a Configure button + inline summary; a new Galleries column follows the same pattern; column widths pinned so rows align across taggers.
+- Catalog default thresholds rebased according to models suggestions.
+
+### Removed
+- Detail-page X/Y position counter. The counter sat next to the back link and required a SUM/COUNT walk over the visible set on every detail-page load whenever the back-search carried no tag-shaped predicate to short-circuit on, affecting performance on large galleries. Adjacent prev/next navigation is unaffected.
+
+### Internal
+- Auto-tagger inference is profile-driven. Lifted the WD14-vs-JoyTag bool to a Profile struct capturing input size, layout, channels, normalize, pad, activation, label format, category scheme, and output index. Profiles resolve through embedded defaults at `internal/tagger/profile_default/<name>.json`, an optional `<modelPath>/<name>/tagger.json` sidecar, then a heuristic from the label-file extension. Profile fingerprint joins the cache reuse signature so a sidecar edit invalidates the session set.
+- Auto-tagger label loaders gained a third format: `camie_json` parses Camie's `dataset_info.tag_mapping.idx_to_tag` + `tag_to_category` shape, populating `tagLabel.categoryName` for the `name_string` category-resolution path.
+- Search: AND-driver materialises wildcard canonicals, so `blue*` at root substitutes a literal IN(...) instead of a per-row LIST SUBQUERY scan; popular AND-of-tags chains (every leaf above the rare-tag threshold) intersect off `idx_image_tags_tag` rather than nesting EXISTS over a full visible scan; a single-leaf AND-driver is now allowed under random sort.
+- Search: rating-ceiling chain peels off `AndExpr{userExpr, chain}` so the count fast path applies to rating-filtered user searches, with a sum-of-usage upper bound on the chain leg; fast counts added for `rating:`, `folder:` recursive, `source:` csv, `tagged:` / `autotagged:`, and `generated:` filters; `idx_images_ingested_visible` pinned for the `tagged:` / `autotagged:` data path.
+- Search: id-bucket gate for newest-sort sparse multi-AND prev/next adjacency.
+
 ## [v1.5.0] - 2026-05-02
 ### Added
 - Tag implications: declare `parent → child` so adding the parent stamps the child on every image carrying the parent, and removing the parent walks the transitive closure to strip children that were only justified by it. Declaring or deleting an implication runs a chunked background propagation job. 

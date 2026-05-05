@@ -102,6 +102,40 @@ func TestLoadDispatch_EmptyCategoryDrops(t *testing.T) {
 	}
 }
 
+func TestLoadDispatch_CamieRatingAndYearStripped(t *testing.T) {
+	tmp := t.TempDir()
+	d := LoadDispatch(tmp, "camie-v2", canonicalCatIDs)
+	cases := []struct {
+		source, wantName string
+		wantCat          string
+	}{
+		{"rating_general", "general", "rating"},
+		{"rating_sensitive", "sensitive", "rating"},
+		{"rating_questionable", "questionable", "rating"},
+		{"rating_explicit", "explicit", "rating"},
+		{"year_2018", "2018", "year"},
+		{"year_2024", "2024", "year"},
+	}
+	for _, c := range cases {
+		rule, ok := d.Lookup(c.source)
+		if !ok {
+			t.Errorf("%s: no rule (canonical name should be stripped)", c.source)
+			continue
+		}
+		if rule.Name != c.wantName {
+			t.Errorf("%s: rule.Name = %q, want %q", c.source, rule.Name, c.wantName)
+		}
+		if rule.CatID != canonicalCatIDs[c.wantCat] {
+			t.Errorf("%s: rule.CatID = %d, want %d (%s)", c.source, rule.CatID, canonicalCatIDs[c.wantCat], c.wantCat)
+		}
+	}
+	// greyscale should land in medium, not general - this is the routing
+	// the camie metadata can't supply on its own.
+	if rule, ok := d.Lookup("greyscale"); !ok || rule.CatID != canonicalCatIDs["medium"] {
+		t.Errorf("greyscale rule = %+v ok=%v, want CatID=medium", rule, ok)
+	}
+}
+
 func TestLoadDispatch_SchemaVersionMismatch(t *testing.T) {
 	tmp := t.TempDir()
 	writeOverlay(t, tmp, "wd-swinv2", `{

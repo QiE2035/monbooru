@@ -263,7 +263,7 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	enabled := tagger.EnabledTaggers(s.cfg)
+	enabled := tagger.EnabledTaggersForGallery(s.cfg, cx.Name)
 	if len(enabled) == 0 {
 		return nil
 	}

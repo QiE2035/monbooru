@@ -1,0 +1,47 @@
+{{define "partials/tagger_thresholds_dialog.html"}}
+<form hx-post="/settings/tagger/{{.Name}}/thresholds"
+      hx-target="#flash-tagger-thresh-{{.Name}}" hx-swap="innerHTML">
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+  <p class="field-hint">Per-category thresholds override the global one.</p>
+  <table class="tagger-thresh-table">
+    <thead><tr><th>Category</th><th>Threshold</th><th></th></tr></thead>
+    <tbody>
+      <tr class="tagger-thresh-global">
+        <td><strong>Global</strong></td>
+        <td>
+          <input type="number" name="global_threshold" value="{{printf "%.2f" .Global}}"
+                 min="0" max="1" step="0.01" required>
+        </td>
+        <td></td>
+      </tr>
+      {{range .Rows}}
+      <tr>
+        <td>
+          <input type="hidden" name="category" value="{{.Category}}">
+          <span style="color:{{.Color}}">{{.Category}}</span>
+        </td>
+        <td>
+          <input type="number" name="threshold_{{.Category}}" value="{{.Override}}"
+                 placeholder="(global)" min="0" max="1" step="0.01">
+        </td>
+        <td>
+          {{if .Override}}<a href="#" class="reset-thresh"
+             onclick="this.closest('tr').querySelector('input[type=number]').value=''; return false;">Reset</a>{{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <div id="flash-tagger-thresh-{{.Name}}"></div>
+  <div class="dialog-actions">
+    <button type="submit">Save</button>
+    <button type="button"
+            hx-post="/settings/tagger/{{.Name}}/thresholds/reset"
+            hx-vals='{"_csrf":"{{.CSRFToken}}"}'
+            hx-target="#tagger-thresh-{{.Name}}-body"
+            hx-swap="innerHTML"
+            hx-confirm="Reset all thresholds for {{.Name}} to defaults?">Reset to defaults</button>
+    <button type="button" onclick="this.closest('dialog').close()">Close</button>
+  </div>
+</form>
+{{end}}

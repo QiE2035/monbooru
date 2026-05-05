@@ -3,11 +3,13 @@
   "models": [
     {
       "name": "wd-swinv2",
-      "description": "Anime tagger (WD14 SwinV2 v3, ~330 MB)",
+      "description": "[Recommended] Anime tagger (WD14 SwinV2 v3, ~330 MB)",
       "files": [
         { "url": "https://huggingface.co/SmilingWolf/wd-swinv2-tagger-v3/resolve/main/model.onnx", "filename": "model.onnx" },
         { "url": "https://huggingface.co/SmilingWolf/wd-swinv2-tagger-v3/resolve/main/selected_tags.csv", "filename": "tags.csv" }
-      ]
+      ],
+      "default_threshold": 0.35,
+      "default_thresholds": { "character": 0.50 }
     },
     {
       "name": "joytag",
@@ -15,7 +17,18 @@
       "files": [
         { "url": "https://huggingface.co/fancyfeast/joytag/resolve/main/model.onnx", "filename": "model.onnx" },
         { "url": "https://huggingface.co/fancyfeast/joytag/resolve/main/top_tags.txt", "filename": "tags.txt" }
-      ]
+      ],
+      "default_threshold": 0.40
+    },
+    {
+      "name": "camie-v2",
+      "description": "Anime tagger with artist/copyright recognition (~789 MB)",
+      "files": [
+        { "url": "https://huggingface.co/Camais03/camie-tagger-v2/resolve/main/camie-tagger-v2.onnx", "filename": "model.onnx" },
+        { "url": "https://huggingface.co/Camais03/camie-tagger-v2/resolve/main/camie-tagger-v2-metadata.json", "filename": "camie-tagger-v2-metadata.json" }
+      ],
+      "default_threshold": 0.50,
+      "default_thresholds": { "character": 0.60 }
     }
   ]
 }

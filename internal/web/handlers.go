@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -271,7 +272,7 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		FolderTree:     folderTree,
 		SourceCounts:   sourceCounts,
 		SavedSearches:  savedSearches,
-		EnabledTaggers: tagger.EnabledTaggers(s.cfg),
+		EnabledTaggers: tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
 	}
 
 	if htmxGridTarget {
@@ -508,8 +509,6 @@ type detailData struct {
 	ThumbnailURL   string
 	PrevID         *int64
 	NextID         *int64
-	Position       int    // 1-based rank of Image within the referring search; 0 = unknown (no back-* context)
-	PositionTotal  int    // total matching rows in the referring search
 	RefURL         string // predecessor detail URL when the user arrived via a Similar-images click; drives the "← Previous image" back link and Escape
 	Ref            string // raw ref=<sourceID> value when valid; forwarded on the delete button so the post-delete redirect returns to the source instead of an arbitrary neighbour
 	BackQuery      string
@@ -584,15 +583,13 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 	// sequential - it's pure CPU on the comfyMeta payload and only matters
 	// once that read returns.
 	var (
-		imageTags     []models.ImageTag
-		sdMeta        *models.SDMetadata
-		comfyMeta     *models.ComfyUIMetadata
-		genericMeta   []models.SDParam
-		imagePaths    []models.ImagePath
-		prevID        *int64
-		nextID        *int64
-		position      int
-		positionTotal int
+		imageTags   []models.ImageTag
+		sdMeta      *models.SDMetadata
+		comfyMeta   *models.ComfyUIMetadata
+		genericMeta []models.SDParam
+		imagePaths  []models.ImagePath
+		prevID      *int64
+		nextID      *int64
 	)
 	var wg sync.WaitGroup
 	wg.Add(5)
@@ -605,14 +602,10 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		genericMeta = meta.ExtractGeneric(img.CanonicalPath, img.FileType)
 	}()
 	if wantAdjacent {
-		wg.Add(2)
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			prevID, nextID = s.findAdjacentImages(id, backQ, backSort, backOrder, backSeed, ceiling)
-		}()
-		go func() {
-			defer wg.Done()
-			position, positionTotal = s.findImagePosition(id, backQ, backSort, backOrder, backSeed, ceiling)
 		}()
 	}
 	wg.Wait()
@@ -622,7 +615,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		comfyNodes = meta.ParseComfyWorkflowNodes(comfyMeta.RawWorkflow)
 	}
 
-	enabledTaggers := tagger.EnabledTaggers(s.cfg)
+	enabledTaggers := tagger.EnabledTaggersForGallery(s.cfg, s.activeName)
 	imageTaggers := distinctAutoTaggerNames(imageTags)
 	hasUserTags := false
 	for _, t := range imageTags {
@@ -646,8 +639,6 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		ThumbnailURL:   fmt.Sprintf("/thumbnails/%s/%d.jpg", s.activeName, id),
 		PrevID:         prevID,
 		NextID:         nextID,
-		Position:       position,
-		PositionTotal:  positionTotal,
 		RefURL:         refURL,
 		Ref:            refStrValid,
 		BackQuery:      backQ,
@@ -2011,6 +2002,8 @@ type taggerRow struct {
 	Reason              string
 	Enabled             bool
 	ConfidenceThreshold float64
+	ThresholdSummary    string
+	GallerySummary      string
 	Installed           bool
 	Supported           bool
 	HostCommand         string
@@ -2020,6 +2013,7 @@ type taggerRow struct {
 func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	base := s.base(r, "settings", "Settings - Monbooru")
 	s.disableUnavailableTaggers()
+	s.persistNewlyDiscoveredTaggers()
 	taggers := tagger.AvailableTaggers(s.cfg)
 	// Build a unified row list: catalog-backed rows (installed-and-in-catalog
 	// plus catalog entries whose subfolder isn't on disk yet) come first as
@@ -2037,6 +2031,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		taggerNames[t.Name] = true
 	}
 	var supportedRows, unsupportedRows []taggerRow
+	totalGalleries := len(s.cfg.Galleries)
 	for _, t := range taggers {
 		row := taggerRow{
 			Name:                t.Name,
@@ -2044,6 +2039,8 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 			Reason:              t.Reason,
 			Enabled:             t.Enabled,
 			ConfidenceThreshold: t.ConfidenceThreshold,
+			ThresholdSummary:    taggerThresholdSummary(t.ConfidenceThreshold, t.CategoryThresholds),
+			GallerySummary:      taggerGallerySummary(t.Galleries, totalGalleries),
 			Installed:           true,
 		}
 		if e, ok := catalogByName[t.Name]; ok {
@@ -2156,11 +2153,6 @@ func (s *Server) settingsTaggerPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse per-tagger form fields: tagger_<name>_enabled and tagger_<name>_threshold.
-	// The list of known tagger names is sent as hidden "tagger_names" fields so
-	// unchecked checkboxes still produce a disabled entry.
-	names := r.Form["tagger_names"]
-
 	newUseCUDA := r.FormValue("use_cuda") == "on"
 	// Probe CUDA before persisting the enable so the user sees any library/GPU
 	// issue immediately instead of waiting for a tagger run to fail. ORT env
@@ -2177,37 +2169,11 @@ func (s *Server) settingsTaggerPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.cfgMu.Lock()
-
 	cudaChanged := s.cfg.Tagger.UseCUDA != newUseCUDA
 	s.cfg.Tagger.UseCUDA = newUseCUDA
 	if n, err := strconv.Atoi(r.FormValue("parallel")); err == nil && n >= 1 {
 		s.cfg.Tagger.Parallel = n
 	}
-
-	// Rebuild the taggers slice from submitted names so deleted subfolders drop out.
-	// Seed from DiscoverTaggers so subfolders present on disk but not yet in TOML
-	// keep their discovery defaults (Enabled=true) instead of collapsing to the
-	// zero value when the form is saved.
-	byName := map[string]config.TaggerInstance{}
-	for _, t := range tagger.DiscoverTaggers(s.cfg) {
-		byName[t.Name] = t.TaggerInstance
-	}
-	newList := make([]config.TaggerInstance, 0, len(names))
-	for _, name := range names {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		t := byName[name]
-		t.Name = name
-		// Enabled state is owned by the per-row Enable/Disable endpoints,
-		// not the Save form, so preserve whatever the config already holds.
-		if f, err := strconv.ParseFloat(r.FormValue("tagger_"+name+"_threshold"), 64); err == nil {
-			t.ConfidenceThreshold = f
-		}
-		newList = append(newList, t)
-	}
-	s.cfg.Tagger.Taggers = newList
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
 		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
@@ -2218,7 +2184,7 @@ func (s *Server) settingsTaggerPost(w http.ResponseWriter, r *http.Request) {
 	if cudaChanged {
 		tagger.ReleaseAll()
 	}
-	logx.Infof("settings: tagger updated (%d taggers, use_cuda=%t)", len(newList), s.cfg.Tagger.UseCUDA)
+	logx.Infof("settings: tagger updated (use_cuda=%t)", s.cfg.Tagger.UseCUDA)
 	w.Write([]byte(`<div class="flash flash-ok">Saved.</div>`))
 	s.renderTemplate(w, "partials/tagger_mode_badge.html", map[string]any{
 		"UseCUDA": s.cfg.Tagger.UseCUDA,
@@ -2244,11 +2210,9 @@ func (s *Server) settingsTaggerEnablePost(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if !found {
-		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers, config.TaggerInstance{
-			Name:                name,
-			Enabled:             true,
-			ConfidenceThreshold: tagger.DefaultConfidenceThreshold,
-		})
+		catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
+		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers,
+			tagger.SeedTaggerInstance(name, true, catalog))
 	}
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
@@ -2281,12 +2245,12 @@ func (s *Server) settingsTaggerDisablePost(w http.ResponseWriter, r *http.Reques
 	}
 	if !found {
 		// Tagger existed on disk but had no TOML entry yet - add a disabled
-		// one so the preference persists.
-		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers, config.TaggerInstance{
-			Name:                name,
-			Enabled:             false,
-			ConfidenceThreshold: tagger.DefaultConfidenceThreshold,
-		})
+		// one so the preference persists. Catalog defaults still seed in
+		// (they don't fire until the row is enabled, but persisting them
+		// here keeps the disable→enable round-trip stable).
+		catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
+		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers,
+			tagger.SeedTaggerInstance(name, false, catalog))
 	}
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
@@ -2296,6 +2260,490 @@ func (s *Server) settingsTaggerDisablePost(w http.ResponseWriter, r *http.Reques
 	logx.Infof("settings: tagger %q disabled", name)
 	w.Header().Set("HX-Refresh", "true")
 	w.Write([]byte(`<div class="flash flash-ok">Tagger ` + html.EscapeString(name) + ` disabled.</div>`))
+}
+
+// thresholdRow is the per-category render shape for the per-tagger
+// Configure dialog. Override is the live category_thresholds value; an
+// empty Override falls back to the global threshold and the input
+// renders a placeholder instead of a value.
+type thresholdRow struct {
+	Category string
+	Override string // "" when no override; formatted "%.2f" otherwise
+	Color    string // tag_categories.color, surfaced as a 1px dot
+}
+
+// taggerGalleryRow is the per-gallery render shape for the per-tagger
+// Galleries dialog: one entry per configured gallery, with Checked =
+// true when the tagger's Galleries list contains this name (or is
+// empty/missing, meaning "every gallery").
+type taggerGalleryRow struct {
+	Name    string
+	Checked bool
+}
+
+// settingsTaggerThresholdsGet renders the dialog body for one tagger's
+// thresholds: a global slot plus one row per emitted category, with a
+// "+ category" select listing the rest of tag_categories so an operator
+// can override a category the model wouldn't otherwise emit (a
+// dispatch rule could route something into it). HTMX lazy-loads the
+// body via hx-get on first dialog open.
+func (s *Server) settingsTaggerThresholdsGet(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" {
+		http.Error(w, "bad name", http.StatusBadRequest)
+		return
+	}
+	rows, global, ok := s.thresholdDialogData(name)
+	if !ok {
+		http.Error(w, "tagger not found", http.StatusNotFound)
+		return
+	}
+	csrf := s.csrfToken(sessionFromContext(r.Context()))
+	s.renderTemplate(w, "partials/tagger_thresholds_dialog.html", map[string]any{
+		"Name":      name,
+		"Global":    global,
+		"Rows":      rows,
+		"CSRFToken": csrf,
+	})
+}
+
+// settingsTaggerThresholdsPost saves the per-tagger threshold form. The
+// global threshold is required (input type=number, validated client-side
+// too); a category row with an empty value clears its override.
+//
+// On validation error the inline flash inside the dialog is updated and
+// the dialog stays open. On success the dialog closes (via the
+// `tagger-saved` HX-Trigger event), the parent settings page's
+// `#flash-tagger` carries the confirmation, and the row's summary text
+// is OOB-swapped to reflect the new values without a page reload.
+func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" {
+		http.Error(w, "bad name", http.StatusBadRequest)
+		return
+	}
+	if !parseFormOK(w, r) {
+		return
+	}
+	globalRaw := strings.TrimSpace(r.FormValue("global_threshold"))
+	global, err := strconv.ParseFloat(globalRaw, 64)
+	if err != nil || global < 0 || global > 1 {
+		w.Write([]byte(`<div class="flash flash-err">Global threshold must be between 0 and 1.</div>`))
+		return
+	}
+	overrides := map[string]float64{}
+	for _, cat := range r.Form["category"] {
+		cat = strings.TrimSpace(cat)
+		if cat == "" {
+			continue
+		}
+		raw := strings.TrimSpace(r.FormValue("threshold_" + cat))
+		if raw == "" {
+			// Empty value clears the override.
+			continue
+		}
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil || v < 0 || v > 1 {
+			fmt.Fprintf(w, `<div class="flash flash-err">Threshold for %s must be between 0 and 1.</div>`,
+				html.EscapeString(cat))
+			return
+		}
+		overrides[cat] = v
+	}
+	s.cfgMu.Lock()
+	found := false
+	for i, t := range s.cfg.Tagger.Taggers {
+		if t.Name == name {
+			s.cfg.Tagger.Taggers[i].ConfidenceThreshold = global
+			if len(overrides) > 0 {
+				s.cfg.Tagger.Taggers[i].CategoryThresholds = overrides
+			} else {
+				s.cfg.Tagger.Taggers[i].CategoryThresholds = nil
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
+		seeded := tagger.SeedTaggerInstance(name, false, catalog)
+		seeded.ConfidenceThreshold = global
+		if len(overrides) > 0 {
+			seeded.CategoryThresholds = overrides
+		} else {
+			seeded.CategoryThresholds = nil
+		}
+		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers, seeded)
+	}
+	s.cfgMu.Unlock()
+	if err := s.saveConfig(); err != nil {
+		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+		return
+	}
+	logx.Infof("settings: tagger %q thresholds updated (global=%.2f, %d overrides)", name, global, len(overrides))
+	summary := taggerThresholdSummary(global, overrides)
+	setTaggerSavedTrigger(w, "tagger-thresh-"+name)
+	fmt.Fprintf(w,
+		`<span id="tagger-thresh-summary-%s" hx-swap-oob="true">%s</span>`+
+			`<div id="flash-tagger" hx-swap-oob="true"><div class="flash flash-ok">Tagger %s thresholds saved.</div></div>`,
+		html.EscapeString(name), html.EscapeString(summary), html.EscapeString(name))
+}
+
+// setTaggerSavedTrigger fires a JS-side `tagger-saved` event with the
+// dialog id to close. The shared shape lets one body listener serve
+// every per-tagger config dialog (thresholds, galleries, future ones).
+func setTaggerSavedTrigger(w http.ResponseWriter, dialogID string) {
+	payload, _ := json.Marshal(map[string]any{
+		"tagger-saved": map[string]any{"dialog": dialogID},
+	})
+	w.Header().Set("HX-Trigger", string(payload))
+}
+
+// settingsTaggerThresholdsResetPost wipes per-tagger threshold overrides
+// and rebases the global threshold to the catalog default (or the
+// package fallback when no catalog entry exists). Renders the dialog
+// body afresh so the inputs reflect the reset values without a save
+// round-trip; the row summary is OOB-swapped so the parent table
+// updates immediately. Stays inside the dialog so the operator can
+// fine-tune from the reset baseline before clicking Save.
+func (s *Server) settingsTaggerThresholdsResetPost(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" {
+		http.Error(w, "bad name", http.StatusBadRequest)
+		return
+	}
+	if !parseFormOK(w, r) {
+		return
+	}
+	catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
+	defaults := tagger.SeedTaggerInstance(name, false, catalog)
+	s.cfgMu.Lock()
+	found := false
+	for i, t := range s.cfg.Tagger.Taggers {
+		if t.Name == name {
+			s.cfg.Tagger.Taggers[i].ConfidenceThreshold = defaults.ConfidenceThreshold
+			s.cfg.Tagger.Taggers[i].CategoryThresholds = defaults.CategoryThresholds
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers, defaults)
+	}
+	s.cfgMu.Unlock()
+	if err := s.saveConfig(); err != nil {
+		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+		return
+	}
+	logx.Infof("settings: tagger %q thresholds reset to defaults", name)
+	rows, global, ok := s.thresholdDialogData(name)
+	if !ok {
+		http.Error(w, "tagger not found", http.StatusNotFound)
+		return
+	}
+	csrf := s.csrfToken(sessionFromContext(r.Context()))
+	summary := taggerThresholdSummary(global, defaults.CategoryThresholds)
+	fmt.Fprintf(w, `<span id="tagger-thresh-summary-%s" hx-swap-oob="true">%s</span>`,
+		html.EscapeString(name), html.EscapeString(summary))
+	s.renderTemplate(w, "partials/tagger_thresholds_dialog.html", map[string]any{
+		"Name":      name,
+		"Global":    global,
+		"Rows":      rows,
+		"CSRFToken": csrf,
+	})
+}
+
+// thresholdDialogData assembles the per-row state the template renders:
+// one entry per category the profile is expected to emit, plus any
+// extra categories carrying an existing override (so a dispatch-driven
+// override stays editable). global is the live ConfidenceThreshold.
+// ok=false means the tagger isn't in cfg or on disk.
+func (s *Server) thresholdDialogData(name string) (rows []thresholdRow, global float64, ok bool) {
+	s.cfgMu.Lock()
+	var inst config.TaggerInstance
+	for _, t := range s.cfg.Tagger.Taggers {
+		if t.Name == name {
+			inst = t
+			ok = true
+			break
+		}
+	}
+	modelPath := s.cfg.Paths.ModelPath
+	s.cfgMu.Unlock()
+
+	if !ok {
+		// Fall back to the discovery default so a never-enabled row can
+		// still open the dialog, seeding from the catalog when possible.
+		for _, t := range tagger.DiscoverTaggers(s.cfg) {
+			if t.Name == name {
+				inst = t.TaggerInstance
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, 0, false
+		}
+	}
+	global = inst.ConfidenceThreshold
+
+	tagsFile := inst.TagsFile
+	if tagsFile == "" {
+		tagsFile = tagger.DefaultTagsFile
+	}
+	profile, _ := tagger.ResolveProfile(modelPath, name, tagsFile)
+	emit := profile.EmittedCategories()
+
+	colors := s.categoryColors()
+
+	seen := map[string]bool{}
+	for _, cat := range emit {
+		seen[cat] = true
+		rows = append(rows, thresholdRow{
+			Category: cat,
+			Override: formatOverride(inst.CategoryThresholds, cat),
+			Color:    colors[cat],
+		})
+	}
+	// Extra overrides not in the profile's emitted set still render so
+	// the operator can edit / clear them (dispatch rules can land a
+	// label in any category).
+	for cat := range inst.CategoryThresholds {
+		if seen[cat] {
+			continue
+		}
+		seen[cat] = true
+		rows = append(rows, thresholdRow{
+			Category: cat,
+			Override: formatOverride(inst.CategoryThresholds, cat),
+			Color:    colors[cat],
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Category < rows[j].Category })
+	return rows, global, true
+}
+
+func formatOverride(m map[string]float64, key string) string {
+	if v, ok := m[key]; ok {
+		return strconv.FormatFloat(v, 'f', 2, 64)
+	}
+	return ""
+}
+
+// taggerThresholdSummary renders the inline summary the table cell
+// shows next to the Configure button: "global 0.40" or "global 0.40,
+// character 0.85, copyright 0.50". Sorted by category name so two
+// equivalent maps render the same string.
+func taggerThresholdSummary(global float64, overrides map[string]float64) string {
+	out := fmt.Sprintf("global %.2f", global)
+	if len(overrides) == 0 {
+		return out
+	}
+	keys := make([]string, 0, len(overrides))
+	for k := range overrides {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out += fmt.Sprintf(", %s %.2f", k, overrides[k])
+	}
+	return out
+}
+
+// categoryColors returns a name → color map for every row in
+// tag_categories on the active gallery. Used by the threshold dialog
+// so each category label renders in its own colour. Database errors
+// yield an empty map so the dialog still renders without colour.
+func (s *Server) categoryColors() map[string]string {
+	cx := s.Active()
+	if cx == nil {
+		return nil
+	}
+	rows, err := cx.DB.Read.Query(`SELECT name, color FROM tag_categories`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var name, color string
+		if err := rows.Scan(&name, &color); err != nil {
+			return out
+		}
+		out[name] = color
+	}
+	return out
+}
+
+// settingsTaggerGalleriesGet renders the dialog body for one tagger's
+// per-gallery selection. One checkbox per configured gallery; the "all
+// galleries" sentinel renders pre-checked when the TaggerInstance has
+// no explicit Galleries list (the legacy default).
+func (s *Server) settingsTaggerGalleriesGet(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" {
+		http.Error(w, "bad name", http.StatusBadRequest)
+		return
+	}
+	rows, allChecked, ok := s.galleryDialogData(name)
+	if !ok {
+		http.Error(w, "tagger not found", http.StatusNotFound)
+		return
+	}
+	csrf := s.csrfToken(sessionFromContext(r.Context()))
+	s.renderTemplate(w, "partials/tagger_galleries_dialog.html", map[string]any{
+		"Name":       name,
+		"Rows":       rows,
+		"AllChecked": allChecked,
+		"CSRFToken":  csrf,
+	})
+}
+
+// settingsTaggerGalleriesPost saves the per-tagger Galleries list.
+// Three submitted shapes:
+//   - `all=on`                       → nil (every gallery, legacy)
+//   - `all=off` with selected names  → those names
+//   - `all=off` with no selection    → []string{} (no gallery, dormant)
+//
+// The explicit-empty case is preserved by storing a non-nil empty slice
+// so the TOML round-trip writes `galleries = []` and AppliesToGallery
+// returns false everywhere on the next read.
+//
+// On success the dialog closes via the shared tagger-saved HX-Trigger.
+func (s *Server) settingsTaggerGalleriesPost(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" {
+		http.Error(w, "bad name", http.StatusBadRequest)
+		return
+	}
+	if !parseFormOK(w, r) {
+		return
+	}
+	all := r.FormValue("all") == "on"
+	var galleries []string
+	if !all {
+		// Filter against configured gallery names so a stale form value
+		// can't poison the config (a renamed gallery would otherwise
+		// linger here and silently disable the tagger). A non-nil empty
+		// slice represents the explicit "no galleries" choice.
+		galleries = []string{}
+		valid := map[string]bool{}
+		for _, g := range s.cfg.Galleries {
+			valid[g.Name] = true
+		}
+		for _, n := range r.Form["gallery_names"] {
+			n = strings.TrimSpace(n)
+			if n == "" || !valid[n] {
+				continue
+			}
+			galleries = append(galleries, n)
+		}
+	}
+	s.cfgMu.Lock()
+	found := false
+	for i, t := range s.cfg.Tagger.Taggers {
+		if t.Name == name {
+			s.cfg.Tagger.Taggers[i].Galleries = galleries
+			found = true
+			break
+		}
+	}
+	if !found {
+		catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
+		seeded := tagger.SeedTaggerInstance(name, false, catalog)
+		seeded.Galleries = galleries
+		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers, seeded)
+	}
+	s.cfgMu.Unlock()
+	if err := s.saveConfig(); err != nil {
+		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+		return
+	}
+	logx.Infof("settings: tagger %q galleries updated (all=%t, %d named)", name, all, len(galleries))
+	summary := taggerGallerySummary(galleries, len(s.cfg.Galleries))
+	setTaggerSavedTrigger(w, "tagger-gal-"+name)
+	fmt.Fprintf(w,
+		`<span id="tagger-gal-summary-%s" hx-swap-oob="true">%s</span>`+
+			`<div id="flash-tagger" hx-swap-oob="true"><div class="flash flash-ok">Tagger %s galleries saved.</div></div>`,
+		html.EscapeString(name), html.EscapeString(summary), html.EscapeString(name))
+}
+
+// galleryDialogData returns one row per configured gallery, with
+// Checked reflecting the tagger's current Galleries list. allChecked
+// is true when Galleries is nil (legacy "every gallery") so the
+// master toggle renders pre-ticked. A non-nil empty slice means
+// "no galleries", which surfaces as the master toggle off and every
+// row unchecked.
+func (s *Server) galleryDialogData(name string) (rows []taggerGalleryRow, allChecked bool, ok bool) {
+	s.cfgMu.Lock()
+	var inst config.TaggerInstance
+	for _, t := range s.cfg.Tagger.Taggers {
+		if t.Name == name {
+			inst = t
+			ok = true
+			break
+		}
+	}
+	galleries := append([]config.Gallery(nil), s.cfg.Galleries...)
+	s.cfgMu.Unlock()
+
+	if !ok {
+		for _, t := range tagger.DiscoverTaggers(s.cfg) {
+			if t.Name == name {
+				inst = t.TaggerInstance
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, false, false
+		}
+	}
+	allChecked = inst.Galleries == nil
+	picked := map[string]bool{}
+	for _, n := range inst.Galleries {
+		picked[n] = true
+	}
+	for _, g := range galleries {
+		rows = append(rows, taggerGalleryRow{
+			Name:    g.Name,
+			Checked: allChecked || picked[g.Name],
+		})
+	}
+	return rows, allChecked, true
+}
+
+// taggerGallerySummary renders the per-row summary text shown next to
+// the Galleries Configure button. nil reads as "(all)" - the legacy
+// applies-everywhere default; explicit empty reads as "(none)" so the
+// dormant case is distinguishable at a glance. Listing every configured
+// gallery also reads "(all)" so picking every box produces the same
+// short summary.
+func taggerGallerySummary(galleries []string, totalGalleries int) string {
+	if galleries == nil {
+		return "(all)"
+	}
+	if len(galleries) == 0 {
+		return "(none)"
+	}
+	if len(galleries) == totalGalleries {
+		return "(all)"
+	}
+	return strings.Join(galleries, ", ")
+}
+
+// catalogEntryByName looks up a catalog row by name, returning nil for
+// taggers that aren't in the catalog (homegrown subfolders). Used by
+// the per-row Enable / Disable handlers to seed catalog-supplied
+// thresholds onto fresh TaggerInstance rows.
+func catalogEntryByName(modelPath, name string) *tagger.CatalogEntry {
+	for _, e := range tagger.LoadCatalog(modelPath) {
+		if e.Name == name {
+			entry := e
+			return &entry
+		}
+	}
+	return nil
 }
 
 // disableUnavailableTaggers flips Enabled to false on any configured tagger
@@ -2320,6 +2768,41 @@ func (s *Server) disableUnavailableTaggers() {
 	if changed {
 		if err := s.saveConfig(); err != nil {
 			logx.Warnf("auto-disable taggers: save config: %v", err)
+		}
+	}
+}
+
+// persistNewlyDiscoveredTaggers materialises a TOML entry for any
+// available subfolder under model_path that has no entry yet, with
+// Enabled=true and the catalog-supplied threshold defaults applied.
+// DiscoverTaggers already surfaces these rows as enabled at render
+// time, but the state was implicit (derived on the fly each call);
+// persisting it makes the intent visible in the config file and
+// removes the chance of a future code path treating "no TOML entry"
+// as "not enabled".
+func (s *Server) persistNewlyDiscoveredTaggers() {
+	discovered := tagger.DiscoverTaggers(s.cfg)
+	modelPath := s.cfg.Paths.ModelPath
+	s.cfgMu.Lock()
+	known := make(map[string]bool, len(s.cfg.Tagger.Taggers))
+	for _, t := range s.cfg.Tagger.Taggers {
+		known[t.Name] = true
+	}
+	added := false
+	for _, d := range discovered {
+		if known[d.Name] || !d.Available {
+			continue
+		}
+		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers,
+			tagger.SeedTaggerInstance(d.Name, true, catalogEntryByName(modelPath, d.Name)))
+		known[d.Name] = true
+		added = true
+		logx.Infof("settings: auto-enabled discovered tagger %q", d.Name)
+	}
+	s.cfgMu.Unlock()
+	if added {
+		if err := s.saveConfig(); err != nil {
+			logx.Warnf("auto-enable taggers: save config: %v", err)
 		}
 	}
 }
@@ -4642,19 +5125,6 @@ func (s *Server) findAdjacentImages(currentID int64, queryStr, sortStr, orderStr
 	prevID, nextID, err := search.ExecuteAdjacent(s.db(), sq, currentID)
 	if err != nil {
 		logx.Warnf("findAdjacentImages: %v", err)
-	}
-	return
-}
-
-// findImagePosition returns the 1-based rank of currentID in the referring
-// search and the total matching rows. Used by the detail page's X/Y counter.
-// Shares the same query-building path as findAdjacentImages so both numbers
-// agree with the prev/next arrows they sit next to.
-func (s *Server) findImagePosition(currentID int64, queryStr, sortStr, orderStr, seedStr, ceiling string) (pos, total int) {
-	sq := adjacentSearchQuery(queryStr, sortStr, orderStr, seedStr, ceiling)
-	pos, total, err := search.ExecutePosition(s.db(), sq, currentID)
-	if err != nil {
-		logx.Warnf("findImagePosition: %v", err)
 	}
 	return
 }

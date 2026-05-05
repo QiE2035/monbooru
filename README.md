@@ -25,7 +25,7 @@ Designed for organizing your local media collection, including AI-generated imag
 - Optional auto-tagging with local ONNX models (WD14, JoyTag, or any compatible model), CPU or GPU (CUDA)
 - Search with wildcards, OR, exclusions, plus filters on folder, date, size, dimensions, category, generation recipe...
 - Built-in rating tags (general / sensitive / questionable / explicit) with a SFW ceiling toggle in the footer that hides anything above the chosen level
-- Tag merging into a canonical name (the alias keeps resolving on later adds and searches), custom tag categories with their own colors
+- Tag management: merge duplicates, create aliases, implications and custom categories
 - Batch operations on a selection or on a whole search: delete, move, add/remove tags, auto-tag
 - Multiple galleries, each with its own filesystem and database; switch between them at runtime
 - Per-gallery export and import for backup or migration. The importer also reads Hydrus network and Blombooru exports - see [docs/MIGRATING.md](docs/MIGRATING.md)

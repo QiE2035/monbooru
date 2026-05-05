@@ -233,30 +233,28 @@ The auto-tagger uses ONNX models to suggest tags for your images. Off by default
 
 **Install a supported tagger from the catalog:**
 
-1. Open Settings → Auto-Tagger. The table lists available taggers (WD14 SwinV2, JoyTag).
-2. Click "Show download instructions" on the row you want. The dialog has shell snippets for both host install and `docker exec` install.
+1. Open Settings → Auto-Tagger. The table lists available taggers (WD14 SwinV2, JoyTag, Camie v2).
+2. Click "Show instructions" on the row you want. The dialog has shell snippets for both host install and `docker exec` install.
 3. Run the snippet on a machine with internet access. Monbooru itself never reaches out.
 4. Tick `Enabled` on the row.
 
 **Install a custom ONNX model:**
 
+Other custom ONNX model may or may not work.
 Drop the model into its own subfolder under the `models/` volume. Each subfolder needs:
 
 - `model.onnx` - the weights.
-- `tags.csv` (WD14 schema: `tag_id,name,category_id`) or `tags.txt` (one label per line, all assigned to `general`).
+- One label file: `tags.csv` (WD14 schema: `tag_id,name,category_id`), `tags.txt` (one label per line, all `general`), or a Camie-style metadata `.json` (`dataset_info.tag_mapping.idx_to_tag` + `tag_to_category`).
 
 Reload the Settings page; the new tagger appears in the table.
 
-**Run it:**
-
-| Action | Effect |
-|---|---|
-| Run untagged | Tag every image with no auto-tags yet. Per-tagger or global. |
-| Run all | Re-tag every image. |
-| Per-image | The Auto-tag button on the detail page. |
-| Remove auto-tagged | Delete auto-tags for one tagger or all. Manual tags untouched. |
+To run it, use the auto-tag button in the image detail or in batch actions.
 
 Multiple taggers can run together; per-image results are merged so a tag detected by two taggers is inserted once with the higher confidence.
+
+**Thresholds:** each tagger has a global confidence threshold plus an optional per-category override map. Open Settings → Auto-Tagger → Configure on a row to edit the global threshold and add overrides for individual categories (e.g. raise `character` to 0.85 to suppress false-positive character tags while keeping `general` permissive). Empty per-category cells fall back to the global threshold; click Reset to drop an override.
+
+**Per-gallery enabling:** each tagger row has a Galleries column with a Configure button. Tick "All galleries" so the tagger fires on every gallery (default). Tick individual galleries to restrict it to just those - useful when one gallery holds anime work and another holds photos and you don't want WD14 firing on the photos.
 
 **Override label routing (advanced):** drop a `dispatch.json` next to the tagger's `model.onnx` to remap a label to another category, rename it, or drop it entirely. Format and the shipped defaults are at `internal/tagger/dispatch_default/<tagger>.json`.
 

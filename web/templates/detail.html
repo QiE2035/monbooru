@@ -62,10 +62,6 @@
       {{else}}
       <a href="/#img-{{.Image.ID}}" class="back-link">← Back</a>
       {{end}}
-      {{if gt .PositionTotal 0}}
-      <span class="detail-nav-sep">·</span>
-      <span class="detail-pos" title="Position in current search">{{.Position}}/{{.PositionTotal}}</span>
-      {{end}}
       {{if .Filename}}
       <span class="detail-nav-sep">·</span>
       <span class="detail-filename mono-small" title="{{.Filename}}">{{.Filename}}</span>

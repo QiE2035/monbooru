@@ -38,7 +38,7 @@ func (s *Server) uploadPage(w http.ResponseWriter, r *http.Request) {
 		"ActiveRating":    base.ActiveRating,
 		"AcceptFileTypes": gallery.SupportedMIMETypes,
 		"TaggerAvailable": tagger.IsAvailable(s.cfg),
-		"EnabledTaggers":  tagger.EnabledTaggers(s.cfg),
+		"EnabledTaggers":  tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
 	})
 }
 
@@ -180,7 +180,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 
 	// Optionally kick off auto-tagging on the newly uploaded images.
 	if autotagAfter && len(addedIDs) > 0 && tagger.IsAvailable(s.cfg) {
-		selected, selErr := selectTaggers(s.cfg, taggerName)
+		selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName)
 		if selErr != nil {
 			msg += " (autotag skipped: " + selErr.Error() + ")"
 		} else if err := s.jobs.Start("autotag"); err != nil {
@@ -225,7 +225,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 	scope := strings.TrimSpace(r.FormValue("scope"))
 	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
 
-	selected, selErr := selectTaggers(s.cfg, taggerName)
+	selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName)
 	if selErr != nil {
 		if isHTMXRequest(r) {
 			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(selErr.Error()) + `</div>`))
@@ -347,7 +347,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 	}
 	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
 
-	selected, selErr := selectTaggers(s.cfg, taggerName)
+	selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName)
 	if selErr != nil {
 		if isHTMXRequest(r) {
 			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(selErr.Error()) + `</div>`))
@@ -399,10 +399,12 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 }
 
 // selectTaggers resolves a user-supplied tagger_name to the concrete
-// TaggerStatus list to run. Empty name means all enabled+available taggers.
-// Returns an error if the requested tagger is not enabled or unavailable.
-func selectTaggers(cfg *config.Config, name string) ([]tagger.TaggerStatus, error) {
-	enabled := tagger.EnabledTaggers(cfg)
+// TaggerStatus list to run on the named gallery. Empty name means
+// every tagger enabled + available + applicable to that gallery.
+// Returns an error if the requested tagger is not enabled, unavailable,
+// or restricted to a different gallery.
+func selectTaggers(cfg *config.Config, gallery, name string) ([]tagger.TaggerStatus, error) {
+	enabled := tagger.EnabledTaggersForGallery(cfg, gallery)
 	if name == "" {
 		return enabled, nil
 	}
@@ -411,5 +413,5 @@ func selectTaggers(cfg *config.Config, name string) ([]tagger.TaggerStatus, erro
 			return []tagger.TaggerStatus{t}, nil
 		}
 	}
-	return nil, fmt.Errorf("tagger %q is not enabled or available", name)
+	return nil, fmt.Errorf("tagger %q is not enabled or available for gallery %q", name, gallery)
 }
