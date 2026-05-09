@@ -18,7 +18,7 @@ A gallery is a named folder full of images. The default one points at `/gallery`
 
 Three ways:
 
-- **Drop files into the gallery folder** - the watcher ingests them. Works for files added by `cp`, rsync, an SD generator that writes directly there, etc.
+- **Drop files into the gallery folder** - the watcher ingests them. 
 - **Upload page** (`/upload`) - multi-file browser upload with optional tags and an optional destination subfolder.
 - **REST API** - `POST /api/v1/images` with a multipart `file`, or a JSON `{path, tags, folder}`. See the REST API section below.
 
@@ -37,7 +37,7 @@ On the image detail page, the tag input takes one or more space-separated tokens
 - `"red hair" blue_eyes` - quotes group multiple words into one tag (spaces become underscores).
 - `artist:"john doe"` - category prefix plus quoted name.
 
-Removing the last image that uses a tag drops `usage_count` to 0 but keeps the tag itself, so user-declared aliases and implications survive an empty library. Use the Tags page Delete action to drop the row when you actually want it gone; flip the **Zero-usage** filter to `Show` to surface every tag at zero usage at once.
+Removing the last image that uses a tag drops `usage_count` to 0 but keeps the tag itself, so user-declared aliases and implications survive an empty library. Use the Tags page Delete action to delete the tag when you actually want it gone; the **Zero-usage** filter is `Show` by default so those rows stay visible, flip it to `Hide` to scope the listing to applied tags, or `Only` for the zero-usage triage view.
 
 Allowed characters: lowercase `a-z`, `0-9`, and `_ ( ) ! @ # $ . ~ + - : ? < > = ^`. Max 200 chars.
 
@@ -46,7 +46,18 @@ Batch tagging:
 - **Tag selected** - check thumbnails in the gallery, the batch bar shows up.
 - **Tag all** - applies to every image matching the current search.
 
-Both open a dialog with an Add/Remove toggle and the same tag input syntax as above. Settings → Tag actions has the same controls plus library-wide bulk removal (auto-tags only, user tags only, or every tag).
+Both open a dialog with an Add/Remove toggle and the same tag input syntax as above.
+
+---
+
+## Source and URL
+
+Each image carries two operator-edited free-form fields next to the metadata panel on the detail page. Click `[edit]` next to either to set them.
+
+- **Source** - provenance label (a site name, scraper, anything you want to remember). Surfaces in the `source:my_label` search filter (exact match). Bare `source:` matches images with nothing set. Max 200 chars.
+- **URL** - the canonical web URL the image came from. Must start with `http://` or `https://`. Rendered as a clickable link (new tab) on the detail page. Max 2048 chars.
+
+Both default to empty; leave them blank if you don't track this.
 
 ---
 
@@ -54,33 +65,35 @@ Both open a dialog with an Add/Remove toggle and the same tag input syntax as ab
 
 Nine built-in categories: `general`, `character`, `artist`, `copyright`, `meta`, `rating`, `medium`, `person`, `year`. Manage categories at `/categories`: add new ones with their own color, rename, recolor, or delete. Deleting a custom category prompts to either move its tags to another category or delete them all.
 
-The `rating` category is locked to its four canonical names - see below.
+The `rating` category is locked to its four canonical names (see below).
 
-**Tag merging** is on the `/tags` page: pick a tag and merge it into another. After the merge:
+**Reserved category names.** A handful of names are refused at create / rename time because they double as search-filter prefixes and would collide with `category:tag` parsing: `fav`, `inbox`, `ai`, `source`, `cat`, `width`, `height`, `date`, `missing`, `animated`, `tagged`, `autotagged`, `folder`, `folderonly`, `generated`, `rating`, plus `system` (the search-bar cheat-sheet trigger). Anything else is fair game.
+
+**Aliasing a tag** is on the `/tags` page: pick a non-alias row and click `Alias→`. The dialog asks for the canonical to point at. After submit:
 
 - Image-tag rows move to the canonical tag.
-- The merged tag becomes an alias and stays in the table with `0` usage and an `alias` badge.
+- The aliased tag stays in the table with `0` usage and an `alias` badge.
 - Anything typed later that matches the alias name resolves to the canonical (in tag input, search, autocomplete, REST API).
 
-**Direct alias creation** uses the **Create alias…** button at the top of the `/tags` page when the alias name isn't on any image yet. Pick a name + category and the existing tag it should resolve to. If the name already names a tag with images attached, the dialog tells you to use Merge instead (which moves those rows onto the canonical first).
+**Direct alias creation** uses the **Create alias…** button at the top of the `/tags` page when the alias name isn't on any image yet. Pick a name + category and the existing tag it should resolve to. If the name already names a tag with images attached, the dialog tells you to use the row's `Alias→` button instead (which moves those rows onto the canonical first).
 
-**Repointing** an existing alias is the same Merge dialog, opened from the alias row's `Repoint→` button - it switches the alias to a different canonical without touching anything else.
+**Repointing** an existing alias uses the same dialog, opened from the alias row's `Repoint→` button - it switches the alias to a different canonical without touching anything else.
 
 Alias rows show as `alias_name → canonical_name` in the Name column. Filter the listing to alias-only via the Origin dropdown.
 
-**Tag implications** are declared per-tag from the `Implications…` button on a non-alias row. Each edge says "adding `parent` to an image also adds `implied` to that image". Implied rows render as a separate dim "Implied tags" subsection on the image's tag list and are excluded from the per-image sidebar so the sidebar stays focused on tags you applied. Manually re-adding an implied tag converts it to user-owned so removing the parent later won't sweep it. Adding or removing an implication kicks off a background job to retroactively fan it out (or sweep) across every image already carrying the parent. Cycles are refused at create time.
+**Tag implications** are declared per-tag from the `Implications…` button on a non-alias row. Each edge says "adding `parent` to an image also adds `implied` to that image". Implied rows and any aliases pointing at on-image tags share a single dim collapsed `Implied tags / Aliases` section at the bottom of the image's tag list. The per-image sidebar excludes implied rows so it stays focused on tags you applied. Manually re-adding an implied tag converts it to user-owned so removing the parent later won't sweep it. Adding or removing an implication kicks off a background job to retroactively fan it out (or sweep) across every image already carrying the parent. Cycles are refused at create time.
 
 ---
 
 ## Rating and SFW ceiling
 
-Each image can carry one or more rating tags from the canonical set:
+Each image carries at most one rating tag, from the canonical set:
 
 ```
 general < sensitive < questionable < explicit
 ```
 
-When more than one is attached, the highest wins. `rating:explicit` matches images whose effective rating is exactly `explicit`.
+The auto-tagger keeps the highest rank when an inference emits more than one rating output. A manual edit (detail-page tag input, batch tag, REST API tag-add) overwrites whatever rating was there with the level you typed, even if it ranks below the existing one. `rating:explicit` matches images whose effective rating is exactly `explicit`.
 
 The footer carries the **SFW ceiling**: a row labelled `rating: sfw · sensitive · questionable · explicit`. Click any level to ceiling the gallery to that and below. The active level renders as `[label]`. Default is `[explicit]` (no ceiling). The setting is stored in a HttpOnly cookie scoped to the current browser.
 
@@ -99,8 +112,10 @@ Tags separated by spaces means AND. Everything else stacks on top:
 | `-blonde_hair` | exclude |
 | `blue*` / `*hair*` | wildcards |
 | `fav:true` | favorites only |
-| `source:a1111` / `source:comfyui` / `source:none` | by metadata source |
-| `source:ai` | any image with a1111 and/or comfyui metadata |
+| `inbox:true` / `inbox:false` | inbox triage state |
+| `ai:a1111` / `ai:comfyui` / `ai:none` | by AI generation tool |
+| `ai:any` | any image with a1111 and/or comfyui metadata |
+| `source:my_label` | exact-match against the per-image source label edited from the detail page; bare `source:` matches images with no source set |
 | `folder:2024/january` | images in this folder or any subfolder |
 | `folder:"my set 1"` | quote paths that contain spaces |
 | `folderonly:2024/january` | only images directly in this folder, no subfolders |
@@ -124,6 +139,8 @@ Autocomplete is combination-aware: the count next to each suggestion is for the 
 
 **Favorites:** press `f` on the detail page or click the heart. Search with `fav:true`.
 
+**Inbox/archive:** every newly-ingested image lands in the inbox (untriaged). Press `i` on the detail page to flip it to archived (curated), or use the gallery's batch surface to send a whole search to/from the inbox. The toolbar's `✱` toggle filters the gallery to the inbox. Search with `inbox:true` or `inbox:false`.
+
 ---
 
 ## Browsing
@@ -132,11 +149,11 @@ The gallery sidebar has:
 
 - A tag filter (client-side, restricts the visible tags from the current page).
 - Tags from the current page, grouped by category.
-- Source buttons (a1111 / comfyui / none).
+- AI-Source buttons (a1111 / comfyui / none).
 - The folder tree - every folder with a count. Click the name to recurse into the folder; click the small `·` next to it to filter to images directly in that folder, no subfolders.
 - Saved searches.
 
-The image detail page reuses the folder tree, source buttons, and saved searches in its sidebar; the current image's tag list sits above them.
+The image detail page reuses the folder tree, AI-source buttons, and saved searches in its sidebar; the current image's tag list sits above them.
 
 **Related images:** the bottom of the detail page shows up to 9 images sharing tags with the current one, ranked by overlap.
 
@@ -144,55 +161,7 @@ The image detail page reuses the folder tree, source buttons, and saved searches
 
 ## Keyboard shortcuts
 
-**Anywhere**
-
-| Key | Action |
-|---|---|
-| `s` | Focus search input |
-| `Escape` | Close dialog, blur input, clear selection, exit tag-focus mode, or go back |
-
-**Gallery — navigation**
-
-| Key | Action |
-|---|---|
-| `h` / `l` | Previous / next page |
-| Arrows | Navigate the grid |
-| `Enter` | Open focused image |
-| `Space` | Toggle selection of the focused thumbnail |
-| `Ctrl+A` | Select every visible thumbnail |
-
-**Gallery — actions**
-
-| Key | Action |
-|---|---|
-| `a` | Open the Actions chooser (Save / Tag / Auto-tag / Move / Delete the current search) |
-| `1`-`9` | Pick the matching entry in the open Actions chooser |
-
-**Gallery — selection active**
-
-| Key | Action |
-|---|---|
-| `a` | Add tags to the selection |
-| `r` | Remove tags from the selection |
-| `t` | Auto-tag the selection |
-
-**Image detail — navigation**
-
-| Key | Action |
-|---|---|
-| `←` / `→` | Previous / next image |
-
-**Image detail — actions**
-
-| Key | Action |
-|---|---|
-| `a` | Focus the tag input |
-| `r` | Enter tag-focus mode (arrows cycle, `Enter` removes the focused tag, `Escape` exits) |
-| `t` | Open the Auto-tag dialog for this image |
-| `f` | Toggle favorite |
-| `Space` | Play / pause the video |
-| `Delete` | Delete image (advances to the next in the current search) |
-
+Press `?` on any page to open the cheat-sheet overlay.
 ---
 
 ## Galleries
@@ -258,7 +227,7 @@ Multiple taggers can run together; per-image results are merged so a tag detecte
 
 **Override label routing (advanced):** drop a `dispatch.json` next to the tagger's `model.onnx` to remap a label to another category, rename it, or drop it entirely. Format and the shipped defaults are at `internal/tagger/dispatch_default/<tagger>.json`.
 
-**GPU (CUDA):** the default image is CPU-only (~210 MB). For GPU inference, switch to the `-cuda` image (~2.3 GB), pass the GPU into the container the usual way, then enable Settings → Auto-Tagger → Use GPU (CUDA) (or set `MONBOORU_TAGGER_USE_CUDA=true`). The current mode is shown as a badge. Worker count is configurable; raise it on GPU if preprocessing becomes the bottleneck.
+**GPU (CUDA):** the default image is CPU-only (~210 MB). For GPU inference, switch to the `-cuda` image (~2.3 GB), pass the GPU into the container the usual way, then enable Settings → Auto-Tagger → Use GPU (CUDA) (or set `MONBOORU_TAGGER_USE_CUDA=true`). The current mode is shown as a badge. Worker count is configurable from Settings → Auto-Tagger or `tagger.parallel` in TOML (default 4); raise it on GPU if preprocessing becomes the bottleneck.
 
 The model stays loaded for 30 minutes after the last run, then unloads to free memory. Tune via `tagger.idle_release_after_minutes`; `0` releases immediately after every run.
 
@@ -302,12 +271,12 @@ The scheduler runs through every gallery in turn. If a job is already running at
 
 ```bash
 # On the host:
-./monbooru -hash-password
+./monbooru -hash-password 'your-password'
 # Or via Docker:
-docker exec -it monbooru monbooru -hash-password
+docker exec -it monbooru monbooru -hash-password 'your-password'
 ```
 
-Paste the generated hash into Settings → Authentication, or set `auth.password_hash` in TOML and `auth.enable_password = true`. The login rate-limits per IP with exponential backoff.
+The flag prints the bcrypt hash of the supplied password and exits. Paste the generated hash into Settings → Authentication, or set `auth.password_hash` in TOML and `auth.enable_password = true`. The login rate-limits per IP with exponential backoff.
 
 **REST API** is disabled by default. Enable it by generating a token in Settings → Authentication. Then:
 
@@ -319,9 +288,7 @@ curl -H "Authorization: Bearer <token>" \
 - HTML reference: `/api/v1/docs` (also linked in the footer).
 - OpenAPI spec: `/api/v1/openapi.json`.
 
-Endpoints cover search, image add/delete, tag add/remove, and tag listing. All endpoints accept `?gallery=<name>` to target a specific gallery.
-
-`GET /api/v1/tags` hides non-alias tags whose `usage_count` is `0` by default so the listing reflects what is actually applied to images. Pass `show_zero=1` to surface them; the API total then matches the count rendered on the `/tags` UI page.
+Endpoints cover image search, single-image metadata, image add/delete, tag add/remove, and tag listing. All endpoints accept `?gallery=<name>` to target a specific gallery.
 
 ---
 

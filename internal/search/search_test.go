@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/gallery"
@@ -104,6 +105,19 @@ func TestParse_Filter_Fav(t *testing.T) {
 	}
 }
 
+func TestParse_Filter_Inbox(t *testing.T) {
+	for _, val := range []string{"true", "false"} {
+		e, _ := Parse("inbox:" + val)
+		f, ok := e.(FilterExpr)
+		if !ok {
+			t.Fatalf("inbox:%s parsed to %T, want FilterExpr", val, e)
+		}
+		if f.Key != "inbox" || f.Val != val {
+			t.Errorf("inbox:%s parsed as {%q, %q}", val, f.Key, f.Val)
+		}
+	}
+}
+
 func TestParse_Filter_Folder(t *testing.T) {
 	e, _ := Parse("folder:2024/jan")
 	f, ok := e.(FilterExpr)
@@ -115,11 +129,19 @@ func TestParse_Filter_Folder(t *testing.T) {
 	}
 }
 
-func TestParse_Filter_Source(t *testing.T) {
-	e, _ := Parse("source:sd")
+func TestParse_Filter_AI(t *testing.T) {
+	e, _ := Parse("ai:sd")
 	f, ok := e.(FilterExpr)
-	if !ok || f.Key != "source" || f.Val != "sd" {
-		t.Errorf("parse source:sd failed")
+	if !ok || f.Key != "ai" || f.Val != "sd" {
+		t.Errorf("parse ai:sd failed")
+	}
+}
+
+func TestParse_Filter_Source(t *testing.T) {
+	e, _ := Parse("source:my_label")
+	f, ok := e.(FilterExpr)
+	if !ok || f.Key != "source" || f.Val != "my_label" {
+		t.Errorf("parse source:my_label failed")
 	}
 }
 
@@ -576,10 +598,12 @@ func TestFastCountCeiling_MatchesSlowPath(t *testing.T) {
 }
 
 // TestFastCountCeiling_WrappedUserExpr exercises the cookie-applied
-// shape: AndExpr{userExpr, ceilingChain}. Without the wrap-aware path
-// fastCountCeiling rejects, the COUNT walks every visible image, and
-// every search the user types under an active rating ceiling pays the
-// slow path.
+// shape: AndExpr{userExpr, ceilingChain}. The helper defers to the
+// slow exact COUNT in this case because min(userCount, chainBound) is
+// only a loose upper bound on the actual intersection - the fixture
+// here has blue_eyes=2 and chainBound=3 but only 1 image satisfies
+// both, and the slow COUNT must surface that exact total to keep
+// pagination from advertising phantom trailing pages.
 func TestFastCountCeiling_WrappedUserExpr(t *testing.T) {
 	database, env := setupSearchDB(t)
 	ingestTestImage(t, database, env, "wc_safe_blue.png")
@@ -605,11 +629,6 @@ func TestFastCountCeiling_WrappedUserExpr(t *testing.T) {
 	attachTag(t, database, safeRedID, ratingTagID(t, database, "general"))
 	attachTag(t, database, expBlueID, ratingTagID(t, database, "explicit"))
 
-	// Ceiling = sensitive: drop questionable+explicit. User searched for
-	// blue_eyes. Expected match: just safeBlueID. Both bounds in play:
-	// blue_eyes carriers = 2; chain bound = visible(4) - hidden(1) = 3.
-	// min(2, 3) = 2 (upper bound, exact for this shape since the only
-	// blue_eyes image hidden by the chain is expBlueID).
 	expr := AndExpr{
 		Left: TagExpr{Tag: "blue_eyes"},
 		Right: AndExpr{
@@ -617,18 +636,18 @@ func TestFastCountCeiling_WrappedUserExpr(t *testing.T) {
 			Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
 		},
 	}
-	got, ok := fastCountCeiling(database, expr)
-	if !ok {
-		t.Fatal("fastCountCeiling should recognise the wrapped ceiling AST")
-	}
-	if got != 2 {
-		t.Errorf("fastCountCeiling = %d, want 2 (min of blue_eyes=2 and chain=3)", got)
+	if _, ok := fastCountCeiling(database, expr); ok {
+		t.Fatal("fastCountCeiling should defer to slow COUNT for wrapped userExpr")
 	}
 
-	// And Execute end-to-end resolves to the actual single match.
+	// Execute end-to-end runs the slow exact COUNT and resolves to the
+	// actual single match - no phantom trailing page for blue_eyes #2.
 	result, err := Execute(database, Query{Expr: expr, Page: 1, Limit: 40})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if result.Total != 1 {
+		t.Errorf("Total = %d, want 1 (exact, not the loose min(2,3) upper bound)", result.Total)
 	}
 	if len(result.Results) != 1 || result.Results[0].ID != safeBlueID {
 		t.Errorf("Execute results = %+v, want only safeBlueID=%d", result.Results, safeBlueID)
@@ -637,7 +656,10 @@ func TestFastCountCeiling_WrappedUserExpr(t *testing.T) {
 
 // TestFastCountCeiling_WrappedNoFastBound covers an AndExpr{userExpr,
 // chain} where userExpr is a shape fastTagTotal can't bound (a fav:
-// filter here). The chain bound alone is still a valid upper bound.
+// filter here). chainBound alone overshoots a narrow userExpr by orders
+// of magnitude, so fastCountCeiling bails and lets the slow exact
+// COUNT serve the total. Execute end-to-end must still resolve to the
+// real match set.
 func TestFastCountCeiling_WrappedNoFastBound(t *testing.T) {
 	database, env := setupSearchDB(t)
 	ingestTestImage(t, database, env, "nfb_a.png")
@@ -654,12 +676,151 @@ func TestFastCountCeiling_WrappedNoFastBound(t *testing.T) {
 		Left:  FilterExpr{Key: "fav", Val: "true"},
 		Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
 	}
-	got, ok := fastCountCeiling(database, expr)
-	if !ok {
-		t.Fatal("fastCountCeiling should fall back to chain bound for unbounded userExpr")
+	if _, ok := fastCountCeiling(database, expr); ok {
+		t.Fatal("fastCountCeiling should defer to slow COUNT when userExpr can't be fast-bounded")
 	}
-	if got != 2 {
-		t.Errorf("fastCountCeiling = %d, want 2 (chain bound: visible 3 - explicit carrier 1)", got)
+	// Execute end-to-end resolves the exact total via the slow COUNT;
+	// the test fixture has no favorites so the match set is empty.
+	res, err := Execute(database, Query{Expr: expr, Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 0 || len(res.Results) != 0 {
+		t.Errorf("Execute total=%d results=%d, want 0/0", res.Total, len(res.Results))
+	}
+}
+
+// TestExecute_CeilingWithMultiAndUserExpr pins the bug where an AND-N
+// user expression under an active rating ceiling reported the SFW
+// visible count as the search total, generating phantom empty pages
+// and starving the cache populate gate. The slow COUNT path now serves
+// the exact total.
+func TestExecute_CeilingWithMultiAndUserExpr(t *testing.T) {
+	AdjacencyCacheClear()
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "ceil_match_safe.png")
+	ingestTestImage(t, database, env, "ceil_match_explicit.png")
+	ingestTestImage(t, database, env, "ceil_partial.png")
+	ingestTestImage(t, database, env, "ceil_other.png")
+
+	var matchSafeID, matchExpID, partialID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_match_safe.png'`).Scan(&matchSafeID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_match_explicit.png'`).Scan(&matchExpID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_partial.png'`).Scan(&partialID)
+
+	var generalCatID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalCatID)
+	tagID := func(name string) int64 {
+		var id int64
+		if err := database.Write.QueryRow(
+			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 0) RETURNING id`,
+			name, generalCatID,
+		).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	a, b, c, d := tagID("alpha"), tagID("bravo"), tagID("charlie"), tagID("delta")
+	for _, id := range []int64{a, b, c, d} {
+		attachTag(t, database, matchSafeID, id)
+		attachTag(t, database, matchExpID, id)
+	}
+	// partialID carries only three of the four; must not match.
+	for _, id := range []int64{a, b, c} {
+		attachTag(t, database, partialID, id)
+	}
+	attachTag(t, database, matchSafeID, ratingTagID(t, database, "general"))
+	attachTag(t, database, matchExpID, ratingTagID(t, database, "explicit"))
+
+	// userExpr: alpha AND bravo AND charlie AND delta; ceiling: SFW.
+	user := AndExpr{Left: AndExpr{Left: AndExpr{Left: TagExpr{Tag: "alpha"}, Right: TagExpr{Tag: "bravo"}}, Right: TagExpr{Tag: "charlie"}}, Right: TagExpr{Tag: "delta"}}
+	chain := AndExpr{Left: NotExpr{Expr: FilterExpr{Key: "rating", Val: "sensitive"}}, Right: AndExpr{Left: NotExpr{Expr: FilterExpr{Key: "rating", Val: "questionable"}}, Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}}}}
+	expr := AndExpr{Left: user, Right: chain}
+
+	res, err := Execute(database, Query{Expr: expr, Page: 1, Limit: 40, CacheKey: "ceiling-and4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 {
+		t.Errorf("Total = %d, want 1 (only ceil_match_safe carries all four tags AND is sfw)", res.Total)
+	}
+	if len(res.Results) != 1 || res.Results[0].ID != matchSafeID {
+		t.Errorf("Results = %+v, want only matchSafeID=%d", res.Results, matchSafeID)
+	}
+}
+
+// TestExecute_CeilingCategoryQualifiedExact pins the user-reported
+// shape: a category-qualified tag under a SFW ceiling whose carriers
+// span multiple rating levels. The fixture has a popular general tag
+// on five images (1 sfw + 2 sensitive + 2 explicit) plus one extra
+// sfw filler; the loose min(userCount=5, chainBound=2) overshoot used
+// to advertise two trailing pages, when only the single sfw carrier
+// of the tag actually matches. Exercises both directions of the
+// overshoot via two queries against the same fixture.
+func TestExecute_CeilingCategoryQualifiedExact(t *testing.T) {
+	AdjacencyCacheClear()
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "ccq_pop_safe.png")
+	ingestTestImage(t, database, env, "ccq_pop_sens1.png")
+	ingestTestImage(t, database, env, "ccq_pop_sens2.png")
+	ingestTestImage(t, database, env, "ccq_pop_exp1.png")
+	ingestTestImage(t, database, env, "ccq_pop_exp2.png")
+	ingestTestImage(t, database, env, "ccq_other_safe.png")
+
+	idOf := func(name string) int64 {
+		var id int64
+		database.Read.QueryRow(
+			`SELECT id FROM images WHERE canonical_path LIKE '%' || ?`, name,
+		).Scan(&id)
+		return id
+	}
+	popSafe := idOf("ccq_pop_safe.png")
+	popSens1 := idOf("ccq_pop_sens1.png")
+	popSens2 := idOf("ccq_pop_sens2.png")
+	popExp1 := idOf("ccq_pop_exp1.png")
+	popExp2 := idOf("ccq_pop_exp2.png")
+	otherSafe := idOf("ccq_other_safe.png")
+
+	var generalCatID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalCatID)
+	var popID int64
+	database.Write.QueryRow(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES ('popular', ?, 0) RETURNING id`,
+		generalCatID,
+	).Scan(&popID)
+	for _, id := range []int64{popSafe, popSens1, popSens2, popExp1, popExp2} {
+		attachTag(t, database, id, popID)
+	}
+	attachTag(t, database, popSafe, ratingTagID(t, database, "general"))
+	attachTag(t, database, popSens1, ratingTagID(t, database, "sensitive"))
+	attachTag(t, database, popSens2, ratingTagID(t, database, "sensitive"))
+	attachTag(t, database, popExp1, ratingTagID(t, database, "explicit"))
+	attachTag(t, database, popExp2, ratingTagID(t, database, "explicit"))
+	attachTag(t, database, otherSafe, ratingTagID(t, database, "general"))
+
+	user := FilterExpr{Key: "general", Val: "popular"}
+	chain := AndExpr{
+		Left: NotExpr{Expr: FilterExpr{Key: "rating", Val: "sensitive"}},
+		Right: AndExpr{
+			Left:  NotExpr{Expr: FilterExpr{Key: "rating", Val: "questionable"}},
+			Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
+		},
+	}
+	expr := AndExpr{Left: user, Right: chain}
+
+	if _, ok := fastCountCeiling(database, expr); ok {
+		t.Fatal("fastCountCeiling should defer to slow COUNT for wrapped userExpr")
+	}
+	res, err := Execute(database, Query{Expr: expr, Page: 1, Limit: 40, CacheKey: "ccq-popular"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 {
+		t.Errorf("Total = %d, want 1 (only popSafe is sfw); loose min(userCount=5, chainBound=2)=2 overshoots",
+			res.Total)
+	}
+	if len(res.Results) != 1 || res.Results[0].ID != popSafe {
+		t.Errorf("Results = %+v, want only popSafe=%d", res.Results, popSafe)
 	}
 }
 
@@ -864,11 +1025,11 @@ func TestFastCountFolder_MatchesSlowPath(t *testing.T) {
 	}
 }
 
-// TestFastCountSource_Csv covers the comma-separated form: source_type
+// TestFastCountAI_Csv covers the comma-separated form: source_type
 // values matching the 4-LIKE pattern get summed via index-pinned
 // COUNT(*) WHERE source_type IN (...). Same match set as the slow
 // path; only the count query restructures.
-func TestFastCountSource_Csv(t *testing.T) {
+func TestFastCountAI_Csv(t *testing.T) {
 	database, env := setupSearchDB(t)
 
 	// Seed images with each source_type value the metadata extractor
@@ -902,7 +1063,7 @@ func TestFastCountSource_Csv(t *testing.T) {
 		// Bare value: slow path already pins the index, helper bails.
 		{"a1111", 0, false},
 		// Special aliases stay on the slow path.
-		{"ai", 0, false},
+		{"any", 0, false},
 		{"none", 0, false},
 		{"sd", 0, false},
 		// CSV value matching nothing returns exact 0.
@@ -910,7 +1071,7 @@ func TestFastCountSource_Csv(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.val, func(t *testing.T) {
-			got, ok := fastCountSource(database, FilterExpr{Key: "source", Val: tc.val})
+			got, ok := fastCountAI(database, FilterExpr{Key: "ai", Val: tc.val})
 			if ok != tc.ok {
 				t.Fatalf("ok = %v, want %v", ok, tc.ok)
 			}
@@ -1096,7 +1257,8 @@ func TestIsPureTagExpr(t *testing.T) {
 		{"category-qualified (unknown key)", FilterExpr{Key: "character", Val: "miku"}, true},
 		{"colon tag fallback (unknown key)", FilterExpr{Key: "nier", Val: "automata"}, true},
 		{"fav filter", FilterExpr{Key: "fav", Val: "true"}, false},
-		{"source filter", FilterExpr{Key: "source", Val: "ai"}, false},
+		{"ai filter", FilterExpr{Key: "ai", Val: "any"}, false},
+		{"source exact filter", FilterExpr{Key: "source", Val: "Pixiv"}, false},
 		{"folder filter", FilterExpr{Key: "folder", Val: "anime"}, false},
 		{"tag and fav", AndExpr{Left: TagExpr{Tag: "a"}, Right: FilterExpr{Key: "fav", Val: "true"}}, false},
 	}
@@ -1760,8 +1922,8 @@ func TestPickAndDriverTag_SingleLiteralStillSkips(t *testing.T) {
 	}
 }
 
-// TestExecute_RandomSortSingleTagDriver pins F006: a random-sort query
-// with a single literal tag predicate engages the AND-driver so the
+// TestExecute_RandomSortSingleTagDriver pins the path where a random-sort
+// query with a single literal tag predicate engages the AND-driver so the
 // random-key TEMP B-TREE sort runs against the bounded image set
 // rather than every visible image carrying the predicate.
 func TestExecute_RandomSortSingleTagDriver(t *testing.T) {
@@ -1807,9 +1969,10 @@ func TestExecute_RandomSortSingleTagDriver(t *testing.T) {
 	}
 }
 
-// TestPickAndDriverTag_PopularIntersect pins the F001 path: every leaf
-// of an AND chain has usage_count above andDriverThreshold, so the
-// driver returns multiple legs that the caller will INTERSECT-bound.
+// TestPickAndDriverTag_PopularIntersect pins the popular-AND path: every
+// leaf of an AND chain has usage_count above andDriverThreshold, so the
+// driver returns the two least-popular legs to INTERSECT-bound the
+// candidate set. Remaining leaves keep their correlated EXISTS.
 // The single-leg shape (smallest below threshold) keeps its old contract.
 func TestPickAndDriverTag_PopularIntersect(t *testing.T) {
 	database, _ := setupSearchDB(t)
@@ -1829,8 +1992,9 @@ func TestPickAndDriverTag_PopularIntersect(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Three popular leaves AND'd: every leg above threshold, all three
-	// legs returned for INTERSECT.
+	// Three popular leaves AND'd: every leg above threshold, the two
+	// least-popular (a_pop, b_pop) feed the INTERSECT; c_pop falls
+	// through to its correlated EXISTS over the bounded candidate set.
 	popular := AndExpr{
 		Left: AndExpr{
 			Left:  TagExpr{Tag: "a_pop"},
@@ -1842,8 +2006,18 @@ func TestPickAndDriverTag_PopularIntersect(t *testing.T) {
 	if !ok {
 		t.Fatal("popular 3-AND should engage the driver via INTERSECT")
 	}
-	if len(legs) != 3 {
-		t.Errorf("legs = %d, want 3 (one per ANDed leaf)", len(legs))
+	if len(legs) != 2 {
+		t.Errorf("legs = %d, want 2 (cap at the two least-popular leaves)", len(legs))
+	}
+	picked := map[string]bool{}
+	for _, l := range legs {
+		picked[l.leaf.Tag] = true
+	}
+	if !picked["a_pop"] || !picked["b_pop"] {
+		t.Errorf("picked = %v, want {a_pop, b_pop} (least-popular pair)", picked)
+	}
+	if picked["c_pop"] {
+		t.Errorf("c_pop is the most popular leaf and should fall through to correlated EXISTS")
 	}
 
 	// Same chain plus the rare leaf: smallest is below threshold so
@@ -1944,6 +2118,75 @@ func TestExecute_PopularAndIntersect(t *testing.T) {
 	}
 	if len(result.Results) != 1 || result.Results[0].ID != allID {
 		t.Errorf("Results = %+v, want only %d (all_three)", result.Results, allID)
+	}
+}
+
+// TestExecute_RecentIDBoundSkipsAsc pins the multi-leg INTERSECT
+// recent-id bound's DESC-only scope. The bound predicate
+// `image_id >= bound` covers the recent-newest id range; under
+// `order=asc` the user asked for the oldest matches, whose ids sit
+// below the bound. Firing the gate there used to silently drop them
+// and surface the asc-by-ingested-at slice of the recent end instead.
+func TestExecute_RecentIDBoundSkipsAsc(t *testing.T) {
+	database, _ := setupSearchDB(t)
+
+	// Need more than (page * limit * driverIDBoundMargin) = 100 visible
+	// images so the bound's `LIMIT 1 OFFSET targetOffset` returns a row;
+	// 150 puts the bound mid-range so a buggy gate would drop the oldest
+	// match. A recursive CTE inserts in one statement.
+	if _, err := database.Write.Exec(`
+		WITH RECURSIVE seq(n) AS (
+		    SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < 150
+		)
+		INSERT INTO images (canonical_path, file_type, file_size, sha256, ingested_at)
+		SELECT '/tmp/asc_' || n || '.png', 'png', 1024, 'asc_sha_' || n, datetime('now')
+		FROM seq
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	var oldestID, newestID int64
+	if err := database.Read.QueryRow(
+		`SELECT MIN(id), MAX(id) FROM images`,
+	).Scan(&oldestID, &newestID); err != nil {
+		t.Fatal(err)
+	}
+
+	var generalID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	mkTag := func(name string, usage int) int64 {
+		var id int64
+		database.Write.QueryRow(
+			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, ?) RETURNING id`,
+			name, generalID, usage,
+		).Scan(&id)
+		return id
+	}
+	// Force both leaves above andDriverThreshold so pickAndDriverTag picks
+	// the two-leg INTERSECT path; that's the only path that ever attaches
+	// the recent-id bound to a leg.
+	lo := mkTag("lo_tag", andDriverThreshold+1)
+	hi := mkTag("hi_tag", andDriverThreshold+1)
+	for _, id := range []int64{oldestID, newestID} {
+		attachTag(t, database, id, lo)
+		attachTag(t, database, id, hi)
+	}
+
+	res, err := Execute(database, Query{
+		Expr: AndExpr{
+			Left:  TagExpr{Tag: "lo_tag"},
+			Right: TagExpr{Tag: "hi_tag"},
+		},
+		Sort:  "newest",
+		Order: "asc",
+		Page:  1,
+		Limit: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Results) != 1 || res.Results[0].ID != oldestID {
+		t.Errorf("Results = %+v, want oldest carrier id=%d (asc order)", res.Results, oldestID)
 	}
 }
 
@@ -2128,9 +2371,31 @@ func TestBuildWhere_FavFalse(t *testing.T) {
 	}
 }
 
-func TestBuildWhere_Source(t *testing.T) {
-	// "sd" is aliased to "a1111"; source filter uses 4 LIKE args for comma-separated types.
-	expr := FilterExpr{Key: "source", Val: "sd"}
+func TestBuildWhere_InboxTrue(t *testing.T) {
+	expr := FilterExpr{Key: "inbox", Val: "true"}
+	where, args, _ := buildWhere(expr)
+	if len(args) != 0 {
+		t.Errorf("expected no args for inbox:true")
+	}
+	if !strings.Contains(where, "is_inbox = 1") {
+		t.Errorf("where = %q", where)
+	}
+}
+
+func TestBuildWhere_InboxFalse(t *testing.T) {
+	expr := FilterExpr{Key: "inbox", Val: "false"}
+	where, args, _ := buildWhere(expr)
+	if len(args) != 0 {
+		t.Errorf("expected no args for inbox:false")
+	}
+	if !strings.Contains(where, "is_inbox = 0") {
+		t.Errorf("where = %q", where)
+	}
+}
+
+func TestBuildWhere_AI(t *testing.T) {
+	// "sd" is aliased to "a1111"; ai filter uses 4 LIKE args for comma-separated source_type values.
+	expr := FilterExpr{Key: "ai", Val: "sd"}
 	where, args, _ := buildWhere(expr)
 	if len(args) != 4 {
 		t.Errorf("expected 4 args, got %d: %v", len(args), args)
@@ -2143,18 +2408,30 @@ func TestBuildWhere_Source(t *testing.T) {
 	}
 }
 
-func TestBuildWhere_SourceAI(t *testing.T) {
-	// "ai" expands inline to match a1111, comfyui, and the combined source type;
+func TestBuildWhere_AIAny(t *testing.T) {
+	// "any" expands inline to match a1111, comfyui, and the combined source type;
 	// no bound args are needed because the values are inlined into the SQL.
-	expr := FilterExpr{Key: "source", Val: "ai"}
+	expr := FilterExpr{Key: "ai", Val: "any"}
 	where, args, _ := buildWhere(expr)
 	if len(args) != 0 {
-		t.Errorf("expected no args for source:ai, got %v", args)
+		t.Errorf("expected no args for ai:any, got %v", args)
 	}
 	for _, want := range []string{"'a1111'", "'comfyui'", "'a1111,comfyui'"} {
 		if !strings.Contains(where, want) {
 			t.Errorf("where = %q, missing %s", where, want)
 		}
+	}
+}
+
+func TestBuildWhere_SourceExact(t *testing.T) {
+	// `source:` is a separate exact-match filter against images.source.
+	expr := FilterExpr{Key: "source", Val: "Pixiv"}
+	where, args, _ := buildWhere(expr)
+	if len(args) != 1 || args[0] != "Pixiv" {
+		t.Errorf("args = %v, want [\"Pixiv\"]", args)
+	}
+	if !strings.Contains(where, "i.source = ?") {
+		t.Errorf("where = %q, expected i.source = ?", where)
 	}
 }
 
@@ -2518,6 +2795,33 @@ func TestExecute_FavFilter(t *testing.T) {
 	}
 }
 
+// New ingests land in the inbox (is_inbox=1 by column default), so the
+// inbox:true filter returns the freshly-ingested row and the IsInbox
+// projection round-trips through the executor's main SELECT/Scan.
+func TestExecute_InboxFilter(t *testing.T) {
+	database, cfg := setupSearchDB(t)
+	ingestTestImage(t, database, cfg, "inbox1.png")
+
+	resTrue, err := Execute(database, Query{Expr: FilterExpr{Key: "inbox", Val: "true"}, Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resTrue.Total != 1 {
+		t.Errorf("inbox:true Total = %d, want 1", resTrue.Total)
+	}
+	if len(resTrue.Results) != 1 || !resTrue.Results[0].IsInbox {
+		t.Errorf("inbox:true result didn't surface IsInbox=true: %+v", resTrue.Results)
+	}
+
+	resFalse, err := Execute(database, Query{Expr: FilterExpr{Key: "inbox", Val: "false"}, Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resFalse.Total != 0 {
+		t.Errorf("inbox:false Total = %d, want 0", resFalse.Total)
+	}
+}
+
 func TestExecute_TagSearch(t *testing.T) {
 	database, cfg := setupSearchDB(t)
 	ingestTestImage(t, database, cfg, "tagged.png")
@@ -2662,6 +2966,48 @@ func TestExecuteAdjacent_RandomNoSeed(t *testing.T) {
 	}
 }
 
+func TestRankInQuery_RandomNoSeed(t *testing.T) {
+	database, cfg := setupSearchDB(t)
+	ingestTestImage(t, database, cfg, "rank_rnd.png")
+	q := Query{Sort: "random", RandomSeed: 0, Page: 1, Limit: 40}
+	rank, err := RankInQuery(context.Background(), database, q, 1)
+	if err != nil || rank != -1 {
+		t.Errorf("random sort with seed=0 must be (-1, nil), got (%d, %v)", rank, err)
+	}
+}
+
+func TestRankInQuery_RandomSeeded(t *testing.T) {
+	database, cfg := setupSearchDB(t)
+	ingestTestImage(t, database, cfg, "rank_rnd_seeded_a.png")
+	ingestTestImage(t, database, cfg, "rank_rnd_seeded_b.png")
+	ingestTestImage(t, database, cfg, "rank_rnd_seeded_c.png")
+	q := Query{Sort: "random", RandomSeed: 1234567, Page: 1, Limit: 40}
+	res, err := Execute(database, q)
+	if err != nil || len(res.Results) != 3 {
+		t.Fatalf("setup Execute: err=%v len=%d", err, len(res.Results))
+	}
+	for i, img := range res.Results {
+		rank, err := RankInQuery(context.Background(), database, q, img.ID)
+		if err != nil {
+			t.Fatalf("rank for id=%d: %v", img.ID, err)
+		}
+		if rank != i {
+			t.Errorf("id=%d: rank = %d, want %d (matches Execute order)", img.ID, rank, i)
+		}
+	}
+}
+
+func TestRankInQuery_HonorsContextDeadline(t *testing.T) {
+	database, cfg := setupSearchDB(t)
+	ingestTestImage(t, database, cfg, "rank_ctx.png")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rank, err := RankInQuery(ctx, database, Query{Sort: "newest", Order: "desc", Page: 1, Limit: 40}, 1)
+	if err == nil || rank != -1 {
+		t.Errorf("cancelled context must surface err and rank=-1, got (%d, %v)", rank, err)
+	}
+}
+
 func TestExecuteAdjacent_WithTagPredicate(t *testing.T) {
 	// Tuple cursor with a tag-predicate WHERE: LIMIT 1 must walk past
 	// untagged neighbours and land on the next tagged one.
@@ -2717,8 +3063,11 @@ func TestExecuteAdjacent_WithTagPredicate(t *testing.T) {
 
 func TestExecuteAdjacent_RandomBucketBound(t *testing.T) {
 	// Random sort + tag predicate bounds adjacency to a fixed id-range
-	// bucket. Images outside the current image's bucket must not appear
-	// as prev/next, even if they match the predicate.
+	// bucket when the candidate set is dense enough to need it. Images
+	// outside the current image's bucket must not appear as prev/next,
+	// even if they match the predicate. usage_count is set above
+	// fastApproxThreshold so adjacencyTotalEstimate keeps the gate on -
+	// the sparse-skip path is covered separately.
 	database, env := setupSearchDB(t)
 	ingestTestImage(t, database, env, "rb_a.png")
 	ingestTestImage(t, database, env, "rb_b.png")
@@ -2766,8 +3115,8 @@ func TestExecuteAdjacent_RandomBucketBound(t *testing.T) {
 	}
 	var tagID int64
 	if err := database.Write.QueryRow(
-		`INSERT INTO tags (name, category_id, usage_count) VALUES ('rndtag', ?, 3) RETURNING id`,
-		generalID,
+		`INSERT INTO tags (name, category_id, usage_count) VALUES ('rndtag', ?, ?) RETURNING id`,
+		generalID, fastApproxThreshold,
 	).Scan(&tagID); err != nil {
 		t.Fatal(err)
 	}
@@ -2803,11 +3152,14 @@ func TestExecuteAdjacent_RandomBucketBound(t *testing.T) {
 	}
 }
 
-// TestExecuteAdjacent_NewestSparseAndBucketBound pins F002: a 3-AND
-// back_q under newest sort gates prev/next to an id-window so a sparse
-// intersection late in the result set can't force a multi-second scan.
-// The 2-AND shape keeps the pre-existing unbounded behaviour because
-// the cursor walk is acceptable there.
+// TestExecuteAdjacent_NewestSparseAndBucketBound pins the bucket-gate: a
+// 3-AND back_q under newest sort gates prev/next to an id-window when
+// the candidate set is dense enough to need it, so a sparse intersection
+// late in the result set can't force a multi-second scan. The 2-AND
+// shape keeps the pre-existing unbounded behaviour because the cursor
+// walk is acceptable there. Each leaf carries usage_count above
+// fastApproxThreshold so adjacencyTotalEstimate keeps the gate on; the
+// candidate-too-small skip path is covered in its own test.
 func TestExecuteAdjacent_NewestSparseAndBucketBound(t *testing.T) {
 	database, env := setupSearchDB(t)
 	ingestTestImage(t, database, env, "ad_a.png")
@@ -2859,8 +3211,8 @@ func TestExecuteAdjacent_NewestSparseAndBucketBound(t *testing.T) {
 	mkTag := func(name string) int64 {
 		var id int64
 		if err := database.Write.QueryRow(
-			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 3) RETURNING id`,
-			name, generalID,
+			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, ?) RETURNING id`,
+			name, generalID, fastApproxThreshold,
 		).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
@@ -2925,6 +3277,208 @@ func TestExecuteAdjacent_NewestSparseAndBucketBound(t *testing.T) {
 	}
 }
 
+// TestExecuteAdjacent_RandomSparseSkipsBucket pins the inverse of
+// RandomBucketBound: a tag-predicate query whose candidate-set upper
+// bound sits below fastApproxThreshold skips the id-bucket gate so
+// prev/next reaches every match instead of dying at a bucket edge that
+// holds only currentID.
+func TestExecuteAdjacent_RandomSparseSkipsBucket(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "rs_a.png")
+	ingestTestImage(t, database, env, "rs_b.png")
+	ingestTestImage(t, database, env, "rs_c.png")
+
+	rows, err := database.Read.Query(`SELECT id FROM images ORDER BY id ASC`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 images, got %d", len(ids))
+	}
+	nearA, nearB := ids[0], ids[1]
+	far := int64(randomAdjacencyBucketSize) * 2
+	tx, err := database.Write.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`PRAGMA defer_foreign_keys = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE images SET id = ? WHERE id = ?`, far, ids[2]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE image_paths SET image_id = ? WHERE image_id = ?`, far, ids[2]); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var generalID int64
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
+	// usage_count = 3 keeps the candidate upper bound below
+	// fastApproxThreshold; the bucket gate must skip.
+	var tagID int64
+	if err := database.Write.QueryRow(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES ('rstag', ?, 3) RETURNING id`,
+		generalID,
+	).Scan(&tagID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{nearA, nearB, far} {
+		if _, err := database.Write.Exec(
+			`INSERT INTO image_tags (image_id, tag_id, is_auto) VALUES (?, ?, 0)`, id, tagID,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	q := Query{Expr: TagExpr{Tag: "rstag"}, Sort: "random", RandomSeed: 1234567}
+
+	// All 3 matches must be reachable via the prev+next chain - the
+	// bucket gate would have stopped at nearA's id-window.
+	reached := walkAdjacency(t, database, q, nearA)
+	for _, want := range []int64{nearA, nearB, far} {
+		if !reached[want] {
+			t.Errorf("sparse random adjacency did not reach %d; reached=%v", want, reached)
+		}
+	}
+}
+
+// TestExecuteAdjacent_NewestSparseAndSkipsBucket mirrors the random-sort
+// skip for the newest-sort 3+AND gate: a candidate set below
+// fastApproxThreshold rides the AND-driver's single-leg path unbounded
+// instead of capping at the andAdjacencyBucketSize boundary.
+func TestExecuteAdjacent_NewestSparseAndSkipsBucket(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "ns_a.png")
+	ingestTestImage(t, database, env, "ns_b.png")
+	ingestTestImage(t, database, env, "ns_c.png")
+
+	rows, err := database.Read.Query(`SELECT id FROM images ORDER BY id ASC`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 images, got %d", len(ids))
+	}
+	nearA, nearB := ids[0], ids[1]
+	far := int64(andAdjacencyBucketSize) * 2
+	tx, err := database.Write.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`PRAGMA defer_foreign_keys = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE images SET id = ? WHERE id = ?`, far, ids[2]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE image_paths SET image_id = ? WHERE image_id = ?`, far, ids[2]); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var generalID int64
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
+	mkTag := func(name string) int64 {
+		var id int64
+		if err := database.Write.QueryRow(
+			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 3) RETURNING id`,
+			name, generalID,
+		).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	a := mkTag("nsa")
+	b := mkTag("nsb")
+	c := mkTag("nsc")
+	for _, p := range []struct {
+		img int64
+		tag int64
+	}{
+		{nearA, a}, {nearA, b}, {nearA, c},
+		{nearB, a}, {nearB, b}, {nearB, c},
+		{far, a}, {far, b}, {far, c},
+	} {
+		if _, err := database.Write.Exec(
+			`INSERT INTO image_tags (image_id, tag_id, is_auto) VALUES (?, ?, 0)`, p.img, p.tag,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	expr := AndExpr{
+		Left: AndExpr{
+			Left:  TagExpr{Tag: "nsa"},
+			Right: TagExpr{Tag: "nsb"},
+		},
+		Right: TagExpr{Tag: "nsc"},
+	}
+	q := Query{Expr: expr, Sort: "newest", Order: "desc"}
+
+	// far must be reachable from nearA's id-bucket: bucket gate is
+	// skipped because the 3-AND's smallest leaf has usage_count well
+	// below fastApproxThreshold.
+	reached := walkAdjacency(t, database, q, nearA)
+	for _, want := range []int64{nearA, nearB, far} {
+		if !reached[want] {
+			t.Errorf("sparse 3-AND adjacency did not reach %d; reached=%v", want, reached)
+		}
+	}
+}
+
+// walkAdjacency returns the set of image ids reachable from start by
+// following ExecuteAdjacent's prev/next chain transitively. Used by
+// the sparse-skip tests to assert that every match in the candidate
+// set is reachable instead of stopping at a bucket edge.
+func walkAdjacency(t *testing.T, database *db.DB, q Query, start int64) map[int64]bool {
+	t.Helper()
+	reached := map[int64]bool{start: true}
+	queue := []int64{start}
+	for len(queue) > 0 {
+		cursor := queue[0]
+		queue = queue[1:]
+		prev, next, err := ExecuteAdjacent(database, q, cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, neighbour := range []*int64{prev, next} {
+			if neighbour == nil || reached[*neighbour] {
+				continue
+			}
+			reached[*neighbour] = true
+			queue = append(queue, *neighbour)
+		}
+	}
+	return reached
+}
+
 func TestExecuteAdjacent_RatingCeiling(t *testing.T) {
 	database, env := setupSearchDB(t)
 	ingestTestImage(t, database, env, "adj_safe.png")
@@ -2966,6 +3520,94 @@ func TestExecuteAdjacent_RatingCeiling(t *testing.T) {
 	}
 	if next != nil {
 		t.Errorf("oldest next under ceiling: got %v, want nil", next)
+	}
+}
+
+// TestExecuteAdjacent_FolderHalfOpenRange pins the folder-adjacency
+// path: a pure folder back_q rides a half-open path range so the cursor seeks
+// idx_images_folder_visible. The match set must equal the slow path's
+// (folder = ? OR folder LIKE 'X/%' ESCAPE '\') form: the folder
+// itself plus everything beneath it, and nothing outside the prefix.
+func TestExecuteAdjacent_FolderHalfOpenRange(t *testing.T) {
+	database, env := setupSearchDB(t)
+	mkdir := func(rel string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(env.galleryDir, rel), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ingestAt := func(rel, name string) int64 {
+		t.Helper()
+		ingestCounter++
+		dir := filepath.Join(env.galleryDir, rel)
+		path := filepath.Join(dir, name)
+		f, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, 10+ingestCounter, 10))); err != nil {
+			f.Close()
+			t.Fatal(err)
+		}
+		f.Close()
+		if _, _, err := gallery.Ingest(database, env.galleryDir, env.thumbnailsDir, path, "png", ""); err != nil {
+			t.Fatalf("ingest %q: %v", path, err)
+		}
+		var id int64
+		if err := database.Read.QueryRow(
+			`SELECT id FROM images WHERE canonical_path = ?`, path,
+		).Scan(&id); err != nil {
+			t.Fatalf("lookup %q: %v", path, err)
+		}
+		return id
+	}
+
+	mkdir("anime")
+	mkdir("anime/girls")
+	mkdir("animes")
+	mkdir("anime-2024")
+	rootImg := ingestAt(".", "fol_root.png")
+	folderImg := ingestAt("anime", "fol_a.png")
+	// "anime-2024" sorts between "anime" and "anime0" lexicographically
+	// because '-' (0x2D) is below '/' (0x2F); a naive [val, val+"0")
+	// range would leak it. Ingest before subImg so the leaked sibling
+	// becomes folderImg's immediate-newer neighbour under desc-newest -
+	// otherwise subImg sits between them and the leak hides behind it.
+	siblingDashImg := ingestAt("anime-2024", "fol_d.png")
+	subImg := ingestAt("anime/girls", "fol_b.png")
+	siblingImg := ingestAt("animes", "fol_c.png")
+
+	q := Query{
+		Expr:  FilterExpr{Key: "folder", Val: "anime"},
+		Sort:  "newest",
+		Order: "desc",
+	}
+
+	// folderImg's neighbours under folder:anime are subImg (also under
+	// anime/) and nothing else - rootImg sits at the gallery root and
+	// the two sibling-prefix folders ("animes", "anime-2024") sit
+	// outside anime/.
+	prev, next, err := ExecuteAdjacent(database, q, folderImg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []*int64{prev, next} {
+		if p == nil {
+			continue
+		}
+		if *p == rootImg {
+			t.Errorf("folder adjacency leaked root image %d", rootImg)
+		}
+		if *p == siblingImg {
+			t.Errorf("folder adjacency leaked sibling-prefix image %d (animes/ outside anime/)", siblingImg)
+		}
+		if *p == siblingDashImg {
+			t.Errorf("folder adjacency leaked low-ASCII sibling image %d (anime-2024/ outside anime/)", siblingDashImg)
+		}
+	}
+	reachedSub := (prev != nil && *prev == subImg) || (next != nil && *next == subImg)
+	if !reachedSub {
+		t.Errorf("folder adjacency did not reach subfolder peer %d (prev=%v next=%v)", subImg, prev, next)
 	}
 }
 
@@ -3098,6 +3740,214 @@ func TestSuggestTagsWithFilter(t *testing.T) {
 	}
 	if got[0].UsageCount != 2 {
 		t.Errorf("expected combo count 2 for alpha+beta, got %d", got[0].UsageCount)
+	}
+}
+
+// TestExecuteAdjacent_CacheReuse pins the gallery -> detail handoff: a
+// gallery render whose page-1 result holds the full match set seeds the
+// adjacency cache, and ExecuteAdjacent then serves prev/next from the
+// cache without touching the cursor SQL.
+func TestExecuteAdjacent_CacheReuse(t *testing.T) {
+	AdjacencyCacheClear()
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "cr_a.png")
+	ingestTestImage(t, database, env, "cr_b.png")
+	ingestTestImage(t, database, env, "cr_c.png")
+
+	q := Query{
+		Sort:     "newest",
+		Order:    "desc",
+		Page:     1,
+		Limit:    40,
+		CacheKey: "test-cache-reuse",
+	}
+	res, err := Execute(database, q)
+	if err != nil || len(res.Results) != 3 {
+		t.Fatalf("Execute: err=%v len=%d", err, len(res.Results))
+	}
+
+	cached, ok := AdjacencyCacheGet(q.CacheKey)
+	if !ok {
+		t.Fatalf("Execute did not populate the cache")
+	}
+	if len(cached) != 3 {
+		t.Fatalf("cache size = %d, want 3", len(cached))
+	}
+	for i, img := range res.Results {
+		if cached[i] != img.ID {
+			t.Errorf("cache[%d] = %d, want %d", i, cached[i], img.ID)
+		}
+	}
+
+	// With a poisoned db handle prev/next must still answer correctly:
+	// the cache hit short-circuits before any SQL fires.
+	middle := res.Results[1].ID
+	prev, next, err := ExecuteAdjacent(nil, q, middle)
+	if err != nil {
+		t.Fatalf("cached ExecuteAdjacent: %v", err)
+	}
+	if prev == nil || *prev != res.Results[0].ID {
+		t.Errorf("prev = %v, want %d", prev, res.Results[0].ID)
+	}
+	if next == nil || *next != res.Results[2].ID {
+		t.Errorf("next = %v, want %d", next, res.Results[2].ID)
+	}
+}
+
+// TestExecute_CachesFullMatchListOnMultiPage pins the populate path for
+// results that span more than one page: the cache holds the full sorted
+// match list (capped at adjacencyCacheMaxIDs), so subsequent gallery
+// page-flips and detail prev/next ride the cache instead of re-running
+// the search SQL.
+func TestExecute_CachesFullMatchListOnMultiPage(t *testing.T) {
+	AdjacencyCacheClear()
+	database, env := setupSearchDB(t)
+	for i := 0; i < 5; i++ {
+		ingestTestImage(t, database, env, "multi_"+string(rune('a'+i))+".png")
+	}
+
+	q := Query{
+		Sort:     "newest",
+		Order:    "desc",
+		Page:     1,
+		Limit:    2, // page holds 2 of 5; cache must still hold all 5
+		CacheKey: "test-cache-multi",
+	}
+	res, err := Execute(database, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 5 || len(res.Results) != 2 {
+		t.Fatalf("page 1 result: total=%d len=%d, want 5/2", res.Total, len(res.Results))
+	}
+	// Multi-page seed runs in the background so page 1 returns at the
+	// speed of its data SELECT alone. Poll briefly for the cache write.
+	var cached []int64
+	var ok bool
+	for i := 0; i < 100; i++ {
+		if cached, ok = AdjacencyCacheGet(q.CacheKey); ok {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !ok {
+		t.Fatal("multi-page render did not populate the cache")
+	}
+	if len(cached) != 5 {
+		t.Fatalf("cached len = %d, want 5", len(cached))
+	}
+	if cached[0] != res.Results[0].ID || cached[1] != res.Results[1].ID {
+		t.Errorf("cache prefix [%d %d] does not match page 1 [%d %d]",
+			cached[0], cached[1], res.Results[0].ID, res.Results[1].ID)
+	}
+}
+
+// TestExecute_CacheServesGalleryReload pins the gallery -> detail -> back
+// flow: when the cache holds the match-id list, a second Execute on the
+// same key returns the right page rows in the cached order without
+// re-running the search SQL. Image rows still scan fresh from the DB so
+// row-level fields (favorite, missing) reflect any concurrent mutation.
+func TestExecute_CacheServesGalleryReload(t *testing.T) {
+	AdjacencyCacheClear()
+	database, env := setupSearchDB(t)
+	for i := 0; i < 3; i++ {
+		ingestTestImage(t, database, env, "reload_"+string(rune('a'+i))+".png")
+	}
+
+	q := Query{
+		Sort:     "newest",
+		Order:    "desc",
+		Page:     1,
+		Limit:    40,
+		CacheKey: "test-cache-reload",
+	}
+	first, err := Execute(database, q)
+	if err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	if len(first.Results) != 3 {
+		t.Fatalf("first Results = %d, want 3", len(first.Results))
+	}
+	cached, ok := AdjacencyCacheGet(q.CacheKey)
+	if !ok || len(cached) != 3 {
+		t.Fatalf("cache state: ok=%v len=%d", ok, len(cached))
+	}
+
+	// Flip a row's is_favorited under the cache. The cache holds only
+	// ids, so the second Execute must surface the new flag.
+	if _, err := database.Write.Exec(
+		`UPDATE images SET is_favorited = 1 WHERE id = ?`, first.Results[0].ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := Execute(database, q)
+	if err != nil {
+		t.Fatalf("second Execute: %v", err)
+	}
+	if second.Total != 3 || len(second.Results) != 3 {
+		t.Fatalf("second result: total=%d len=%d, want 3/3", second.Total, len(second.Results))
+	}
+	for i := range first.Results {
+		if first.Results[i].ID != second.Results[i].ID {
+			t.Errorf("Results[%d].ID = %d, want %d", i, second.Results[i].ID, first.Results[i].ID)
+		}
+	}
+	if !second.Results[0].IsFavorited {
+		t.Errorf("cache hit returned stale is_favorited; row mutation should be visible")
+	}
+}
+
+// TestExecute_CacheSlicesByPage pins pagination on the cached fast path:
+// the populated entry feeds page=2 the right slice and a page past the
+// end returns an empty result, all without re-running the search SQL.
+func TestExecute_CacheSlicesByPage(t *testing.T) {
+	AdjacencyCacheClear()
+	database, env := setupSearchDB(t)
+	for i := 0; i < 5; i++ {
+		ingestTestImage(t, database, env, "slice_"+string(rune('a'+i))+".png")
+	}
+
+	cacheKey := "test-cache-slice"
+	populate, err := Execute(database, Query{
+		Sort: "newest", Order: "desc", Page: 1, Limit: 40, CacheKey: cacheKey,
+	})
+	if err != nil {
+		t.Fatalf("populate Execute: %v", err)
+	}
+	if len(populate.Results) != 5 {
+		t.Fatalf("populate Results = %d, want 5", len(populate.Results))
+	}
+	cached, ok := AdjacencyCacheGet(cacheKey)
+	if !ok || len(cached) != 5 {
+		t.Fatalf("cache state: ok=%v len=%d", ok, len(cached))
+	}
+
+	res, err := Execute(database, Query{
+		Sort: "newest", Order: "desc", Page: 2, Limit: 2, CacheKey: cacheKey,
+	})
+	if err != nil {
+		t.Fatalf("Execute page 2: %v", err)
+	}
+	if res.Total != 5 {
+		t.Errorf("Total = %d, want 5", res.Total)
+	}
+	if len(res.Results) != 2 {
+		t.Fatalf("page 2 Results = %d, want 2", len(res.Results))
+	}
+	if res.Results[0].ID != cached[2] || res.Results[1].ID != cached[3] {
+		t.Errorf("page 2 ids = [%d %d], want [%d %d]",
+			res.Results[0].ID, res.Results[1].ID, cached[2], cached[3])
+	}
+
+	pastEnd, err := Execute(database, Query{
+		Sort: "newest", Order: "desc", Page: 99, Limit: 2, CacheKey: cacheKey,
+	})
+	if err != nil {
+		t.Fatalf("Execute page past end: %v", err)
+	}
+	if pastEnd.Total != 5 || len(pastEnd.Results) != 0 {
+		t.Errorf("past-end result: total=%d len=%d, want 5/0", pastEnd.Total, len(pastEnd.Results))
 	}
 }
 

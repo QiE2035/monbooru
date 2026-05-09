@@ -510,21 +510,49 @@ button.footer-rating-link:hover { color: var(--fg); }
 .badge {
   background: rgba(0,0,0,0.7);
   color: var(--fg);
-  font-size: 10px;
+  font-size: 14px;
   padding: 2px 4px;
   border: 1px solid var(--border);
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Lock the inner content box so every overlay slot is exactly the
+     same square regardless of which glyph it carries. Without this,
+     character-width variance (▶ vs ♥ vs ✱) and the flex container's
+     default cross-axis stretch reflow neighbours when one badge has
+     a slightly heavier glyph. */
+  box-sizing: content-box;
+  width: 12px;
+  height: 12px;
 }
-.badge-video { color: var(--warning); }
-
-.fav-star {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--fg-dim);
-  font-size: 14px;
-  cursor: pointer;
+.badge-inbox { color: var(--accent); }
+.fav-heart { color: var(--error); }
+/* The play badge is rendered as a CSS triangle: the ▶ unicode glyph
+   has asymmetric side bearings and pixel-rendering quirks that drift
+   off-centre in the box. A bordered pseudo-element gives a precise,
+   font-independent triangle. */
+.badge-video {
+  color: var(--warning);
+  font-size: 0;
 }
-.fav-star.active { color: var(--warning); }
+.badge-video::before {
+  content: '';
+  display: block;
+  width: 0;
+  height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-left: 9px solid currentColor;
+  margin-left: 1px;
+}
+/* Filesize is the only text-bearing badge in the overlay; the locked
+   box is too narrow for kilobyte numerals, so widen it back out and
+   restore the legacy small font. */
+.badge-filesize {
+  font-size: 10px;
+  width: auto;
+}
 
 /* Pagination */
 .pagination {
@@ -836,6 +864,27 @@ kbd {
   font-size: 12px;
 }
 
+#shortcuts-help { width: min(1200px, 95vw); }
+#shortcuts-help h3 { margin: 0 0 6px 0; font-size: 13px; }
+#shortcuts-help h4 { margin: 0 0 2px 0; font-size: 11px; color: var(--fg-dim); font-weight: normal; text-transform: uppercase; letter-spacing: 0.05em; }
+.shortcuts-help-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 20px; font-size: 11px; line-height: 1.35; }
+.shortcuts-help-grid section { break-inside: avoid; }
+.shortcuts-help-grid table { border-collapse: collapse; width: 100%; }
+.shortcuts-help-grid td { padding: 0 6px 0 0; vertical-align: top; }
+.shortcuts-help-grid td:first-child { white-space: nowrap; color: var(--fg-dim); }
+
+.chord-leader-hint {
+  position: fixed;
+  bottom: 32px;
+  left: 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  z-index: 9999;
+}
+
 /* Login */
 .login-wrap {
   display: flex;
@@ -957,9 +1006,13 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   line-height: 1.4;
 }
 .nav-arrow:hover { color: var(--fg); border-color: var(--fg-dim); text-decoration: none; }
+.nav-arrow-placeholder { visibility: hidden; }
 .back-link { color: var(--fg-dim); font-size: 13px; text-decoration: none; flex-shrink: 0; }
 .back-link:hover { color: var(--fg); }
 .detail-actions { display: flex; gap: 8px; align-items: center; }
+/* Bring the download anchor (.btn-sm) up to the row's font-size +
+   line-height so it renders at the same height as autotag/inbox/fav. */
+.detail-actions .btn-sm { font-size: 13px; line-height: 1.4; }
 .detail-filename {
   color: var(--fg-dim);
   white-space: nowrap;
@@ -986,10 +1039,23 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   color: var(--fg-dim);
   padding: 2px 8px;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 13px;
+  line-height: 1.4;
 }
-.btn-fav:hover { color: var(--accent); border-color: var(--accent); }
-.btn-fav.active { color: var(--accent); border-color: var(--accent); }
+.btn-fav:hover { color: var(--error); border-color: var(--error); }
+.btn-fav.active { color: var(--error); border-color: var(--error); }
+
+.btn-inbox {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.btn-inbox:hover { color: var(--accent); border-color: var(--accent); }
+.btn-inbox.active { color: var(--accent); border-color: var(--accent); }
 
 .detail-media {
   text-align: center;
@@ -1237,11 +1303,14 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .tag-source-group { margin-bottom: 4px; }
 .tag-source-title { font-size: 11px; color: var(--fg-dim); margin: 4px 0 2px; font-weight: normal; }
 
-/* Implied rows are decorative on the per-image list - dim them so they
-   read as derived from the tags above, not as primary content. The
-   sidebar excludes them via groupByImageTags. */
-.tag-source-group[data-source="implied"] .tag-source-title,
-.tag-source-group[data-source="alias"] .tag-source-title { font-style: italic; }
+/* Implied + alias rows live in a collapsed <details> at the bottom of
+   the under-image list. Dim them so they read as derived from the tags
+   above, not as primary content. The sidebar excludes implied via
+   groupByImageTags. */
+details.tag-source-group[data-source="implied"] > summary { font-style: italic; cursor: pointer; list-style: none; font-size: 11px; color: var(--fg-dim); margin: 4px 0 2px; }
+details.tag-source-group[data-source="implied"] > summary::-webkit-details-marker { display: none; }
+details.tag-source-group[data-source="implied"] > summary::before { content: "▶ "; display: inline-block; }
+details.tag-source-group[data-source="implied"][open] > summary::before { content: "▼ "; }
 .tag-implied-entry,
 .tag-alias-entry { opacity: 0.55; }
 .tag-implied-entry:hover,
@@ -1260,6 +1329,14 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .maintenance-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
 .maintenance-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .maintenance-table td:last-child { text-align: right; white-space: nowrap; }
+
+.stats-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+.stats-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: normal; color: var(--fg-dim); }
+.stats-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.stats-table td:last-child, .stats-table th:last-child { white-space: nowrap; }
+.stats-table th.stats-d1 { padding-left: 24px; }
+.stats-table th.stats-d2 { padding-left: 44px; }
+.stats-table th.stats-d3 { padding-left: 64px; }
 
 .tagger-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 

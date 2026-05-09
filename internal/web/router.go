@@ -156,17 +156,16 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 			// land in the "user" bucket; API-supplied sources each get their
 			// own "Tags added by <source>" subsection. Auto rows keep the
 			// existing per-tagger grouping with the "auto-tagger" suffix.
-			// is_implied rows skip every source bucket and trail at the
-			// end as a single "Implied tags" group, dimmed by CSS.
+			// is_implied rows skip every source bucket - they render
+			// together with aliases inside the collapsed wrapper at the
+			// bottom of the under-image list.
 			var userTags []models.ImageTag
-			var impliedTags []models.ImageTag
 			byUserSource := map[string]*imageTagSourceGroup{}
 			var userSourceOrder []string
 			byTagger := map[string]*imageTagSourceGroup{}
 			var order []string
 			for _, t := range tagList {
 				if t.IsImplied {
-					impliedTags = append(impliedTags, t)
 					continue
 				}
 				if !t.IsAuto {
@@ -227,12 +226,14 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 				})
 				out = append(out, *g)
 			}
-			if len(impliedTags) > 0 {
-				out = append(out, imageTagSourceGroup{
-					Source: "implied",
-					Title:  "Implied tags",
-					Tags:   impliedTags,
-				})
+			return out
+		},
+		"impliedFromImageTags": func(tagList []models.ImageTag) []models.ImageTag {
+			var out []models.ImageTag
+			for _, t := range tagList {
+				if t.IsImplied {
+					out = append(out, t)
+				}
 			}
 			return out
 		},
@@ -288,6 +289,8 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 				return "Stop re-extraction"
 			case "rebuild-thumbs":
 				return "Stop thumbnail rebuild"
+			case "prune-thumbs":
+				return "Stop thumbnail prune"
 			case "move":
 				return "Stop moving"
 			case "tag":
@@ -343,7 +346,7 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 		},
 		// hasFavFilter reports whether the search query contains a `fav:true`
 		// token, regardless of position or surrounding tags. Drives the gallery
-		// header's ★ toggle's active class so the button doesn't go inactive
+		// header's ♥ toggle's active class so the button doesn't go inactive
 		// the moment the user combines `fav:true` with any other tag.
 		"hasFavFilter": func(query string) bool {
 			for _, tok := range strings.Fields(query) {
@@ -352,6 +355,23 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 				}
 			}
 			return false
+		},
+		// hasInboxFilter mirrors hasFavFilter for the inbox toggle next to
+		// the favorite button. Active only on `inbox:true` (the triage
+		// view); `inbox:false` stays inactive because the toggle is one-way.
+		"hasInboxFilter": func(query string) bool {
+			for _, tok := range strings.Fields(query) {
+				if strings.EqualFold(tok, "inbox:true") {
+					return true
+				}
+			}
+			return false
+		},
+		"pageLoadMs": func(t time.Time) int64 {
+			if t.IsZero() {
+				return 0
+			}
+			return time.Since(t).Milliseconds()
 		},
 	}).ParseFS(webFS.FS, "templates/*.html", "templates/partials/*.html")
 	if err != nil {
@@ -546,8 +566,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /images/{id}/auto-tags", s.removeAutoTagsFromImageHandler)
 	mux.HandleFunc("DELETE /images/{id}/tags/{tagID}", s.removeTagFromImage)
 	mux.HandleFunc("POST /images/{id}/favorite", s.toggleFavorite)
+	mux.HandleFunc("POST /images/{id}/inbox", s.toggleInbox)
 	mux.HandleFunc("DELETE /images/{id}", s.deleteImage)
 	mux.HandleFunc("POST /images/{id}/canonical-path", s.promoteCanonical)
+	mux.HandleFunc("POST /images/{id}/external", s.updateExternal)
 	mux.HandleFunc("POST /images/{id}/move", s.moveImage)
 	mux.HandleFunc("DELETE /images/{id}/aliases/{pathID}", s.deleteAlias)
 
@@ -609,6 +631,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /internal/batch-move", s.batchMove)
 	mux.HandleFunc("POST /internal/batch-tag", s.batchTag)
 	mux.HandleFunc("POST /internal/batch-strip", s.batchStrip)
+	mux.HandleFunc("POST /internal/batch-inbox", s.batchInbox)
 	mux.HandleFunc("POST /internal/delete-search", s.deleteSearchPost)
 	mux.HandleFunc("POST /tags/delete-search", s.deleteTagsSearchPost)
 	mux.HandleFunc("POST /internal/delete-folder", s.deleteFolderPost)
@@ -674,8 +697,23 @@ func isNoisyPath(path string) bool {
 	return strings.HasPrefix(path, "/static/") || strings.HasPrefix(path, "/thumbnails/")
 }
 
+// requestStartKey carries the wall-clock time at which the outermost
+// middleware first saw the request. base() reads it back so the footer's
+// "page loaded in N ms" reflects everything between the request hitting
+// our handler chain and the layout footer rendering, not just the
+// handler's tail end.
+type requestStartKey struct{}
+
+func requestStartFromContext(ctx context.Context) time.Time {
+	if t, ok := ctx.Value(requestStartKey{}).(time.Time); ok {
+		return t
+	}
+	return time.Time{}
+}
+
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), requestStartKey{}, time.Now()))
 		if isNoisyPath(r.URL.Path) {
 			logx.Debugf("%s %s", r.Method, r.URL.Path)
 		} else {
@@ -730,22 +768,30 @@ type baseData struct {
 	// Counts surfaced on the footer status bar. Populated per-request;
 	// zero when the active gallery is missing or a query failed.
 	VisibleCount int
+	InboxCount   int
 	TagCount     int
 	SavedCount   int
 	// Rating ceiling state for the footer selector. ActiveRating is the
 	// effective level - "explicit" when no cookie is set.
-	RatingLevels  []ratingLevel
-	ActiveRating  string
+	RatingLevels []ratingLevel
+	ActiveRating string
+	// RequestStart is the wall-clock time captured by loggingMiddleware
+	// when the request first entered our handler chain. The footer
+	// renders time.Since(RequestStart) so the indicator covers all
+	// middleware + handler work + template execution, not just the
+	// tail-end after base() runs.
+	RequestStart time.Time
 }
 
 func (s *Server) base(r *http.Request, nav, title string) baseData {
 	sessID := sessionFromContext(r.Context())
 	cx := s.contexts[s.activeName] // ctxMu RLocked by ContextMiddleware
 	degraded := false
-	visible, tagCount, savedCount := 0, 0, 0
+	visible, inbox, tagCount, savedCount := 0, 0, 0, 0
 	if cx != nil {
 		degraded = cx.Degraded
 		visible, _ = cx.VisibleCount()
+		inbox, _ = cx.InboxCount()
 		tagCount, _ = cx.TagCount()
 		savedCount, _ = cx.SavedCount()
 	}
@@ -771,10 +817,12 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 		ActiveGallery: s.activeName,
 		Galleries:     galleries,
 		VisibleCount:  visible,
+		InboxCount:    inbox,
 		TagCount:      tagCount,
 		SavedCount:    savedCount,
 		RatingLevels:  ratingFooterLevels,
 		ActiveRating:  active,
+		RequestStart:  requestStartFromContext(r.Context()),
 	}
 }
 

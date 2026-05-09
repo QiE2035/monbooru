@@ -13,7 +13,10 @@
           <span class="badge badge-video">▶</span>
         {{end}}
         {{if .IsFavorited}}
-          <span class="badge fav-star">★</span>
+          <span class="badge fav-heart">♥</span>
+        {{end}}
+        {{if .IsInbox}}
+          <span class="badge badge-inbox">✱</span>
         {{end}}
         {{if .IsMissing}}
           <span class="badge badge-missing">✗</span>

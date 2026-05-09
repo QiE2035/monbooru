@@ -32,10 +32,12 @@ func (s *Server) uploadPage(w http.ResponseWriter, r *http.Request) {
 		"ActiveGallery":   base.ActiveGallery,
 		"Galleries":       s.galleryList(),
 		"VisibleCount":    base.VisibleCount,
+		"InboxCount":      base.InboxCount,
 		"TagCount":        base.TagCount,
 		"SavedCount":      base.SavedCount,
 		"RatingLevels":    base.RatingLevels,
 		"ActiveRating":    base.ActiveRating,
+		"RequestStart":    base.RequestStart,
 		"AcceptFileTypes": gallery.SupportedMIMETypes,
 		"TaggerAvailable": tagger.IsAvailable(s.cfg),
 		"EnabledTaggers":  tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
@@ -211,6 +213,21 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Write([]byte(`<div class="flash ` + cssClass + `">` + html.EscapeString(msg) + `</div>`))
+	// The form's hx-target only swaps #upload-result; the View-inbox
+	// anchor sits outside it and would keep the pre-upload count.
+	// OOB-swap the anchor with the freshly cached count whenever the
+	// upload actually moved rows into the inbox.
+	if added > 0 {
+		inbox := 0
+		if cx := s.Active(); cx != nil {
+			inbox, _ = cx.InboxCount()
+		}
+		count := ""
+		if inbox > 0 {
+			count = fmt.Sprintf(" (%d)", inbox)
+		}
+		fmt.Fprintf(w, `<a id="upload-inbox-link" href="/?q=inbox:true" hx-swap-oob="true">✱ View inbox%s</a>`, count)
+	}
 }
 
 func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {

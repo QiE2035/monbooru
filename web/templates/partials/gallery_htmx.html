@@ -13,4 +13,8 @@
      dialog stays open), but its entries are conditional on .Query / .Result.Total
      and would go stale on HTMX search updates without this. */}}
 <div id="batch-actions-body" hx-swap-oob="true">{{template "partials/batch_actions_body.html" .}}</div>
+{{/* OOB footer timer: the layout's "page loaded in N ms" sits outside
+     #gallery-grid, so without an OOB swap it keeps showing the original
+     full-page load number across every htmx search and pagination. */}}
+<span id="page-load-ms" hx-swap-oob="true">{{pageLoadMs .RequestStart}}</span>
 {{end}}

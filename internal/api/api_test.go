@@ -464,8 +464,8 @@ func TestCreateImage_JSONOriginRoundTrip(t *testing.T) {
 	f.Close()
 
 	body, _ := json.Marshal(map[string]any{
-		"path":   path,
-		"source": "https://danbooru/12345",
+		"path": path,
+		"via":  "https://danbooru/12345",
 	})
 	req := httptest.NewRequest("POST", "/api/v1/images", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -501,8 +501,8 @@ func TestAddImageTags_CarriesSource(t *testing.T) {
 	id := env.createTestImage(t, "tag_source.png", 10, 10)
 
 	body, _ := json.Marshal(map[string]any{
-		"tags":   []string{"from_app"},
-		"source": "my_app",
+		"tags": []string{"from_app"},
+		"via":  "my_app",
 	})
 	req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/tags", id), bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -554,14 +554,26 @@ func TestAddImageTags_InvalidBody(t *testing.T) {
 }
 
 func TestAddImageTags_ImageNotFound(t *testing.T) {
-	mux := newTestMux(t)
-	body, _ := json.Marshal(map[string]any{"tags": []string{"red"}})
+	env := newTestEnv(t)
+	body, _ := json.Marshal(map[string]any{"tags": []string{"never_added_red"}})
 	req := httptest.NewRequest("POST", "/api/v1/images/99999/tags", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
+	env.mux.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", w.Code)
+	}
+	// The pre-check must short-circuit before GetOrCreateTag runs, otherwise
+	// a missing-image POST would seed the vocabulary with tags nobody asked
+	// for.
+	var n int
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM tags WHERE name = ?`, "never_added_red",
+	).Scan(&n); err != nil {
+		t.Fatalf("count tags: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("addImageTags on missing id created %d stray tag row(s)", n)
 	}
 }
 

@@ -202,7 +202,7 @@ func TestSearchSuggest_System_Level2_Operators(t *testing.T) {
 
 func TestSearchSuggest_System_Level2_Values(t *testing.T) {
 	srv := newTestServer(t)
-	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:source:", nil)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:ai:", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -211,12 +211,12 @@ func TestSearchSuggest_System_Level2_Values(t *testing.T) {
 	}
 	body := w.Body.String()
 	for _, want := range []string{
-		`data-tag-name="source:a1111"`,
-		`data-tag-name="source:comfyui"`,
-		`data-tag-name="source:none"`,
+		`data-tag-name="ai:a1111"`,
+		`data-tag-name="ai:comfyui"`,
+		`data-tag-name="ai:none"`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("source: level-2 dropdown missing %q\nbody: %s", want, body)
+			t.Errorf("ai: level-2 dropdown missing %q\nbody: %s", want, body)
 		}
 	}
 }
@@ -316,9 +316,9 @@ func TestSearchSuggest_System_Level2_OperatorDescriptions(t *testing.T) {
 	}
 }
 
-func TestSearchSuggest_System_Level2_SourceDescriptions(t *testing.T) {
+func TestSearchSuggest_System_Level2_AIDescriptions(t *testing.T) {
 	srv := newTestServer(t)
-	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:source:", nil)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:ai:", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -329,7 +329,7 @@ func TestSearchSuggest_System_Level2_SourceDescriptions(t *testing.T) {
 		`<span class="suggest-description">no metadata</span>`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("source: level-2 dropdown missing description %q\nbody: %s", want, body)
+			t.Errorf("ai: level-2 dropdown missing description %q\nbody: %s", want, body)
 		}
 	}
 }
@@ -383,6 +383,46 @@ func TestSearchSuggest_BareFilterKey_SurfacesValueHint(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("bare fav: dropdown missing %q\nbody: %s", want, body)
+		}
+	}
+}
+
+// inbox: should land in the level-1 cheat-sheet (system:) the same way
+// fav: does, since both are boolean filter keywords driven off a column
+// on images.
+func TestSearchSuggest_System_TopLevel_Inbox(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `data-tag-name="inbox:"`) {
+		t.Errorf("system: top-level dropdown missing inbox: row\nbody: %s", body)
+	}
+}
+
+// Bare inbox: must surface the level-2 true/false expansion, mirroring
+// the fav: bare-key behaviour.
+func TestSearchSuggest_BareInboxKey_SurfacesValueHint(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest("GET", "/internal/search/suggest?q=inbox:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`data-tag-name="inbox:true"`,
+		`data-tag-name="inbox:false"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("bare inbox: dropdown missing %q\nbody: %s", want, body)
 		}
 	}
 }
@@ -686,6 +726,43 @@ func imageTagCategory(t *testing.T, srv *Server, id int64, want string) string {
 	return cat
 }
 
+// TestAddTagToImage_PartialDup_SurfacesDupList covers the mixed-submit
+// branch: some tokens are new, some already on the image. The user
+// should see both the success line and the "already on image" note,
+// otherwise they're left diffing the under-image list against their
+// pasted input to find which tokens were no-ops.
+func TestAddTagToImage_PartialDup_SurfacesDupList(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "partial_dup.png", 10, 10)
+
+	csrf := srv.csrfToken("anon")
+	post := func(tag string) *httptest.ResponseRecorder {
+		t.Helper()
+		form := url.Values{"_csrf": {csrf}, "tag": {tag}}
+		req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/tags", id), strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("X-CSRF-Token", csrf)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	// Seed: the image already carries `existing_one`.
+	if w := post("existing_one"); w.Code != http.StatusOK {
+		t.Fatalf("seed add: expected 200, got %d", w.Code)
+	}
+
+	// Mixed submit: one new + one duplicate.
+	w := post("brand_new existing_one")
+	if w.Code != http.StatusOK {
+		t.Fatalf("mixed add: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "already on image: existing_one") {
+		t.Errorf("response missing 'already on image' note for the dup token; body=%s", body)
+	}
+}
+
 func TestAddTagToImage_ColonFallbackLiteral(t *testing.T) {
 	// `nier` is not a category, so the token must fall through to a literal
 	// tag-name insert and land whole in general - not be rejected as an
@@ -821,10 +898,47 @@ func TestRenameTag_HTMXCollisionSurfacesError(t *testing.T) {
 	}
 }
 
-// TestRenameTag_HTMXSuccessRedirects pins the success branch: the
-// handler emits HX-Redirect so the client navigates to /tags rather
-// than swapping the empty body into #rename-error.
-func TestRenameTag_HTMXSuccessRedirects(t *testing.T) {
+// TestMergeTags_HTMXSuccessRefreshes mirrors the rename refresh
+// guarantee: a successful alias / repoint posts back HX-Refresh so
+// the dialog's parent /tags page reloads at the same URL, keeping
+// the user's q / sort / origin / page filter in scope.
+func TestMergeTags_HTMXSuccessRefreshes(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	var generalID int64
+	cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
+	src, _ := cx.TagSvc.GetOrCreateTag("alias_src", generalID)
+	dst, _ := cx.TagSvc.GetOrCreateTag("alias_dst", generalID)
+
+	csrf := srv.csrfToken("anon")
+	form := url.Values{
+		"_csrf":        {csrf},
+		"alias_id":     {fmt.Sprintf("%d", src.ID)},
+		"canonical_id": {fmt.Sprintf("%d", dst.ID)},
+	}
+	req := httptest.NewRequest("POST", "/tags/merge", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204 on HTMX merge, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("HX-Refresh") != "true" {
+		t.Errorf("HX-Refresh = %q, want true", w.Header().Get("HX-Refresh"))
+	}
+	if got := w.Header().Get("HX-Redirect"); got != "" {
+		t.Errorf("HX-Redirect = %q, want empty (HX-Refresh handles reload)", got)
+	}
+}
+
+// TestRenameTag_HTMXSuccessRefreshes pins the success branch: the
+// handler emits HX-Refresh so the client reloads the current URL,
+// preserving the user's active /tags filter (q, sort, origin, page)
+// instead of dropping them by redirecting to /tags.
+func TestRenameTag_HTMXSuccessRefreshes(t *testing.T) {
 	srv := newTestServer(t)
 	cx := srv.Active()
 	var generalID int64
@@ -843,8 +957,11 @@ func TestRenameTag_HTMXSuccessRedirects(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Errorf("expected 204 on HTMX rename, got %d", w.Code)
 	}
-	if w.Header().Get("HX-Redirect") != "/tags" {
-		t.Errorf("HX-Redirect = %q, want /tags", w.Header().Get("HX-Redirect"))
+	if w.Header().Get("HX-Refresh") != "true" {
+		t.Errorf("HX-Refresh = %q, want true", w.Header().Get("HX-Refresh"))
+	}
+	if got := w.Header().Get("HX-Redirect"); got != "" {
+		t.Errorf("HX-Redirect = %q, want empty (HX-Refresh handles reload)", got)
 	}
 }
 
@@ -871,5 +988,320 @@ func TestAddTagToImage_RealCategoryPrefixStillSplits(t *testing.T) {
 	}
 	if cat := imageTagCategory(t, srv, id, "artist:john_doe"); cat != "" {
 		t.Errorf("literal artist:john_doe must not be stored, got category %q", cat)
+	}
+}
+
+// TestUpdateExternal_HTMXBadURLSurfacesFlash pins the dialog UX: a
+// non-http URL submitted from the detail-page #external-url-dialog
+// must come back as a 200 + flash-err fragment so htmx swaps the
+// message into the slot and the dialog stays open with the typed
+// value intact, instead of navigating the browser to a stripped
+// text/plain error page.
+func TestUpdateExternal_HTMXBadURLSurfacesFlash(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "ext.png", 10, 10)
+
+	csrf := srv.csrfToken("anon")
+	form := url.Values{"_csrf": {csrf}, "url": {"ftp://example.com"}}
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 (htmx swap target), got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html so htmx swaps as a fragment", got)
+	}
+	if !strings.Contains(w.Body.String(), `class="flash flash-err"`) {
+		t.Errorf("body does not carry flash-err fragment: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "url must start with") {
+		t.Errorf("body missing the validation message: %s", w.Body.String())
+	}
+}
+
+// TestUpdateExternal_HTMXSuccessRefreshes pins the success branch:
+// a valid URL save under HX-Request emits HX-Refresh so the detail
+// page reloads with the new value rendered.
+func TestUpdateExternal_HTMXSuccessRefreshes(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "ext_ok.png", 10, 10)
+
+	csrf := srv.csrfToken("anon")
+	form := url.Values{"_csrf": {csrf}, "url": {"https://example.com/art"}}
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("HX-Refresh") != "true" {
+		t.Errorf("HX-Refresh = %q, want true", w.Header().Get("HX-Refresh"))
+	}
+	var stored string
+	srv.Active().DB.Read.QueryRow(`SELECT url FROM images WHERE id = ?`, id).Scan(&stored)
+	if stored != "https://example.com/art" {
+		t.Errorf("images.url = %q, want https://example.com/art", stored)
+	}
+}
+
+// TestUploadInboxLink_DropsCountUnderCeiling pins the same fix as
+// the gallery toolbar tooltip: the InboxCount cache is ceiling-blind,
+// so a "View inbox (39)" link mis-promises when a ceiling hides
+// higher-rated rows from the click result. Drop the parens when a
+// ceiling is active so the link doesn't masquerade as the post-click
+// match count.
+func TestUploadInboxLink_DropsCountUnderCeiling(t *testing.T) {
+	srv := newTestServer(t)
+	seedImage(t, srv, "in.png", 10, 10)
+
+	req := httptest.NewRequest("GET", "/upload", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /upload expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `>✱ View inbox (1)</a>`) {
+		t.Errorf("no-ceiling link should carry the count; body slice: %s", uploadInboxLink(t, body))
+	}
+
+	req = httptest.NewRequest("GET", "/upload", nil)
+	req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: "sensitive"})
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /upload with ceiling expected 200, got %d", w.Code)
+	}
+	body = w.Body.String()
+	if !strings.Contains(body, `>✱ View inbox</a>`) {
+		t.Errorf("ceiling-active link should drop the count; body slice: %s", uploadInboxLink(t, body))
+	}
+}
+
+func uploadInboxLink(t *testing.T, body string) string {
+	t.Helper()
+	idx := strings.Index(body, `id="upload-inbox-link"`)
+	if idx < 0 {
+		return "(no upload-inbox-link)"
+	}
+	end := strings.Index(body[idx:], "</a>")
+	if end < 0 {
+		return body[idx:min(len(body), idx+200)]
+	}
+	return body[idx : idx+end+4]
+}
+
+// TestGalleryInboxTooltip_DropsCountUnderCeiling pins F011: the
+// InboxCount cache deliberately ignores the cookie-applied rating
+// ceiling, so a tooltip "Inbox (39)" would lie when the ceiling
+// hides higher-rated rows from the click result. Drop the parens
+// when a ceiling is active so the badge doesn't masquerade as the
+// post-click match count.
+func TestGalleryInboxTooltip_DropsCountUnderCeiling(t *testing.T) {
+	srv := newTestServer(t)
+	// Seed one inbox image so InboxCount > 0 in both branches.
+	seedImage(t, srv, "in.png", 10, 10)
+
+	// No cookie → ActiveRating = "explicit" → count parenthesised.
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET / expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `title="Inbox (1) (I)"`) {
+		t.Errorf("no-ceiling tooltip should carry the count; body slice: %s", inboxTooltip(t, body))
+	}
+
+	// With ceiling=sensitive set, the badge must drop the count.
+	req = httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: "sensitive"})
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET / with ceiling expected 200, got %d", w.Code)
+	}
+	body = w.Body.String()
+	if !strings.Contains(body, `title="Inbox (I)"`) {
+		t.Errorf("ceiling-active tooltip should drop the count; body slice: %s", inboxTooltip(t, body))
+	}
+}
+
+func inboxTooltip(t *testing.T, body string) string {
+	t.Helper()
+	idx := strings.Index(body, `id="inbox-filter-btn"`)
+	if idx < 0 {
+		return "(no inbox-filter-btn)"
+	}
+	end := strings.Index(body[idx:], ">")
+	if end < 0 {
+		return body[idx:min(len(body), idx+200)]
+	}
+	return body[idx : idx+end+1]
+}
+
+// TestAddTagToImage_CategoryPrefixOnlyRejected pins parseTagInput's
+// fix for the silent-drop that swallowed `general:` (known category +
+// empty name). The token must surface as a rejected flash so the user
+// sees the malformed input, matching how `:` and overlong names already
+// behave. Other valid tokens in the same submit still get applied.
+func TestAddTagToImage_CategoryPrefixOnlyRejected(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "prefix_only.png", 10, 10)
+
+	csrf := srv.csrfToken("anon")
+	form := url.Values{"_csrf": {csrf}, "tag": {"general: 1girl"}}
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/tags", id), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "empty tag name after category prefix") {
+		t.Errorf("rejected flash missing the prefix-only diagnostic; body: %s", body)
+	}
+	if !strings.Contains(body, "general:") {
+		t.Errorf("flash should echo the offending token `general:`; body: %s", body)
+	}
+	// The valid 1girl token must still land.
+	if cat := imageTagCategory(t, srv, id, "1girl"); cat != "general" {
+		t.Errorf("1girl category = %q, want general (token after rejected prefix should still apply)", cat)
+	}
+}
+
+// TestTagsPage_AliasRowOmitsCategorySelect pins the spec §5.6 read-only
+// claim for alias rows: the Category cell is read-only because the
+// alias's category is set at creation and ChangeTagCategory wouldn't
+// know which side to move. Render a colored span instead of the
+// editable <select>.
+func TestTagsPage_AliasRowOmitsCategorySelect(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	var generalID int64
+	cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
+	canon, _ := cx.TagSvc.GetOrCreateTag("alias_canon", generalID)
+	src, _ := cx.TagSvc.GetOrCreateTag("alias_src", generalID)
+	if err := cx.TagSvc.MergeTags(src.ID, canon.ID); err != nil {
+		t.Fatalf("MergeTags: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/tags?q=alias_src&show_zero=1&origin=alias", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /tags expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	idx := strings.Index(body, `data-name="alias_src"`)
+	if idx < 0 {
+		t.Fatalf("alias row not in body: %s", body[:min(len(body), 600)])
+	}
+	rowStart := strings.LastIndex(body[:idx], "<tr")
+	rowEnd := strings.Index(body[idx:], "</tr>")
+	row := body[rowStart : idx+rowEnd]
+	if strings.Contains(row, `<select class="cat-select"`) {
+		t.Errorf("alias row still renders an editable Category <select>; row was: %s", row)
+	}
+	// The cell should still surface the alias's own category by name.
+	if !strings.Contains(row, `>general</span>`) {
+		t.Errorf("alias row missing the static Category span; row was: %s", row)
+	}
+}
+
+// TestTagsPage_ClampsPastTheEndPage mirrors the gallery clamp: a stale
+// ?page=N URL past the actual page count must clamp to the last valid
+// page so the header count and the table content stay aligned.
+func TestTagsPage_ClampsPastTheEndPage(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/tags?page=999", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /tags?page=999 expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "No tags found.") {
+		t.Errorf("clamp failed: body still renders empty-state message: %s", body[:min(len(body), 600)])
+	}
+	// The seeded test gallery carries the four canonical rating tags
+	// at usage 0, so show_zero=Show + page=999 must clamp to page 1
+	// and surface at least one row.
+	if !strings.Contains(body, `data-name="general"`) && !strings.Contains(body, `data-name="explicit"`) {
+		t.Errorf("clamp didn't surface any rating row; body: %s", body[:min(len(body), 600)])
+	}
+}
+
+// TestTagsPage_RatingRowOmitsImmutableActions pins the UI gating that
+// matches spec §5.9: rating rows must not surface Rename / Alias→ /
+// Delete buttons because the server uniformly rejects those operations.
+// Implications stays visible because rating tags are valid edge sides.
+func TestTagsPage_RatingRowOmitsImmutableActions(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/tags?q=explicit&show_zero=1", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /tags expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `data-name="explicit"`) {
+		t.Fatalf("rating row for `explicit` not in /tags?q=explicit response: %s", body[:min(len(body), 600)])
+	}
+	for _, forbidden := range []string{
+		`btn-rename-trigger" title="Rename this tag"`,
+		`btn-merge-trigger"`,
+		`<select class="cat-select"`,
+	} {
+		// Each appears around `data-name="explicit"` in the trigger
+		// button block, so an unguarded scan of the body would hit even
+		// for unrelated tags. Slice the explicit row's cell to scope the
+		// assertion.
+		idx := strings.Index(body, `data-name="explicit"`)
+		if idx < 0 {
+			break
+		}
+		// Walk backwards to the row's <tr; the row spans <tr ...> through
+		// </tr>. Cheap split here is fine for a test.
+		rowStart := strings.LastIndex(body[:idx], "<tr")
+		rowEnd := strings.Index(body[idx:], "</tr>")
+		if rowStart < 0 || rowEnd < 0 {
+			t.Fatalf("could not isolate the explicit row in body")
+		}
+		row := body[rowStart : idx+rowEnd]
+		if strings.Contains(row, forbidden) {
+			t.Errorf("rating row should not contain %q; row was: %s", forbidden, row)
+		}
+	}
+	// Implications and Delete stay available on the rating row.
+	// Implications because rating tags are valid edge sides per §5.6.1;
+	// Delete because the rating-tag branch of DeleteTag strips
+	// image_tags rows but leaves the immutable catalog row in place.
+	idx := strings.Index(body, `data-name="explicit"`)
+	rowStart := strings.LastIndex(body[:idx], "<tr")
+	rowEnd := strings.Index(body[idx:], "</tr>")
+	row := body[rowStart : idx+rowEnd]
+	if !strings.Contains(row, `btn-implications-trigger"`) {
+		t.Errorf("rating row missing the Implications trigger; row was: %s", row)
+	}
+	if !strings.Contains(row, `btn-delete-tag"`) {
+		t.Errorf("rating row missing the Delete trigger; row was: %s", row)
 	}
 }

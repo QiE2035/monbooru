@@ -1635,6 +1635,73 @@ func TestAddRating_UsageCountsTrackPrune(t *testing.T) {
 	}
 }
 
+// TestAddRating_ManualOverwritesPriorLevel pins the manual-add rule:
+// the user's typed rating wins over whatever is already attached, even
+// when its rank is below an existing auto-tagger value. The auto-tagger
+// path (TestAddRating_PrunesLowerRanksOnAdd) keeps highest-wins.
+func TestAddRating_ManualOverwritesPriorLevel(t *testing.T) {
+	database, svc := setupTestDB(t)
+	imageID := insertTestImage(t, database, "ratings_manual.png")
+
+	imageRatingNames := func() []string {
+		t.Helper()
+		rows, err := database.Read.Query(
+			`SELECT t.name FROM image_tags it
+			 JOIN tags t ON t.id = it.tag_id
+			 WHERE it.image_id = ? AND t.category_id = ?
+			 ORDER BY t.name`,
+			imageID, svc.RatingCategoryID(),
+		)
+		if err != nil {
+			t.Fatalf("query rating names: %v", err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, n)
+		}
+		return out
+	}
+
+	// Seed via the auto-tagger entry so the image starts with `explicit`.
+	expID := ratingTagIDByName(t, database, "explicit")
+	conf := 0.9
+	if err := svc.AddTagToImage(imageID, expID, true, &conf); err != nil {
+		t.Fatalf("AddTagToImage(explicit, isAuto=true): %v", err)
+	}
+
+	// Manual add of `general` (lower rank) must overwrite, not be swept.
+	genID := ratingTagIDByName(t, database, "general")
+	if err := svc.AddTagToImage(imageID, genID, false, nil); err != nil {
+		t.Fatalf("AddTagToImage(general, isAuto=false): %v", err)
+	}
+	got := imageRatingNames()
+	if len(got) != 1 || got[0] != "general" {
+		t.Fatalf("manual general after auto explicit: image carries %v, want only [general]", got)
+	}
+	if exp, _ := svc.GetTag(expID); exp.UsageCount != 0 {
+		t.Errorf("explicit usage_count = %d after manual overwrite, want 0", exp.UsageCount)
+	}
+	if gen, _ := svc.GetTag(genID); gen.UsageCount != 1 {
+		t.Errorf("general usage_count = %d after manual overwrite, want 1", gen.UsageCount)
+	}
+
+	// Manual add of `sensitive` (higher than general, lower than the
+	// pruned explicit) must also overwrite cleanly.
+	senID := ratingTagIDByName(t, database, "sensitive")
+	if err := svc.AddTagToImage(imageID, senID, false, nil); err != nil {
+		t.Fatalf("AddTagToImage(sensitive, isAuto=false): %v", err)
+	}
+	got = imageRatingNames()
+	if len(got) != 1 || got[0] != "sensitive" {
+		t.Fatalf("manual sensitive after manual general: image carries %v, want only [sensitive]", got)
+	}
+}
+
 // TestAddNonRating_DoesNotTriggerPrune verifies the cheap fast path:
 // a non-rating add does not run the prune query, even on an image that
 // already carries multiple rating tags from prior (legacy) state.

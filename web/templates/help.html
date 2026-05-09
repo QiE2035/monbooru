@@ -52,7 +52,7 @@
     <ul>
       <li><strong>Create tag</strong> declares a fresh tag (no image needed); useful for pre-seeding a vocabulary or wiring implications against unused names.</li>
       <li><strong>Create alias</strong> binds a name to an existing canonical so typing the alias adds the canonical instead.</li>
-      <li><strong>Merge</strong> moves every image-tag row from one tag onto another and turns the source into an alias.</li>
+      <li><strong>Alias</strong> on a non-alias row turns it into an alias of another tag: every image-tag row moves to the canonical and the source becomes a zero-usage alias entry.</li>
       <li><strong>Implications</strong> declare "tag X also implies tag Y": adding X to an image fans Y out as a dim implied row.</li>
     </ul>
   </section>
@@ -71,10 +71,12 @@
         <tr><td><code>red*</code></td><td>Wildcard: tags starting with "red" (e.g. red_hair, red_eyes)</td></tr>
         <tr><td><code>*hair*</code></td><td>Wildcard: tags containing "hair"</td></tr>
         <tr><td><code>fav:true</code></td><td>Favorited images only</td></tr>
-        <tr><td><code>source:ai</code></td><td>Any AI-generated image (a1111 and/or comfyui metadata present)</td></tr>
-        <tr><td><code>source:a1111</code></td><td>Images generated with A1111/Forge</td></tr>
-        <tr><td><code>source:comfyui</code></td><td>Images generated with ComfyUI</td></tr>
-        <tr><td><code>source:none</code></td><td>Images with no detected generation metadata</td></tr>
+        <tr><td><code>inbox:true</code> / <code>inbox:false</code></td><td>Inbox state: untriaged (default for added images) vs archived/curated</td></tr>
+        <tr><td><code>ai:any</code></td><td>Any AI-generated image (a1111 and/or comfyui metadata present)</td></tr>
+        <tr><td><code>ai:a1111</code></td><td>Images generated with A1111/Forge</td></tr>
+        <tr><td><code>ai:comfyui</code></td><td>Images generated with ComfyUI</td></tr>
+        <tr><td><code>ai:none</code></td><td>Images with no detected generation metadata</td></tr>
+        <tr><td><code>source:my_label</code></td><td>Exact-match against the operator-edited <code>images.source</code> field (set per image from the detail page)</td></tr>
         <tr><td><code>folder:path/to</code></td><td>Images in that folder or any subfolder beneath it</td></tr>
         <tr><td><code>folderonly:path/to</code></td><td>Only images directly in that folder (no subfolders); use <code>folderonly:</code> for the gallery root alone</td></tr>
         <tr><td><code>folder:"path with spaces"</code></td><td>Folder path with spaces (use quotes)</td></tr>
@@ -99,7 +101,7 @@
     <table class="help-table">
       <thead><tr><th>Sort</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td>Newest</td><td>Sort by ingest date (default). Use ↑/↓ to flip direction.</td></tr>
+        <tr><td>Newest</td><td>Sort by ingest date (default). Use the order toggle (↓/↑) next to the sort select to flip direction.</td></tr>
         <tr><td>File size</td><td>Sort by file size, largest first.</td></tr>
         <tr><td>Random (⇄)</td><td>Shuffle images randomly. Stable across page turns; click again to re-shuffle.</td></tr>
       </tbody>
@@ -110,67 +112,8 @@
 
   <section id="keymap">
     <h3>Keyboard Shortcuts</h3>
-
-    <h4>Anywhere</h4>
-    <table class="help-table">
-      <thead><tr><th>Key</th><th>Action</th></tr></thead>
-      <tbody>
-        <tr><td><kbd>s</kbd></td><td>Focus search input</td></tr>
-        <tr><td><kbd>Escape</kbd></td><td>Close dialog, blur input, clear selection, exit tag-focus mode, or go back</td></tr>
-      </tbody>
-    </table>
-
-    <h4>Gallery — navigation</h4>
-    <table class="help-table">
-      <thead><tr><th>Key</th><th>Action</th></tr></thead>
-      <tbody>
-        <tr><td><kbd>h</kbd> / <kbd>l</kbd></td><td>Previous / next page</td></tr>
-        <tr><td><kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd></td><td>Navigate the grid</td></tr>
-        <tr><td><kbd>Enter</kbd></td><td>Open focused image</td></tr>
-        <tr><td><kbd>Space</kbd></td><td>Toggle selection of the focused thumbnail</td></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>A</kbd></td><td>Select every visible thumbnail</td></tr>
-      </tbody>
-    </table>
-
-    <h4>Gallery — actions</h4>
-    <table class="help-table">
-      <thead><tr><th>Key</th><th>Action</th></tr></thead>
-      <tbody>
-        <tr><td><kbd>a</kbd></td><td>Open the Actions chooser (Save / Tag / Auto-tag / Move / Delete the current search)</td></tr>
-        <tr><td><kbd>1</kbd>-<kbd>9</kbd></td><td>Pick the matching entry in the open Actions chooser</td></tr>
-      </tbody>
-    </table>
-
-    <h4>Gallery — selection active</h4>
-    <table class="help-table">
-      <thead><tr><th>Key</th><th>Action</th></tr></thead>
-      <tbody>
-        <tr><td><kbd>a</kbd></td><td>Add tags to the selection</td></tr>
-        <tr><td><kbd>r</kbd></td><td>Remove tags from the selection</td></tr>
-        <tr><td><kbd>t</kbd></td><td>Auto-tag the selection</td></tr>
-      </tbody>
-    </table>
-
-    <h4>Image detail — navigation</h4>
-    <table class="help-table">
-      <thead><tr><th>Key</th><th>Action</th></tr></thead>
-      <tbody>
-        <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Previous / next image</td></tr>
-      </tbody>
-    </table>
-
-    <h4>Image detail — actions</h4>
-    <table class="help-table">
-      <thead><tr><th>Key</th><th>Action</th></tr></thead>
-      <tbody>
-        <tr><td><kbd>a</kbd></td><td>Focus the tag input</td></tr>
-        <tr><td><kbd>r</kbd></td><td>Enter tag-focus mode: arrows cycle, <kbd>Enter</kbd> removes the focused tag, <kbd>Escape</kbd> exits</td></tr>
-        <tr><td><kbd>t</kbd></td><td>Open the Auto-tag dialog for this image</td></tr>
-        <tr><td><kbd>f</kbd></td><td>Toggle favorite</td></tr>
-        <tr><td><kbd>Space</kbd></td><td>Play / pause the video</td></tr>
-        <tr><td><kbd>Delete</kbd></td><td>Delete image (advances to the next in the current search)</td></tr>
-      </tbody>
-    </table>
+    <p>Press <kbd>?</kbd> on any page to open the cheat-sheet overlay.</p>
+    <p><button type="button" class="btn-sm" onclick="document.getElementById('shortcuts-help').showModal()">Open shortcuts overlay</button></p>
   </section>
 
   <hr class="help-sep">
@@ -181,8 +124,8 @@
     <ul>
       <li><strong>General</strong> - toggle the gallery file watcher, set the max file size, and change the number of images per page.</li>
       <li><strong>Galleries</strong> - add, rename, switch between, set default, or delete configured galleries. The Add form takes an optional import file (.db / .json / .zip) so a populated gallery can be created in one step. </li>
+      <li><strong>Auto-Tagger</strong> - enable one or more taggers, set global and per-category confidence thresholds, scope a tagger to a subset of galleries, toggle GPU (CUDA), pick a worker count, and disable or delete a tagger row.</li>
       <li><strong>Authentication</strong> - set or remove a password, regenerate the API token.</li>
-      <li><strong>Auto-Tagger</strong> - enable one or more taggers, set per-tagger confidence thresholds, toggle GPU (CUDA), pick a worker count, and disable or delete a tagger row.</li>
       <li><strong>Maintenance</strong> - prune missing images, clean up orphaned thumbnails, rebuild thumbnails, recalculate tag counts, merge auto-tagged-only general tags into their unique categorized counterparts, re-extract metadata, vacuum the database, and list or remove duplicate file paths.</li>
       <li><strong>Schedule</strong> - opt-in daily automation. Pick a time-of-day (default 01:00) and tick any of: Sync gallery, Remove orphaned thumbnails, Run enabled auto-taggers, Merge general tags. The scheduler iterates every configured gallery in turn at the chosen time and skips silently when another job is already running.</li>
     </ul>

@@ -72,29 +72,79 @@
         {{if .PrevID}}
         <a href="/images/{{deref64 .PrevID}}?back_q={{.BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}"
            class="nav-arrow" title="Previous image (←)">← Prev</a>
+        {{else}}
+        <span class="nav-arrow nav-arrow-placeholder" aria-hidden="true">← Prev</span>
         {{end}}
         {{if .NextID}}
         <a href="/images/{{deref64 .NextID}}?back_q={{.BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}"
            class="nav-arrow" title="Next image (→)">Next →</a>
+        {{else}}
+        <span class="nav-arrow nav-arrow-placeholder" aria-hidden="true">Next →</span>
         {{end}}
       </div>
       <div class="detail-actions">
         {{if .EnabledTaggers}}
-        <button type="button" class="btn-autotag" title="Auto-tag this image"
+        <button type="button" class="btn-autotag" title="Auto-tag this image (t)"
                 onclick="document.getElementById('autotag-dialog').showModal()">Auto-tag</button>
         {{end}}
         <a href="/images/{{.Image.ID}}/file" download class="btn-sm" title="Download image">⤓</a>
+        <form id="inbox-form" hx-post="/images/{{.Image.ID}}/inbox"
+              hx-target="#inbox-btn" hx-swap="outerHTML"
+              hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}' style="display:inline">
+          <button type="submit" id="inbox-btn" class="btn-inbox{{if .Image.IsInbox}} active{{end}}"
+                  title="{{if .Image.IsInbox}}Archive (i){{else}}Send to inbox (i){{end}}">
+            {{if .Image.IsInbox}}✱ In inbox{{else}}✱ Archived{{end}}
+          </button>
+        </form>
         <form id="fav-form" hx-post="/images/{{.Image.ID}}/favorite"
               hx-target="#fav-btn" hx-swap="outerHTML"
               hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}' style="display:inline">
           <button type="submit" id="fav-btn" class="btn-fav{{if .Image.IsFavorited}} active{{end}}"
-                  title="{{if .Image.IsFavorited}}Unfavorite{{else}}Favorite{{end}}">
-            {{if .Image.IsFavorited}}★{{else}}☆{{end}}
+                  title="{{if .Image.IsFavorited}}Unfavorite (f){{else}}Favorite (f){{end}}">
+            {{if .Image.IsFavorited}}♥{{else}}♡{{end}}
           </button>
         </form>
       </div>
     </div>
   </div>
+
+  <dialog id="external-source-dialog">
+    <form hx-post="/images/{{.Image.ID}}/external"
+          hx-target="#external-source-error"
+          hx-swap="innerHTML"
+          hx-on::after-request="if(event.detail.xhr.status===204)document.getElementById('external-source-dialog').close()">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <p>Edit <strong>Source</strong></p>
+      <div class="field">
+        <label>Source label (max 200 chars)</label>
+        <input type="text" name="source" id="external-source-input" maxlength="200" autocomplete="off">
+      </div>
+      <div id="external-source-error"></div>
+      <div class="dialog-actions">
+        <button type="submit">Save</button>
+        <button type="button" onclick="document.getElementById('external-source-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="external-url-dialog">
+    <form hx-post="/images/{{.Image.ID}}/external"
+          hx-target="#external-url-error"
+          hx-swap="innerHTML"
+          hx-on::after-request="if(event.detail.xhr.status===204)document.getElementById('external-url-dialog').close()">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <p>Edit <strong>URL</strong></p>
+      <div class="field">
+        <label>Original URL (must start with http:// or https://; max 2048 chars)</label>
+        <input type="url" name="url" id="external-url-input" maxlength="2048" autocomplete="off" placeholder="https://...">
+      </div>
+      <div id="external-url-error"></div>
+      <div class="dialog-actions">
+        <button type="submit">Save</button>
+        <button type="button" onclick="document.getElementById('external-url-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
 
   {{if .EnabledTaggers}}
   <dialog id="autotag-dialog">
@@ -171,6 +221,21 @@
         input.focus();
         input.select();
       }
+      document.addEventListener('click', function(e) {
+        var btn = e.target.closest && e.target.closest('.btn-edit-external');
+        if (!btn) return;
+        var field = btn.dataset.field;
+        var value = btn.dataset.value || '';
+        var inputId = 'external-' + field + '-input';
+        var dialogId = 'external-' + field + '-dialog';
+        var input = document.getElementById(inputId);
+        var dlg = document.getElementById(dialogId);
+        if (!input || !dlg) return;
+        input.value = value;
+        dlg.showModal();
+        input.focus();
+        input.select();
+      });
       function submitRemoveAutoTags(imageId) {
         var form = document.getElementById('remove-auto-form');
         var names = Array.from(form.querySelectorAll('input[name="taggers"]:checked')).map(function(cb){ return cb.value; });
@@ -210,7 +275,15 @@
             <tr><th>File size</th><td>{{humanBytes .Image.FileSize}}</td></tr>
             <tr><th>SHA-256</th><td class="mono-small sha-truncated" title="{{.Image.SHA256}}">{{.Image.SHA256}}</td></tr>
             <tr><th>Ingested</th><td>{{.Image.IngestedAt.Format "2006-01-02 15:04:05"}}</td></tr>
-            {{if .Image.Origin}}<tr><th>Source</th><td>{{.Image.Origin}}</td></tr>{{end}}
+            <tr><th>Source</th><td>
+              {{if .Image.Source}}<span class="meta-source-value">{{.Image.Source}}</span>{{else}}<span class="field-hint">(none)</span>{{end}}
+              <button type="button" class="btn-sm btn-edit-external" data-field="source" data-value="{{.Image.Source}}" title="Edit source">[edit]</button>
+            </td></tr>
+            <tr><th>URL</th><td>
+              {{if .Image.URL}}<a href="{{.Image.URL}}" target="_blank" rel="noopener noreferrer" class="meta-url-value">{{.Image.URL}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
+              <button type="button" class="btn-sm btn-edit-external" data-field="url" data-value="{{.Image.URL}}" title="Edit URL">[edit]</button>
+            </td></tr>
+            {{if .Image.Origin}}<tr><th>Added via</th><td>{{.Image.Origin}}</td></tr>{{end}}
             {{if .Image.AutoTaggedAt}}
             <tr><th>Auto-tagged</th><td>{{.Image.AutoTaggedAt.Format "2006-01-02 15:04:05"}}</td></tr>
             {{end}}

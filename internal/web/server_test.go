@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leqwin/monbooru/internal/config"
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/jobs"
+	"github.com/leqwin/monbooru/internal/search"
 )
 
 func newTestServer(t *testing.T) *Server {
@@ -133,6 +135,87 @@ func TestCustomCSS_LinkRenderedWhenConfigured(t *testing.T) {
 	}
 }
 
+// TestSettingsStatsSection asserts the Settings → Stats section renders
+// the active gallery in the per-gallery DB table and the process-memory
+// rows. A handler that drops the Stats data map key surfaces here as a
+// missing gallery name in the rendered body.
+func TestSettingsStatsSection(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/settings", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /settings expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	checks := []string{
+		`href="#stats"`,
+		`id="stats"`,
+		`Process memory`,
+		`Database size per gallery`,
+		`Goroutines`,
+		// The seeded test gallery's name must appear in the DB-size row.
+		srv.cfg.Galleries[0].Name,
+	}
+	for _, c := range checks {
+		if !strings.Contains(body, c) {
+			t.Errorf("settings page missing stats marker: %q", c)
+		}
+	}
+}
+
+// TestGatherStats_MountLabelsAreCompact pins that a row's label set
+// collapses to one entry per gallery on that filesystem, not one entry per
+// (gallery × {db, images, thumbnails}). Two galleries on the same temp
+// dir should produce a single row with both names; the row must not list
+// "default db, default images, default thumbnails, stock db, ...".
+func TestGatherStats_MountLabelsAreCompact(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+	stats := srv.gatherStats()
+	if len(stats.Mounts) == 0 {
+		t.Skip("filesystem stats unavailable on this platform")
+	}
+	for _, m := range stats.Mounts {
+		seen := map[string]int{}
+		for _, l := range m.Labels {
+			seen[l]++
+			if seen[l] > 1 {
+				t.Errorf("mount labels duplicate gallery name: %v", m.Labels)
+			}
+		}
+		for _, l := range m.Labels {
+			if strings.ContainsAny(l, " ") {
+				t.Errorf("mount label %q includes a kind suffix; should be just the gallery name", l)
+			}
+		}
+	}
+}
+
+// TestPageLoadIndicator_RenderedOnFullLayoutPages mirrors the CustomCSS
+// walk: every full-layout handler must thread RequestStart through to the
+// footer template func so a hand-copy handler that forgets the field shows
+// up here instead of silently rendering "page loaded in 0 ms".
+func TestPageLoadIndicator_RenderedOnFullLayoutPages(t *testing.T) {
+	srv := newTestServer(t)
+
+	pages := []string{"/", "/tags", "/categories", "/settings", "/help", "/upload"}
+	for _, page := range pages {
+		req := httptest.NewRequest("GET", page, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("GET %s expected 200, got %d", page, w.Code)
+			continue
+		}
+		if !strings.Contains(w.Body.String(), "page loaded in ") {
+			t.Errorf("%s: footer page-load indicator missing", page)
+		}
+	}
+}
+
 func TestCustomCSS_LinkOmittedByDefault(t *testing.T) {
 	srv := newTestServer(t)
 
@@ -231,6 +314,11 @@ func TestGalleryHTMXPartialReturnsGrid(t *testing.T) {
 	// counts without an extra round trip (spec §12.3).
 	if !strings.Contains(body, "sidebar-inner") {
 		t.Error("HTMX partial should carry the OOB sidebar swap")
+	}
+	// Footer timer rides an OOB span so "page loaded in N ms" reflects
+	// the search request, not the original full-page render time.
+	if !strings.Contains(body, `id="page-load-ms" hx-swap-oob="true"`) {
+		t.Error("HTMX partial should carry the OOB page-load-ms swap")
 	}
 }
 
@@ -392,6 +480,105 @@ func insertTestImage(t *testing.T, database *db.DB) int64 {
 	return id
 }
 
+// TestDetailPage_BackPageReflectsCachedPositionWhenWarm pins the
+// detail-page back-link override: when the adjacency cache holds the
+// match list for the back_* search context, the detail handler resolves
+// the current image's page from its index in the cached list and uses
+// that for the "← Back" link, regardless of the back_page param the URL
+// arrived with. This is what lets Escape land on the page that
+// contains the current image after the user has walked prev/next
+// across page boundaries.
+func TestDetailPage_BackPageReflectsCachedPositionWhenWarm(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.UI.PageSize = 5
+	id := insertTestImage(t, srv.db())
+
+	// Seed the cache so the current id sits at index 12 (page 3 with
+	// page_size 5). Other ids are sentinel values; the handler only
+	// uses positions, not row data.
+	cacheKey := search.BuildAdjacencyCacheKey(srv.activeName, "general:tag", "newest", "desc", 0, "")
+	ids := make([]int64, 30)
+	for i := range ids {
+		ids[i] = int64(900_000 + i)
+	}
+	ids[12] = id
+	search.AdjacencyCacheClear()
+	search.AdjacencyCacheSet(cacheKey, ids)
+
+	// User arrived on the detail page from page 1 of the search but,
+	// after walking prev/next, the current image actually lives on
+	// page 3 (index 12 / page_size 5 = floor 2 + 1 = 3).
+	url := fmt.Sprintf(
+		"/images/%d?back_q=%s&back_sort=newest&back_order=desc&back_page=1",
+		id, "general%3Atag",
+	)
+	req := httptest.NewRequest("GET", url, nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("detail expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "&page=3") {
+		t.Errorf("back link should carry &page=3 from the cached index; body lacked it")
+	}
+	if strings.Contains(body, "&page=1#img-") {
+		t.Errorf("back link still anchored at the original back_page=1")
+	}
+}
+
+// TestDetailPage_BackPageRankQueryOnCacheMiss pins the cold-path
+// fallback: when no cached match list is available, the handler runs
+// a COUNT-rank against the back_q's WHERE shape and uses that to land
+// the back link on the page that actually contains the image, even
+// across detail loads that bypassed the gallery render entirely.
+func TestDetailPage_BackPageRankQueryOnCacheMiss(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.UI.PageSize = 5
+
+	// Insert a handful of images so a back_q query (here just the
+	// implicit visible filter) produces a multi-page result. Newest
+	// sort orders by ingested_at DESC, then id DESC; ingested_at is
+	// set to datetime('now') for every row so id tie-breaks. A row
+	// inserted later has a larger id and ranks before earlier rows.
+	var ids []int64
+	for i := 0; i < 12; i++ {
+		res, err := srv.db().Write.Exec(
+			`INSERT INTO images (canonical_path, file_type, file_size, sha256, ingested_at)
+			 VALUES (?, 'jpg', 1024, ?, datetime('now'))`,
+			fmt.Sprintf("/tmp/rank_%d.jpg", i),
+			fmt.Sprintf("rank_sha_%d", i),
+		)
+		if err != nil {
+			t.Fatalf("insert rank fixture: %v", err)
+		}
+		newID, _ := res.LastInsertId()
+		ids = append(ids, newID)
+	}
+	target := ids[3] // 4th inserted (zero-indexed rank 8 in DESC by id); page 2 with page_size 5.
+	search.AdjacencyCacheClear()
+
+	url := fmt.Sprintf(
+		"/images/%d?back_q=&back_sort=newest&back_order=desc&back_page=1",
+		target,
+	)
+	req := httptest.NewRequest("GET", url, nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("detail expected 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "&page=2") {
+		t.Errorf("cache-miss rank query should land back link on page 2; body lacked &page=2")
+	}
+	if strings.Contains(body, "&page=1#img-") {
+		t.Errorf("back link still anchored at the original back_page=1")
+	}
+}
+
 func TestDetailPageReturns200(t *testing.T) {
 	srv := newTestServer(t)
 	id := insertTestImage(t, srv.db())
@@ -546,6 +733,54 @@ func TestToggleFavoriteReturnsButton(t *testing.T) {
 	}
 }
 
+// Toggling inbox state flips is_inbox via the same RETURNING-update shape
+// as the favorite toggle, returns the inline button HTML for the new
+// state, and drops the cached InboxCount so the toolbar count refreshes
+// on the next render.
+func TestToggleInboxReturnsButtonAndInvalidatesCount(t *testing.T) {
+	srv := newTestServer(t)
+	// insertTestImage creates a row with default is_inbox = 1 (the column
+	// default applies when the INSERT omits it).
+	id := insertTestImage(t, srv.db())
+	cx := srv.Active()
+	if cx == nil {
+		t.Fatal("active gallery missing")
+	}
+
+	pre, err := cx.InboxCount()
+	if err != nil {
+		t.Fatalf("InboxCount pre: %v", err)
+	}
+	if pre != 1 {
+		t.Errorf("expected 1 inbox image before toggle, got %d", pre)
+	}
+
+	h := srv.Handler()
+	postReq := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/inbox", id), nil)
+	postReq.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+	postW := httptest.NewRecorder()
+	h.ServeHTTP(postW, postReq)
+
+	if postW.Code != http.StatusOK {
+		t.Errorf("toggle inbox expected 200, got %d\nbody: %s", postW.Code, postW.Body.String())
+	}
+	body := postW.Body.String()
+	if !strings.Contains(body, "inbox-btn") {
+		t.Errorf("toggle inbox response missing inbox-btn, got: %s", body)
+	}
+	if !strings.Contains(body, "Archived") {
+		t.Errorf("toggle inbox response should label the new state Archived, got: %s", body)
+	}
+
+	post, err := cx.InboxCount()
+	if err != nil {
+		t.Fatalf("InboxCount post: %v", err)
+	}
+	if post != 0 {
+		t.Errorf("expected 0 inbox images after toggle, got %d (cache may not have invalidated)", post)
+	}
+}
+
 func TestDeleteImage(t *testing.T) {
 	srv := newTestServer(t)
 	id := insertTestImage(t, srv.db())
@@ -689,6 +924,57 @@ func TestSettingsGeneralPost(t *testing.T) {
 	}
 }
 
+// TestSettingsTagger_RejectsBadName pins the allowlist guard on every
+// per-tagger settings endpoint. A name that escapes [A-Za-z0-9_-]+
+// would otherwise land in cfg.Tagger.Taggers verbatim and persist to
+// TOML, with subsequent runs joining model_path/<name>/model.onnx
+// against a value the lookup can never resolve.
+func TestSettingsTagger_RejectsBadName(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+	csrf := srv.csrfToken("anon")
+	form := "_csrf=" + csrf
+
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{"POST", "/settings/tagger/foo$bar/enable"},
+		{"POST", "/settings/tagger/foo$bar/disable"},
+		{"GET", "/settings/tagger/foo$bar/thresholds"},
+		{"POST", "/settings/tagger/foo$bar/thresholds"},
+		{"POST", "/settings/tagger/foo$bar/thresholds/reset"},
+		{"GET", "/settings/tagger/foo$bar/galleries"},
+		{"POST", "/settings/tagger/foo$bar/galleries"},
+		{"POST", "/settings/tagger/foo$bar/delete"},
+	}
+	for _, tc := range cases {
+		var body string
+		if tc.method == "POST" {
+			body = form
+		}
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(body))
+		if tc.method == "POST" {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("X-CSRF-Token", csrf)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s %s: expected 400 for bad tagger name, got %d", tc.method, tc.path, w.Code)
+		}
+	}
+
+	// The bad name must not have leaked into cfg.Tagger.Taggers via the
+	// enable/disable handlers, which append a new instance when the name
+	// isn't already configured.
+	for _, ti := range srv.cfg.Tagger.Taggers {
+		if ti.Name == "foo$bar" {
+			t.Errorf("rejected tagger name persisted to config: %+v", ti)
+		}
+	}
+}
+
 func TestCSRFTokenValidation(t *testing.T) {
 	srv := newTestServer(t)
 	sess := "test-session-id"
@@ -765,6 +1051,52 @@ func TestPruneMissingImages(t *testing.T) {
 	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images WHERE sha256 = 'prune_test_hash'`).Scan(&count)
 	if count != 0 {
 		t.Error("missing image should have been pruned")
+	}
+}
+
+// TestPruneOrphanedThumbnails_AsJob pins the new shape: the request
+// returns immediately with "Thumbnail prune started.", the actual
+// sweep happens in a goroutine, and the orphan file is gone once the
+// job manager reports done.
+func TestPruneOrphanedThumbnails_AsJob(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+
+	orphan := filepath.Join(cx.ThumbnailsPath, "777777.jpg")
+	if err := os.WriteFile(orphan, []byte("orphan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	body := "_csrf=" + srv.csrfToken("anon")
+	req := httptest.NewRequest("POST", "/settings/maintenance/prune-orphaned-thumbnails", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "started") {
+		t.Errorf("expected immediate 'started' flash, got: %s", w.Body.String())
+	}
+
+	// Wait for the goroutine to finish - 2s ceiling is more than enough
+	// for the in-memory test fixture.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		state := srv.jobs.Get()
+		if state != nil && !state.Running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("prune-thumbs job did not finish within 2s")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Error("orphan thumbnail should have been removed")
 	}
 }
 

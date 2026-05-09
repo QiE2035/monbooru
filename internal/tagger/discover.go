@@ -1,8 +1,10 @@
 package tagger
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/leqwin/monbooru/internal/config"
@@ -19,6 +21,25 @@ const (
 	// that do not yet have a TOML entry with an explicit threshold.
 	DefaultConfidenceThreshold = 0.4
 )
+
+// taggerNameRe enforces the same allowlist gallery names use. The name
+// becomes the folder under paths.model_path and a TOML key, so a
+// permissive value would let the settings handlers persist a row that
+// lookups can never resolve.
+var taggerNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// ValidateTaggerName rejects an empty or non-allowlist name. Mirrors
+// config.ValidateGalleryName so the two operator-supplied identifiers
+// share the same vocabulary.
+func ValidateTaggerName(name string) error {
+	if name == "" {
+		return fmt.Errorf("tagger name must not be empty")
+	}
+	if !taggerNameRe.MatchString(name) {
+		return fmt.Errorf("tagger name %q must match [A-Za-z0-9_-]+", name)
+	}
+	return nil
+}
 
 // TaggerStatus pairs a configured tagger with its runtime availability
 // so the settings UI can show why each row is active or inactive.

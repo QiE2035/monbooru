@@ -1,9 +1,11 @@
 package search
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/searchkw"
+	"github.com/leqwin/monbooru/internal/tags"
 )
 
 // Query holds a parsed query and pagination parameters.
@@ -28,11 +31,80 @@ type Query struct {
 	// SkipCount drops COUNT(*) entirely; result.Total is 0. For callers
 	// like the sidebar that consume Results.IDs but never surface Total.
 	SkipCount bool
+	// CacheKey, when set, ties Execute's match-id list to ExecuteAdjacent's
+	// prev/next lookup: the gallery populates the cache when its page-1
+	// result holds the full match set, and the detail page reads it
+	// instead of refetching. Empty disables both sides.
+	CacheKey string
 }
 
 // Execute runs the query against the DB and returns paginated results.
 func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
+	page := q.Page
+	if page < 1 {
+		page = 1
+	}
+	limit := q.Limit
+	if limit < 1 {
+		limit = 40
+	}
+
+	// Cache fast path: when the gallery's match-id list is already in the
+	// adjacency cache, slice it for the requested page and reread row data
+	// by primary key. Skips driver-leg picking, COUNT, and the sorted data
+	// SELECT entirely. PresetTotal/SkipCount callers (unfiltered visible
+	// path, sidebar) keep their tighter shapes - they don't carry a key in
+	// practice but the guard keeps the contract explicit. Stale membership
+	// is bounded by the cache TTL; row fields are always fresh.
+	if q.CacheKey != "" && !q.SkipCount && q.PresetTotal == nil {
+		if ids, ok := AdjacencyCacheGet(q.CacheKey); ok {
+			return executeFromCachedIDs(database, ids, page, limit)
+		}
+	}
+
 	driverLegs, _ := pickAndDriverTag(database, q.Expr, q.Sort == "random")
+
+	// Push a recent-id bound into each multi-leg INTERSECT subquery for
+	// newest-DESC pages: id is monotonic with ingested_at on the default
+	// ingest path, so the top-(page*limit) rows ordered by ingested_at
+	// DESC live within the most recent (page*limit)*driverIDBoundMargin
+	// visible images. The bound caps each leg's materialisation by
+	// orders of magnitude on a populous tag.
+	//
+	// Gated on intersection density >= 1/driverIDBoundDensityCutoff so a
+	// sparse-AND case (where the top of the result set may not lie in the
+	// recent slice) keeps the unbounded INTERSECT - the slow path was
+	// already fast there. containsMissingFilter excludes shapes whose
+	// match set isn't bounded by the visible (is_missing=0) carrier.
+	// Order=asc is excluded because the bound is the recent end of the
+	// id range; under ASC the user wants the oldest matches, whose ids
+	// sit below the bound and would be filtered out entirely.
+	if len(driverLegs) >= 2 &&
+		(q.Sort == "" || q.Sort == "newest") &&
+		q.Order != "asc" &&
+		!containsMissingFilter(q.Expr) {
+		if total, ok := fastTagTotal(database, q.Expr); ok {
+			if visible, vOk := fastVisibleCount(database); vOk &&
+				total*driverIDBoundDensityCutoff >= visible {
+				targetOffset := (page * limit) * driverIDBoundMargin
+				var bound int64
+				err := database.Read.QueryRow(
+					`SELECT id FROM images INDEXED BY idx_images_ingested_visible
+					 WHERE is_missing = 0
+					 ORDER BY ingested_at DESC, id DESC
+					 LIMIT 1 OFFSET ?`, targetOffset,
+				).Scan(&bound)
+				if err == nil {
+					for i := range driverLegs {
+						driverLegs[i].idBound = bound
+					}
+				}
+				// ErrNoRows: library smaller than offset; full INTERSECT
+				// is already cheap, no bound needed.
+			}
+		}
+	}
+
 	where, args, hasMissingFilter := buildWhereDBDriver(q.Expr, database, driverLegs)
 	where, args = applyAndDriver(where, args, driverLegs)
 
@@ -46,14 +118,6 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 
 	orderClause := buildOrder(q.Sort, q.Order, q.RandomSeed)
 
-	page := q.Page
-	if page < 1 {
-		page = 1
-	}
-	limit := q.Limit
-	if limit < 1 {
-		limit = 40
-	}
 	offset := (page - 1) * limit
 
 	var total int
@@ -99,7 +163,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	dataSQL := fmt.Sprintf(
 		`SELECT i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
 		        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
-		        i.auto_tagged_at, i.source_type, i.origin, i.ingested_at
+		        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.ingested_at
 		 FROM images i%s
 		 WHERE %s
 		 %s
@@ -119,7 +183,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	var images []models.Image
 	for rows.Next() {
 		var img models.Image
-		var isMissing, isFav int
+		var isMissing, isFav, isInbox int
 		var width, height *int
 		var autoTaggedAt *string
 		var ingestedAt string
@@ -127,12 +191,13 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 		if err := rows.Scan(
 			&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
 			&width, &height, &img.FileSize, &isMissing, &isFav,
-			&autoTaggedAt, &img.SourceType, &img.Origin, &ingestedAt,
+			&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &ingestedAt,
 		); err != nil {
 			return nil, err
 		}
 		img.IsMissing = isMissing == 1
 		img.IsFavorited = isFav == 1
+		img.IsInbox = isInbox == 1
 		img.Width = width
 		img.Height = height
 		if autoTaggedAt != nil {
@@ -146,12 +211,161 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 		return nil, err
 	}
 
+	// Seed the cache so subsequent gallery pages and detail prev/next
+	// ride the cached id slice instead of re-running the sorted SELECT.
+	// Above adjacencyCacheMaxIDs the entry would be partial against an
+	// unknown total; skip and let the slow path serve.
+	//
+	// Single-page case (len(images) == total): ids are already in hand,
+	// seed synchronously - free.
+	//
+	// Multi-page case: a separate id-only fan fetches up to the cap.
+	// Run it in the background so page 1 returns at the speed of its
+	// data SELECT alone; page 2 either gets the cache hit when the fan
+	// finishes, or falls through to a fresh Execute. Captured args are
+	// not mutated by the caller after Execute returns; the fan reads
+	// the same WHERE shape against the read pool, which is goroutine-
+	// safe.
+	if q.CacheKey != "" && total > 0 && total <= adjacencyCacheMaxIDs {
+		if len(images) == total {
+			ids := make([]int64, len(images))
+			for i, img := range images {
+				ids[i] = img.ID
+			}
+			AdjacencyCacheSet(q.CacheKey, ids)
+		} else if AdjacencyCacheTryAcquireFan(q.CacheKey) {
+			cacheKey, hint, w, fanArgs, order, t := q.CacheKey, indexHint, where, args, orderClause, total
+			go func() {
+				defer AdjacencyCacheReleaseFan(cacheKey)
+				ids := fetchSortedMatchIDs(database, hint, w, fanArgs, order, t)
+				if len(ids) > 0 {
+					AdjacencyCacheSet(cacheKey, ids)
+				}
+			}()
+		}
+	}
+
 	return &models.SearchResult{
 		Page:    page,
 		Limit:   limit,
 		Total:   total,
 		Results: images,
 	}, nil
+}
+
+// executeFromCachedIDs builds a SearchResult from a cached, sorted
+// match-id list: slice for the requested page, fan a single primary-key
+// IN-fetch, and re-emit in the cached order. Image rows are always read
+// fresh so favorite, tag, and missing-flag mutations surface
+// immediately on the next render. Rows returned out of order by the
+// planner are reordered in Go to match the cache's sort.
+func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*models.SearchResult, error) {
+	total := len(ids)
+	offset := (page - 1) * limit
+	if offset >= total {
+		return &models.SearchResult{Page: page, Limit: limit, Total: total}, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	pageIDs := ids[offset:end]
+
+	placeholders := strings.Repeat("?,", len(pageIDs)-1) + "?"
+	args := make([]any, len(pageIDs))
+	for i, id := range pageIDs {
+		args[i] = id
+	}
+	sql := fmt.Sprintf(
+		`SELECT i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
+		        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
+		        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.ingested_at
+		 FROM images i WHERE i.id IN (%s)`, placeholders,
+	)
+	rows, err := database.Read.Query(sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("cached id fetch: %w", err)
+	}
+	defer rows.Close()
+
+	byID := make(map[int64]models.Image, len(pageIDs))
+	for rows.Next() {
+		var img models.Image
+		var isMissing, isFav, isInbox int
+		var width, height *int
+		var autoTaggedAt *string
+		var ingestedAt string
+		if err := rows.Scan(
+			&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
+			&width, &height, &img.FileSize, &isMissing, &isFav,
+			&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &ingestedAt,
+		); err != nil {
+			return nil, err
+		}
+		img.IsMissing = isMissing == 1
+		img.IsFavorited = isFav == 1
+		img.IsInbox = isInbox == 1
+		img.Width = width
+		img.Height = height
+		if autoTaggedAt != nil {
+			t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
+			img.AutoTaggedAt = &t
+		}
+		img.IngestedAt, _ = time.Parse(time.RFC3339, ingestedAt)
+		byID[img.ID] = img
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]models.Image, 0, len(pageIDs))
+	for _, id := range pageIDs {
+		if img, ok := byID[id]; ok {
+			out = append(out, img)
+		}
+	}
+	return &models.SearchResult{
+		Page:    page,
+		Limit:   limit,
+		Total:   total,
+		Results: out,
+	}, nil
+}
+
+// fetchSortedMatchIDs runs the same WHERE/ORDER BY shape as Execute's
+// data SELECT but selects only ids and stops at adjacencyCacheMaxIDs.
+// Used by Execute to seed the cache when total exceeds a single page,
+// so subsequent page-flips and detail prev/next ride the cache. Errors
+// degrade to a nil slice; the caller skips populate and the next render
+// retries.
+func fetchSortedMatchIDs(database *db.DB, indexHint, where string, args []any, orderClause string, total int) []int64 {
+	n := total
+	if n > adjacencyCacheMaxIDs {
+		n = adjacencyCacheMaxIDs
+	}
+	sql := fmt.Sprintf(
+		`SELECT i.id FROM images i%s WHERE %s %s LIMIT ?`,
+		indexHint, where, orderClause,
+	)
+	qargs := make([]any, len(args), len(args)+1)
+	copy(qargs, args)
+	qargs = append(qargs, n)
+	rows, err := database.Read.Query(sql, qargs...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, n)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil
+	}
+	return ids
 }
 
 // isPureTagExpr reports whether expr is composed only of tag-style
@@ -182,6 +396,23 @@ func isPureTagExpr(expr Expr) bool {
 		// image_tags EXISTS too; everything else (fav, source, folder,
 		// width, ...) has its own column index.
 		return !searchkw.IsKeyword(e.Key)
+	}
+	return false
+}
+
+// containsMissingFilter reports whether expr carries a `missing:` filter
+// anywhere in the AST. Used to gate optimisations whose density
+// estimates assume `is_missing = 0` (the implicit visibility filter).
+func containsMissingFilter(expr Expr) bool {
+	switch e := expr.(type) {
+	case AndExpr:
+		return containsMissingFilter(e.Left) || containsMissingFilter(e.Right)
+	case OrExpr:
+		return containsMissingFilter(e.Left) || containsMissingFilter(e.Right)
+	case NotExpr:
+		return containsMissingFilter(e.Expr)
+	case FilterExpr:
+		return e.Key == "missing"
 	}
 	return false
 }
@@ -250,6 +481,52 @@ func fastTagTotal(database *db.DB, expr Expr) (int, bool) {
 	return 0, false
 }
 
+// adjacencyTotalEstimate returns an upper-bound row count for expr
+// without applying the fastApproxThreshold gate that fastCountAnd /
+// fastCountOr use to fall back to the slow exact COUNT. ExecuteAdjacent's
+// bucket decision needs to know whether the candidate set is small
+// regardless of size: the gate inside fastTagTotal hides exactly the
+// case the bucket harms (sparse intersections that fit in a fast
+// unbounded cursor but get capped to 0-1 matches per id-bucket).
+//
+// AND/OR are walked here so the recursion never crosses the gated
+// fastCountAnd / fastCountOr; leaves and NotExpr delegate to
+// fastTagTotal, which carries its own leaf-level gates - those handle
+// shapes (multi-canonical wildcard sum, cat: sum) where a loose bound
+// is still preferable to firing the bucket on a borderline case.
+func adjacencyTotalEstimate(database *db.DB, expr Expr) (int, bool) {
+	switch e := expr.(type) {
+	case AndExpr:
+		l, lok := adjacencyTotalEstimate(database, e.Left)
+		if !lok {
+			return 0, false
+		}
+		r, rok := adjacencyTotalEstimate(database, e.Right)
+		if !rok {
+			return 0, false
+		}
+		if l < r {
+			return l, true
+		}
+		return r, true
+	case OrExpr:
+		l, lok := adjacencyTotalEstimate(database, e.Left)
+		if !lok {
+			return 0, false
+		}
+		r, rok := adjacencyTotalEstimate(database, e.Right)
+		if !rok {
+			return 0, false
+		}
+		sum := l + r
+		if v, vok := fastVisibleCount(database); vok && sum > v {
+			sum = v
+		}
+		return sum, true
+	}
+	return fastTagTotal(database, expr)
+}
+
 // fastCountCeiling matches the cookie-ceiling AST shape: a chain of
 // NotExpr{FilterExpr{Key:"rating"}} ANDed together, optionally wrapped
 // as AndExpr{userExpr, chain} when the cookie is combined with a user
@@ -303,16 +580,18 @@ func fastCountCeiling(database *db.DB, expr Expr) (int, bool) {
 	if user == nil {
 		return chainBound, true
 	}
-	// When fastTagTotal can't bound the user expression, the chain bound
-	// alone is still a valid upper bound on count(userExpr AND chain).
-	userCount, ok := fastTagTotal(database, user)
-	if !ok {
-		return chainBound, true
-	}
-	if userCount < chainBound {
-		return userCount, true
-	}
-	return chainBound, true
+	// Both userCount and chainBound are valid upper bounds on
+	// count(userExpr AND chain), so min(userCount, chainBound) is too -
+	// but the bound has no relationship to the actual intersection
+	// density. A general-category tag carried mostly by NSFW images
+	// under a SFW ceiling, or a SFW visible count dwarfed by a popular
+	// tag, both produce an order-of-magnitude overshoot that
+	// pagination then advertises as phantom trailing pages. Defer to
+	// the slow exact COUNT; cost is bounded by the user's match
+	// cardinality via idx_image_tags_tag_image, paid once per cache
+	// miss, and the resulting total seeds the adjacency cache so
+	// subsequent renders ride the fast path with no SQL.
+	return 0, false
 }
 
 // extractCeilingShape splits an AST into a userExpr remainder and the
@@ -385,6 +664,22 @@ const fastApproxThreshold = 50000
 // the slow path stays as is.
 const andDriverThreshold = 50000
 
+// driverIDBoundMargin is the safety multiplier applied when picking the
+// recent-id bound for multi-leg INTERSECT under newest sort. The bound
+// covers the (page*limit)*driverIDBoundMargin most recent visible
+// images so even with NTP-scale clock skew or a sparse intersection
+// inside the recent slice the page is fully populated. 100x absorbs
+// drift up to several hours of ingestion volume on typical libraries.
+const driverIDBoundMargin = 100
+
+// driverIDBoundDensityCutoff gates the recent-id bound on the AND
+// intersection being dense enough that the bound has plenty of
+// matches. Bound applies when total*cutoff >= visibleCount, i.e.
+// density >= 1/cutoff. The bound's safety margin produces (page*limit)*
+// driverIDBoundMargin candidate rows; with density >= 1/20 = 5% that
+// floor stays well above the page size.
+const driverIDBoundDensityCutoff = 20
+
 // collectAndedTags returns the positive TagExpr leaves (literal or
 // wildcard) reachable from the root through AndExpr nodes only. Leaves
 // under OrExpr, NotExpr, or any FilterExpr are skipped because dropping
@@ -410,10 +705,14 @@ func collectAndedTags(expr Expr) []TagExpr {
 
 // andDriverLeg pairs an ANDed TagExpr leaf with the canonical tag IDs
 // the driver materialises for it. Multiple legs feed an INTERSECT chain
-// in applyAndDriver; a single leg uses the simpler IN form.
+// in applyAndDriver; a single leg uses the simpler IN form. idBound,
+// when > 0, is pushed into each leg's IN subquery as
+// `AND image_id >= ?` so the materialisation is capped to the recent
+// id range covering the requested page.
 type andDriverLeg struct {
-	leaf TagExpr
-	ids  []int64
+	leaf    TagExpr
+	ids     []int64
+	idBound int64
 }
 
 // pickAndDriverTag chooses one or more ANDed TagExpr leaves to feed the
@@ -524,6 +823,17 @@ func pickAndDriverTag(database *db.DB, expr Expr, allowSingleLiteral bool) ([]an
 	if len(legs) < 2 {
 		return nil, false
 	}
+	// Cap at the two least-popular leaves. Each additional materialised
+	// leg adds ~smallestUsage rows to the read pool's working set; under
+	// c>1 contention every thread pays that cost in parallel and the
+	// extra narrowing past two legs no longer offsets it. Leaves dropped
+	// here keep their correlated EXISTS via buildWhereDBDriver, which
+	// runs against the candidate set the INTERSECT already bounded.
+	sort.Slice(legs, func(i, j int) bool { return legs[i].usage < legs[j].usage })
+	const maxIntersectLegs = 2
+	if len(legs) > maxIntersectLegs {
+		legs = legs[:maxIntersectLegs]
+	}
 	out := make([]andDriverLeg, len(legs))
 	for i, l := range legs {
 		out[i] = andDriverLeg{leaf: l.leaf, ids: l.ids}
@@ -594,6 +904,13 @@ func resolveDriverCanonicals(database *db.DB, leaf TagExpr) ([]int64, int64, boo
 // IN (...))`. Multiple legs: each leg's image_id stream is INTERSECTed
 // so the bound is the matching intersection of every materialised
 // leaf - the popular-AND shape's path off the slow per-row EXISTS scan.
+//
+// idBound, when set per-leg, appends `AND image_id >= ?` to that leg's
+// subquery so the materialisation is capped to the recent id range. The
+// caller computes the bound from the partial idx_images_ingested_visible
+// for newest-sort pages where id is monotonic with ingested_at; the
+// bounded INTERSECT keeps just the recent slice that the LIMIT page is
+// drawn from.
 func applyAndDriver(where string, args []any, legs []andDriverLeg) (string, []any) {
 	if len(legs) == 0 {
 		return where, args
@@ -606,6 +923,10 @@ func applyAndDriver(where string, args []any, legs []andDriverLeg) (string, []an
 		parts[i] = "SELECT image_id FROM image_tags WHERE tag_id IN (" + placeholders + ")"
 		for _, id := range leg.ids {
 			driverArgs = append(driverArgs, id)
+		}
+		if leg.idBound > 0 {
+			parts[i] += " AND image_id >= ?"
+			driverArgs = append(driverArgs, leg.idBound)
 		}
 	}
 	var driverWhere string
@@ -621,10 +942,13 @@ func applyAndDriver(where string, args []any, legs []andDriverLeg) (string, []an
 }
 
 // randomAdjacencyBucketSize caps the id range ExecuteAdjacent scans
-// when Sort=="random" carries a tag predicate. The random key has no
-// index, so the cursor's ORDER BY temp-sorts every matching row;
+// when Sort=="random" carries a tag predicate dense enough to make the
+// unbounded temp-sort blow the detail-page budget. The random key has
+// no index, so the cursor's ORDER BY temp-sorts every matching row;
 // bounding the outer scan to a fixed id-range bucket keeps that sort
-// proportional to the bucket. The chain ends at bucket boundaries.
+// proportional to the bucket. The chain ends at bucket boundaries when
+// the gate fires - skipped for candidate sets below fastApproxThreshold
+// where the bucket would only ever hold currentID itself.
 const randomAdjacencyBucketSize = 2000
 
 // andAdjacencyBucketSize caps the id range ExecuteAdjacent scans for
@@ -636,7 +960,9 @@ const randomAdjacencyBucketSize = 2000
 // the worst case to a fixed window even when the intersection is
 // sparse. Sized larger than randomAdjacencyBucketSize because newest/
 // filesize are the common navigation sorts; users expect prev/next to
-// reach further than they do under random.
+// reach further than they do under random. Same fastApproxThreshold
+// skip applies as random sort: candidate sets below it ride the
+// AND-driver's single-leg path unbounded.
 const andAdjacencyBucketSize = 10000
 
 func fastCountTag(database *db.DB, t TagExpr) (int, bool) {
@@ -814,14 +1140,17 @@ func fastCountFilter(database *db.DB, e FilterExpr) (int, bool) {
 	if e.Key == "tagged" || e.Key == "autotagged" {
 		return fastCountTagged(database, e)
 	}
-	if e.Key == "source" {
-		return fastCountSource(database, e)
+	if e.Key == "inbox" {
+		return fastCountInbox(database, e)
+	}
+	if e.Key == "ai" {
+		return fastCountAI(database, e)
 	}
 	if e.Key == "folder" {
 		return fastCountFolder(database, e)
 	}
 	if searchkw.IsKeyword(e.Key) {
-		// Other filter keywords (fav, source, folder, ...) have their
+		// Other filter keywords (fav, ai, source, folder, ...) have their
 		// own selective indexes that the planner picks; no fast path
 		// shortcut is needed.
 		return 0, false
@@ -940,28 +1269,29 @@ func fastCountFolder(database *db.DB, e FilterExpr) (int, bool) {
 	return n, true
 }
 
-// fastCountSource answers `source:VAL` counts via two index-pinned
-// queries: list distinct source_type values (a tiny set on real data;
+// fastCountAI answers `ai:VAL` counts via two index-pinned queries:
+// list distinct source_type values (a tiny set on real data;
 // models.SourceType* names four of them), filter that set against the
 // same four LIKE patterns buildFilterExpr uses, then COUNT(*) WHERE
-// source_type IN (matching) hitting idx_images_source. Same matches as
-// the slow path; the difference is the slow path's count phase walks
-// visible images evaluating an OR-of-LIKE that no index pins, while
-// this helper rides idx_images_source for both phases.
+// source_type IN (matching) hitting idx_images_source_type. Same
+// matches as the slow path; the difference is the slow path's count
+// phase walks visible images evaluating an OR-of-LIKE that no index
+// pins, while this helper rides idx_images_source_type for both
+// phases.
 //
-// The bare-equality and the bare-source aliases (`sd`, `ai`, `none`)
+// The bare-equality and the bare-ai aliases (`sd`, `any`, `none`)
 // keep the slow path: the bare ones are fast already (single equality
-// pinning idx_images_source), and `ai` is a fixed three-element OR
-// the planner handles directly. Empty value is the no-op slow path.
-func fastCountSource(database *db.DB, e FilterExpr) (int, bool) {
-	if e.Key != "source" || e.Val == "" {
+// pinning idx_images_source_type), and `any` is a fixed three-element
+// OR the planner handles directly. Empty value is the no-op slow path.
+func fastCountAI(database *db.DB, e FilterExpr) (int, bool) {
+	if e.Key != "ai" || e.Val == "" {
 		return 0, false
 	}
 	val := e.Val
 	if val == "sd" {
 		val = "a1111"
 	}
-	if val == "ai" || val == "none" {
+	if val == "any" || val == "none" {
 		return 0, false
 	}
 	if !strings.Contains(val, ",") {
@@ -1046,6 +1376,33 @@ func fastCountTagged(database *db.DB, e FilterExpr) (int, bool) {
 	return fastVisibleCount(database)
 }
 
+// fastCountInbox returns the visible count for inbox:true / inbox:false
+// off idx_images_inbox_visible. Exact at every fixture size: the partial
+// index covers the (is_missing = 0, is_inbox = ?) seek directly with no
+// row fetch, so the slow path's full visible scan is the wrong tradeoff
+// even on small libraries.
+func fastCountInbox(database *db.DB, e FilterExpr) (int, bool) {
+	if e.Key != "inbox" {
+		return 0, false
+	}
+	var target int
+	switch e.Val {
+	case "true":
+		target = 1
+	case "false":
+		target = 0
+	default:
+		return 0, false
+	}
+	var n int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM images WHERE is_missing = 0 AND is_inbox = ?`, target,
+	).Scan(&n); err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 // fastCountGenerated answers generated:HASH counts from the metadata
 // side. The partial idx_sd_metadata_genhash / idx_comfyui_metadata_genhash
 // seek directly on the hash, replacing the slow path's per-row EXISTS
@@ -1086,10 +1443,20 @@ func fastVisibleCount(database *db.DB) (int, bool) {
 // ExecuteAdjacent returns the image IDs immediately before and after
 // currentID under q's sort and filter. Uses cursor-style LIMIT 1
 // queries so cost is O(log n) via the ingested_at / file_size indexes,
-// not O(matches). Random sort has no key index; for tag-predicate
-// queries the scan is bounded to a fixed id-range bucket containing
-// currentID (see randomAdjacencyBucketSize).
+// not O(matches). Random sort has no key index; for popular tag-
+// predicate queries the scan is bounded to a fixed id-range bucket
+// containing currentID (see randomAdjacencyBucketSize). Sparse
+// candidate sets skip the gate so prev/next reaches every match
+// instead of dying at a bucket edge holding only currentID.
 func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64, error) {
+	// Cache fast path: when the gallery handed us the sorted match list,
+	// prev/next is a slice scan and no SQL fires. Empty key or cache miss
+	// falls through to the cursor logic below.
+	if ids, ok := AdjacencyCacheGet(q.CacheKey); ok {
+		prev, next := findInAdjacencyList(ids, currentID)
+		return prev, next, nil
+	}
+
 	var ingestedAt string
 	var fileSize int64
 	if err := database.Read.QueryRow(
@@ -1098,9 +1465,68 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		return nil, nil, nil
 	}
 
-	driverLegs, _ := pickAndDriverTag(database, q.Expr, q.Sort == "random")
+	// Decide the bucket gate ahead of the AND-driver pick so the driver
+	// doesn't materialise legs the bucket would render redundant. With
+	// the bucket bounding the candidate range to a fixed window
+	// (2k rows under random, 10k under newest/filesize), a per-row
+	// correlated EXISTS finishes in tens of ms; an INTERSECT of two
+	// popular leaves materialises hundreds of thousands of image_tags
+	// rows ahead of the BETWEEN bound and dwarfs the bucket's cap.
+	//
+	// Skip the gate when the candidate set is provably small: a sparse
+	// multi-tag intersection scatters its matches across id-space at
+	// densities far below one per bucket, so prev/next would terminate
+	// on every click. Below fastApproxThreshold the AND-driver's
+	// single-leg path keeps the outer cursor scan in budget without
+	// bucketing - same threshold the rest of the count helpers gate on.
+	smallCandidate := false
+	if total, ok := adjacencyTotalEstimate(database, q.Expr); ok && total < fastApproxThreshold {
+		smallCandidate = true
+	}
+
+	bucketLo, bucketHi := int64(0), int64(0)
+	bucketed := false
+	switch {
+	case smallCandidate:
+	case q.Sort == "random" && containsTagPredicate(q.Expr):
+		bucketLo = (currentID / randomAdjacencyBucketSize) * randomAdjacencyBucketSize
+		bucketHi = bucketLo + randomAdjacencyBucketSize - 1
+		bucketed = true
+	case (q.Sort == "" || q.Sort == "newest" || q.Sort == "filesize") &&
+		len(collectAndedTags(q.Expr)) >= 3:
+		// Sparse multi-AND adjacency: bound the cursor's outer walk to a
+		// fixed id window so a sparse intersection late in the result
+		// set can't force a multi-second scan. prev/next stops at the
+		// bucket boundary when the bound has neighbours to give; the
+		// smallCandidate gate above lifts the cap when matches are
+		// scattered too thin to bucket usefully.
+		bucketLo = (currentID / andAdjacencyBucketSize) * andAdjacencyBucketSize
+		bucketHi = bucketLo + andAdjacencyBucketSize - 1
+		bucketed = true
+	}
+
+	var driverLegs []andDriverLeg
+	if !bucketed {
+		driverLegs, _ = pickAndDriverTag(database, q.Expr, q.Sort == "random")
+	}
 	where, args, hasMissingFilter := buildWhereDBDriver(q.Expr, database, driverLegs)
 	where, args = applyAndDriver(where, args, driverLegs)
+
+	// Pure folder predicate: substitute the cursor's WHERE with a
+	// seekable equality-or-range form so SQLite hits
+	// idx_images_folder_visible instead of scanning
+	// idx_images_ingested_visible past unmatched rows under the OR/LIKE
+	// form. Splits into the folder itself plus the half-open subfolder
+	// range [val+"/", val+"0"); '0' is the codepoint immediately after
+	// '/'. A bare [val, val+"0") would leak siblings sharing the prefix
+	// followed by an ASCII char below '/' - "anime-2024" and "anime "
+	// both sit between "anime" and "anime0" lexicographically. Mirrors
+	// fastCountFolder's split.
+	if f, ok := q.Expr.(FilterExpr); ok && f.Key == "folder" && f.Val != "" {
+		where = "(i.folder_path = ? OR (i.folder_path >= ? AND i.folder_path < ?))"
+		args = []any{f.Val, f.Val + "/", f.Val + "0"}
+	}
+
 	if !hasMissingFilter {
 		if where == "" {
 			where = "i.is_missing = 0"
@@ -1109,19 +1535,7 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		}
 	}
 
-	if q.Sort == "random" && containsTagPredicate(q.Expr) {
-		bucketLo := (currentID / randomAdjacencyBucketSize) * randomAdjacencyBucketSize
-		bucketHi := bucketLo + randomAdjacencyBucketSize - 1
-		where = where + " AND i.id BETWEEN ? AND ?"
-		args = append(args, bucketLo, bucketHi)
-	} else if (q.Sort == "" || q.Sort == "newest" || q.Sort == "filesize") &&
-		len(collectAndedTags(q.Expr)) >= 3 {
-		// Sparse multi-AND adjacency: bound the cursor's outer walk to a
-		// fixed id window so a sparse intersection late in the result
-		// set can't force a multi-second scan. prev/next stops at the
-		// bucket boundary; same UX trade as the random-sort gate above.
-		bucketLo := (currentID / andAdjacencyBucketSize) * andAdjacencyBucketSize
-		bucketHi := bucketLo + andAdjacencyBucketSize - 1
+	if bucketed {
 		where = where + " AND i.id BETWEEN ? AND ?"
 		args = append(args, bucketLo, bucketHi)
 	}
@@ -1191,6 +1605,115 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		return &id
 	}
 	return lookup(prevCmp, prevSort), lookup(nextCmp, nextSort), nil
+}
+
+// RankInQuery returns the 0-indexed position currentID would occupy in
+// q's sorted result set, computed as a single COUNT against the same
+// WHERE shape Execute uses. Callers turn the rank into a 1-indexed
+// page via floor(rank / pageSize) + 1. Use it as a cold-path fallback
+// for the detail handler's back-link page when AdjacencyCacheGet
+// misses; warm calls should hit the cache and skip this helper. Cost
+// scales with the WHERE's match cardinality, so spawn it in parallel
+// with other detail reads and pass a deadline-bound context - on a
+// large fixture a popular-tag back_q can otherwise pin the COUNT for
+// seconds while the user waits on the page.
+//
+// Returns (-1, nil) when the helper can't usefully answer (random
+// sort with seed=0, ctx cancelled). The caller degrades to whatever
+// back_page came in on the URL.
+func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64) (int, error) {
+	// Skip when the result set won't fit the adjacency cache anyway. A
+	// popular-tag back_q is the worst case here - the COUNT walks the
+	// EXISTS chain against every newer-than-currentID visible row, paid
+	// in seconds on a 1M-image fixture. The cache wouldn't have helped
+	// either (Execute would have refused to seed past the cap), so the
+	// rank is structurally unrecoverable; the handler degrades to the
+	// URL's back_page rather than blocking the page render.
+	if total, ok := fastTagTotal(database, q.Expr); ok && total > adjacencyCacheMaxIDs {
+		return -1, nil
+	}
+
+	var ingestedAt string
+	var fileSize int64
+	if err := database.Read.QueryRowContext(ctx,
+		`SELECT ingested_at, file_size FROM images WHERE id = ?`, currentID,
+	).Scan(&ingestedAt, &fileSize); err != nil {
+		return -1, err
+	}
+
+	driverLegs, _ := pickAndDriverTag(database, q.Expr, q.Sort == "random")
+	where, args, hasMissingFilter := buildWhereDBDriver(q.Expr, database, driverLegs)
+	where, args = applyAndDriver(where, args, driverLegs)
+
+	// Pure folder predicate gets the same seekable shape Execute and
+	// ExecuteAdjacent use so the planner hits idx_images_folder_visible.
+	if f, ok := q.Expr.(FilterExpr); ok && f.Key == "folder" && f.Val != "" {
+		where = "(i.folder_path = ? OR (i.folder_path >= ? AND i.folder_path < ?))"
+		args = []any{f.Val, f.Val + "/", f.Val + "0"}
+	}
+
+	if !hasMissingFilter {
+		if where == "" {
+			where = "i.is_missing = 0"
+		} else {
+			where = where + " AND i.is_missing = 0"
+		}
+	}
+
+	var keyCol string
+	var keyVal any
+	switch q.Sort {
+	case "random":
+		if q.RandomSeed == 0 {
+			return -1, nil
+		}
+		// SAFETY: q.RandomSeed is generated server-side via crypto/rand
+		// and never sourced from user input. %d only produces digits, so
+		// the literal interpolation is safe from SQL injection.
+		keyCol = fmt.Sprintf("((i.id * %d) & 2147483647)", q.RandomSeed)
+		keyVal = (currentID * q.RandomSeed) & 2147483647
+	case "filesize":
+		keyCol = "i.file_size"
+		keyVal = fileSize
+	default: // "newest"
+		keyCol = "i.ingested_at"
+		keyVal = ingestedAt
+	}
+
+	// Match ExecuteAdjacent's prev-direction comparison: under DESC
+	// order the rows that come before currentID in the result are the
+	// ones with a larger (key, id); under ASC / random they're the
+	// ones with a smaller (key, id).
+	var beforeCmp string
+	if q.Order == "asc" || q.Sort == "random" {
+		beforeCmp = fmt.Sprintf("(%s, i.id) < (?, ?)", keyCol)
+	} else {
+		beforeCmp = fmt.Sprintf("(%s, i.id) > (?, ?)", keyCol)
+	}
+
+	indexHint := ""
+	if !hasMissingFilter && (q.Expr == nil || isPureTagExpr(q.Expr)) {
+		switch q.Sort {
+		case "filesize":
+			indexHint = " INDEXED BY idx_images_filesize_visible"
+		case "", "newest":
+			indexHint = " INDEXED BY idx_images_ingested_visible"
+		}
+	}
+
+	sql := fmt.Sprintf(
+		"SELECT COUNT(*) FROM images i%s WHERE %s AND %s",
+		indexHint, where, beforeCmp,
+	)
+	qargs := make([]any, 0, len(args)+2)
+	qargs = append(qargs, args...)
+	qargs = append(qargs, keyVal, currentID)
+
+	var rank int
+	if err := database.Read.QueryRowContext(ctx, sql, qargs...).Scan(&rank); err != nil {
+		return -1, err
+	}
+	return rank, nil
 }
 
 // DeleteTarget is the minimum bulk-delete needs from a row.
@@ -1318,8 +1841,11 @@ const suggestCandidateCap = 25
 // suggestContextCap bounds the materialised context-image set. The combo
 // count for hot context tags becomes a lower bound past the cap, but
 // the relative ordering of suggestions is preserved because tied
-// candidates fall through to global usage_count for tie-breaking.
-const suggestContextCap = 5000
+// candidates fall through to global usage_count for tie-breaking. 1000
+// is the working point: under c=5 the per-worker join through
+// image_tags x context fits the page cache; bumping to 5000 amplifies
+// the autocomplete latency 3.5x without changing the visible top 10.
+const suggestContextCap = 1000
 
 // SuggestTagsWithFilter returns up to limit tags matching prefix that
 // also co-occur with at least one image matching expr. UsageCount on
@@ -1330,7 +1856,7 @@ func SuggestTagsWithFilter(database *db.DB, expr Expr, prefix, categoryName stri
 	// No preceding context: the combination count collapses to the tag's
 	// global usage count, so skip the image_tags ⋈ images join entirely.
 	if expr == nil {
-		return suggestByUsage(database, prefix, categoryName, limit)
+		return tags.SuggestUsageRanked(database, prefix, categoryName, true, limit)
 	}
 
 	where, args, hasMissingFilter := buildWhereDB(expr, database)
@@ -1432,73 +1958,6 @@ func SuggestTagsWithFilter(database *db.DB, expr Expr, prefix, categoryName stri
 	}
 	if len(out) < limit {
 		out, err = run(substrPat, out, limit-len(out), prefixPat)
-		if err != nil {
-			return out, err
-		}
-	}
-	return out, nil
-}
-
-// suggestByUsage is the no-context fast path of SuggestTagsWithFilter:
-// same two-pass prefix→substring shape, but the per-tag count comes
-// from tags.usage_count instead of an image_tags ⋈ images join.
-func suggestByUsage(database *db.DB, prefix, categoryName string, limit int) ([]models.Tag, error) {
-	baseSQL := `SELECT t.id, t.name, tc.name, tc.color, t.usage_count
-	            FROM tags t
-	            JOIN tag_categories tc ON tc.id = t.category_id
-	            WHERE t.is_alias = 0
-	              AND t.usage_count > 0
-	              AND t.name LIKE ?
-	              %s
-	            ORDER BY t.usage_count DESC, t.name ASC
-	            LIMIT ?`
-
-	catClause := ""
-	var catArgs []any
-	if categoryName != "" {
-		catClause = "AND tc.name = ?"
-		catArgs = []any{categoryName}
-	}
-
-	run := func(pat string, prior []models.Tag, remaining int, nameNotLike string) ([]models.Tag, error) {
-		extra := catClause
-		qargs := make([]any, 0, 2+len(catArgs))
-		qargs = append(qargs, pat)
-		qargs = append(qargs, catArgs...)
-		if nameNotLike != "" {
-			extra = extra + " AND t.name NOT LIKE ?"
-			qargs = append(qargs, nameNotLike)
-		}
-		qargs = append(qargs, remaining)
-		rows, err := database.Read.Query(fmt.Sprintf(baseSQL, extra), qargs...)
-		if err != nil {
-			return prior, err
-		}
-		defer rows.Close()
-		seen := map[int64]bool{}
-		for _, t := range prior {
-			seen[t.ID] = true
-		}
-		for rows.Next() {
-			var t models.Tag
-			if err := rows.Scan(&t.ID, &t.Name, &t.CategoryName, &t.CategoryColor, &t.UsageCount); err != nil {
-				return prior, err
-			}
-			if seen[t.ID] {
-				continue
-			}
-			prior = append(prior, t)
-			seen[t.ID] = true
-		}
-		return prior, rows.Err()
-	}
-
-	out, err := run(prefix+"%", nil, limit, "")
-	if err != nil {
-		return nil, err
-	}
-	if len(out) < limit {
-		out, err = run("%"+prefix+"%", out, limit-len(out), prefix+"%")
 		if err != nil {
 			return out, err
 		}
@@ -1773,18 +2232,33 @@ func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
 		}
 		return "i.is_favorited = 0"
 
-	case "source":
+	case "inbox":
+		if e.Val == "true" {
+			return "i.is_inbox = 1"
+		}
+		return "i.is_inbox = 0"
+
+	case "ai":
 		// Accept comma-separated source_type and the legacy "sd" alias.
 		val := e.Val
 		if val == "sd" {
 			val = "a1111"
 		}
-		// "ai" matches any image carrying a1111 and/or comfyui metadata.
-		if val == "ai" {
+		// "any" matches any image carrying a1111 and/or comfyui metadata.
+		if val == "any" {
 			return "(i.source_type = 'a1111' OR i.source_type = 'comfyui' OR i.source_type = 'a1111,comfyui')"
 		}
 		b.args = append(b.args, val, "%,"+val, val+",%", "%,"+val+",%")
 		return "(i.source_type = ? OR i.source_type LIKE ? OR i.source_type LIKE ? OR i.source_type LIKE ?)"
+
+	case "source":
+		// Exact-match against the operator-edited images.source label.
+		// Empty value matches images that carry no source - common for
+		// freshly-ingested files - so the user can triage them with
+		// `source:""`. The bare token form `source:` (no value) is also
+		// useful as the empty-string predicate.
+		b.args = append(b.args, e.Val)
+		return "i.source = ?"
 
 	case "cat":
 		b.args = append(b.args, e.Val)

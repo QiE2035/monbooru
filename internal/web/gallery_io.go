@@ -88,9 +88,12 @@ type imageRow struct {
 	FileSize      int64          `json:"file_size"`
 	IsMissing     int            `json:"is_missing"`
 	IsFavorited   int            `json:"is_favorited"`
+	IsInbox       int            `json:"is_inbox"`
 	AutoTaggedAt  sql.NullString `json:"auto_tagged_at"`
 	SourceType    string         `json:"source_type"`
 	Origin        string         `json:"origin"`
+	Source        string         `json:"source"`
+	URL           string         `json:"url"`
 	IngestedAt    string         `json:"ingested_at"`
 }
 
@@ -221,13 +224,13 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 	}
 	if err := streamRows(bw, "images", cx.DB,
 		`SELECT id, sha256, canonical_path, folder_path, file_type, width, height,
-		        file_size, is_missing, is_favorited, auto_tagged_at, source_type, origin, ingested_at
+		        file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, ingested_at
 		 FROM images ORDER BY id`,
 		func(rows *sql.Rows) (any, error) {
 			var r imageRow
 			err := rows.Scan(&r.ID, &r.SHA256, &r.CanonicalPath, &r.FolderPath, &r.FileType,
-				&r.Width, &r.Height, &r.FileSize, &r.IsMissing, &r.IsFavorited,
-				&r.AutoTaggedAt, &r.SourceType, &r.Origin, &r.IngestedAt)
+				&r.Width, &r.Height, &r.FileSize, &r.IsMissing, &r.IsFavorited, &r.IsInbox,
+				&r.AutoTaggedAt, &r.SourceType, &r.Origin, &r.Source, &r.URL, &r.IngestedAt)
 			return r, err
 		}); err != nil {
 		return err
@@ -976,10 +979,10 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		}
 		if _, err := tx.Exec(
 			`INSERT INTO images (id, sha256, canonical_path, folder_path, file_type, width, height,
-			                    file_size, is_missing, is_favorited, auto_tagged_at, source_type, origin, ingested_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                    file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, ingested_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.SHA256, r.CanonicalPath, r.FolderPath, r.FileType, width, height,
-			r.FileSize, r.IsMissing, r.IsFavorited, auto, r.SourceType, r.Origin, r.IngestedAt,
+			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, auto, r.SourceType, r.Origin, r.Source, r.URL, r.IngestedAt,
 		); err != nil {
 			return fmt.Errorf("insert image %d: %w", r.ID, err)
 		}

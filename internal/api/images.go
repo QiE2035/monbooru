@@ -29,10 +29,13 @@ type imageResponse struct {
 	Height        *int           `json:"height"`
 	FileSize      int64          `json:"file_size"`
 	IsFavorited   bool           `json:"is_favorited"`
+	IsInbox       bool           `json:"is_inbox"`
 	IsMissing     bool           `json:"is_missing"`
 	AutoTaggedAt  *time.Time     `json:"auto_tagged_at"`
 	SourceType    string         `json:"source_type"`
 	Origin        string         `json:"origin"`
+	Source        string         `json:"source"`
+	URL           string         `json:"url"`
 	IngestedAt    time.Time      `json:"ingested_at"`
 	ThumbnailURL  string         `json:"thumbnail_url"`
 	Tags          []imageTagJSON `json:"tags"`
@@ -50,21 +53,22 @@ type imageTagJSON struct {
 // JSON response struct.
 func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, error) {
 	var img models.Image
-	var isMissing, isFavorited int
+	var isMissing, isFavorited, isInbox int
 	var autoTaggedAt *string
 	var ingestedAt string
 
 	err := g.DB.Read.QueryRow(`
 		SELECT id, sha256, canonical_path, file_type, width, height, file_size,
-		       is_missing, is_favorited, auto_tagged_at, source_type, origin, ingested_at
+		       is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, ingested_at
 		FROM images WHERE id = ?`, imageID,
 	).Scan(&img.ID, &img.SHA256, &img.CanonicalPath, &img.FileType, &img.Width, &img.Height,
-		&img.FileSize, &isMissing, &isFavorited, &autoTaggedAt, &img.SourceType, &img.Origin, &ingestedAt)
+		&img.FileSize, &isMissing, &isFavorited, &isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &ingestedAt)
 	if err != nil {
 		return nil, err
 	}
 	img.IsMissing = isMissing == 1
 	img.IsFavorited = isFavorited == 1
+	img.IsInbox = isInbox == 1
 	img.IngestedAt, _ = time.Parse(time.RFC3339, ingestedAt)
 	if autoTaggedAt != nil {
 		t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
@@ -119,10 +123,13 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 		Height:        img.Height,
 		FileSize:      img.FileSize,
 		IsFavorited:   img.IsFavorited,
+		IsInbox:       img.IsInbox,
 		IsMissing:     img.IsMissing,
 		AutoTaggedAt:  img.AutoTaggedAt,
 		SourceType:    img.SourceType,
 		Origin:        img.Origin,
+		Source:        img.Source,
+		URL:           img.URL,
 		IngestedAt:    img.IngestedAt,
 		ThumbnailURL:  "/thumbnails/" + g.Name + "/" + strconv.FormatInt(imageID, 10) + ".jpg",
 		Tags:          tags,
@@ -151,10 +158,11 @@ func (h *Handler) getImage(w http.ResponseWriter, r *http.Request) {
 }
 
 // createImage handles POST /api/v1/images. Accepts either multipart
-// (with `file`, `tags`, `folder`, `autotag`, `tagger_name`, `source`)
-// or JSON (with `path`, `tags`, `folder`, `autotag`, `tagger_name`,
-// `source`). In JSON mode `folder` only applies to relative paths;
-// absolute paths are used verbatim.
+// (with `file`, `tags`, `folder`, `autotag`, `tagger_name`, `via`) or
+// JSON (with `path`, `tags`, `folder`, `autotag`, `tagger_name`,
+// `via`). In JSON mode `folder` only applies to relative paths;
+// absolute paths are used verbatim. `via` lands on `images.origin` and
+// is attached to each initial tag's `image_tags.tagger_name`.
 func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 	g, ok := h.resolveGallery(w, r)
 	if !ok {
@@ -168,7 +176,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		folder         string
 		autotag        bool
 		taggerName     string
-		tagSource      string // caller-supplied source; stored on image.origin and inherited by initial tags
+		via            string // caller-supplied label; stored on images.origin and inherited by initial tags
 		uploadedToDisk bool   // true when we wrote the file ourselves (multipart)
 	)
 
@@ -189,7 +197,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		folder = strings.TrimSpace(r.FormValue("folder"))
 		autotag = isTrue(r.FormValue("autotag"))
 		taggerName = strings.TrimSpace(r.FormValue("tagger_name"))
-		tagSource = strings.TrimSpace(r.FormValue("source"))
+		via = strings.TrimSpace(r.FormValue("via"))
 
 		destDir, destErr := gallery.ResolveSubdir(g.GalleryPath, folder)
 		if destErr != nil {
@@ -230,7 +238,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 			Folder     string   `json:"folder"`
 			Autotag    bool     `json:"autotag"`
 			TaggerName string   `json:"tagger_name"`
-			Source     string   `json:"source"`
+			Via        string   `json:"via"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
@@ -245,7 +253,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		folder = strings.TrimSpace(body.Folder)
 		autotag = body.Autotag
 		taggerName = strings.TrimSpace(body.TaggerName)
-		tagSource = strings.TrimSpace(body.Source)
+		via = strings.TrimSpace(body.Via)
 
 		// Relative path + folder: resolve under <gallery>/<folder>/<path>.
 		// Absolute paths go through unchanged.
@@ -284,9 +292,9 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Caller-supplied source wins; otherwise multipart defaults to
+	// Caller-supplied `via` wins; otherwise multipart defaults to
 	// "upload" and JSON path-reference defaults to "ingest".
-	origin := tagSource
+	origin := via
 	if origin == "" {
 		if uploadedToDisk {
 			origin = models.OriginUpload
@@ -329,7 +337,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
 			continue
 		}
-		if err := g.TagSvc.AddTagToImageFromTagger(img.ID, tag.ID, false, nil, tagSource); err != nil {
+		if err := g.TagSvc.AddTagToImageFromTagger(img.ID, tag.ID, false, nil, via); err != nil {
 			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
 		}
 	}
@@ -504,10 +512,13 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 			Height:        img.Height,
 			FileSize:      img.FileSize,
 			IsFavorited:   img.IsFavorited,
+			IsInbox:       img.IsInbox,
 			IsMissing:     img.IsMissing,
 			AutoTaggedAt:  img.AutoTaggedAt,
 			SourceType:    img.SourceType,
 			Origin:        img.Origin,
+			Source:        img.Source,
+			URL:           img.URL,
 			IngestedAt:    img.IngestedAt,
 			ThumbnailURL:  "/thumbnails/" + g.Name + "/" + strconv.FormatInt(img.ID, 10) + ".jpg",
 			Tags:          []imageTagJSON{},
@@ -536,16 +547,20 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid image id")
 		return
 	}
+	if !imageExists(g, id) {
+		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return
+	}
 
 	var body struct {
-		Tags   []string `json:"tags"`
-		Source string   `json:"source"`
+		Tags []string `json:"tags"`
+		Via  string   `json:"via"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
 	}
-	source := strings.TrimSpace(body.Source)
+	via := strings.TrimSpace(body.Via)
 
 	var tagWarnings []string
 	for _, tagName := range body.Tags {
@@ -559,9 +574,12 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
 			continue
 		}
-		if err := g.TagSvc.AddTagToImageFromTagger(id, tag.ID, false, nil, source); err != nil {
+		if err := g.TagSvc.AddTagToImageFromTagger(id, tag.ID, false, nil, via); err != nil {
 			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
 		}
+	}
+	if g.InvalidateCaches != nil {
+		g.InvalidateCaches()
 	}
 
 	resp, err := h.buildImageResponse(g, id)
@@ -577,6 +595,17 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp.Tags)
+}
+
+// imageExists short-circuits the tag-mutation handlers so a request
+// against a missing id returns 404 before any per-token work runs.
+// Without it the per-tag inserts hit the FK constraint and surface as
+// warnings the caller never sees (the final buildImageResponse 404
+// supersedes them), and a token's GetOrCreateTag run still leaves a
+// stray vocabulary row behind.
+func imageExists(g Gallery, id int64) bool {
+	var n int
+	return g.DB.Read.QueryRow(`SELECT 1 FROM images WHERE id = ?`, id).Scan(&n) == nil
 }
 
 // resolveCategoryTag splits "artist:foo" into (artist_id, "foo") when
@@ -619,6 +648,10 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid image id")
 		return
 	}
+	if !imageExists(g, id) {
+		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return
+	}
 
 	var body struct {
 		Tags []string `json:"tags"`
@@ -639,6 +672,9 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		g.TagSvc.RemoveTagFromImage(id, tagID)
+	}
+	if g.InvalidateCaches != nil {
+		g.InvalidateCaches()
 	}
 
 	resp, err := h.buildImageResponse(g, id)

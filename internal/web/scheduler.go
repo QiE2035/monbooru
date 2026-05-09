@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -187,16 +188,50 @@ func (s *Server) scheduledSync(cx *galleryCtx) error {
 }
 
 func (s *Server) scheduledRemoveOrphans(cx *galleryCtx) error {
-	entries, err := os.ReadDir(cx.ThumbnailsPath)
-	if err != nil {
-		logx.Warnf("scheduler orphans %q: read thumbnails dir: %v", cx.Name, err)
-		return err
-	}
-	known := map[int64]struct{}{}
-	rows, err := cx.DB.Read.Query(`SELECT id FROM images`)
-	if err != nil {
+	if err := s.jobs.StartScheduled("prune-thumbs"); err != nil {
 		logx.Warnf("scheduler orphans %q: %v", cx.Name, err)
 		return err
+	}
+	ctx := s.jobs.Context()
+	removed, processed, total, err := s.runOrphanSweep(ctx, cx)
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		logx.Warnf("scheduler orphans %q: %v", cx.Name, err)
+		return err
+	}
+	if ctx.Err() != nil {
+		s.jobs.Complete(fmt.Sprintf("[%s] orphan sweep cancelled (%d/%d scanned, %d removed)", cx.Name, processed, total, removed))
+		return nil
+	}
+	s.jobs.Complete(fmt.Sprintf("[%s] removed %d orphaned thumbnail(s)", cx.Name, removed))
+	logx.Infof("scheduler: [%s] removed %d orphaned thumbnail(s)", cx.Name, removed)
+	return nil
+}
+
+// runOrphanSweep walks the thumbnails directory and unlinks files
+// whose id no longer matches a row in images. ctx aborts the sweep at
+// the next entry; the returned counts reflect partial progress so the
+// caller's cancelled summary stays accurate. Shared by the scheduler
+// (StartScheduled wrapper) and the user-triggered prune handler
+// (Start + goroutine wrapper) so the actual sweep lives in one place.
+//
+// Returns (removed, processed, total, err): removed is the number of
+// orphan files unlinked, processed is the number of directory entries
+// inspected (including non-thumbnail bystanders that are kept), total
+// is the entry count from the initial ReadDir, err is set only when
+// the prerequisite reads (ReadDir, the SELECT id FROM images cursor)
+// fail. A truncated cursor returns err so the sweep doesn't delete
+// legit thumbnails as orphans.
+func (s *Server) runOrphanSweep(ctx context.Context, cx *galleryCtx) (removed, processed, total int, err error) {
+	entries, err := os.ReadDir(cx.ThumbnailsPath)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("read thumbnails dir: %w", err)
+	}
+	total = len(entries)
+	known := map[int64]struct{}{}
+	rows, err := cx.DB.Read.QueryContext(ctx, `SELECT id FROM images`)
+	if err != nil {
+		return 0, 0, total, err
 	}
 	for rows.Next() {
 		var id int64
@@ -205,16 +240,16 @@ func (s *Server) scheduledRemoveOrphans(cx *galleryCtx) error {
 		}
 	}
 	if iterErr := rows.Err(); iterErr != nil {
-		// A truncated cursor would shrink `known`, leaving the loop
-		// below to delete legit thumbnails as orphans. Bail loud
-		// rather than silently quiet.
 		rows.Close()
-		logx.Warnf("scheduler orphans %q: cursor error, skipping sweep: %v", cx.Name, iterErr)
-		return iterErr
+		return 0, 0, total, fmt.Errorf("cursor: %w", iterErr)
 	}
 	rows.Close()
-	removed := 0
-	for _, e := range entries {
+
+	s.jobs.Update(0, total, fmt.Sprintf("[%s] pruning 0/%d…", cx.Name, total))
+	for i, e := range entries {
+		if ctx.Err() != nil {
+			return removed, i, total, nil
+		}
 		if e.IsDir() {
 			continue
 		}
@@ -228,8 +263,8 @@ func (s *Server) scheduledRemoveOrphans(cx *galleryCtx) error {
 		default:
 			continue
 		}
-		id, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
+		id, parseErr := strconv.ParseInt(idStr, 10, 64)
+		if parseErr != nil {
 			continue
 		}
 		if _, ok := known[id]; ok {
@@ -238,9 +273,11 @@ func (s *Server) scheduledRemoveOrphans(cx *galleryCtx) error {
 		if err := os.Remove(filepath.Join(cx.ThumbnailsPath, name)); err == nil {
 			removed++
 		}
+		if (i+1)%50 == 0 || i == total-1 {
+			s.jobs.Update(i+1, total, fmt.Sprintf("[%s] pruning %d/%d…", cx.Name, i+1, total))
+		}
 	}
-	logx.Infof("scheduler: [%s] removed %d orphaned thumbnail(s)", cx.Name, removed)
-	return nil
+	return removed, total, total, nil
 }
 
 func (s *Server) scheduledAutotag(cx *galleryCtx) error {

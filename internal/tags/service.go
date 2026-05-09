@@ -1,6 +1,7 @@
 package tags
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -215,6 +216,99 @@ func (s *Service) Recalc() {
 
 func (s *Service) RecalcCount() (updated int64) {
 	return RecalcDBCount(s.db)
+}
+
+// ChunkedDeleteWithTagRecalc walks ids in 500-row write transactions.
+// Per chunk it (1) collects the distinct tag_ids the about-to-delete
+// rows would touch (`SELECT DISTINCT tag_id FROM image_tags WHERE
+// image_id IN (?…)` + extraSQL), (2) calls deleteFn(tx, placeholders,
+// args) for the caller's actual DELETE, (3) commits, (4) runs
+// afterCommit(chunk) outside the tx for filesystem cleanup or
+// progress reporting.
+//
+// ctx aborts at a chunk boundary; cancelled is true and processed
+// reflects partial progress so the caller's summary stays accurate.
+// extraSQL is appended after the IN-list for both the tag-id SELECT
+// and the caller's deleteFn args (caller decides whether to embed it
+// in their DELETE), with extraArgs spliced in after the chunk ids.
+//
+// affected is the union of touched tag_ids; the caller passes it to
+// RecalcIDs once after the loop so RecalcIDs runs on the touched set
+// instead of walking the whole tags table.
+func (s *Service) ChunkedDeleteWithTagRecalc(
+	ctx context.Context,
+	ids []int64,
+	extraSQL string,
+	extraArgs []any,
+	deleteFn func(tx *sql.Tx, placeholders string, args []any) error,
+	afterCommit func(chunk []int64),
+) (affected []int64, processed int, cancelled bool, err error) {
+	const chunkSize = 500
+	seen := map[int64]struct{}{}
+	for start := 0; start < len(ids); start += chunkSize {
+		if ctx.Err() != nil {
+			cancelled = true
+			break
+		}
+		end := start + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		placeholders := strings.Repeat("?,", len(chunk))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := make([]any, 0, len(chunk)+len(extraArgs))
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		args = append(args, extraArgs...)
+
+		tx, err := s.db.Write.Begin()
+		if err != nil {
+			return tagIDsFromSet(seen), processed, false, err
+		}
+		tagRows, err := tx.Query(
+			`SELECT DISTINCT tag_id FROM image_tags WHERE image_id IN (`+placeholders+`)`+extraSQL,
+			args...,
+		)
+		if err != nil {
+			tx.Rollback()
+			return tagIDsFromSet(seen), processed, false, err
+		}
+		for tagRows.Next() {
+			var tid int64
+			if scanErr := tagRows.Scan(&tid); scanErr != nil {
+				tagRows.Close()
+				tx.Rollback()
+				return tagIDsFromSet(seen), processed, false, scanErr
+			}
+			seen[tid] = struct{}{}
+		}
+		tagRows.Close()
+		if err := deleteFn(tx, placeholders, args); err != nil {
+			tx.Rollback()
+			return tagIDsFromSet(seen), processed, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return tagIDsFromSet(seen), processed, false, err
+		}
+		if afterCommit != nil {
+			afterCommit(chunk)
+		}
+		processed = end
+	}
+	return tagIDsFromSet(seen), processed, cancelled, nil
+}
+
+func tagIDsFromSet(seen map[int64]struct{}) []int64 {
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]int64, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	return out
 }
 
 // RecalcIDs recomputes usage_count for the given tag IDs. Lets bulk
@@ -858,14 +952,24 @@ func (s *Service) AddTagToImageReportingDup(imageID, tagID int64, isAuto bool, c
 	if err != nil {
 		return false, false, err
 	}
-	// Highest-rank-wins among rating tags. The PK lookup is cheap and
-	// the prune is a no-op when the image carries 0 or 1 rating tags
-	// (the typical case after this rule has been applied to a row).
+	// At most one rating row per image, but the rule splits on origin: a
+	// manual add overwrites whatever rating was there (so the user's
+	// chosen level always wins, even when it ranks below a pre-existing
+	// auto-tagger value), while an auto-tagger add keeps the highest
+	// rank so a single inference emitting `sensitive` and `questionable`
+	// resolves the way search does. The PK lookup is cheap and the
+	// prune is a no-op when the image carries 0 or 1 rating tags.
 	if (added || promoted) && s.ratingCatID != 0 {
 		var catID int64
 		if err := tx.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, tagID).Scan(&catID); err == nil && catID == s.ratingCatID {
-			if err := pruneLowerRatingsTx(tx, s.ratingCatID, imageID); err != nil {
-				return false, false, err
+			var pruneErr error
+			if isAuto {
+				pruneErr = pruneLowerRatingsTx(tx, s.ratingCatID, imageID)
+			} else {
+				pruneErr = pruneOtherRatingsTx(tx, s.ratingCatID, imageID, tagID)
+			}
+			if pruneErr != nil {
+				return false, false, pruneErr
 			}
 		}
 	}
@@ -1296,6 +1400,46 @@ func pruneLowerRatingsTx(tx *sql.Tx, ratingCatID, imageID int64) error {
 	return nil
 }
 
+// pruneOtherRatingsTx is the manual-add twin of pruneLowerRatingsTx:
+// it keeps only keepTagID and sweeps every other rating row off the
+// image so the user's just-typed rating always wins, even when its
+// rank is below an existing auto-tagger value. Mirrors the prune
+// shape so the usage_count decrements still flow through
+// removeTagFromImageTx.
+func pruneOtherRatingsTx(tx *sql.Tx, ratingCatID, imageID, keepTagID int64) error {
+	if ratingCatID == 0 {
+		return nil
+	}
+	rows, err := tx.Query(
+		`SELECT it.tag_id FROM image_tags it
+		 JOIN tags t ON t.id = it.tag_id
+		 WHERE it.image_id = ? AND t.category_id = ? AND t.is_alias = 0 AND it.tag_id != ?`,
+		imageID, ratingCatID, keepTagID,
+	)
+	if err != nil {
+		return fmt.Errorf("scan rating rows for overwrite: %w", err)
+	}
+	var others []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		others = append(others, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range others {
+		if err := removeTagFromImageTx(tx, imageID, id); err != nil {
+			return fmt.Errorf("overwrite prior rating %d: %w", id, err)
+		}
+	}
+	return nil
+}
+
 // RatingTagIDsAbove returns the canonical rating tag ids whose level
 // ranks strictly above ceiling (e.g. ceiling="sensitive" returns the ids
 // of "questionable" and "explicit"). An empty or unknown ceiling, or
@@ -1436,61 +1580,88 @@ func (s *Service) RelatedImages(imageID int64, limit int, ratingCeiling string) 
 // SuggestTags returns tags matching prefix, sorted by usage_count DESC.
 // Two-pass shape: prefix matches first, then substring matches.
 func (s *Service) SuggestTags(prefix string, limit int) ([]models.Tag, error) {
-	prefixLimit := limit
-	rows, err := s.db.Read.Query(
-		`SELECT t.id, t.name, tc.name, tc.color, t.usage_count
-		 FROM tags t
-		 JOIN tag_categories tc ON tc.id = t.category_id
-		 WHERE t.name LIKE ? AND t.is_alias = 0
-		 ORDER BY t.usage_count DESC
-		 LIMIT ?`,
-		prefix+"%", prefixLimit,
-	)
+	return suggestUsageRanked(s.db, prefix, "", false, limit)
+}
+
+// SuggestUsageRanked is the exported entry point for callers outside
+// the tags package (the no-context fast path of search.SuggestTagsWithFilter).
+// requireUsage gates the `usage_count > 0` filter so the search-bar
+// autocomplete hides zero-usage tags while the detail-page tag input
+// (where freshly-declared tags must surface immediately) keeps them.
+func SuggestUsageRanked(database *db.DB, prefix, categoryName string, requireUsage bool, limit int) ([]models.Tag, error) {
+	return suggestUsageRanked(database, prefix, categoryName, requireUsage, limit)
+}
+
+// suggestUsageRanked is the shared two-pass prefix→substring helper:
+// prefix matches first (sorted by usage_count DESC), then substring
+// matches that aren't already in the prefix set, until limit is hit.
+// categoryName, when non-empty, scopes both passes to that category;
+// requireUsage adds `usage_count > 0`.
+func suggestUsageRanked(database *db.DB, prefix, categoryName string, requireUsage bool, limit int) ([]models.Tag, error) {
+	baseSQL := `SELECT t.id, t.name, tc.name, tc.color, t.usage_count
+	            FROM tags t
+	            JOIN tag_categories tc ON tc.id = t.category_id
+	            WHERE t.is_alias = 0
+	              %s
+	              AND t.name LIKE ?
+	              %s
+	            ORDER BY t.usage_count DESC, t.name ASC
+	            LIMIT ?`
+	usageClause := ""
+	if requireUsage {
+		usageClause = "AND t.usage_count > 0"
+	}
+	catClause := ""
+	var catArgs []any
+	if categoryName != "" {
+		catClause = "AND tc.name = ?"
+		catArgs = []any{categoryName}
+	}
+
+	run := func(pat string, prior []models.Tag, remaining int, nameNotLike string) ([]models.Tag, error) {
+		extra := catClause
+		qargs := make([]any, 0, 2+len(catArgs))
+		qargs = append(qargs, pat)
+		qargs = append(qargs, catArgs...)
+		if nameNotLike != "" {
+			extra = extra + " AND t.name NOT LIKE ?"
+			qargs = append(qargs, nameNotLike)
+		}
+		qargs = append(qargs, remaining)
+		rows, err := database.Read.Query(fmt.Sprintf(baseSQL, usageClause, extra), qargs...)
+		if err != nil {
+			return prior, err
+		}
+		defer rows.Close()
+		seen := map[int64]bool{}
+		for _, t := range prior {
+			seen[t.ID] = true
+		}
+		for rows.Next() {
+			var t models.Tag
+			if err := rows.Scan(&t.ID, &t.Name, &t.CategoryName, &t.CategoryColor, &t.UsageCount); err != nil {
+				return prior, err
+			}
+			if seen[t.ID] {
+				continue
+			}
+			prior = append(prior, t)
+			seen[t.ID] = true
+		}
+		return prior, rows.Err()
+	}
+
+	out, err := run(prefix+"%", nil, limit, "")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	seen := map[int64]struct{}{}
-	var result []models.Tag
-	for rows.Next() {
-		var t models.Tag
-		if err := rows.Scan(&t.ID, &t.Name, &t.CategoryName, &t.CategoryColor, &t.UsageCount); err != nil {
-			return nil, err
-		}
-		seen[t.ID] = struct{}{}
-		result = append(result, t)
-	}
-	rows.Close()
-
-	if len(result) < limit {
-		remaining := limit - len(result)
-		rows2, err := s.db.Read.Query(
-			`SELECT t.id, t.name, tc.name, tc.color, t.usage_count
-			 FROM tags t
-			 JOIN tag_categories tc ON tc.id = t.category_id
-			 WHERE t.name LIKE ? AND t.name NOT LIKE ? AND t.is_alias = 0
-			 ORDER BY t.usage_count DESC
-			 LIMIT ?`,
-			"%"+prefix+"%", prefix+"%", remaining,
-		)
+	if len(out) < limit {
+		out, err = run("%"+prefix+"%", out, limit-len(out), prefix+"%")
 		if err != nil {
-			return result, nil
-		}
-		defer rows2.Close()
-
-		for rows2.Next() {
-			var t models.Tag
-			if err := rows2.Scan(&t.ID, &t.Name, &t.CategoryName, &t.CategoryColor, &t.UsageCount); err != nil {
-				return nil, err
-			}
-			if _, ok := seen[t.ID]; !ok {
-				result = append(result, t)
-			}
+			return out, err
 		}
 	}
-
-	return result, nil
+	return out, nil
 }
 
 // SuggestTagsInCategory returns tags matching prefix in the named

@@ -35,9 +35,12 @@ type Image struct {
 	FileSize      int64
 	IsMissing     bool
 	IsFavorited   bool
+	IsInbox       bool // 1 = needs triage; 0 = archived/curated
 	AutoTaggedAt  *time.Time
 	SourceType    string // "a1111" | "comfyui" | "none" | "a1111,comfyui"
 	Origin        string // "ingest" | "upload" | caller-supplied string (app name, URL...)
+	Source        string // free-form provenance label (site name, scraper, ...); operator-edited
+	URL           string // canonical web URL the image came from; http(s) only
 	IngestedAt    time.Time
 }
 

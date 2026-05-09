@@ -12,6 +12,7 @@ import (
 	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/jobs"
 	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/leqwin/monbooru/internal/search"
 	"github.com/leqwin/monbooru/internal/tags"
 )
 
@@ -40,6 +41,7 @@ type galleryCtx struct {
 	folderTree   atomic.Pointer[[]gallery.FolderNode]
 	sourceCounts atomic.Pointer[gallery.SourceCounts]
 	visibleCount atomic.Pointer[int]
+	inboxCount   atomic.Pointer[int]
 	tagCount     atomic.Pointer[int]
 	savedCount   atomic.Pointer[int]
 
@@ -59,8 +61,15 @@ func (cx *galleryCtx) InvalidateCaches() {
 	cx.folderTree.Store(nil)
 	cx.sourceCounts.Store(nil)
 	cx.visibleCount.Store(nil)
+	cx.inboxCount.Store(nil)
 	cx.tagCount.Store(nil)
 	cx.savedCount.Store(nil)
+	// The adjacency cache holds sorted match-id snapshots that pre-date
+	// any membership-changing write (delete, move, inbox/favourite
+	// toggle, batch tag). Without dropping them here, a re-render of
+	// the same query within the 5-min TTL serves the stale list and
+	// the gallery shows rows that no longer match.
+	search.AdjacencyCacheDropForGallery(cx.Name)
 }
 
 // FolderTree returns the cached tree or builds one on demand. The cache is
@@ -106,6 +115,22 @@ func (cx *galleryCtx) VisibleCount() (int, error) {
 	return n, nil
 }
 
+// InboxCount returns the cached count of visible images sitting in the
+// inbox (is_inbox = 1, is_missing = 0). Surfaced in the gallery toolbar's
+// inbox toggle so the user sees the triage backlog at a glance. Reads
+// off idx_images_inbox_visible.
+func (cx *galleryCtx) InboxCount() (int, error) {
+	if p := cx.inboxCount.Load(); p != nil {
+		return *p, nil
+	}
+	var n int
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images WHERE is_missing = 0 AND is_inbox = 1`).Scan(&n); err != nil {
+		return 0, err
+	}
+	cx.inboxCount.Store(&n)
+	return n, nil
+}
+
 // TagCount returns the cached count of non-alias tags or queries it on demand.
 // Surfaced in the Settings galleries table and the layout footer; uncached the
 // query runs once per render per gallery, which adds up on multi-gallery boxes.
@@ -146,6 +171,7 @@ func (cx *galleryCtx) warmCaches() {
 	cx.FolderTree()   //nolint:errcheck
 	cx.SourceCounts() //nolint:errcheck
 	cx.VisibleCount() //nolint:errcheck
+	cx.InboxCount()   //nolint:errcheck
 	cx.TagCount()     //nolint:errcheck
 	cx.SavedCount()   //nolint:errcheck
 }

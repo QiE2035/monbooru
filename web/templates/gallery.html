@@ -27,10 +27,12 @@
     </select>
     {{if .RandomSeed}}<input type="hidden" name="seed" value="{{.RandomSeed}}">{{end}}
     <button type="submit">Search</button>
+    <button type="button" id="inbox-filter-btn" class="{{if hasInboxFilter .Query}}active{{end}}"
+            onclick="toggleInboxFilter()" title="Inbox{{if and (gt .InboxCount 0) (eq .ActiveRating "explicit")}} ({{.InboxCount}}){{end}} (I)">✱</button>
     <button type="button" id="fav-filter-btn" class="{{if hasFavFilter .Query}}active{{end}}"
-            onclick="toggleFavFilter()" title="Show favorites">★</button>
+            onclick="toggleFavFilter()" title="Show favorites (F)">♥</button>
     <button type="button" id="random-sort-btn" class="{{if eq .Sort "random"}}active{{end}}"
-            onclick="applyRandomSort()" title="{{if eq .Sort "random"}}Re-shuffle{{else}}Random order{{end}}">⇄</button>
+            onclick="applyRandomSort()" title="{{if eq .Sort "random"}}Re-shuffle{{else}}Random order{{end}} (R)">⇄</button>
   </form>
   <div id="save-search-area">{{template "partials/save_search_area.html" .}}</div>
 </div>
@@ -43,7 +45,9 @@
   <span id="batch-count">0 selected</span>
   <form id="batch-delete-form">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <button type="button" class="batch-bar-right" onclick="openTagSelectedDialog()">Add tags manually</button>
+    <button type="button" class="batch-bar-right" onclick="openInboxSelectedDialog()">Send/Remove from inbox</button>
+    <span class="batch-bar-sep" aria-hidden="true"></span>
+    <button type="button" onclick="openTagSelectedDialog()">Add tags manually</button>
     <button type="button" onclick="openStripSelectedDialog()">Remove tags</button>
     {{if .EnabledTaggers}}<button type="button" class="btn-autotag" onclick="openAutotagSelectedDialog()">Auto-tag</button>{{end}}
     <span class="batch-bar-sep" aria-hidden="true"></span>
@@ -268,6 +272,37 @@
   </form>
 </dialog>
 
+<!-- Batch inbox dialogs. Per-row toggle: each image flips between inbox
+     and archived, regardless of starting state. -->
+<dialog id="batch-inbox-search-dialog">
+  <p>
+    Toggle inbox state for
+    <strong id="batch-inbox-search-count-display">0</strong>
+    <span id="batch-inbox-search-noun">images</span>?
+  </p>
+  <p style="color:var(--fg-dim);font-size:12px">Inbox images become archived; archived become inbox.</p>
+  <div id="batch-inbox-search-flash"></div>
+  <div class="dialog-actions">
+    <button type="button" onclick="confirmInboxSearch()">Apply</button>
+    <button type="button" onclick="closeDialogAndRestoreParent('batch-inbox-search-dialog')">Cancel</button>
+  </div>
+</dialog>
+
+<dialog id="batch-inbox-selected-dialog">
+  <p>
+    Toggle inbox state for
+    <strong id="batch-inbox-selected-count">0</strong>
+    selected
+    <span id="batch-inbox-selected-noun">images</span>?
+  </p>
+  <p style="color:var(--fg-dim);font-size:12px">Inbox images become archived; archived become inbox.</p>
+  <div id="batch-inbox-selected-flash"></div>
+  <div class="dialog-actions">
+    <button type="button" onclick="confirmInboxSelected()">Apply</button>
+    <button type="button" onclick="document.getElementById('batch-inbox-selected-dialog').close()">Cancel</button>
+  </div>
+</dialog>
+
 <!-- Move search dialog -->
 <dialog id="move-search-dialog">
   <p>Move <strong id="move-search-count-display">0</strong> <span id="move-search-noun">images</span> in current search to folder:</p>
@@ -484,6 +519,10 @@ function pickBatchAction(action) {
     case 'move':
       openMoveSearchDialog();
       subId = 'move-search-dialog';
+      break;
+    case 'inbox-toggle':
+      openInboxSearchDialog();
+      subId = 'batch-inbox-search-dialog';
       break;
     case 'delete':
       openDeleteSearchDialog();
@@ -968,6 +1007,100 @@ function toggleFavFilter() {
     si.value = tokens.join(' ');
   }
   document.getElementById('search-form').dispatchEvent(new Event('submit', {bubbles:true}));
+}
+
+function toggleInboxFilter() {
+  var si = document.getElementById('search-input');
+  if (!si) return;
+  var tokens = si.value.split(/\s+/).filter(function(t) { return t && t.toLowerCase() !== 'inbox:true'; });
+  var hadInbox = tokens.length !== si.value.split(/\s+/).filter(Boolean).length;
+  if (hadInbox) {
+    si.value = tokens.join(' ');
+  } else {
+    tokens.unshift('inbox:true');
+    si.value = tokens.join(' ');
+  }
+  document.getElementById('search-form').dispatchEvent(new Event('submit', {bubbles:true}));
+}
+
+function openInboxSearchDialog() {
+  var rcEl = document.querySelector('.result-count');
+  var n = 0;
+  if (rcEl) {
+    var m = rcEl.textContent.match(/(\d+)/);
+    if (m) n = parseInt(m[1], 10);
+  }
+  var dlg = document.getElementById('batch-inbox-search-dialog');
+  document.getElementById('batch-inbox-search-count-display').textContent = n;
+  document.getElementById('batch-inbox-search-noun').textContent = n === 1 ? 'image' : 'images';
+  var flash = document.getElementById('batch-inbox-search-flash');
+  if (flash) flash.innerHTML = '';
+  dlg.showModal();
+}
+
+function openInboxSelectedDialog() {
+  var checked = document.querySelectorAll('.thumb-checkbox:checked');
+  if (checked.length === 0) return;
+  document.getElementById('batch-inbox-selected-count').textContent = checked.length;
+  document.getElementById('batch-inbox-selected-noun').textContent = checked.length === 1 ? 'image' : 'images';
+  var flash = document.getElementById('batch-inbox-selected-flash');
+  if (flash) flash.innerHTML = '';
+  document.getElementById('batch-inbox-selected-dialog').showModal();
+}
+
+function confirmInboxSearch() {
+  var csrfEl = document.querySelector('input[name="_csrf"]');
+  var csrf = csrfEl ? csrfEl.value : '';
+  var si = document.getElementById('search-input');
+  var sortEl = document.getElementById('search-sort');
+  var orderEl = document.querySelector('#search-form select[name="order"]');
+  var parts = ['_csrf=' + encodeURIComponent(csrf),
+               'scope=search',
+               'q=' + encodeURIComponent(si ? si.value : ''),
+               'sort=' + encodeURIComponent(sortEl ? sortEl.value : 'newest'),
+               'order=' + encodeURIComponent(orderEl ? orderEl.value : 'desc')];
+  postInboxBatch(parts.join('&'), csrf, 'batch-inbox-search-dialog', 'batch-inbox-search-flash', false);
+}
+
+function confirmInboxSelected() {
+  var checked = document.querySelectorAll('.thumb-checkbox:checked');
+  var flash = document.getElementById('batch-inbox-selected-flash');
+  if (checked.length === 0) {
+    if (flash) flash.innerHTML = '<div class="flash flash-err">No images selected.</div>';
+    return;
+  }
+  var csrfEl = document.querySelector('input[name="_csrf"]');
+  var csrf = csrfEl ? csrfEl.value : '';
+  var parts = ['_csrf=' + encodeURIComponent(csrf),
+               'scope=selection'];
+  Array.prototype.forEach.call(checked, function(cb) {
+    parts.push('ids=' + encodeURIComponent(cb.value));
+  });
+  postInboxBatch(parts.join('&'), csrf, 'batch-inbox-selected-dialog', 'batch-inbox-selected-flash', true);
+}
+
+function postInboxBatch(body, csrf, dialogId, flashId, clearOnOk) {
+  var flash = document.getElementById(flashId);
+  if (flash) flash.innerHTML = '';
+  fetch('/internal/batch-inbox', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
+    body: body
+  }).then(function(res) {
+    if (res.ok) {
+      var dlg = document.getElementById(dialogId);
+      if (dlg) dlg.close();
+      if (clearOnOk) clearSelection();
+      _pendingGalleryReload = true;
+      refreshJobStatus();
+    } else {
+      res.text().then(function(t) {
+        if (flash) flash.innerHTML = t || '<div class="flash flash-err">Inbox update failed.</div>';
+      });
+    }
+  }).catch(function() {
+    if (flash) flash.innerHTML = '<div class="flash flash-err">Request failed.</div>';
+  });
 }
 
 function applyRandomSort() {

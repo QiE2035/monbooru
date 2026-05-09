@@ -8,6 +8,7 @@
     <a href="#auth">Auth</a>
     <a href="#maintenance">Maintenance</a>
     <a href="#schedule">Schedule</a>
+    <a href="#stats">Stats</a>
   </nav>
 </div>
 {{template "layout_mid" .}}
@@ -717,6 +718,78 @@
       </div>
       <button type="submit">Save</button>
     </form>
+  </section>
+
+  {{$stats := index . "Stats"}}
+  <section id="stats" class="settings-section">
+    <h3>Stats</h3>
+    <div class="settings-sub">
+      <h4>Process memory</h4>
+      <table class="stats-table">
+        <tbody>
+          {{if $stats.Mem.Available}}
+          <tr><th>Proportional set size (PSS)</th><td>{{humanBytes $stats.Mem.Total}}</td></tr>
+          {{if or $stats.Mem.Anon $stats.Mem.File}}
+          <tr><th class="stats-d1">Anonymous</th><td>{{humanBytes $stats.Mem.Anon}}</td></tr>
+          <tr><th class="stats-d2">Go reserved (from OS)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
+          <tr><th class="stats-d3">Go heap (in use)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
+          <tr><th class="stats-d2">Native (SQLite cache, taggers, CGO)</th><td>{{humanBytes $stats.Mem.Native}}</td></tr>
+          <tr><th class="stats-d1">File-backed</th><td>{{humanBytes $stats.Mem.File}}</td></tr>
+          {{if $stats.Mem.DB}}
+          <tr><th class="stats-d2">DB pages (mmap'd)</th><td>{{humanBytes $stats.Mem.DB}}</td></tr>
+          <tr><th class="stats-d2">Binary &amp; shared libs</th><td>{{humanBytes $stats.Mem.OtherFile}}</td></tr>
+          {{end}}
+          {{else}}
+          <tr><th class="stats-d1">Go reserved (from OS)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
+          <tr><th class="stats-d2">Go heap (in use)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
+          {{end}}
+          {{else}}
+          <tr><th>Go reserved (from OS)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
+          <tr><th class="stats-d1">Go heap (in use)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
+          {{end}}
+          <tr><th>Goroutines</th><td>{{$stats.Mem.Goroutines}}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="settings-sub">
+      <h4>Database size per gallery</h4>
+      <div class="table-scroll">
+      <table class="stats-table">
+        <thead><tr><th>Gallery</th><th>DB path</th><th>Size</th></tr></thead>
+        <tbody>
+          {{range $stats.Galleries}}
+          <tr>
+            <td><strong>{{.Name}}</strong></td>
+            <td><code>{{.DBPath}}</code></td>
+            <td>{{humanBytes .DBSize}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      </div>
+    </div>
+    <div class="settings-sub">
+      <h4>Filesystem free space</h4>
+      {{if $stats.Mounts}}
+      <div class="table-scroll">
+      <table class="stats-table">
+        <thead><tr><th>Mount</th><th>Used</th><th>Free</th><th>Total</th><th>Used %</th></tr></thead>
+        <tbody>
+          {{range $stats.Mounts}}
+          <tr>
+            <td>{{range $i, $l := .Labels}}{{if $i}}, {{end}}{{$l}}{{end}}</td>
+            <td>{{humanBytes .UsedSize}}</td>
+            <td>{{humanBytes .FreeSize}}</td>
+            <td>{{humanBytes .TotalSize}}</td>
+            <td>{{.UsedPct}}%</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      </div>
+      {{end}}
+      {{range $stats.FSWarnings}}<p class="field-hint">{{.}}</p>{{end}}
+    </div>
   </section>
 </div>
 

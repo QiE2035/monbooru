@@ -37,7 +37,11 @@ func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {
 		PageIndex: offset / limit,
 		Limit:     limit,
 		Origin:    q.Get("origin"),
-		ShowZero:  q.Get("show_zero") == "1",
+		// Tri-state with the /tags page: empty / anything but "0" → Show
+		// (default so freshly-declared tags surface without a flag flip);
+		// "0" → Hide. The UI also exposes "only" but the API has no use
+		// for that triage view, so any non-"0" string folds into Show.
+		ShowZero:  q.Get("show_zero") != "0",
 	}
 
 	if catName != "" {

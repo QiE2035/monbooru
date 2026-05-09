@@ -1,31 +1,184 @@
 'use strict';
 
+// Chord state for the `g`-leader navigation. A second key within
+// chordTimeoutMs fires the chord; anything else cancels.
+var _chordPending = '';
+var _chordTimer = null;
+var _chordHint = null;
+var chordTimeoutMs = 500;
+
+// Map of <leader, secondary> chords. Each value is either a string URL
+// (navigated via location.assign) or a function executed with no args.
+var chordMap = {
+  g: {
+    g: '/',
+    u: '/upload',
+    c: '/categories',
+    t: '/tags',
+    s: '/settings',
+    h: '/help',
+  },
+};
+
+function clearChord() {
+  _chordPending = '';
+  if (_chordTimer) { clearTimeout(_chordTimer); _chordTimer = null; }
+  if (_chordHint && _chordHint.parentNode) _chordHint.parentNode.removeChild(_chordHint);
+  _chordHint = null;
+}
+
+function showChordHint(leader) {
+  if (_chordHint && _chordHint.parentNode) _chordHint.parentNode.removeChild(_chordHint);
+  _chordHint = document.createElement('div');
+  _chordHint.className = 'chord-leader-hint';
+  var keys = Object.keys(chordMap[leader] || {}).sort();
+  _chordHint.textContent = leader + ' → ' + keys.join(' / ');
+  document.body.appendChild(_chordHint);
+}
+
+// Move-cursor / open-card helpers reused by both arrow keys and h/j/k/l.
+function moveGridCursor(dx, dy) {
+  var cards = Array.from(document.querySelectorAll('.thumb-card'));
+  if (cards.length === 0) return false;
+  var focused = document.querySelector('.thumb-card.focused');
+  var idx = focused ? cards.indexOf(focused) : -1;
+  if (idx < 0) {
+    idx = 0;
+  } else {
+    var cols = 1;
+    var grid = document.querySelector('.thumb-grid');
+    if (grid && cards[0]) {
+      var cardW = cards[0].offsetWidth;
+      if (cardW > 0) cols = Math.max(1, Math.round(grid.offsetWidth / cardW));
+    }
+    idx = Math.max(0, Math.min(cards.length - 1, idx + dx + dy * cols));
+  }
+  cards.forEach(function(c) { c.classList.remove('focused'); });
+  cards[idx].classList.add('focused');
+  cards[idx].scrollIntoView({ block: 'nearest' });
+  return true;
+}
+
+function jumpGridCursor(target) {
+  var cards = Array.from(document.querySelectorAll('.thumb-card'));
+  if (cards.length === 0) return false;
+  var idx = target === 'first' ? 0 : cards.length - 1;
+  cards.forEach(function(c) { c.classList.remove('focused'); });
+  cards[idx].classList.add('focused');
+  cards[idx].scrollIntoView({ block: 'nearest' });
+  return true;
+}
+
+function clickPagination(needle) {
+  var links = document.querySelectorAll('.pagination a');
+  for (var i = 0; i < links.length; i++) {
+    if (links[i].textContent.indexOf(needle) >= 0) { links[i].click(); return true; }
+  }
+  return false;
+}
+
+// Detail-page prev/next image. Falls through when no nav arrow is present.
+function navDetailImage(direction) {
+  var sel = direction === 'prev'
+    ? '.nav-arrow[title^="Previous image"]'
+    : '.nav-arrow[title^="Next image"]';
+  var a = document.querySelector(sel);
+  if (a && a.href) { window.location.href = a.href; return true; }
+  return false;
+}
+
+// Cycle the rating ceiling level. delta=+1 picks a stricter level (less
+// permissive); delta=-1 picks a more permissive one. Fires the matching
+// inactive footer-rating-link form.
+function cycleRatingCeiling(delta) {
+  var labels = document.querySelectorAll('.footer-rating-active, .footer-rating-link');
+  // Active sits among the cluster as the [bracketed] span; siblings are
+  // <button class="footer-rating-link">. Find the active index from the
+  // active span's text and submit the neighbour's parent form.
+  var active = document.querySelector('.footer-rating-active');
+  if (!active) return false;
+  var siblings = active.parentNode.parentNode.querySelectorAll('.footer-rating-active, .footer-rating-link');
+  var ordered = Array.prototype.slice.call(siblings);
+  var idx = ordered.indexOf(active);
+  if (idx < 0) return false;
+  var next = idx + delta;
+  if (next < 0 || next >= ordered.length) return false;
+  var target = ordered[next];
+  if (target.tagName === 'BUTTON') {
+    var f = target.closest('form');
+    if (f) { f.requestSubmit ? f.requestSubmit() : f.submit(); return true; }
+  }
+  return false;
+}
+
+// Cycle the gallery sort select between newest -> filesize -> random.
+function cycleSort() {
+  var sortEl = document.getElementById('search-sort');
+  var form = document.getElementById('search-form');
+  if (!sortEl || !form) return false;
+  var order = ['newest', 'filesize', 'random'];
+  var i = order.indexOf(sortEl.value);
+  var next = order[(i + 1) % order.length];
+  if (next === 'random') {
+    applyRandomSort();
+    return true;
+  }
+  var opt = sortEl.querySelector('option[value="' + next + '"]');
+  if (!opt) {
+    opt = document.createElement('option');
+    opt.value = next;
+    opt.textContent = next;
+    sortEl.appendChild(opt);
+  }
+  sortEl.value = next;
+  form.dispatchEvent(new Event('submit', { bubbles: true }));
+  return true;
+}
+
+function flipSortDirection() {
+  var orderEl = document.querySelector('#search-form select[name="order"]');
+  var form = document.getElementById('search-form');
+  if (!orderEl || !form) return false;
+  orderEl.value = orderEl.value === 'asc' ? 'desc' : 'asc';
+  form.dispatchEvent(new Event('submit', { bubbles: true }));
+  return true;
+}
+
+function focusFirstSelector(selectors) {
+  for (var i = 0; i < selectors.length; i++) {
+    var el = document.querySelector(selectors[i]);
+    if (el) { el.focus(); if (el.select) el.select(); return true; }
+  }
+  return false;
+}
+
+// Surface helpers; keep the keydown router readable.
+function isGalleryPage()    { return !!document.querySelector('.thumb-grid, #gallery-grid'); }
+function isDetailPage()     { return !!document.getElementById('detail-page'); }
+function isTagsPage()       { return !!document.getElementById('tags-page'); }
+function isCategoriesPage() { return !!document.getElementById('categories-page'); }
+function isSettingsPage()   { return !!document.getElementById('settings-page'); }
+function batchBarVisible() {
+  var bar = document.getElementById('batch-bar');
+  return !!(bar && bar.classList.contains('visible'));
+}
+
 // Keyboard navigation
 document.addEventListener('keydown', function(e) {
-  const tag = e.target.tagName.toLowerCase();
-  const isInput = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
+  var tag = e.target.tagName.toLowerCase();
+  var isInput = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
 
-  // 'Escape' → blur input first; once nothing is focused, go back to active search on detail page
+  // 'Escape' → blur input first; once nothing is focused, walk the chain.
   if (e.key === 'Escape') {
     if (isInput) { e.target.blur(); return; }
-    // The dialog itself owns the close on Escape via the browser's close
-    // watcher (which fires the `cancel` event below). The keydown handler
-    // just bails so detail-page back-nav and other shortcuts don't fire
-    // on top of the close.
     if (document.querySelector('dialog[open]')) return;
-    // Batch selection takes priority over detail-page back-nav: while the
-    // batch bar is up, Escape clears the selection instead of leaving the
-    // gallery. The bar is gallery-only, so detail-page Escape is unaffected.
-    var batchBar = document.getElementById('batch-bar');
-    if (batchBar && batchBar.classList.contains('visible')) {
+    if (batchBarVisible()) {
       e.preventDefault();
       clearSelection();
       return;
     }
-    // Detail-page tag-focus mode (entered with 'r'): Escape leaves the mode
-    // without removing anything. Checked before the back-nav branch so the
-    // first Escape unwinds the mode and a second Escape leaves the page.
-    if (document.querySelector('#image-tags .tag-item.focused')) {
+    if (document.body.classList.contains('tag-focus') ||
+        document.querySelector('#image-tags .tag-item.focused')) {
       e.preventDefault();
       exitTagFocusMode();
       return;
@@ -33,130 +186,243 @@ document.addEventListener('keydown', function(e) {
     var detailPage = document.getElementById('detail-page');
     if (detailPage) {
       e.preventDefault();
-      // If the page was reached via a Similar-images click (the server-set
-      // data-ref marks this) walk the browser history one step. Using
-      // history.back() rather than navigating to data-ref preserves the
-      // full chain: the previous detail page is still the one the user saw,
-      // with its own predecessors intact.
-      if (detailPage.dataset.ref && history.length > 1) {
-        history.back();
-        return;
-      }
+      if (detailPage.dataset.ref && history.length > 1) { history.back(); return; }
       var backLink = document.querySelector('.back-link');
       if (backLink) { backLink.click(); }
       else { window.location.href = '/'; }
       return;
     }
-  }
-
-  // While a dialog is open, swallow gallery / detail keyboard shortcuts so
-  // arrow-key grid nav, h/l pagination, f/t/s focus, Delete, Space, Enter,
-  // and the `a` chooser shortcut don't fire under the user's input. Inputs,
-  // selects, and textareas inside the dialog still receive their own
-  // keystrokes because isInput is true for those targets.
-  if (!isInput && document.querySelector('dialog[open]')) return;
-
-  // 'f' → favorite toggle on detail page
-  if (e.key === 'f' && !isInput) {
-    const favBtn = document.querySelector('.btn-fav');
-    if (favBtn) favBtn.click();
     return;
   }
 
-  // 's' → focus the search input (on any page that has one)
-  if (e.key === 's' && !isInput) {
-    const si = document.getElementById('search-input');
-    if (si) { e.preventDefault(); si.focus(); si.select(); }
+  // While a dialog is open, swallow gallery / detail keyboard shortcuts so
+  // arrow-key grid nav, page navigation, single-key actions, and the chord
+  // state machine don't fire under the user's input. Inputs, selects, and
+  // textareas inside the dialog still receive their own keystrokes because
+  // isInput is true for those targets.
+  if (!isInput && document.querySelector('dialog[open]')) {
+    // ? closes the shortcuts overlay so the same key is a toggle.
+    if (e.key === '?' && document.getElementById('shortcuts-help') && document.getElementById('shortcuts-help').open) {
+      e.preventDefault();
+      document.getElementById('shortcuts-help').close();
+    }
+    return;
+  }
+
+  if (isInput) return;
+
+  // Chord secondary: a leader is pending and this key is the secondary.
+  if (_chordPending) {
+    var leaderMap = chordMap[_chordPending];
+    var leader = _chordPending;
+    clearChord();
+    var action = leaderMap && leaderMap[e.key];
+    if (action) {
+      e.preventDefault();
+      if (typeof action === 'string') window.location.href = action;
+      else action();
+      return;
+    }
+    // Unknown secondary: fall through so the key still does its single-key job.
+  }
+
+  // ? overlay
+  if (e.key === '?') {
+    var helpDlg = document.getElementById('shortcuts-help');
+    if (helpDlg) {
+      e.preventDefault();
+      if (helpDlg.open) helpDlg.close();
+      else helpDlg.showModal();
+    }
+    return;
+  }
+
+  // Search focus (anywhere a search input exists).
+  if (e.key === 's' || e.key === '/') {
+    if (focusFirstSelector(['#search-input', '#sidebar-inner input[name="q"]'])) {
+      e.preventDefault();
+      return;
+    }
+  }
+
+  // Y → click the topbar Sync button.
+  if (e.key === 'Y') {
+    var syncForm = document.querySelector('form[hx-post="/internal/sync"]');
+    if (syncForm) { e.preventDefault(); syncForm.requestSubmit ? syncForm.requestSubmit() : syncForm.submit(); return; }
+  }
+
+  // , / .  rating-ceiling cycle.
+  if (e.key === ',') { if (cycleRatingCeiling(-1)) { e.preventDefault(); return; } }
+  if (e.key === '.') { if (cycleRatingCeiling(+1)) { e.preventDefault(); return; } }
+
+  // \ switch gallery (only when more than one is configured).
+  if (e.key === '\\') {
+    var swDlg = document.getElementById('gallery-switch-dialog');
+    if (swDlg) { e.preventDefault(); swDlg.showModal(); return; }
+  }
+
+  // Leader: g opens a 500ms window for the chord secondary.
+  if (e.key === 'g' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    _chordPending = 'g';
+    showChordHint('g');
+    if (_chordTimer) clearTimeout(_chordTimer);
+    _chordTimer = setTimeout(clearChord, chordTimeoutMs);
     return;
   }
 
   // Ctrl/Cmd+A → select every visible thumbnail. Gated on the gallery grid
   // existing so the browser's native select-all-text still works on pages
   // without a grid.
-  if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A') && !isInput) {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
     if (!document.querySelector('.thumb-checkbox')) return;
     e.preventDefault();
     selectAll();
     return;
   }
 
-  // 'a' → context-dependent add-tag entry point:
-  //   - gallery with selection : open the Add-tags-on-selection dialog
-  //   - detail page            : focus the per-image tag input
-  //   - gallery, no selection  : open the Actions chooser
-  // No-op when an input is focused, when a dialog is already open, or when
-  // modifiers are held (Ctrl+A is handled above).
-  if (e.key === 'a' && !isInput && !e.ctrlKey && !e.metaKey) {
-    if (document.querySelector('dialog[open]')) return;
-    const bar = document.getElementById('batch-bar');
-    if (bar && bar.classList.contains('visible')) {
-      e.preventDefault();
-      openTagSelectedDialog();
-      return;
+  // Tags page
+  if (isTagsPage()) {
+    if (e.key === 'n') {
+      var btnNew = document.getElementById('btn-create-tag');
+      if (btnNew) { e.preventDefault(); btnNew.click(); return; }
     }
-    const tagInput = document.getElementById('tag-input');
-    if (tagInput) {
-      e.preventDefault();
-      tagInput.focus();
-      return;
+    if (e.key === 'N') {
+      var btnAlias = document.getElementById('btn-create-alias');
+      if (btnAlias) { e.preventDefault(); btnAlias.click(); return; }
     }
-    const actionsBtn = document.getElementById('actions-btn');
-    if (!actionsBtn) return;
-    e.preventDefault();
-    actionsBtn.click();
-    return;
-  }
-
-  // 'r' → remove tags. On the gallery this opens the Remove-tags dialog when
-  // a selection is active. On the detail page it enters tag-focus mode so
-  // arrow keys can cycle through individual tags and Enter triggers the per-
-  // tag remove button.
-  if (e.key === 'r' && !isInput) {
-    const bar = document.getElementById('batch-bar');
-    if (bar && bar.classList.contains('visible')) {
-      e.preventDefault();
-      openStripSelectedDialog();
-      return;
-    }
-    if (document.getElementById('detail-page')) {
-      e.preventDefault();
-      enterTagFocusMode();
-      return;
+    if (e.key === '[') { if (clickPagination('Prev')) { e.preventDefault(); return; } }
+    if (e.key === ']') { if (clickPagination('Next')) { e.preventDefault(); return; } }
+    if (e.key === 'G') { if (clickPagination('Last')) { e.preventDefault(); return; } }
+    if (e.key === 'p') {
+      var jp = document.querySelector('.page-jump');
+      if (jp) { e.preventDefault(); jp.click(); return; }
     }
   }
 
-  // 't' → auto-tag. On the gallery this opens the Auto-tag-on-selection
-  // dialog when the batch bar is up. On the detail page it clicks the
-  // header's Auto-tag button (which opens the per-image dialog). No-op when
-  // no taggers are configured (the .btn-autotag button isn't rendered).
-  if (e.key === 't' && !isInput) {
-    const bar = document.getElementById('batch-bar');
-    if (bar && bar.classList.contains('visible')) {
+  // Categories page
+  if (isCategoriesPage() && e.key === 'n') {
+    if (focusFirstSelector(['.add-cat-form input[name="name"]'])) { e.preventDefault(); return; }
+  }
+
+  // Settings page: 1-6 jump to section anchors.
+  if (isSettingsPage() && /^[1-6]$/.test(e.key)) {
+    var settingsAnchors = ['#general', '#galleries', '#tagger', '#auth', '#maintenance', '#schedule'];
+    var sec = document.querySelector(settingsAnchors[parseInt(e.key, 10) - 1]);
+    if (sec) { e.preventDefault(); sec.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+  }
+
+  // f / i toggles on the detail page (favorite / inbox archive).
+  if (e.key === 'f') {
+    var favBtn = document.querySelector('.btn-fav');
+    if (favBtn) { e.preventDefault(); favBtn.click(); return; }
+  }
+
+  // 'a' → context-dependent add-tag entry point. Detail tag-input focus
+  // takes priority over the Actions chooser. Selection branch lives in the
+  // same key with priority: selection > detail tag input > gallery chooser.
+  if (e.key === 'a' && !e.ctrlKey && !e.metaKey) {
+    if (batchBarVisible()) { e.preventDefault(); openTagSelectedDialog(); return; }
+    var tagInput = document.getElementById('tag-input');
+    if (tagInput) { e.preventDefault(); tagInput.focus(); return; }
+    var actionsBtn = document.getElementById('actions-btn');
+    if (actionsBtn) { e.preventDefault(); actionsBtn.click(); return; }
+  }
+
+  // 'r' → remove tags on selection / enter detail tag-focus mode.
+  if (e.key === 'r') {
+    if (batchBarVisible()) { e.preventDefault(); openStripSelectedDialog(); return; }
+    if (isDetailPage()) { e.preventDefault(); enterTagFocusMode(); return; }
+  }
+
+  // 't' → auto-tag on selection / open detail auto-tag dialog.
+  if (e.key === 't') {
+    if (batchBarVisible()) {
       if (!document.querySelector('.btn-autotag')) return;
-      e.preventDefault();
-      openAutotagSelectedDialog();
-      return;
+      e.preventDefault(); openAutotagSelectedDialog(); return;
     }
-    if (document.getElementById('detail-page')) {
-      const btn = document.querySelector('.detail-actions .btn-autotag');
-      if (!btn) return;
-      e.preventDefault();
-      btn.click();
-      return;
+    if (isDetailPage()) {
+      var btn = document.querySelector('.detail-actions .btn-autotag');
+      if (btn) { e.preventDefault(); btn.click(); return; }
     }
   }
 
-  // 'Delete' → delete current image on detail page
-  if ((e.key === 'Delete' || e.key === 'Del') && !isInput) {
+  // 'm' → move dialog (selection on the gallery; detail page).
+  if (e.key === 'm') {
+    if (batchBarVisible()) { e.preventDefault(); openMoveSelectedDialog(); return; }
+    if (isDetailPage()) {
+      var moveDlg = document.getElementById('move-image-dialog');
+      if (moveDlg && typeof openMoveImageDialog === 'function') {
+        e.preventDefault(); openMoveImageDialog(); return;
+      }
+    }
+  }
+
+  // 'i' → toggle inbox / archive (selection bulk dialog or detail toggle).
+  if (e.key === 'i') {
+    if (batchBarVisible()) {
+      if (typeof openInboxSelectedDialog === 'function') {
+        e.preventDefault(); openInboxSelectedDialog(); return;
+      }
+    }
+    if (isDetailPage()) {
+      var inboxBtn = document.querySelector('.btn-inbox');
+      if (inboxBtn) { e.preventDefault(); inboxBtn.click(); return; }
+    }
+  }
+
+  // Gallery view-level toggles (Shift modifiers).
+  if (isGalleryPage()) {
+    if (e.key === 'F') {
+      var fbtn = document.getElementById('fav-filter-btn');
+      if (fbtn) { e.preventDefault(); fbtn.click(); return; }
+    }
+    if (e.key === 'I') {
+      var ibtn = document.getElementById('inbox-filter-btn');
+      if (ibtn) { e.preventDefault(); ibtn.click(); return; }
+    }
+    if (e.key === 'R') {
+      var rbtn = document.getElementById('random-sort-btn');
+      if (rbtn) { e.preventDefault(); rbtn.click(); return; }
+    }
+    if (e.key === 'O') { if (cycleSort()) { e.preventDefault(); return; } }
+    if (e.key === 'D') { if (flipSortDirection()) { e.preventDefault(); return; } }
+    if (e.key === 'S' && !batchBarVisible()) {
+      var saveDlg = document.getElementById('save-search-dialog');
+      if (saveDlg) {
+        var si = document.getElementById('search-input');
+        var sq = document.getElementById('save-search-query');
+        var sp = document.getElementById('save-search-preview');
+        if (si && sq) sq.value = si.value;
+        if (si && sp) sp.textContent = si.value || '(empty)';
+        e.preventDefault(); saveDlg.showModal(); return;
+      }
+    }
+    if (e.key === '[') { if (clickPagination('Prev')) { e.preventDefault(); return; } }
+    if (e.key === ']') { if (clickPagination('Next')) { e.preventDefault(); return; } }
+    if (e.key === 'G') { if (clickPagination('Last')) { e.preventDefault(); return; } }
+    if (e.key === 'p') {
+      var jp2 = document.querySelector('.page-jump');
+      if (jp2) { e.preventDefault(); jp2.click(); return; }
+    }
+    if (e.key === 'Home') { if (jumpGridCursor('first')) { e.preventDefault(); return; } }
+    if (e.key === 'End')  { if (jumpGridCursor('last'))  { e.preventDefault(); return; } }
+  }
+
+  // 'Delete' → delete current image (detail) or selection (gallery).
+  if (e.key === 'Delete' || e.key === 'Del') {
+    if (batchBarVisible()) {
+      e.preventDefault();
+      if (typeof batchDeleteSelected === 'function') batchDeleteSelected();
+      return;
+    }
     var delBtn = document.getElementById('delete-image-btn');
-    if (delBtn) { e.preventDefault(); delBtn.click(); }
-    return;
+    if (delBtn) { e.preventDefault(); delBtn.click(); return; }
   }
 
   // Spacebar → play/pause the detail-page video, or toggle the focused
-  // thumbnail's selection on the gallery. Guarded by !isInput so it doesn't
-  // hijack spaces inside the tag or search inputs.
-  if (e.key === ' ' && !isInput) {
+  // thumbnail's selection on the gallery.
+  if (e.key === ' ') {
     var vid = document.querySelector('.detail-video');
     if (vid) {
       e.preventDefault();
@@ -175,86 +441,83 @@ document.addEventListener('keydown', function(e) {
     return;
   }
 
-  // 'h' → previous page, 'l' → next page in gallery
-  if ((e.key === 'h' || e.key === 'l') && !isInput) {
-    var pLinks = document.querySelectorAll('.pagination a');
-    if (e.key === 'h') {
-      var pPrev = Array.from(pLinks).find(function(a) { return a.textContent.indexOf('Prev') >= 0; });
-      if (pPrev) { e.preventDefault(); pPrev.click(); }
-    } else {
-      var pNext = Array.from(pLinks).find(function(a) { return a.textContent.indexOf('Next') >= 0; });
-      if (pNext) { e.preventDefault(); pNext.click(); }
-    }
+  // Backspace: detail-page back. Mirrors Esc's back step.
+  if (e.key === 'Backspace' && isDetailPage()) {
+    var detail2 = document.getElementById('detail-page');
+    e.preventDefault();
+    if (detail2 && detail2.dataset.ref && history.length > 1) { history.back(); return; }
+    var bl = document.querySelector('.back-link');
+    if (bl) bl.click();
+    else window.location.href = '/';
     return;
   }
 
-  // Arrow keys: navigate gallery grid or prev/next on detail page
-  if (!isInput && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-    // Detail-page tag-focus mode: arrows cycle the focused tag instead of
-    // navigating to the prev/next image. The per-image image arrows resume
-    // their default role as soon as the user exits the mode (Esc).
+  // o → open focused card (gallery) or open original in new tab (detail).
+  if (e.key === 'o') {
+    if (isDetailPage()) {
+      var dlA = document.querySelector('.detail-actions a[download]');
+      if (dlA) { e.preventDefault(); window.open(dlA.href, '_blank'); return; }
+    } else {
+      var foc = document.querySelector('.thumb-card.focused a');
+      if (foc) { e.preventDefault(); window.location.href = foc.href; return; }
+    }
+  }
+
+  // h j k l: vim aliases.
+  // Detail page: h/k = prev image, l/j = next image.
+  // Gallery: grid-cursor moves (h ← l → k ↑ j ↓).
+  if (e.key === 'h' || e.key === 'l' || e.key === 'j' || e.key === 'k') {
+    if (document.querySelector('#image-tags .tag-item.focused')) {
+      e.preventDefault();
+      cycleTagFocus((e.key === 'l' || e.key === 'j') ? 1 : -1);
+      return;
+    }
+    if (isDetailPage()) {
+      var dir = (e.key === 'l' || e.key === 'j') ? 'next' : 'prev';
+      if (navDetailImage(dir)) { e.preventDefault(); return; }
+    } else if (isGalleryPage()) {
+      var dx = 0, dy = 0;
+      if (e.key === 'h') dx = -1;
+      else if (e.key === 'l') dx = 1;
+      else if (e.key === 'k') dy = -1;
+      else if (e.key === 'j') dy = 1;
+      if (moveGridCursor(dx, dy)) { e.preventDefault(); return; }
+    }
+  }
+
+  // Arrow keys: tag-focus mode > detail prev/next > gallery grid moves.
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
     if (document.querySelector('#image-tags .tag-item.focused')) {
       e.preventDefault();
       cycleTagFocus(e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1);
       return;
     }
-    // Detail page: left/right = prev/next image
-    if (document.getElementById('detail-page')) {
-      if (e.key === 'ArrowLeft') {
-        var prev = document.querySelector('.nav-arrow[title^="Previous image"]');
-        if (prev) { e.preventDefault(); window.location.href = prev.href; }
-      } else if (e.key === 'ArrowRight') {
-        var next = document.querySelector('.nav-arrow[title^="Next image"]');
-        if (next) { e.preventDefault(); window.location.href = next.href; }
-      }
+    if (isDetailPage()) {
+      if (e.key === 'ArrowLeft') { if (navDetailImage('prev')) { e.preventDefault(); } return; }
+      if (e.key === 'ArrowRight') { if (navDetailImage('next')) { e.preventDefault(); } return; }
       return;
     }
-    // Gallery: arrow keys navigate grid (Up/Down by row, Left/Right by cell)
-    const cards = Array.from(document.querySelectorAll('.thumb-card'));
-    if (cards.length === 0) return;
-    const focused = document.querySelector('.thumb-card.focused');
-    let idx = focused ? cards.indexOf(focused) : -1;
-    if (idx < 0) idx = 0;
-    else {
-      // Calculate columns for Up/Down row navigation
-      var cols = 1;
-      if (cards.length > 1) {
-        var grid = document.querySelector('.thumb-grid');
-        if (grid && cards[0]) {
-          var cardW = cards[0].offsetWidth;
-          if (cardW > 0) cols = Math.max(1, Math.round(grid.offsetWidth / cardW));
-        }
-      }
-      if (e.key === 'ArrowRight') idx = Math.min(idx + 1, cards.length - 1);
-      else if (e.key === 'ArrowLeft') idx = Math.max(idx - 1, 0);
-      else if (e.key === 'ArrowDown') idx = Math.min(idx + cols, cards.length - 1);
-      else if (e.key === 'ArrowUp') idx = Math.max(idx - cols, 0);
+    if (isGalleryPage()) {
+      var ax = 0, ay = 0;
+      if (e.key === 'ArrowLeft') ax = -1;
+      else if (e.key === 'ArrowRight') ax = 1;
+      else if (e.key === 'ArrowUp') ay = -1;
+      else if (e.key === 'ArrowDown') ay = 1;
+      if (moveGridCursor(ax, ay)) { e.preventDefault(); return; }
     }
-    cards.forEach(function(c) { c.classList.remove('focused'); });
-    cards[idx].classList.add('focused');
-    cards[idx].scrollIntoView({ block: 'nearest' });
-    e.preventDefault();
-    return;
   }
 
-  // Enter on a tag in detail-page tag-focus mode: trigger the per-tag remove
-  // button. Falls through to the gallery's open-focused-card handler when no
-  // tag is focused.
-  if (e.key === 'Enter' && !isInput) {
+  // Enter: tag-focus mode remove > gallery open focused card.
+  if (e.key === 'Enter') {
     var focusedTag = document.querySelector('#image-tags .tag-item.focused');
     if (focusedTag) {
       e.preventDefault();
-      var btn = focusedTag.querySelector('.tag-remove-btn');
-      if (btn) btn.click();
+      var tagBtn = focusedTag.querySelector('.tag-remove-btn');
+      if (tagBtn) tagBtn.click();
       return;
     }
-  }
-
-  // Enter: open focused card
-  if (e.key === 'Enter' && !isInput) {
-    const focused = document.querySelector('.thumb-card.focused a');
-    if (focused) { window.location.href = focused.href; }
-    return;
+    var focusedCard = document.querySelector('.thumb-card.focused a');
+    if (focusedCard) { window.location.href = focusedCard.href; return; }
   }
 });
 
@@ -479,12 +742,17 @@ function enterTagFocusMode() {
   if (document.querySelector('#image-tags .tag-item.focused')) return;
   items[0].classList.add('focused');
   items[0].scrollIntoView({block: 'nearest'});
+  // Mode flag survives an htmx swap that strips the .focused class on the
+  // <li> - the Escape handler keys off body.tag-focus to know we're still
+  // in mode.
+  document.body.classList.add('tag-focus');
 }
 
 function exitTagFocusMode() {
   document.querySelectorAll('#image-tags .tag-item.focused').forEach(function(li) {
     li.classList.remove('focused');
   });
+  document.body.classList.remove('tag-focus');
 }
 
 function cycleTagFocus(step) {
@@ -678,12 +946,13 @@ function initFolderTree() {
     currentFolder = folderMatch[1] || folderMatch[2];
   }
 
-  // Force the Source section open when the current query targets a source,
-  // and its AI subtree when the query picks an AI variant.
-  var sourceMatch = q.match(/(?:^|\s)source:([a-z0-9_,-]+)/i);
+  // Force the AI source section open when the current query targets an
+  // ai: predicate, and its sub-tree when the query picks an a1111 / comfyui
+  // / any variant.
+  var sourceMatch = q.match(/(?:^|\s)ai:([a-z0-9_,-]+)/i);
   var sourceVal = sourceMatch ? sourceMatch[1].toLowerCase() : '';
   var sourceOpen = sourceVal !== '';
-  var sourceAIOpen = sourceVal === 'ai' || sourceVal === 'a1111' || sourceVal === 'comfyui';
+  var sourceAIOpen = sourceVal === 'any' || sourceVal === 'a1111' || sourceVal === 'comfyui';
 
   // Folder tree main toggle (show/hide whole tree).
   // Use onclick assignment (not addEventListener) to prevent duplicate handlers
@@ -707,7 +976,7 @@ function initFolderTree() {
     var firstInit = !btn.dataset.folderInit;
     btn.dataset.folderInit = '1';
     var urlDriven = (currentFolder && (currentFolder === path || currentFolder.startsWith(path + '/'))) ||
-      (path === '__source_ai__' && sourceAIOpen);
+      (path === '__ai_source__' && sourceAIOpen);
     var shouldExpand = expanded.has(path) || (firstInit && urlDriven);
 
     if (shouldExpand) {
@@ -716,7 +985,7 @@ function initFolderTree() {
       // Force the parent tree open only when navigation drives this
       // expansion. The parent's open/close otherwise stays under the
       // user's control via initSectionToggle's own cookie key.
-      if (firstInit && urlDriven && treeList && path !== '__source_ai__') {
+      if (firstInit && urlDriven && treeList && path !== '__ai_source__') {
         treeList.style.display = '';
         if (treeToggle) treeToggle.textContent = '▼';
       }
@@ -1181,7 +1450,24 @@ function separateNewTags(container) {
 
 document.body.addEventListener('htmx:afterSettle', function(e) {
   var el = e.detail ? e.detail.elt : null;
-  if (el && el.id === 'image-tags') separateNewTags(el);
+  if (!el || el.id !== 'image-tags') return;
+  separateNewTags(el);
+  // Re-anchor tag-focus after the swap. The deleted-row's <li> takes the
+  // .focused class with it, so without this the next ArrowRight / Enter
+  // has no cursor to act on and the user has to press r again to keep
+  // deleting.
+  if (document.body.classList.contains('tag-focus') &&
+      !el.querySelector('.tag-item.focused')) {
+    var first = el.querySelector('.tag-item');
+    if (first) {
+      first.classList.add('focused');
+      first.scrollIntoView({block: 'nearest'});
+    } else {
+      // Image has no tags left - leave the mode rather than holding it
+      // open against an empty list.
+      document.body.classList.remove('tag-focus');
+    }
+  }
 });
 
 document.addEventListener('DOMContentLoaded', function() {

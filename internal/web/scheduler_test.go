@@ -5,6 +5,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,6 +174,36 @@ func TestScheduledRemoveOrphans_RemovesStrayFiles(t *testing.T) {
 	thumb := filepath.Join(cx.ThumbnailsPath, gallery.ThumbnailPath(cx.ThumbnailsPath, id)[len(cx.ThumbnailsPath)+1:])
 	if _, err := os.Stat(thumb); err != nil {
 		t.Errorf("real thumbnail should survive sweep: %v", err)
+	}
+}
+
+// TestScheduledRemoveOrphans_ReportsViaJobManager pins the move from
+// the old "fire-and-forget" shape to a job-slot Complete summary so
+// the status bar surfaces what ran and Cancel can interrupt it.
+func TestScheduledRemoveOrphans_ReportsViaJobManager(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+
+	// One orphan so Complete reports a non-zero count.
+	orphanJpg := filepath.Join(cx.ThumbnailsPath, "424242.jpg")
+	if err := os.WriteFile(orphanJpg, []byte("orphan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.scheduledRemoveOrphans(cx)
+
+	state := srv.jobs.Get()
+	if state == nil {
+		t.Fatal("expected a job state after scheduledRemoveOrphans")
+	}
+	if state.Running {
+		t.Error("job should be marked done, not running")
+	}
+	if state.JobType != "prune-thumbs" {
+		t.Errorf("JobType = %q, want prune-thumbs", state.JobType)
+	}
+	if !strings.Contains(state.Summary, "removed 1 orphaned thumbnail") {
+		t.Errorf("Summary = %q, want a line mentioning 1 removed", state.Summary)
 	}
 }
 

@@ -157,6 +157,94 @@ func TestConcurrentReads(t *testing.T) {
 	wg.Wait()
 }
 
+// A library predating the inbox column must boot cleanly and end up with
+// is_inbox=0 on every pre-existing row, so the operator's whole gallery
+// doesn't dump into the inbox view on first launch. Asserts the column
+// is added, the partial index is registered, and the backfill flips
+// every row to 0.
+func TestBootstrapInboxMigration(t *testing.T) {
+	db := openTestDB(t)
+	// Stand up a stripped-down images table missing is_inbox to mimic an
+	// old library. The real schema has more columns; only the ones used
+	// by the migration's UPDATE / pragma_table_info / CREATE INDEX path
+	// matter here.
+	if _, err := db.Write.Exec(`
+		CREATE TABLE images (
+		    id             INTEGER PRIMARY KEY,
+		    sha256         TEXT    NOT NULL UNIQUE,
+		    canonical_path TEXT    NOT NULL,
+		    folder_path    TEXT    NOT NULL DEFAULT '',
+		    file_type      TEXT    NOT NULL,
+		    width          INTEGER,
+		    height         INTEGER,
+		    file_size      INTEGER NOT NULL,
+		    is_missing     INTEGER NOT NULL DEFAULT 0,
+		    is_favorited   INTEGER NOT NULL DEFAULT 0,
+		    auto_tagged_at TEXT,
+		    source_type    TEXT    NOT NULL DEFAULT 'none',
+		    ingested_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+		t.Fatalf("seed pre-feature images table: %v", err)
+	}
+	for i := 1; i <= 3; i++ {
+		if _, err := db.Write.Exec(
+			`INSERT INTO images (sha256, canonical_path, file_type, file_size) VALUES (?, ?, 'png', 1024)`,
+			"sha"+string(rune('a'+i)), "/tmp/"+string(rune('a'+i)),
+		); err != nil {
+			t.Fatalf("seed row %d: %v", i, err)
+		}
+	}
+
+	if err := Bootstrap(db); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	var n int
+	if err := db.Read.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('images') WHERE name = 'is_inbox'`,
+	).Scan(&n); err != nil {
+		t.Fatalf("read column metadata: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("is_inbox column not added by Bootstrap")
+	}
+
+	var notArchived int
+	if err := db.Read.QueryRow(`SELECT COUNT(*) FROM images WHERE is_inbox != 0`).Scan(&notArchived); err != nil {
+		t.Fatalf("count is_inbox: %v", err)
+	}
+	if notArchived != 0 {
+		t.Errorf("expected every pre-existing row to be is_inbox=0 after upgrade, got %d not archived", notArchived)
+	}
+
+	var idxN int
+	if err := db.Read.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_images_inbox_visible'`,
+	).Scan(&idxN); err != nil {
+		t.Fatalf("read index metadata: %v", err)
+	}
+	if idxN != 1 {
+		t.Errorf("idx_images_inbox_visible not registered after Bootstrap")
+	}
+
+	// Re-running Bootstrap on the now-migrated DB must be a no-op (the
+	// pre-count branch shouldn't fire a second backfill against rows the
+	// user has since flipped back into the inbox).
+	if _, err := db.Write.Exec(`UPDATE images SET is_inbox = 1 WHERE id = 1`); err != nil {
+		t.Fatalf("simulate user toggle: %v", err)
+	}
+	if err := Bootstrap(db); err != nil {
+		t.Fatalf("re-Bootstrap: %v", err)
+	}
+	var stillInbox int
+	if err := db.Read.QueryRow(`SELECT is_inbox FROM images WHERE id = 1`).Scan(&stillInbox); err != nil {
+		t.Fatalf("read after re-bootstrap: %v", err)
+	}
+	if stillInbox != 1 {
+		t.Errorf("user-toggled is_inbox=1 row was reset to 0 by re-Bootstrap")
+	}
+}
+
 func TestShrinkMemory(t *testing.T) {
 	db := openTestDB(t)
 	if err := Bootstrap(db); err != nil {

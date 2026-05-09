@@ -13,6 +13,8 @@ package searchkw
 // is one edit here.
 var Keywords = []string{
 	"fav",
+	"inbox",
+	"ai",
 	"source",
 	"cat",
 	"width",
@@ -53,7 +55,8 @@ func IsKeyword(s string) bool {
 // expansion.
 var Expansions = map[string][]string{
 	"fav":        {"true", "false"},
-	"source":     {"a1111", "comfyui", "none", "ai", "sd"},
+	"inbox":      {"true", "false"},
+	"ai":         {"a1111", "comfyui", "none", "any", "sd"},
 	"width":      {">=", "<=", ">", "<", "="},
 	"height":     {">=", "<=", ">", "<", "="},
 	"date":       {">", "<", ">=", "<=", ".."},
@@ -70,7 +73,9 @@ var Expansions = map[string][]string{
 // label applied at render time.
 var Descriptions = map[string]string{
 	"fav":        "favorite images",
-	"source":     "generation source",
+	"inbox":      "in inbox",
+	"ai":         "AI generation tool",
+	"source":     "external source label",
 	"cat":        "by tag category",
 	"width":      "image width",
 	"height":     "image height",
@@ -111,11 +116,11 @@ var ExpansionDescriptions = map[string]map[string]string{
 		"<":  "less than",
 		"=":  "exactly",
 	},
-	"source": {
+	"ai": {
 		"a1111":   "A1111 / Forge",
 		"comfyui": "ComfyUI",
 		"none":    "no metadata",
-		"ai":      "any AI tool",
+		"any":     "any AI tool",
 		"sd":      "alias of a1111",
 	},
 }

@@ -1,5 +1,68 @@
 # Changelog
 
+## [v1.6.0] - 2026-05-09
+### Added
+- Inbox/archive triage. Newly ingested or uploaded images land in the inbox (`is_inbox=1`); the user flips them to archived once curated. Pre-existing libraries upgrade as fully archived (the migration backfills `is_inbox=0` so nothing dumps into the inbox view on first boot). Surfaces: `inbox:true` / `inbox:false` search keywords, a toolbar `Inbox` toggle with a live count, a thumbnail grid badge, a detail-page button (`i` shortcut), and a single Send-to-inbox / Archive batch toggle on the selection bar and the Actions chooser.
+- Upload page: inbox backlog count rendered next to a `View inbox` link.
+- Favourite styling switched from the yellow ★ glyph to a red heart (♥/♡) across the gallery grid overlay, the toolbar `Favourites` filter button, and the detail-page action row. 
+- Per-image external metadata: new `images.source` (free-form provenance label, e.g. site name) and `images.url` (canonical web URL) columns, edited from the detail page via small `[edit]` pop-ins. The URL field is rendered as an `http(s)`-only target=_blank link.
+- Search keyword `source:my_label` for exact-match against the new `images.source` field, riding `idx_images_source`.
+- Keyboard shortcut overhault:
+  - Keyboard shortcut overlay: press `?` anywhere to display the cheat-sheet.
+  - Chord-based navigation: `g g`, `g u`, `g c`, `g t`, `g s`, `g h` jump to gallery / upload / categories / tags / settings / help.
+  - Vim aliases: `h j k l` for the gallery grid cursor, `[` and `]` for prev/next page, `g g` / `G` for first/last page, `p` for the page-jump dialog. Detail-page `h l j k` alias the prev/next-image arrows.
+  - Gallery view-level shortcuts: `F` / `I` toggle the favorites / inbox filters, `R` random-sorts, `O` cycles sort, `D` flips direction, `S` opens save-search directly, `Home` / `End` jump to the first / last visible thumbnail.
+  - Selection-bar shortcuts: `m` moves, `i` toggles inbox/archive, `Delete` deletes (with confirm), in addition to the existing `a` / `r` / `t`.
+  - Detail page shortcuts: `m` opens the move dialog, `o` opens the original in a new tab, `Backspace` returns to the gallery.
+  - Tags page shortcuts: `n` opens the create-tag dialog, `N` opens the create-alias dialog, page navigation parity with the gallery.
+  - Categories page: `n` focuses the Add category form. Settings page: `1`-`6` jump to the section headings.
+  - Anywhere: `Y` clicks the topbar Sync button, `,` / `.` walk the SFW ceiling, `\` opens the gallery-switch dialog when more than one gallery is configured.
+- Settings → Stats section: per-gallery DB size and a memory containment tree.
+- Footer: server-side render time displayed.
+
+### Changed
+- Detail-page metadata row labelled `Source` (showing the ingest origin) renamed to `Added via`, freeing the `Source` row for the new operator-edited label.
+- Sidebar heading `Source` renamed to `AI source` to disambiguate from the new free-form source field.
+- Search keyword `source:` renamed to `ai:` for the AI-generation-tool filter family. The omnibus value `source:ai` becomes `ai:any`. The other values (`a1111`, `comfyui`, `none`, `sd`) are unchanged. Saved searches and bookmarks must be updated by hand; there is no auto-rewrite.
+- REST API field `source` on `POST /api/v1/images` and `POST /api/v1/images/{id}/tags` renamed to `via` to match the per-image `Added via` semantics.
+- Tags-page row button `Merge→` relabelled `Alias→` (and its dialog prompt to `Alias <name> → to:` with submit text `Alias`).
+- Detail page: implied tags and the alias section under the image fold into one collapsed `<details>` (closed by default). Summary text is `Implied tags`, `Aliases`, or `Implied tags and aliases` depending on what is present. Alias chips drop the merge-arrow + canonical span.
+- Manual rating-tag adds now overwrite any existing rating on the image; the auto-tagger continues to keep the highest-rank rating it predicted.
+- `GET /api/v1/tags` defaults to `show_zero=1` to match the /tags page; pass `show_zero=0` to hide declared-but-unused tags.
+- /tags page row controls: Rename / Alias / Delete are hidden on the four canonical rating rows (they're reserved); the Category cell on rating rows and on alias rows is rendered read-only. Delete on a rating row still works as a usage-strip.
+
+### Fixed
+- /tags page: filter and pagination state preserved across rename, alias create, and alias/repoint merge so the operator stays on the same view after a write.
+- /tags page: past-the-end page numbers clamp to the last populated page instead of returning empty.
+- /tags page: tokens that match a category prefix only (`character:`) surface the category-only filter instead of being silently dropped.
+- Detail page: prev/next layout no longer jumps when one neighbour is missing.
+- Detail page: tag-focus mode survives the post-delete htmx swap; the cursor re-anchors to the next tag in the row.
+- Detail page: partial-duplicate tag adds surface the duplicate token instead of silently dropping it.
+- Gallery / detail: download, favourite, inbox, and external buttons share the same height across the action row; the favourite (♥/♡) glyph swap no longer reflows the row.
+- Gallery: thumbnail badges share identical pixel dimensions (square, centred) so a card lines up with its peers.
+- Search: gallery adjacency cache is invalidated on every membership write (tag add/remove, batch ops, alias merges) and on every `InvalidateCaches` call, so navigation no longer surfaces stale neighbours.
+- Search: rating-ceiling chain is dropped from the loose-bound when the user expression has no upper bound, so cookie-applied SFW chains stop adding redundant work; ceiling+search COUNT defers to the slow exact COUNT instead of an inaccurate fast estimate.
+- Search: `RankInQuery` fires on random sort under the existing gates (was over-conservative) and the cold-path worst case is bounded so a popular-tag detail page no longer walks an unbounded carrier set.
+- Detail back link: page number aligns with the current image when the adjacency cache is warm.
+- Scheduler: orphan-thumbnail sweep takes a job slot and observes context cancellation.
+- API: `addImageTags` / `removeImageTags` pre-check image existence and return 404 instead of a write error; `POST /tagger/{name}` validates the tagger name from the URL against an allowlist; OpenAPI spec updated for the `source` / `via` / `url` rename.
+
+### Removed
+- BREAKING: search keyword `source:` (the AI filter form) is gone; use `ai:` instead. `source:` now means exact-match against the new `images.source` field.
+- BREAKING: REST API field `source` is removed entirely from the two endpoints above. Use `via`. No deprecation period.
+- BREAKING: gallery `h` / `l` page-navigation shortcuts; use `[` / `]` instead. The vim letters now alias the grid cursor.
+- Keyboard shortcuts `PgUp` / `PgDn` (use `[` / `]`), `c` (use `g c`), `g r` (use `R`), and the detail-page `d` shortcut are dropped to match the new chord scheme.
+
+### Internal
+- New `idx_images_source(source)` and renamed `idx_images_source_type(source_type)` (the previous `idx_images_source` index was on `source_type`).
+- `fastCountSource` helper renamed to `fastCountAI`; the slow-path `buildFilterExpr` flips `case "source":` to `case "ai":` and adds a separate `source:` exact-match branch.
+- Search adjacency cache: gallery match-id list cached for adjacency reuse and reused by the gallery handler for multi-page searches; cap raised to 20 000 IDs; populated asynchronously through a singleflight gate.
+- Search: covering index on `image_tags(tag_id, image_id)`; recent-id bound on multi-leg INTERSECT for newest sort (skipped when `order=asc`); multi-leg AND-driver INTERSECT capped at the two least-popular legs; AND-driver skipped in adjacency when the bucket gate fires; adjacency bucket gate skipped when the candidate set is small.
+- Search: `suggestContextCap` tightened to 1 000 to bound the with-context autocomplete query under contention.
+- DB: SQLite page cache capped at 2 MiB per connection; per-conn cache trimmed and idle write-pool conns closed after a quiet period.
+- Tags: `ChunkedDeleteWithTagRecalc` extracted and folded into three callers; `suggestUsageRanked` extracted, replacing `search.suggestByUsage`; `mergeTagsPost` routes the canonical input through `resolveCanonicalTag` so alias / category resolution lines up across the tag-mutation surface.
+- Maintenance: `prune-orphaned-thumbnails` runs as a background job through the scheduler instead of inline.
+
 ## [v1.5.1] - 2026-05-05
 ### Added
 - Camie v2 auto-tagger as a third catalog entry (`camie-v2`). 789 MB ONNX, 70k+ tags across 7 categories. It's currently the only supported model that natively predicts artist (~7k tags) and copyright (~5k tags). 

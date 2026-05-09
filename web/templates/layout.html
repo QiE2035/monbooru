@@ -91,7 +91,7 @@
       {{$active := .ActiveRating}}{{$csrf := .CSRFToken}}{{range $i, $lv := .RatingLevels}}{{if $i}}<span class="footer-sep">·</span>{{end}}{{if eq $lv.Value $active}}<span class="footer-rating-active">[{{$lv.Label}}]</span>{{else}}<form hx-post="/internal/rating-ceiling?level={{$lv.Value}}" hx-swap="none" hx-on::after-request="window.location.reload()" style="display:inline"><input type="hidden" name="_csrf" value="{{$csrf}}"><button type="submit" class="footer-rating-link">{{$lv.Label}}</button></form>{{end}}{{end}}
     </div>
     <div id="footer-right">
-      <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="/api/v1/docs" target="_blank" rel="noopener">API</a>
+      page loaded in <span id="page-load-ms">{{pageLoadMs .RequestStart}}</span> ms · <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="/api/v1/docs" target="_blank" rel="noopener">API</a>
     </div>
   </footer>
   <dialog id="confirm-dialog">
@@ -100,6 +100,110 @@
     <div class="dialog-actions">
       <button type="button" id="confirm-dialog-ok" class="btn-danger">OK</button>
       <button type="button" id="confirm-dialog-cancel">Cancel</button>
+    </div>
+  </dialog>
+  <dialog id="shortcuts-help">
+    <h3>Keyboard shortcuts</h3>
+    <div class="shortcuts-help-grid">
+      <section data-surface="anywhere">
+        <h4>Anywhere</h4>
+        <table>
+          <tbody>
+            <tr><td><kbd>?</kbd></td><td>Toggle this overlay</td></tr>
+            <tr><td><kbd>s</kbd> / <kbd>/</kbd></td><td>Focus search</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>Close dialog · clear selection · back</td></tr>
+            <tr><td><kbd>g g</kbd></td><td>Gallery</td></tr>
+            <tr><td><kbd>g u</kbd></td><td>Upload</td></tr>
+            <tr><td><kbd>g c</kbd></td><td>Categories</td></tr>
+            <tr><td><kbd>g t</kbd></td><td>Tags</td></tr>
+            <tr><td><kbd>g s</kbd></td><td>Settings</td></tr>
+            <tr><td><kbd>g h</kbd></td><td>Help</td></tr>
+            <tr><td><kbd>Y</kbd></td><td>Sync gallery</td></tr>
+            <tr><td><kbd>,</kbd> / <kbd>.</kbd></td><td>Rating ceiling: more permissive / strict</td></tr>
+            <tr><td><kbd>\</kbd></td><td>Switch gallery</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section data-surface="gallery">
+        <h4>Gallery</h4>
+        <table>
+          <tbody>
+            <tr><td><kbd>↑ ↓ ← →</kbd> / <kbd>h j k l</kbd></td><td>Move grid cursor</td></tr>
+            <tr><td><kbd>Enter</kbd> / <kbd>o</kbd></td><td>Open focused image</td></tr>
+            <tr><td><kbd>Space</kbd></td><td>Toggle thumbnail selection</td></tr>
+            <tr><td><kbd>Home</kbd> / <kbd>End</kbd></td><td>First / last visible thumbnail</td></tr>
+            <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>Previous / next page</td></tr>
+            <tr><td><kbd>g g</kbd> / <kbd>G</kbd></td><td>First / last page</td></tr>
+            <tr><td><kbd>p</kbd></td><td>Page-jump dialog</td></tr>
+            <tr><td><kbd>F</kbd> / <kbd>I</kbd></td><td>Toggle favorites / inbox filter</td></tr>
+            <tr><td><kbd>R</kbd></td><td>Random sort</td></tr>
+            <tr><td><kbd>O</kbd> / <kbd>D</kbd></td><td>Cycle sort / flip direction</td></tr>
+            <tr><td><kbd>a</kbd></td><td>Actions chooser</td></tr>
+            <tr><td><kbd>S</kbd></td><td>Save search dialog</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>A</kbd></td><td>Select all visible</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section data-surface="selection">
+        <h4>Selection active</h4>
+        <table>
+          <tbody>
+            <tr><td><kbd>a</kbd></td><td>Add tags</td></tr>
+            <tr><td><kbd>r</kbd></td><td>Remove tags</td></tr>
+            <tr><td><kbd>t</kbd></td><td>Auto-tag</td></tr>
+            <tr><td><kbd>m</kbd></td><td>Move</td></tr>
+            <tr><td><kbd>i</kbd></td><td>Toggle inbox / archive</td></tr>
+            <tr><td><kbd>Delete</kbd></td><td>Delete (with confirm)</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>Clear selection</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section data-surface="detail">
+        <h4>Image detail</h4>
+        <table>
+          <tbody>
+            <tr><td><kbd>← →</kbd> / <kbd>h l</kbd> / <kbd>j k</kbd></td><td>Previous / next image</td></tr>
+            <tr><td><kbd>Esc</kbd> / <kbd>Backspace</kbd></td><td>Back to gallery</td></tr>
+            <tr><td><kbd>o</kbd></td><td>Open original (new tab)</td></tr>
+            <tr><td><kbd>a</kbd></td><td>Focus tag input</td></tr>
+            <tr><td><kbd>r</kbd></td><td>Tag-focus mode</td></tr>
+            <tr><td><kbd>t</kbd></td><td>Auto-tag dialog</td></tr>
+            <tr><td><kbd>f</kbd> / <kbd>i</kbd></td><td>Toggle favorite / inbox</td></tr>
+            <tr><td><kbd>m</kbd></td><td>Move dialog</td></tr>
+            <tr><td><kbd>Delete</kbd></td><td>Delete image</td></tr>
+            <tr><td><kbd>Space</kbd></td><td>Play / pause video</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section data-surface="tags">
+        <h4>Tags page</h4>
+        <table>
+          <tbody>
+            <tr><td><kbd>s</kbd></td><td>Focus tag filter</td></tr>
+            <tr><td><kbd>n</kbd> / <kbd>N</kbd></td><td>New tag / new alias</td></tr>
+            <tr><td><kbd>[</kbd> / <kbd>]</kbd> · <kbd>g g</kbd> / <kbd>G</kbd> · <kbd>p</kbd></td><td>Page navigation</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section data-surface="categories">
+        <h4>Categories page</h4>
+        <table>
+          <tbody>
+            <tr><td><kbd>n</kbd></td><td>Focus Add category</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section data-surface="settings">
+        <h4>Settings page</h4>
+        <table>
+          <tbody>
+            <tr><td><kbd>1</kbd>-<kbd>6</kbd></td><td>Jump to section heading</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" onclick="document.getElementById('shortcuts-help').close()">Close</button>
     </div>
   </dialog>
   <dialog id="page-jump-dialog">

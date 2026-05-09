@@ -56,9 +56,16 @@ CREATE TABLE IF NOT EXISTS images (
     file_size      INTEGER NOT NULL,
     is_missing     INTEGER NOT NULL DEFAULT 0,
     is_favorited   INTEGER NOT NULL DEFAULT 0,
+    -- New ingests land in the inbox (1) for triage; archived rows sit at 0.
+    -- Matching idx_images_inbox_visible is created in db.go Bootstrap so the
+    -- migration's ALTER TABLE on existing libraries runs before the index
+    -- references the new column.
+    is_inbox       INTEGER NOT NULL DEFAULT 1,
     auto_tagged_at TEXT,
     source_type    TEXT    NOT NULL DEFAULT 'none',
     origin         TEXT    NOT NULL DEFAULT 'ingest',
+    source         TEXT    NOT NULL DEFAULT '',
+    url            TEXT    NOT NULL DEFAULT '',
     ingested_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
@@ -125,7 +132,14 @@ CREATE INDEX IF NOT EXISTS idx_tags_category     ON tags(category_id);
 CREATE INDEX IF NOT EXISTS idx_tags_usage        ON tags(usage_count DESC);
 CREATE INDEX IF NOT EXISTS idx_tags_active_usage ON tags(usage_count DESC, name) WHERE is_alias = 0;
 CREATE INDEX IF NOT EXISTS idx_tags_alias_canonical ON tags(canonical_tag_id, name) WHERE is_alias = 1;
-CREATE INDEX IF NOT EXISTS idx_image_tags_tag    ON image_tags(tag_id);
+-- Composite covering index: a `tag_id = ?` lookup gets `image_id`
+-- straight from the index entry, so the multi-leg INTERSECT in the
+-- AND-driver doesn't pay one row-fetch per matched image. The
+-- `image_id` suffix also makes `tag_id = ? AND image_id >= ?` a real
+-- range seek for the recent-id-bounded INTERSECT shape. This index
+-- supersedes the older single-column `idx_image_tags_tag(tag_id)`;
+-- Bootstrap drops that one explicitly when upgrading.
+CREATE INDEX IF NOT EXISTS idx_image_tags_tag_image ON image_tags(tag_id, image_id);
 CREATE INDEX IF NOT EXISTS idx_image_tags_image  ON image_tags(image_id);
 CREATE INDEX IF NOT EXISTS idx_tag_implications_implied ON tag_implications(implied_tag_id);
 CREATE INDEX IF NOT EXISTS idx_image_tags_user_tag ON image_tags(tag_id) WHERE is_auto = 0;
@@ -134,7 +148,11 @@ CREATE INDEX IF NOT EXISTS idx_image_tags_auto_tagger ON image_tags(tagger_name)
 CREATE INDEX IF NOT EXISTS idx_images_sha256     ON images(sha256);
 CREATE INDEX IF NOT EXISTS idx_images_ingested   ON images(ingested_at DESC);
 CREATE INDEX IF NOT EXISTS idx_images_favorited  ON images(is_favorited);
-CREATE INDEX IF NOT EXISTS idx_images_source     ON images(source_type);
+CREATE INDEX IF NOT EXISTS idx_images_source_type ON images(source_type);
+-- idx_images_source(source) is created in db.Bootstrap so the migration's
+-- ALTER TABLE ADD COLUMN source on libraries that predate the column
+-- runs before this index references it (schema.sql is executed before
+-- ensureColumn).
 CREATE INDEX IF NOT EXISTS idx_images_missing    ON images(is_missing);
 CREATE INDEX IF NOT EXISTS idx_images_folder     ON images(folder_path);
 CREATE INDEX IF NOT EXISTS idx_images_folder_visible ON images(folder_path) WHERE is_missing = 0;
