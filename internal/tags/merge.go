@@ -147,7 +147,31 @@ func (s *Service) MergeTags(aliasID, canonicalID int64) error {
 	//
 	// Step 1: insert canonical-side rows for images that don't already
 	// have one. INSERT OR IGNORE keeps the existing canonical when the
-	// image already had it, so no double-count.
+	// image already had it, so no double-count. Capture the image_ids
+	// that didn't already carry the canonical so step (e) below can fan
+	// out the canonical's implications onto them.
+	rows, err := tx.Query(
+		`SELECT image_id FROM image_tags WHERE tag_id = ?
+		 AND image_id NOT IN (SELECT image_id FROM image_tags WHERE tag_id = ?)`,
+		aliasID, canonicalID,
+	)
+	if err != nil {
+		return fmt.Errorf("merge enumerate alias-only images: %w", err)
+	}
+	var newCarrierIDs []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("merge scan alias-only image: %w", err)
+		}
+		newCarrierIDs = append(newCarrierIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("merge iterate alias-only images: %w", err)
+	}
+
 	if _, err := tx.Exec(
 		`INSERT OR IGNORE INTO image_tags (image_id, tag_id, is_auto, is_implied, confidence, tagger_name)
 		 SELECT image_id, ?, is_auto, is_implied, confidence, tagger_name
@@ -212,6 +236,17 @@ func (s *Service) MergeTags(aliasID, canonicalID int64) error {
 		canonicalID, canonicalID,
 	); err != nil {
 		return err
+	}
+
+	// (e) Fan out the canonical's implication closure onto images that
+	// only carried the alias. Without this an image previously tagged
+	// only with the alias ends up with the canonical but none of its
+	// declared implied children, and a later removeTagFromImageTx walk
+	// on that parent has no is_implied=1 rows to sweep.
+	for _, imageID := range newCarrierIDs {
+		if err := fanOutImpliedTxImpl(tx, imageID, canonicalID, s.ratingCatID, 0); err != nil {
+			return fmt.Errorf("merge fan out implications onto image %d: %w", imageID, err)
+		}
 	}
 
 	return tx.Commit()

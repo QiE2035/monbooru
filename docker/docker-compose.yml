@@ -1,10 +1,10 @@
 services:
   monbooru:
     container_name: monbooru
-    # you can use monbooru:latest-cuda if you have a CUDA compatible GPU for faster auto-tagging
+
+    # you can use monbooru:latest-cuda if you have a CUDA compatible GPU for faster auto-tagging 
     image: ghcr.io/leqwin/monbooru:latest
-    ports:
-      - "127.0.0.1:8080:8080"
+
     # if using CUDA, pass the GPU to the container
     #deploy:
     #  resources:
@@ -13,17 +13,23 @@ services:
     #        - driver: nvidia
     #          count: all     
     #          capabilities: [gpu]
+
+    ## Run as your host user so files written to bind-mounted volumes land owned by you on the host. 
+    ## You may need to comment this line out if using CUDA
+    user: "1000:1000"
+
+    ports:
+      - "127.0.0.1:8080:8080"
     security_opt:
       - no-new-privileges:true
+
+    ## Drop all capabilities, only keep CHOWN and DAC_OVERRIDE so monbooru can set permissions for files in the galleries
     cap_drop:
       - ALL
     cap_add:
       - CHOWN
-      - FOWNER
-      - SETGID
-      - SETUID
-      - DAC_READ_SEARCH
       - DAC_OVERRIDE
+    
     volumes:
       - /path/to/your/models:/models:ro
       - /path/to/your/gallery:/gallery

@@ -28,6 +28,7 @@
       <select name="sort" id="search-sort">
         <option value="newest"   {{if eq .BackSort "newest"}}selected{{end}}>Newest</option>
         <option value="filesize" {{if eq .BackSort "filesize"}}selected{{end}}>File size</option>
+        <option value="order"    {{if eq .BackSort "order"}}selected{{end}}>Order</option>
       </select>
       <select name="order">
         <option value="desc" {{if ne .BackOrder "asc"}}selected{{end}}>↓</option>
@@ -146,6 +147,53 @@
     </form>
   </dialog>
 
+  <dialog id="external-collection-dialog">
+    <form hx-post="/images/{{.Image.ID}}/external"
+          hx-target="#external-collection-error"
+          hx-swap="innerHTML"
+          hx-on::after-request="if(event.target===this&&event.detail.xhr.status===204)document.getElementById('external-collection-dialog').close()">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <p>Edit <strong>Collection</strong></p>
+      <div class="field">
+        <label>Collection label (max 200 chars)</label>
+        <div class="series-input-wrap">
+          <input type="text" name="collection" id="external-collection-input" maxlength="200" autocomplete="off"
+                 hx-get="/internal/collection/suggest"
+                 hx-trigger="input changed delay:200ms"
+                 hx-target="#external-collection-suggest"
+                 hx-swap="innerHTML"
+                 hx-vals='js:{prefix: document.getElementById("external-collection-input").value}'
+                 onkeydown="handleSuggestKey(event, 'external-collection-suggest', 'external-collection-input')">
+          <div id="external-collection-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
+        </div>
+      </div>
+      <div id="external-collection-error"></div>
+      <div class="dialog-actions">
+        <button type="submit">Save</button>
+        <button type="button" onclick="document.getElementById('external-collection-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="external-order-dialog">
+    <form hx-post="/images/{{.Image.ID}}/external"
+          hx-target="#external-order-error"
+          hx-swap="innerHTML"
+          hx-on::after-request="if(event.detail.xhr.status===204)document.getElementById('external-order-dialog').close()">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <p>Edit <strong>Order within collection</strong></p>
+      <div class="field">
+        <label>Order (optional, 1 or higher; leave blank to clear)</label>
+        <input type="number" name="collection_order" id="external-order-input" min="1" autocomplete="off">
+      </div>
+      <div id="external-order-error"></div>
+      <div class="dialog-actions">
+        <button type="submit">Save</button>
+        <button type="button" onclick="document.getElementById('external-order-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
   {{if .EnabledTaggers}}
   <dialog id="autotag-dialog">
     <form hx-post="/images/{{.Image.ID}}/autotag"
@@ -172,9 +220,15 @@
       {{/* Media */}}
       <div class="detail-media">
         {{if or (eq .Image.FileType "mp4") (eq .Image.FileType "webm")}}
-        <video src="/images/{{.Image.ID}}/file" controls loop autoplay muted playsinline preload="metadata" class="detail-video">
+        <video src="/images/{{.Image.ID}}/file" controls loop autoplay muted playsinline preload="auto" class="detail-video"
+               onloadedmetadata="this.play().catch(function(){})">
           Your browser does not support video.
         </video>
+        {{else if .IsManga}}
+        <a href="/images/{{.Image.ID}}/read?page=1" title="Open in reader">
+          <img src="/images/{{.Image.ID}}/page/1" alt="Cover of manga {{.Image.ID}}" class="detail-img"
+               onerror="if(!this.dataset.fallback){this.dataset.fallback='1';this.src='/thumbnails/{{.ActiveGallery}}/{{.Image.ID}}.jpg';}else{this.onerror=null;}">
+        </a>
         {{else}}
         <a href="/images/{{.Image.ID}}/file" target="_blank">
           <img src="/images/{{.Image.ID}}/file" alt="Image {{.Image.ID}}" class="detail-img"
@@ -183,16 +237,25 @@
         {{end}}
       </div>
 
+      {{if .IsManga}}
+      <div class="manga-actions">
+        <a href="/images/{{.Image.ID}}/read?page=1{{.BackKVQS}}" class="btn-manga-action btn-read" title="Open in reader (R)">Open in reader <span class="btn-key-hint">(R)</span></a>
+        {{if .Image.PageCount}}{{if gt (deref .Image.PageCount) 1}}
+        <a href="/images/{{.Image.ID}}/pages{{.BackQS}}" class="btn-manga-action btn-pages" title="See all pages (P)">See all pages <span class="btn-key-hint">(P)</span></a>
+        {{end}}{{end}}
+      </div>
+      {{end}}
+
       {{/* Tag editor */}}
       <div class="tag-editor-section">
         <h3>Tags</h3>
         {{template "partials/tag_list.html" (dict "ImageID" .Image.ID "ImageTags" .ImageTags "Aliases" .Aliases "CSRFToken" .CSRFToken)}}
-        <div class="add-tag-wrapper" style="position:relative">
-          <form id="add-tag-form" class="add-tag-form"
-                hx-post="/images/{{.Image.ID}}/tags"
-                hx-target="#image-tags"
-                hx-swap="outerHTML">
-            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <form id="add-tag-form" class="add-tag-form"
+              hx-post="/images/{{.Image.ID}}/tags"
+              hx-target="#image-tags"
+              hx-swap="outerHTML">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <div class="add-tag-input-wrap">
             <input type="text" name="tag" id="tag-input" placeholder="Add tag(s)..." autocomplete="off"
                    hx-get="/internal/tags/suggest"
                    hx-trigger="input changed delay:200ms"
@@ -200,10 +263,10 @@
                    hx-swap="innerHTML"
                    hx-include="this"
                    onkeydown="handleSuggestKey(event, 'tag-suggest-dropdown', 'tag-input')">
-            <button type="submit">Add</button>
-          </form>
-          <div id="tag-suggest-dropdown" class="suggest-dropdown tag-suggest-dropdown"></div>
-        </div>
+            <div id="tag-suggest-dropdown" class="suggest-dropdown tag-suggest-dropdown"></div>
+          </div>
+          <button type="submit">Add</button>
+        </form>
       </div>
 
       {{/* Danger zone: delete + remove all tags + remove auto-tagged. Rendered
@@ -232,6 +295,10 @@
         var dlg = document.getElementById(dialogId);
         if (!input || !dlg) return;
         input.value = value;
+        if (field === 'collection') {
+          var dd = document.getElementById('external-collection-suggest');
+          if (dd) dd.innerHTML = '';
+        }
         dlg.showModal();
         input.focus();
         input.select();
@@ -275,6 +342,7 @@
             <tr><th>File size</th><td>{{humanBytes .Image.FileSize}}</td></tr>
             <tr><th>SHA-256</th><td class="mono-small sha-truncated" title="{{.Image.SHA256}}">{{.Image.SHA256}}</td></tr>
             <tr><th>Ingested</th><td>{{.Image.IngestedAt.Format "2006-01-02 15:04:05"}}</td></tr>
+            {{if .Image.Origin}}<tr><th>Added via</th><td>{{.Image.Origin}}</td></tr>{{end}}
             <tr><th>Source</th><td>
               {{if .Image.Source}}<span class="meta-source-value">{{.Image.Source}}</span>{{else}}<span class="field-hint">(none)</span>{{end}}
               <button type="button" class="btn-sm btn-edit-external" data-field="source" data-value="{{.Image.Source}}" title="Edit source">[edit]</button>
@@ -283,7 +351,17 @@
               {{if .Image.URL}}<a href="{{.Image.URL}}" target="_blank" rel="noopener noreferrer" class="meta-url-value">{{.Image.URL}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
               <button type="button" class="btn-sm btn-edit-external" data-field="url" data-value="{{.Image.URL}}" title="Edit URL">[edit]</button>
             </td></tr>
-            {{if .Image.Origin}}<tr><th>Added via</th><td>{{.Image.Origin}}</td></tr>{{end}}
+            <tr><th>Collection</th><td>
+              {{if .Image.Series}}<a href="/?q={{urlQ (printf "collection:\"%s\"" .Image.Series)}}" class="meta-source-value" title="Search this collection">{{.Image.Series}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
+              <button type="button" class="btn-sm btn-edit-external" data-field="collection" data-value="{{.Image.Series}}" title="Edit collection">[edit]</button>
+            </td></tr>
+            <tr><th>Order</th><td>
+              {{if .Image.SeriesOrder}}<span class="meta-source-value">#{{deref .Image.SeriesOrder}}</span>{{else}}<span class="field-hint">(none)</span>{{end}}
+              <button type="button" class="btn-sm btn-edit-external" data-field="order" data-value="{{if .Image.SeriesOrder}}{{deref .Image.SeriesOrder}}{{end}}" title="Edit order">[edit]</button>
+            </td></tr>
+            {{if and .IsManga .Image.PageCount}}
+            <tr><th>Pages</th><td>{{deref .Image.PageCount}}</td></tr>
+            {{end}}
             {{if .Image.AutoTaggedAt}}
             <tr><th>Auto-tagged</th><td>{{.Image.AutoTaggedAt.Format "2006-01-02 15:04:05"}}</td></tr>
             {{end}}
@@ -398,35 +476,90 @@
         </details>
         {{end}}
 
-        {{/* Alias paths section */}}
+        {{if .MangaMeta}}
+        <details class="gen-details" open>
+          <summary>► Comic / manga metadata</summary>
+          <div class="node-list">
+            <div class="node-entry">
+              <table class="node-params">
+                {{if .MangaMeta.Title}}<tr><td class="node-param-name">Title</td><td class="node-param-value">{{.MangaMeta.Title}}</td></tr>{{end}}
+                {{if .MangaMeta.Series}}<tr><td class="node-param-name">Series</td><td class="node-param-value">{{.MangaMeta.Series}}</td></tr>{{end}}
+                {{if .MangaMeta.Number}}<tr><td class="node-param-name">Number</td><td class="node-param-value">{{.MangaMeta.Number}}</td></tr>{{end}}
+                {{if .MangaMeta.Volume}}<tr><td class="node-param-name">Volume</td><td class="node-param-value">{{.MangaMeta.Volume}}</td></tr>{{end}}
+                {{if .MangaMeta.Count}}<tr><td class="node-param-name">Issue count</td><td class="node-param-value">{{deref .MangaMeta.Count}}</td></tr>{{end}}
+                {{if .MangaMeta.Year}}<tr><td class="node-param-name">Date</td><td class="node-param-value">{{deref .MangaMeta.Year}}{{if .MangaMeta.Month}}-{{deref .MangaMeta.Month}}{{end}}{{if .MangaMeta.Day}}-{{deref .MangaMeta.Day}}{{end}}</td></tr>{{end}}
+                {{if .MangaMeta.Writer}}<tr><td class="node-param-name">Writer</td><td class="node-param-value">{{.MangaMeta.Writer}}</td></tr>{{end}}
+                {{if .MangaMeta.Penciller}}<tr><td class="node-param-name">Penciller</td><td class="node-param-value">{{.MangaMeta.Penciller}}</td></tr>{{end}}
+                {{if .MangaMeta.Inker}}<tr><td class="node-param-name">Inker</td><td class="node-param-value">{{.MangaMeta.Inker}}</td></tr>{{end}}
+                {{if .MangaMeta.Colorist}}<tr><td class="node-param-name">Colorist</td><td class="node-param-value">{{.MangaMeta.Colorist}}</td></tr>{{end}}
+                {{if .MangaMeta.Letterer}}<tr><td class="node-param-name">Letterer</td><td class="node-param-value">{{.MangaMeta.Letterer}}</td></tr>{{end}}
+                {{if .MangaMeta.CoverArtist}}<tr><td class="node-param-name">Cover artist</td><td class="node-param-value">{{.MangaMeta.CoverArtist}}</td></tr>{{end}}
+                {{if .MangaMeta.Editor}}<tr><td class="node-param-name">Editor</td><td class="node-param-value">{{.MangaMeta.Editor}}</td></tr>{{end}}
+                {{if .MangaMeta.Publisher}}<tr><td class="node-param-name">Publisher</td><td class="node-param-value">{{.MangaMeta.Publisher}}</td></tr>{{end}}
+                {{if .MangaMeta.Imprint}}<tr><td class="node-param-name">Imprint</td><td class="node-param-value">{{.MangaMeta.Imprint}}</td></tr>{{end}}
+                {{if .MangaMeta.Genre}}<tr><td class="node-param-name">Genre</td><td class="node-param-value">{{.MangaMeta.Genre}}</td></tr>{{end}}
+                {{if .MangaMeta.Web}}<tr><td class="node-param-name">Web</td><td class="node-param-value">{{if or (hasPrefix .MangaMeta.Web "http://") (hasPrefix .MangaMeta.Web "https://")}}<a href="{{.MangaMeta.Web}}" target="_blank" rel="noopener noreferrer">{{.MangaMeta.Web}}</a>{{else}}{{.MangaMeta.Web}}{{end}}</td></tr>{{end}}
+                {{if .MangaMeta.LanguageISO}}<tr><td class="node-param-name">Language</td><td class="node-param-value">{{.MangaMeta.LanguageISO}}</td></tr>{{end}}
+                {{if .MangaMeta.Format}}<tr><td class="node-param-name">Format</td><td class="node-param-value">{{.MangaMeta.Format}}</td></tr>{{end}}
+                {{if .MangaMeta.Manga}}<tr><td class="node-param-name">Manga</td><td class="node-param-value">{{.MangaMeta.Manga}}</td></tr>{{end}}
+                {{if .MangaMeta.AgeRating}}<tr><td class="node-param-name">Age rating</td><td class="node-param-value">{{.MangaMeta.AgeRating}}</td></tr>{{end}}
+                {{if .MangaMeta.CommunityRating}}<tr><td class="node-param-name">Community rating</td><td class="node-param-value">{{printf "%.2f" (deref64f .MangaMeta.CommunityRating)}}</td></tr>{{end}}
+                {{if .MangaMeta.XMLPageCount}}<tr><td class="node-param-name">XML page count</td><td class="node-param-value">{{deref .MangaMeta.XMLPageCount}}</td></tr>{{end}}
+              </table>
+            </div>
+            {{if .MangaMeta.Summary}}
+            <div class="node-entry">
+              <div class="node-header"><span class="node-title">Summary</span></div>
+              <pre class="gen-text comic-info-summary">{{.MangaMeta.Summary}}</pre>
+            </div>
+            {{end}}
+            {{if .MangaMeta.Notes}}
+            <div class="node-entry">
+              <div class="node-header"><span class="node-title">Notes</span></div>
+              <pre class="gen-text comic-info-summary">{{.MangaMeta.Notes}}</pre>
+            </div>
+            {{end}}
+            {{if .MangaMeta.RawXML}}
+            <details class="long-value">
+              <summary>Raw ComicInfo.xml</summary>
+              <pre class="long-value-full">{{.MangaMeta.RawXML}}</pre>
+            </details>
+            {{end}}
+          </div>
+        </details>
+        {{end}}
+
+        {{/* Duplicate filesystem paths sharing this image's SHA-256.
+             The "Duplicates" label is intentionally distinct from tag
+             aliases above; the two concepts share no logic. The path
+             stacks above the action buttons so the narrow metadata
+             panel doesn't crush the row into wrap city. */}}
         {{if gt (len .ImagePaths) 1}}
-        <div class="aliases-section">
-          <h3>Aliases</h3>
-          <table class="meta-table">
-            <tbody>
-              {{range .ImagePaths}}
-              <tr>
-                <td class="mono-small">{{.Path}}</td>
-                <td>
-                  {{if .IsCanonical}}
-                  <span class="badge-canonical">canonical</span>
-                  {{else}}
-                  <form method="POST" action="/images/{{$.Image.ID}}/canonical-path" style="display:inline">
-                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-                    <input type="hidden" name="path" value="{{.Path}}">
-                    <button type="submit" class="btn-sm">Set canonical</button>
-                  </form>
-                  <button class="btn-sm btn-danger"
-                          hx-delete="/images/{{$.Image.ID}}/aliases/{{.ID}}"
-                          hx-target="closest tr"
-                          hx-swap="outerHTML"
-                          hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'>Remove</button>
-                  {{end}}
-                </td>
-              </tr>
-              {{end}}
-            </tbody>
-          </table>
+        <div class="duplicates-section">
+          <h3>Duplicates</h3>
+          <ul class="duplicates-list">
+            {{range .ImagePaths}}
+            <li class="duplicates-entry">
+              <div class="duplicates-path mono-small">{{.Path}}</div>
+              <div class="duplicates-actions">
+                {{if .IsCanonical}}
+                <span class="btn-sm btn-canonical" aria-disabled="true">Canonical</span>
+                {{else}}
+                <form method="POST" action="/images/{{$.Image.ID}}/canonical-path" style="display:inline">
+                  <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                  <input type="hidden" name="path" value="{{.Path}}">
+                  <button type="submit" class="btn-sm">Set canonical</button>
+                </form>
+                <button class="btn-sm btn-danger"
+                        hx-delete="/images/{{$.Image.ID}}/aliases/{{.ID}}"
+                        hx-target="closest .duplicates-entry"
+                        hx-swap="outerHTML"
+                        hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'>Remove</button>
+                {{end}}
+              </div>
+            </li>
+            {{end}}
+          </ul>
         </div>
         {{end}}
 

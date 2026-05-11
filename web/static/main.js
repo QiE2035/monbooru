@@ -9,6 +9,12 @@ var chordTimeoutMs = 500;
 
 // Map of <leader, secondary> chords. Each value is either a string URL
 // (navigated via location.assign) or a function executed with no args.
+//
+// `e` leader edits a metadata field on the detail page. The secondaries
+// trigger the existing .btn-edit-external click handler so the dialog
+// opens with the prior value pre-filled - no separate seeding path.
+// `o` order / `s` source / `c` collection / `u` url; on pages without
+// the matching edit button the chord no-ops.
 var chordMap = {
   g: {
     g: '/',
@@ -18,7 +24,18 @@ var chordMap = {
     s: '/settings',
     h: '/help',
   },
+  e: {
+    o: function () { clickEditField('order'); },
+    s: function () { clickEditField('source'); },
+    c: function () { clickEditField('collection'); },
+    u: function () { clickEditField('url'); },
+  },
 };
+
+function clickEditField(field) {
+  var btn = document.querySelector('.btn-edit-external[data-field="' + field + '"]');
+  if (btn) btn.click();
+}
 
 function clearChord() {
   _chordPending = '';
@@ -36,7 +53,41 @@ function showChordHint(leader) {
   document.body.appendChild(_chordHint);
 }
 
+// pageScroller returns the nearest ancestor that actually scrolls. The
+// layout pins body to overflow:hidden and lets <main> own the scrolling
+// so the topbar / footer stay sticky. Falls back to document scrolling.
+function pageScroller(el) {
+  var node = el && el.parentElement;
+  while (node) {
+    var ov = getComputedStyle(node).overflowY;
+    if ((ov === 'auto' || ov === 'scroll') && node.scrollHeight > node.clientHeight) {
+      return node;
+    }
+    node = node.parentElement;
+  }
+  return document.scrollingElement || document.documentElement;
+}
+
+function scrollPageTo(el, top) {
+  var s = pageScroller(el);
+  if (s === document.documentElement || s === document.body || s === document.scrollingElement) {
+    window.scrollTo({ top: top, behavior: 'smooth' });
+  } else {
+    s.scrollTo({ top: top, behavior: 'smooth' });
+  }
+}
+
+function scrollToTop(el) { scrollPageTo(el, 0); }
+function scrollToBottom(el) {
+  var s = pageScroller(el);
+  scrollPageTo(el, s.scrollHeight);
+}
+
 // Move-cursor / open-card helpers reused by both arrow keys and h/j/k/l.
+// When dy != 0 and the would-be index walks off the top/bottom row, the
+// scroll container scrolls to the top / bottom (search bar above,
+// pagination below) instead of clamping silently. Horizontal walk-off
+// keeps the existing clamp - side-scrolling has no useful target here.
 function moveGridCursor(dx, dy) {
   var cards = Array.from(document.querySelectorAll('.thumb-card'));
   if (cards.length === 0) return false;
@@ -51,7 +102,16 @@ function moveGridCursor(dx, dy) {
       var cardW = cards[0].offsetWidth;
       if (cardW > 0) cols = Math.max(1, Math.round(grid.offsetWidth / cardW));
     }
-    idx = Math.max(0, Math.min(cards.length - 1, idx + dx + dy * cols));
+    var newIdx = idx + dx + dy * cols;
+    if (dy < 0 && newIdx < 0) {
+      scrollToTop(cards[idx]);
+      return true;
+    }
+    if (dy > 0 && newIdx > cards.length - 1) {
+      scrollToBottom(cards[idx]);
+      return true;
+    }
+    idx = Math.max(0, Math.min(cards.length - 1, newIdx));
   }
   cards.forEach(function(c) { c.classList.remove('focused'); });
   cards[idx].classList.add('focused');
@@ -111,12 +171,12 @@ function cycleRatingCeiling(delta) {
   return false;
 }
 
-// Cycle the gallery sort select between newest -> filesize -> random.
+// Cycle the gallery sort select between newest -> filesize -> order -> random.
 function cycleSort() {
   var sortEl = document.getElementById('search-sort');
   var form = document.getElementById('search-form');
   if (!sortEl || !form) return false;
-  var order = ['newest', 'filesize', 'random'];
+  var order = ['newest', 'filesize', 'order', 'random'];
   var i = order.indexOf(sortEl.value);
   var next = order[(i + 1) % order.length];
   if (next === 'random') {
@@ -163,10 +223,153 @@ function batchBarVisible() {
   return !!(bar && bar.classList.contains('visible'));
 }
 
+// Pages-grid keymap. Arrow keys walk the cell focus across rows / columns
+// (cols computed from the rendered card width like the gallery grid),
+// Enter opens the focused page in the reader, Home / End jump.
+function handlePagesGridKey(e) {
+  var page = document.getElementById('pages-grid-page');
+  if (!page) return false;
+  if (e.target.tagName.toLowerCase() === 'input' || e.target.isContentEditable) return false;
+  if (document.querySelector('dialog[open]')) return false;
+  var cells = Array.from(page.querySelectorAll('.manga-page-cell'));
+  if (cells.length === 0) return false;
+  var focused = page.querySelector('.manga-page-cell.focused');
+  var idx = focused ? cells.indexOf(focused) : -1;
+  function moveTo(target) {
+    target = Math.max(0, Math.min(cells.length - 1, target));
+    cells.forEach(function(c) { c.classList.remove('focused'); });
+    cells[target].classList.add('focused');
+    cells[target].scrollIntoView({ block: 'nearest' });
+  }
+  function cols() {
+    if (cells.length === 0) return 1;
+    // Count cells whose offsetTop matches the first cell's top - that's
+    // the rendered column count regardless of grid gap. The simple
+    // gridWidth/cellWidth heuristic overshoots when the gap is set
+    // because cellWidth excludes the gap, leaving ArrowDown short by
+    // one column on every row boundary.
+    var firstTop = cells[0].offsetTop;
+    var n = 0;
+    for (var i = 0; i < cells.length; i++) {
+      if (cells[i].offsetTop !== firstTop) break;
+      n++;
+    }
+    return Math.max(1, n);
+  }
+  function tryVerticalScroll(target) {
+    if (idx < 0) return false;
+    if (target < 0) {
+      scrollToTop(cells[idx]);
+      return true;
+    }
+    if (target > cells.length - 1) {
+      scrollToBottom(cells[idx]);
+      return true;
+    }
+    return false;
+  }
+  switch (e.key) {
+    case 'ArrowRight':
+      e.preventDefault(); moveTo(idx < 0 ? 0 : idx + 1); return true;
+    case 'ArrowLeft':
+      e.preventDefault(); moveTo(idx < 0 ? 0 : idx - 1); return true;
+    case 'ArrowDown':
+      e.preventDefault();
+      if (tryVerticalScroll(idx + cols())) return true;
+      moveTo(idx < 0 ? 0 : idx + cols()); return true;
+    case 'ArrowUp':
+      e.preventDefault();
+      if (tryVerticalScroll(idx - cols())) return true;
+      moveTo(idx < 0 ? 0 : idx - cols()); return true;
+    case 'Home':
+      e.preventDefault(); moveTo(0); return true;
+    case 'End':
+      e.preventDefault(); moveTo(cells.length - 1); return true;
+    case 'Enter':
+      if (idx < 0) return false;
+      var link = cells[idx].querySelector('a');
+      if (link && link.href) { window.location.href = link.href; return true; }
+      return false;
+  }
+  return false;
+}
+
+// Reader keymap. The reader is a separate <body class="reader-body"> that
+// hides every gallery / detail control via CSS, so its keys must run
+// before the global keymap and short-circuit it; otherwise the gallery's
+// h/l/space bindings would steal the reader's prev/next.
+function handleReaderKey(e) {
+  var reader = document.getElementById('reader');
+  if (!reader) return false;
+  if (e.target.tagName.toLowerCase() === 'input') return false;
+  if (document.querySelector('dialog[open]')) {
+    if (e.key === 'Escape') {
+      // Browser handles dialog Esc; let it through.
+    }
+    return false;
+  }
+  var page = parseInt(reader.dataset.page, 10) || 1;
+  var total = parseInt(reader.dataset.total, 10) || 1;
+  var imgID = reader.dataset.imageId;
+  var detail = reader.dataset.detailUrl || ('/images/' + imgID);
+  function go(p) {
+    if (p < 1) p = 1; if (p > total) p = total;
+    if (p === page) return;
+    // Preserve the existing query (back_q / from=pages / etc) so a
+    // keyboard page-flip stays in the same context as a click on the
+    // template-emitted prev/next anchors. Without from=pages the
+    // next Esc would land on the detail page instead of the pages grid.
+    var url = new URL(window.location.href);
+    url.searchParams.set('page', String(p));
+    url.hash = '';
+    window.location.href = url.pathname + url.search;
+  }
+  switch (e.key) {
+    case 'ArrowRight': case 'l': case ' ':
+      e.preventDefault(); go(page + 1); return true;
+    case 'ArrowLeft': case 'h':
+      e.preventDefault(); go(page - 1); return true;
+    case 'Home':
+      e.preventDefault(); go(1); return true;
+    case 'End':
+      e.preventDefault(); go(total); return true;
+    case 'p':
+      var dlg = document.getElementById('reader-jump-dialog');
+      if (dlg) {
+        e.preventDefault();
+        dlg.showModal();
+        var inp = document.getElementById('reader-jump-input');
+        if (inp) { inp.focus(); inp.select(); }
+      }
+      return true;
+    case 'P':
+      var pagesLink = document.querySelector('.reader-pages');
+      if (pagesLink && pagesLink.href) {
+        e.preventDefault();
+        window.location.href = pagesLink.href;
+        return true;
+      }
+      return false;
+    case 'o':
+      e.preventDefault();
+      var openLink = document.querySelector('.reader-open');
+      if (openLink) openLink.click();
+      return true;
+    case 'Escape': case 'Backspace':
+      e.preventDefault();
+      window.location.href = detail;
+      return true;
+  }
+  return false;
+}
+
 // Keyboard navigation
 document.addEventListener('keydown', function(e) {
   var tag = e.target.tagName.toLowerCase();
   var isInput = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
+
+  if (handleReaderKey(e)) return;
+  if (handlePagesGridKey(e)) return;
 
   // 'Escape' → blur input first; once nothing is focused, walk the chain.
   if (e.key === 'Escape') {
@@ -189,6 +392,13 @@ document.addEventListener('keydown', function(e) {
       if (detailPage.dataset.ref && history.length > 1) { history.back(); return; }
       var backLink = document.querySelector('.back-link');
       if (backLink) { backLink.click(); }
+      else { window.location.href = '/'; }
+      return;
+    }
+    if (document.getElementById('pages-grid-page')) {
+      e.preventDefault();
+      var pagesBack = document.querySelector('.back-link');
+      if (pagesBack) { pagesBack.click(); }
       else { window.location.href = '/'; }
       return;
     }
@@ -271,6 +481,18 @@ document.addEventListener('keydown', function(e) {
     return;
   }
 
+  // Leader: e edits a detail-page metadata field (o order / s source /
+  // c collection / u url). Gated on the detail page so non-detail
+  // surfaces don't swallow a stray `e`.
+  if (e.key === 'e' && !e.ctrlKey && !e.metaKey && !e.altKey && isDetailPage()) {
+    e.preventDefault();
+    _chordPending = 'e';
+    showChordHint('e');
+    if (_chordTimer) clearTimeout(_chordTimer);
+    _chordTimer = setTimeout(clearChord, chordTimeoutMs);
+    return;
+  }
+
   // Ctrl/Cmd+A → select every visible thumbnail. Gated on the gallery grid
   // existing so the browser's native select-all-text still works on pages
   // without a grid.
@@ -335,6 +557,29 @@ document.addEventListener('keydown', function(e) {
     if (isDetailPage()) { e.preventDefault(); enterTagFocusMode(); return; }
   }
 
+  // Manga reader shortcuts. R opens the reader from the detail page or
+  // the pages grid (where there's no tag-focus context to clobber).
+  // P opens the all-pages grid from the detail page. Both gate on the
+  // matching .btn-manga-action anchor being present so non-manga
+  // detail pages don't fire on these uppercase keys.
+  if (e.key === 'R') {
+    var readBtn = document.querySelector('.btn-manga-action.btn-read');
+    if (readBtn) { e.preventDefault(); window.location.href = readBtn.href; return; }
+    // On /pages the visible Open-in-reader button was dropped as
+    // redundant; the keyboard shortcut still has a job, so fall back
+    // to the page's image-id data attribute.
+    var pagesGrid = document.getElementById('pages-grid-page');
+    if (pagesGrid && pagesGrid.dataset.imageId) {
+      e.preventDefault();
+      window.location.href = '/images/' + pagesGrid.dataset.imageId + '/read?page=1';
+      return;
+    }
+  }
+  if (e.key === 'P' && isDetailPage()) {
+    var pagesBtn = document.querySelector('.btn-manga-action.btn-pages');
+    if (pagesBtn) { e.preventDefault(); window.location.href = pagesBtn.href; return; }
+  }
+
   // 't' → auto-tag on selection / open detail auto-tag dialog.
   if (e.key === 't') {
     if (batchBarVisible()) {
@@ -395,6 +640,13 @@ document.addEventListener('keydown', function(e) {
         var sp = document.getElementById('save-search-preview');
         if (si && sq) sq.value = si.value;
         if (si && sp) sp.textContent = si.value || '(empty)';
+        var u = new URL(window.location.href);
+        var ss = document.getElementById('save-search-sort');
+        var so = document.getElementById('save-search-order');
+        var se = document.getElementById('save-search-seed');
+        if (ss) ss.value = u.searchParams.get('sort') || '';
+        if (so) so.value = u.searchParams.get('order') || '';
+        if (se) se.value = u.searchParams.get('seed') || '';
         e.preventDefault(); saveDlg.showModal(); return;
       }
     }
@@ -959,6 +1211,11 @@ function initFolderTree() {
   // from multiple calls (e.g. HTMX partial swaps fire htmx:afterSettle repeatedly).
   initSectionToggle('folder-tree-toggle', 'folder-tree-list', '__tree__', false);
   initSectionToggle('source-tree-toggle', 'source-tree-list', '__source__', sourceOpen);
+  // Force the Collections section open when the query targets one so
+  // the user lands with the matching entry already visible.
+  var collectionMatch = q.match(/(?:^|\s)collection:(?:"([^"]+)"|([^\s]+))/);
+  var collectionOpen = !!collectionMatch;
+  initSectionToggle('series-tree-toggle', 'series-tree-list', '__series__', collectionOpen);
   var treeToggle = document.getElementById('folder-tree-toggle');
   var treeList = document.getElementById('folder-tree-list');
 
@@ -1050,6 +1307,23 @@ function applyFolderSuggest(btn) {
   if (!input) return;
   dd.innerHTML = '';
   input.value = folder;
+  input.focus();
+}
+
+// Series suggest (detail-page series-edit and batch-series dialogs):
+// mirror of applyFolderSuggest, picking the series text input from the
+// dropdown's nearest container so a single helper covers both surfaces.
+function applySeriesSuggest(btn) {
+  var series = btn.dataset.series;
+  if (series == null) return;
+  var dd = btn.closest('.suggest-dropdown');
+  if (!dd) return;
+  var container = dd.parentElement;
+  if (!container) return;
+  var input = container.querySelector('input[type="text"]');
+  if (!input) return;
+  dd.innerHTML = '';
+  input.value = series;
   input.focus();
 }
 
@@ -1386,6 +1660,9 @@ initSuggestDismiss('move-search-suggest', 'move-search-folder');
 initSuggestDismiss('move-image-suggest', 'move-image-folder');
 initSuggestDismiss('batch-tag-suggest', 'batch-tag-input');
 initSuggestDismiss('batch-strip-suggest', 'batch-strip-input');
+initSuggestDismiss('external-collection-suggest', 'external-collection-input');
+initSuggestDismiss('batch-series-search-suggest', 'batch-series-search-input');
+initSuggestDismiss('batch-series-selected-suggest', 'batch-series-selected-input');
 
 // Detail page: tags added in the current session are split into a "just-added"
 // list and reset on full page reload.
@@ -1475,3 +1752,34 @@ document.addEventListener('DOMContentLoaded', function() {
   if (el) captureInitialTags(el);
 });
 
+
+// Reader: clicking the page counter opens the page-jump dialog.
+document.addEventListener('DOMContentLoaded', function() {
+  var counter = document.getElementById('reader-counter');
+  var dlg = document.getElementById('reader-jump-dialog');
+  if (counter && dlg) {
+    counter.addEventListener('click', function(e) {
+      e.preventDefault();
+      dlg.showModal();
+      var inp = document.getElementById('reader-jump-input');
+      if (inp) { inp.focus(); inp.select(); }
+    });
+  }
+});
+
+// Pages grid: when the URL carries a #page-N fragment (set by the
+// reader's Back / Pages link so the operator returns to the cell they
+// were just reading), focus that cell so the keyboard nav picks up
+// from the right spot and the cell is visually anchored.
+document.addEventListener('DOMContentLoaded', function() {
+  if (!document.getElementById('pages-grid-page')) return;
+  var hash = window.location.hash;
+  if (!hash || hash.indexOf('#page-') !== 0) return;
+  var target = document.querySelector(hash + '.manga-page-cell');
+  if (!target) return;
+  document.querySelectorAll('.manga-page-cell.focused').forEach(function(c) {
+    c.classList.remove('focused');
+  });
+  target.classList.add('focused');
+  target.scrollIntoView({ block: 'center' });
+});

@@ -114,12 +114,15 @@ func (m *Manager) Context() context.Context {
 
 // Cancel signals the running job's context to abort. It is a no-op when no
 // job is running; workers observe ctx.Done() and wrap up via Complete/Fail.
+// scheduleHeld is released so a cancel mid-schedule abandons the run rather
+// than leaving the reservation pinned across phases the user no longer wants.
 func (m *Manager) Cancel() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cancel != nil {
 		m.cancel()
 	}
+	m.scheduleHeld = false
 }
 
 // Update sets the processed count and message.
@@ -247,7 +250,7 @@ func (m *Manager) SetWatcherMessage(msg string) {
 	now := time.Now().UTC()
 	m.state = &models.JobState{
 		Running:    false,
-		JobType:    "watcher",
+		JobType:    models.JobTypeWatcher,
 		Summary:    msg,
 		FinishedAt: &now,
 	}

@@ -36,6 +36,7 @@
   <dialog id="move-image-dialog" data-current-folder="{{.CurrentFolder}}">
     <p>Move this image to folder:</p>
     <p class="field-hint">Currently in <code>{{if .CurrentFolder}}{{.CurrentFolder}}{{else}}/ (gallery root){{end}}</code></p>
+    <p class="field-hint">Path is relative to the gallery root. Subfolders are created automatically. Absolute paths and <code>..</code> segments are rejected.</p>
     <form id="move-image-form"
           hx-post="/images/{{.ImageID}}/move"
           hx-swap="none"

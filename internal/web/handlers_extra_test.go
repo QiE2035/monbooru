@@ -1,6 +1,7 @@
 package web
 
 import (
+	"database/sql"
 	"fmt"
 	"image"
 	"image/png"
@@ -14,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/gallery"
+	"github.com/leqwin/monbooru/internal/models"
 )
 
 func TestMoveImage_RejectsAbsolutePath(t *testing.T) {
@@ -126,6 +129,124 @@ func TestFoldersSuggest_PrefixFilter(t *testing.T) {
 	if strings.Contains(body, "2025/mar") {
 		t.Errorf("2025/mar must not match prefix=2024, got %s", body)
 	}
+}
+
+// Sidebar folder/series links carry the q value through html/template's
+// href-context URL autoescaper, which re-percent-encodes anything it
+// doesn't recognise as a trusted URL. The links must therefore render
+// the percent-escapes exactly once so a click actually submits the
+// quoted filter, not a double-encoded literal that matches nothing.
+func TestSidebarFolderLink_SinglePercentEncoded(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	sub := filepath.Join(cx.GalleryPath, "api-test")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(sub, "f.png")
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	f, _ := os.Create(p)
+	_ = png.Encode(f, img)
+	f.Close()
+	if _, _, err := gallery.Ingest(cx.DB, cx.GalleryPath, cx.ThumbnailsPath, p, "png", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/internal/sidebar-browse", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	body := w.Body.String()
+
+	// Single-encoded form: folder:"api-test" → folder%3A%22api-test%22.
+	if !strings.Contains(body, `href="/?q=folder%3A%22api-test%22"`) {
+		t.Errorf("folder href not single-encoded; want /?q=folder%%3A%%22api-test%%22\nbody: %s", body)
+	}
+	// Double-encoded (% → %25) means html/template re-escaped the value.
+	if strings.Contains(body, "folder%253A") || strings.Contains(body, "%2522") {
+		t.Errorf("folder href is double-encoded\nbody: %s", body)
+	}
+
+	// Follow the link the way a browser would: the q parameter decodes
+	// once to folder:"api-test", which the gallery search must match.
+	req2 := httptest.NewRequest("GET", `/?q=folder%3A%22api-test%22`, nil)
+	w2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("gallery returned %d", w2.Code)
+	}
+	if !strings.Contains(w2.Body.String(), `<span id="result-count" class="result-count">1</span>`) {
+		t.Errorf("folder:\"api-test\" should return 1 match, body excerpt:\n%s", resultCountSlice(t, w2.Body.String()))
+	}
+}
+
+// Collection link on the detail page mirrors the sidebar's folder
+// link path: emitted via urlQ inside an href= attribute. The same
+// single-encoded contract applies so a click submits the quoted
+// collection filter intact.
+func TestDetailCollectionLink_SinglePercentEncoded(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "s.png", 9, 9)
+	if _, err := srv.db().Write.Exec(`UPDATE images SET series=? WHERE id=?`, "touhou series", id); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", fmt.Sprintf("/images/%d", id), nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	body := w.Body.String()
+	// `+` in an HTML attribute may render as `&#43;` after html/template
+	// HTML-escapes the value; the browser still decodes it to `+` before
+	// submitting the URL. Accept either form.
+	want := []string{
+		`href="/?q=collection%3A%22touhou+series%22"`,
+		`href="/?q=collection%3A%22touhou&#43;series%22"`,
+	}
+	ok := false
+	for _, w := range want {
+		if strings.Contains(body, w) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		t.Errorf("collection href not single-encoded; want one of %v\nbody slice: %s", want, seriesLinkSlice(t, body))
+	}
+	if strings.Contains(body, "collection%253A") {
+		t.Errorf("collection href is double-encoded\nbody slice: %s", seriesLinkSlice(t, body))
+	}
+
+	req2 := httptest.NewRequest("GET", `/?q=collection%3A%22touhou+series%22`, nil)
+	w2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w2, req2)
+	if !strings.Contains(w2.Body.String(), `<span id="result-count" class="result-count">1</span>`) {
+		t.Errorf("collection:\"touhou series\" should return 1 match\n%s", resultCountSlice(t, w2.Body.String()))
+	}
+}
+
+func resultCountSlice(t *testing.T, body string) string {
+	t.Helper()
+	idx := strings.Index(body, `id="gallery-status"`)
+	if idx < 0 {
+		return body[:min(len(body), 200)]
+	}
+	end := strings.Index(body[idx:], "</div>")
+	if end < 0 {
+		return body[idx:min(len(body), idx+200)]
+	}
+	return body[idx : idx+end+6]
+}
+
+func seriesLinkSlice(t *testing.T, body string) string {
+	t.Helper()
+	idx := strings.Index(body, `Series</th>`)
+	if idx < 0 {
+		return body[:min(len(body), 200)]
+	}
+	end := idx + 400
+	if end > len(body) {
+		end = len(body)
+	}
+	return body[idx:end]
 }
 
 // system: cheat-sheet branch: typing the bare prefix should surface every
@@ -509,6 +630,46 @@ func TestSearchSuggest_System_Level2_RealCategoryDrillIn(t *testing.T) {
 	}
 }
 
+// TestSavedSearch_RoundtripsSortAndSeed pins the U-F003 fix: a save
+// from the random-sort gallery must persist sort+order+seed and the
+// sidebar entry must reopen at the same view.
+func TestSavedSearch_RoundtripsSortAndSeed(t *testing.T) {
+	srv := newTestServer(t)
+	csrf := srv.csrfToken("anon")
+
+	form := url.Values{
+		"_csrf": {csrf}, "name": {"rand_42"}, "query": {"bulk"},
+		"sort": {"random"}, "order": {"asc"}, "seed": {"42"},
+	}
+	req := httptest.NewRequest("POST", "/search/saved", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("create saved search expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got struct {
+		Sort, Order, Seed string
+	}
+	if err := srv.db().Read.QueryRow(
+		`SELECT sort, sort_order, seed FROM saved_searches WHERE name='rand_42'`,
+	).Scan(&got.Sort, &got.Order, &got.Seed); err != nil {
+		t.Fatalf("saved search columns missing: %v", err)
+	}
+	if got.Sort != "random" || got.Order != "asc" || got.Seed != "42" {
+		t.Errorf("sort/order/seed = %+v, want {random asc 42}", got)
+	}
+
+	ss := models.SavedSearch{Query: "bulk", Sort: "random", Order: "asc", Seed: "42"}
+	want := "/?q=bulk&sort=random&order=asc&seed=42"
+	if got := ss.HRef(); got != want {
+		t.Errorf("HRef = %q, want %q", got, want)
+	}
+}
+
 func TestSavedSearch_CreateAndDelete(t *testing.T) {
 	srv := newTestServer(t)
 	csrf := srv.csrfToken("anon")
@@ -760,6 +921,47 @@ func TestAddTagToImage_PartialDup_SurfacesDupList(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, "already on image: existing_one") {
 		t.Errorf("response missing 'already on image' note for the dup token; body=%s", body)
+	}
+}
+
+// TestAddTagToImage_PartialReject_ShowsWarnFlash pins the mixed-outcome
+// flash routing: when some tokens land and some are rejected (e.g.
+// malformed input alongside good tags), the response must surface
+// BOTH lists in one orange .flash-warn flash, not just the rejects in
+// red. The user reads the flash to know which of their tokens went in
+// and which to retry.
+func TestAddTagToImage_PartialReject_ShowsWarnFlash(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "partial_reject.png", 10, 10)
+
+	csrf := srv.csrfToken("anon")
+	// `general:` is a known category with an empty tag-name token, which
+	// parseTagInput rejects via the "empty tag name after category
+	// prefix" path. `brand_new` is a clean new tag.
+	form := url.Values{"_csrf": {csrf}, "tag": {"general: brand_new"}}
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/tags", id), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `class="flash flash-warn"`) {
+		t.Errorf("mixed outcome should render a flash-warn; body=%s", body)
+	}
+	if !strings.Contains(body, "added: brand_new") {
+		t.Errorf("warn flash should list the added token; body=%s", body)
+	}
+	if !strings.Contains(body, "rejected:") {
+		t.Errorf("warn flash should list the rejected token; body=%s", body)
+	}
+	if strings.Contains(body, `class="flash flash-err"`) {
+		t.Errorf("mixed outcome should NOT render an err flash; body=%s", body)
+	}
+	if strings.Contains(body, `class="flash flash-ok"`) {
+		t.Errorf("mixed outcome should NOT render an ok flash; body=%s", body)
 	}
 }
 
@@ -1053,16 +1255,421 @@ func TestUpdateExternal_HTMXSuccessRefreshes(t *testing.T) {
 	}
 }
 
-// TestUploadInboxLink_DropsCountUnderCeiling pins the same fix as
-// the gallery toolbar tooltip: the InboxCount cache is ceiling-blind,
-// so a "View inbox (39)" link mis-promises when a ceiling hides
-// higher-rated rows from the click result. Drop the parens when a
-// ceiling is active so the link doesn't masquerade as the post-click
-// match count.
-func TestUploadInboxLink_DropsCountUnderCeiling(t *testing.T) {
+// TestVacuumDBPost_RunsToCompletion pins T-F010: the maintenance
+// handler kicks off a vacuum job (now in a goroutine after A-F007),
+// returns the "started" flash immediately, and the job worker runs
+// VACUUM + wal_checkpoint to completion. Pinning the handler shape
+// would catch a future regression that drops the goroutine wrap or
+// inverts the WAL checkpoint order.
+func TestVacuumDBPost_RunsToCompletion(t *testing.T) {
 	srv := newTestServer(t)
-	seedImage(t, srv, "in.png", 10, 10)
+	csrf := srv.csrfToken("anon")
 
+	// Seed a few images so VACUUM has actual pages to rewrite.
+	for i := 0; i < 4; i++ {
+		seedImage(t, srv, fmt.Sprintf("vac%d.png", i), 6+i, 6+i)
+	}
+
+	form := url.Values{"_csrf": {csrf}}
+	req := httptest.NewRequest("POST", "/settings/maintenance/vacuum-db", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("vacuum handler expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Vacuum started") {
+		t.Errorf("body missing 'Vacuum started' flash: %q", w.Body.String())
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !srv.jobs.IsRunning() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if srv.jobs.IsRunning() {
+		t.Fatal("vacuum job never drained")
+	}
+	state := srv.jobs.Get()
+	if state == nil {
+		t.Fatal("expected job state after vacuum drain")
+	}
+	if !strings.Contains(state.Summary, "Vacuumed") {
+		t.Errorf("job summary = %q, want 'Vacuumed (...)'", state.Summary)
+	}
+}
+
+// TestDeleteSearch_BulkDeleteReconcilesUsage pins T-F009: the bulk-
+// delete background path must drop image rows, cascade image_tags,
+// reconcile tags.usage_count to the post-delete reality, and clear
+// thumbnail files. The Playwright cancel test owns the cancellation
+// branch; this test pins the happy-path commit invariants without
+// the 3000-image fixture cost.
+func TestDeleteSearch_BulkDeleteReconcilesUsage(t *testing.T) {
+	srv := newTestServer(t)
+	csrf := srv.csrfToken("anon")
+
+	// Seed several images, all sharing one tag plus one image-private
+	// tag so the recalc has both the "shared survives" and the "tag
+	// drops to zero" cases on the same run.
+	const n = 6
+	var ids []int64
+	for i := 0; i < n; i++ {
+		ids = append(ids, seedImage(t, srv, fmt.Sprintf("bd%d.png", i), 4+i, 4+i))
+	}
+	var general int64
+	srv.db().Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&general)
+	res, err := srv.db().Write.Exec(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 0)`, "shared", general,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedID, _ := res.LastInsertId()
+	for _, id := range ids {
+		if err := srv.tagSvc().AddTagToImage(id, sharedID, false, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Bump usage_count of an unrelated tag so the recalc must leave
+	// untouched tags untouched.
+	res, err = srv.db().Write.Exec(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 99)`, "untouched", general,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	untouchedID, _ := res.LastInsertId()
+
+	form := url.Values{"_csrf": {csrf}, "q": {""}}
+	req := httptest.NewRequest("POST", "/internal/delete-search", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("delete-search expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !srv.jobs.IsRunning() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if srv.jobs.IsRunning() {
+		t.Fatal("delete job never drained")
+	}
+
+	var imgCount int
+	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&imgCount)
+	if imgCount != 0 {
+		t.Errorf("images count after bulk delete = %d, want 0", imgCount)
+	}
+	var sharedUsage, untouchedUsage int
+	srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, sharedID).Scan(&sharedUsage)
+	srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, untouchedID).Scan(&untouchedUsage)
+	if sharedUsage != 0 {
+		t.Errorf("shared tag usage_count = %d after wiping every carrier, want 0", sharedUsage)
+	}
+	if untouchedUsage != 99 {
+		t.Errorf("untouched tag usage_count = %d, want 99 (unchanged)", untouchedUsage)
+	}
+}
+
+// TestRemoveUserTagsFromImageHandler_DropsManualOnly pins T-F008's
+// user-side scope: a DELETE on /images/{id}/user-tags must clear
+// every is_auto=0 row for the image while leaving auto-tagged rows
+// intact, with usage_count reconciled on each affected tag.
+func TestRemoveUserTagsFromImageHandler_DropsManualOnly(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "ut.png", 10, 10)
+
+	insertTag := func(name string) int64 {
+		t.Helper()
+		var general int64
+		srv.db().Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&general)
+		res, err := srv.db().Write.Exec(
+			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 1)`, name, general,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tagID, _ := res.LastInsertId()
+		return tagID
+	}
+	manualID := insertTag("manual_a")
+	autoID := insertTag("auto_b")
+	if _, err := srv.db().Write.Exec(
+		`INSERT INTO image_tags (image_id, tag_id, is_auto, tagger_name) VALUES (?, ?, 0, NULL)`,
+		id, manualID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.db().Write.Exec(
+		`INSERT INTO image_tags (image_id, tag_id, is_auto, tagger_name) VALUES (?, ?, 1, ?)`,
+		id, autoID, "tagger-A",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	csrf := srv.csrfToken("anon")
+	req := httptest.NewRequest("DELETE", fmt.Sprintf("/images/%d/user-tags", id), nil)
+	req.Header.Set("X-CSRF-Token", csrf)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("DELETE /user-tags expected 200, got %d", w.Code)
+	}
+
+	var manualLeft, autoLeft int
+	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND is_auto = 0`, id).Scan(&manualLeft)
+	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND is_auto = 1`, id).Scan(&autoLeft)
+	if manualLeft != 0 {
+		t.Errorf("user-tags should be 0 after delete, got %d", manualLeft)
+	}
+	if autoLeft != 1 {
+		t.Errorf("auto-tags should remain 1 (left alone), got %d", autoLeft)
+	}
+	var manualUsage, autoUsage int
+	srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, manualID).Scan(&manualUsage)
+	srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, autoID).Scan(&autoUsage)
+	if manualUsage != 0 {
+		t.Errorf("manual_a usage_count = %d after user-tags delete, want 0", manualUsage)
+	}
+	if autoUsage != 1 {
+		t.Errorf("auto_b usage_count = %d after user-tags delete, want 1 (unchanged)", autoUsage)
+	}
+}
+
+// TestRemoveAutoTagsFromImageHandler_RespectsTaggerFilter pins
+// T-F008's auto-side scope: the optional `taggers=` query param must
+// narrow the delete to the named taggers, leaving other tagger rows
+// alone. An empty filter removes every auto row.
+func TestRemoveAutoTagsFromImageHandler_RespectsTaggerFilter(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "at.png", 10, 10)
+
+	insertAuto := func(name, taggerName string) int64 {
+		t.Helper()
+		var general int64
+		srv.db().Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&general)
+		res, err := srv.db().Write.Exec(
+			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 1)`, name, general,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tagID, _ := res.LastInsertId()
+		if _, err := srv.db().Write.Exec(
+			`INSERT INTO image_tags (image_id, tag_id, is_auto, tagger_name) VALUES (?, ?, 1, ?)`,
+			id, tagID, taggerName,
+		); err != nil {
+			t.Fatal(err)
+		}
+		return tagID
+	}
+	aID := insertAuto("auto_from_a", "tagger-A")
+	bID := insertAuto("auto_from_b", "tagger-B")
+	_ = aID
+
+	csrf := srv.csrfToken("anon")
+	req := httptest.NewRequest("DELETE", fmt.Sprintf("/images/%d/auto-tags?taggers=tagger-A", id), nil)
+	req.Header.Set("X-CSRF-Token", csrf)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("DELETE /auto-tags?taggers=tagger-A expected 200, got %d", w.Code)
+	}
+
+	var leftA, leftB int
+	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND tag_id = ?`, id, aID).Scan(&leftA)
+	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND tag_id = ?`, id, bID).Scan(&leftB)
+	if leftA != 0 {
+		t.Errorf("tagger-A row should be removed, got %d", leftA)
+	}
+	if leftB != 1 {
+		t.Errorf("tagger-B row should survive (out of scope), got %d", leftB)
+	}
+}
+
+// TestServeImageFile_RejectsTraversal pins T-F002 (handler side):
+// the path-traversal defense at GET /images/{id}/file must refuse a
+// canonical_path that resolves outside the active gallery root, even
+// when the row exists in the DB. Mirrors the gallery.PathInside test
+// in the gallery package.
+func TestServeImageFile_RejectsTraversal(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "served.png", 10, 10)
+
+	req := httptest.NewRequest("GET", fmt.Sprintf("/images/%d/file", id), nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("happy-path serve expected 200, got %d", w.Code)
+	}
+
+	// Poison the row's canonical_path to a sibling directory and assert
+	// the handler refuses to follow it. The cx.GalleryPath stays the
+	// active gallery root, so the PathInside check fires.
+	outside := filepath.Join(t.TempDir(), "evil.txt")
+	if err := os.WriteFile(outside, []byte("leaked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Active().DB.Write.Exec(
+		`UPDATE images SET canonical_path = ? WHERE id = ?`, outside, id,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	req2 := httptest.NewRequest("GET", fmt.Sprintf("/images/%d/file", id), nil)
+	w2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w2, req2)
+	if w2.Code != http.StatusNotFound {
+		t.Errorf("traversal serve expected 404, got %d (body: %q)", w2.Code, w2.Body.String())
+	}
+}
+
+// TestUpdateExternal_AbsentFieldsLeaveOthersAlone pins the UI-F023
+// contract: each detail-page dialog ships only its own field, so a
+// caller that posts only `source=foo` (no series, no url) must leave
+// collection and url unchanged. Absent != empty - empty clears the
+// field, truly absent leaves it alone.
+func TestUpdateExternal_AbsentFieldsLeaveOthersAlone(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "ext_isolation.png", 10, 10)
+	csrf := srv.csrfToken("anon")
+
+	seedAll := url.Values{
+		"_csrf":            {csrf},
+		"source":           {"danbooru"},
+		"url":              {"https://example.com/art"},
+		"collection":       {"my set"},
+		"collection_order": {"3"},
+	}
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(seedAll.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code/100 != 2 && w.Code != http.StatusSeeOther {
+		t.Fatalf("seed external fields: %d %s", w.Code, w.Body.String())
+	}
+
+	sourceOnly := url.Values{"_csrf": {csrf}, "source": {"updated"}}
+	req2 := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(sourceOnly.Encode()))
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req2.Header.Set("X-CSRF-Token", csrf)
+	w2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w2, req2)
+	if w2.Code/100 != 2 && w2.Code != http.StatusSeeOther {
+		t.Fatalf("update source only: %d %s", w2.Code, w2.Body.String())
+	}
+
+	var src, urlVal, collection string
+	var order sql.NullInt64
+	if err := srv.Active().DB.Read.QueryRow(
+		`SELECT source, url, series, series_order FROM images WHERE id = ?`, id,
+	).Scan(&src, &urlVal, &collection, &order); err != nil {
+		t.Fatal(err)
+	}
+	if src != "updated" {
+		t.Errorf("source = %q, want updated", src)
+	}
+	if urlVal != "https://example.com/art" {
+		t.Errorf("url = %q, want unchanged https://example.com/art", urlVal)
+	}
+	if collection != "my set" {
+		t.Errorf("collection = %q, want unchanged 'my set'", collection)
+	}
+	if !order.Valid || order.Int64 != 3 {
+		t.Errorf("collection_order = %v (valid=%v), want unchanged 3", order.Int64, order.Valid)
+	}
+}
+
+// TestUpdateExternal_RejectsCollectionOrderWithoutCollection pins the
+// U-F004 fix: an order without an anchoring collection label is
+// meaningless.
+func TestUpdateExternal_RejectsCollectionOrderWithoutCollection(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "ext_so.png", 10, 10)
+	csrf := srv.csrfToken("anon")
+
+	form := url.Values{"_csrf": {csrf}, "collection": {""}, "collection_order": {"5"}}
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (htmx swap target), got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "non-empty collection label") {
+		t.Errorf("body missing the validation message: %s", w.Body.String())
+	}
+	var stored sql.NullInt64
+	srv.Active().DB.Read.QueryRow(`SELECT series_order FROM images WHERE id = ?`, id).Scan(&stored)
+	if stored.Valid {
+		t.Errorf("collection_order should remain NULL, got %d", stored.Int64)
+	}
+}
+
+// TestUpdateExternal_RejectsZeroOrNegativeOrder pins the U-F006 fix:
+// zero and negative integers fall outside the 1-based position model.
+func TestUpdateExternal_RejectsZeroOrNegativeOrder(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "ext_neg.png", 10, 10)
+	csrf := srv.csrfToken("anon")
+
+	for _, raw := range []string{"0", "-3"} {
+		form := url.Values{"_csrf": {csrf}, "collection": {"My Set"}, "collection_order": {raw}}
+		req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("X-CSRF-Token", csrf)
+		req.Header.Set("HX-Request", "true")
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("collection_order=%q expected 200, got %d: %s", raw, w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "1 or higher") {
+			t.Errorf("collection_order=%q body missing validation message: %s", raw, w.Body.String())
+		}
+	}
+	var stored sql.NullInt64
+	srv.Active().DB.Read.QueryRow(`SELECT series_order FROM images WHERE id = ?`, id).Scan(&stored)
+	if stored.Valid {
+		t.Errorf("collection_order should remain NULL, got %d", stored.Int64)
+	}
+}
+
+// TestUploadInboxLink_CeilingAwareCount pins the View inbox (N) link
+// on /upload. The cached InboxCount is ceiling-blind, so the handler
+// recomputes against the active rating ceiling. The parenthesised count
+// must always render when > 0 and must match what a click on the link
+// would surface.
+func TestUploadInboxLink_CeilingAwareCount(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	safeID := seedImage(t, srv, "safe.png", 10, 10)
+	explicitID := seedImage(t, srv, "explicit.png", 11, 11)
+	generalTagID := ratingTagIDWeb(t, cx.DB, "general")
+	explicitTagID := ratingTagIDWeb(t, cx.DB, "explicit")
+	if err := cx.TagSvc.AddTagToImage(safeID, generalTagID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := cx.TagSvc.AddTagToImage(explicitID, explicitTagID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	cx.InvalidateCaches()
+
+	// No ceiling cookie → both inbox rows are visible.
 	req := httptest.NewRequest("GET", "/upload", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
@@ -1070,21 +1677,46 @@ func TestUploadInboxLink_DropsCountUnderCeiling(t *testing.T) {
 		t.Fatalf("GET /upload expected 200, got %d", w.Code)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, `>✱ View inbox (1)</a>`) {
-		t.Errorf("no-ceiling link should carry the count; body slice: %s", uploadInboxLink(t, body))
+	if !strings.Contains(body, `>✱ View inbox (2)</a>`) {
+		t.Errorf("no-ceiling link should show full count; body slice: %s", uploadInboxLink(t, body))
 	}
 
+	// ceiling=sensitive hides the explicit row; the count drops to 1.
 	req = httptest.NewRequest("GET", "/upload", nil)
 	req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: "sensitive"})
 	w = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET /upload with ceiling expected 200, got %d", w.Code)
-	}
 	body = w.Body.String()
-	if !strings.Contains(body, `>✱ View inbox</a>`) {
-		t.Errorf("ceiling-active link should drop the count; body slice: %s", uploadInboxLink(t, body))
+	if !strings.Contains(body, `>✱ View inbox (1)</a>`) {
+		t.Errorf("ceiling-active link should show ceiling-aware count; body slice: %s", uploadInboxLink(t, body))
 	}
+
+	// ceiling=general hides both inbox rows; the parens drop entirely.
+	req = httptest.NewRequest("GET", "/upload", nil)
+	req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: "general"})
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	body = w.Body.String()
+	// Only the explicit-rated row exists; general-only rows would survive.
+	// safe.png has rating:general which is at ceiling, so it stays.
+	if !strings.Contains(body, `>✱ View inbox (1)</a>`) {
+		t.Errorf("ceiling=general link should include the general-rated inbox row; body slice: %s", uploadInboxLink(t, body))
+	}
+}
+
+// ratingTagIDWeb is the web-package mirror of search.ratingTagID. The
+// rating rows are seeded by the schema bootstrap so the lookup always
+// succeeds.
+func ratingTagIDWeb(t *testing.T, database *db.DB, name string) int64 {
+	t.Helper()
+	var id int64
+	if err := database.Read.QueryRow(
+		`SELECT t.id FROM tags t JOIN tag_categories tc ON tc.id = t.category_id
+		 WHERE tc.name = 'rating' AND t.name = ?`, name,
+	).Scan(&id); err != nil {
+		t.Fatalf("rating tag %q not seeded: %v", name, err)
+	}
+	return id
 }
 
 func uploadInboxLink(t *testing.T, body string) string {
@@ -1247,6 +1879,25 @@ func TestTagsPage_ClampsPastTheEndPage(t *testing.T) {
 	}
 }
 
+// TestTagsPage_CategoryPrefixRedirectsToCatFilter pins U-F005: a
+// `?q=character:` token (category prefix only, no tag-name suffix)
+// surfaces the category-only filter instead of returning "No tags found".
+func TestTagsPage_CategoryPrefixRedirectsToCatFilter(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/tags?q=character:", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect, got %d: %s", w.Code, w.Body.String())
+	}
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "cat=") || strings.Contains(loc, "q=character%3A") {
+		t.Errorf("redirect Location = %q; want cat=<id> with q dropped", loc)
+	}
+}
+
 // TestTagsPage_RatingRowOmitsImmutableActions pins the UI gating that
 // matches spec §5.9: rating rows must not surface Rename / Alias→ /
 // Delete buttons because the server uniformly rejects those operations.
@@ -1303,5 +1954,38 @@ func TestTagsPage_RatingRowOmitsImmutableActions(t *testing.T) {
 	}
 	if !strings.Contains(row, `btn-delete-tag"`) {
 		t.Errorf("rating row missing the Delete trigger; row was: %s", row)
+	}
+}
+
+// The detail page section listing duplicate filesystem paths sharing one
+// SHA-256 must header itself "Duplicates" so the label doesn't shadow
+// the unrelated tag-alias concept. The CSS class follows so the two
+// surfaces don't drift.
+func TestDetailPage_DuplicateFilePathsHeaderReadsDuplicates(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "dup.png", 10, 10)
+	cx := srv.Active()
+	if _, err := cx.DB.Write.Exec(
+		`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 0)`,
+		id, filepath.Join(cx.GalleryPath, "dup-alt.png"),
+	); err != nil {
+		t.Fatalf("insert duplicate path: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", fmt.Sprintf("/images/%d", id), nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("detail GET: %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `<h3>Duplicates</h3>`) {
+		t.Errorf("duplicate-paths section header should read Duplicates; not found in body")
+	}
+	if strings.Contains(body, `<h3>Aliases</h3>`) {
+		t.Errorf("legacy <h3>Aliases</h3> still present in detail body")
+	}
+	if !strings.Contains(body, `class="duplicates-section"`) {
+		t.Errorf("duplicates-section CSS class missing")
 	}
 }

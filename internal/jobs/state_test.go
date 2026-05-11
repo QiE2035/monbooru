@@ -199,6 +199,27 @@ func TestBeginSchedule_DoubleAcquireRefuses(t *testing.T) {
 	}
 }
 
+// TestCancel_ReleasesScheduleHeld pins A-F017: cancelling a job mid-
+// schedule must drop the scheduleHeld reservation so a subsequent user
+// Start succeeds. Without the release, the scheduler's deferred
+// EndSchedule was the only thing that could clear the bit, and a
+// future code path that returned early without it would leak.
+func TestCancel_ReleasesScheduleHeld(t *testing.T) {
+	m := NewManager()
+	if err := m.BeginSchedule(); err != nil {
+		t.Fatalf("BeginSchedule: %v", err)
+	}
+	if err := m.StartScheduled("sync"); err != nil {
+		t.Fatalf("StartScheduled: %v", err)
+	}
+	m.Cancel()
+	m.Complete("cancelled")
+
+	if err := m.Start("sync"); err != nil {
+		t.Errorf("Start after cancel + complete = %v, want nil (scheduleHeld should be released)", err)
+	}
+}
+
 // TestMarkViewed_NopBeforeComplete ensures MarkViewed doesn't flip the
 // viewed latch on a running job (doing so would make the next Complete's
 // auto-dismiss never fire the short timer).

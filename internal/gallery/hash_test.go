@@ -235,3 +235,34 @@ func TestUniqueDestPath_PreservesExtension(t *testing.T) {
 		t.Errorf("got %q, want %q (only the last extension is preserved)", got, want)
 	}
 }
+
+// TestPathInside pins T-F002's hash-side coverage: the path-traversal
+// defense the serveImageFile handler relies on must reject sibling-
+// prefix attacks, .. segments, absolute escapes, and the equal-prefix
+// edge case the docstring calls out (`/data/gallery_backup` vs
+// `/data/gallery`).
+func TestPathInside(t *testing.T) {
+	cases := []struct {
+		root, target string
+		want         bool
+	}{
+		{"/data/gallery", "/data/gallery", true},
+		{"/data/gallery", "/data/gallery/photo.png", true},
+		{"/data/gallery", "/data/gallery/sub/photo.png", true},
+		{"/data/gallery", "/data/gallery_backup/leak.png", false},
+		{"/data/gallery", "/data/gallery/../escape.png", false},
+		{"/data/gallery", "/etc/passwd", false},
+		{"/data/gallery", "/data/galleryX/photo.png", false},
+		// A target containing ".." but with cleaned segments fully
+		// inside root counts as inside.
+		{"/data/gallery", "/data/gallery/foo/../bar.png", true},
+	}
+	for _, tc := range cases {
+		// PathInside takes cleaned absolute paths.
+		root := filepath.Clean(tc.root)
+		target := filepath.Clean(tc.target)
+		if got := PathInside(root, target); got != tc.want {
+			t.Errorf("PathInside(%q, %q) = %v, want %v", root, target, got, tc.want)
+		}
+	}
+}

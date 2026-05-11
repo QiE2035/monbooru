@@ -27,18 +27,22 @@ var defaultDispatchFS embed.FS
 // → Auto-Tagger dialog only renders copy-paste curl commands so the
 // "no automatic outbound HTTP" promise stays intact.
 //
-// DefaultThreshold and DefaultThresholds prefill TaggerInstance when an
-// operator first enables a catalog row from Settings; both are optional.
-// A non-zero DefaultThreshold replaces the package-wide
-// DefaultConfidenceThreshold for that tagger; DefaultThresholds maps
-// category name → per-category override and copies into the
-// TaggerInstance's CategoryThresholds map.
+// DefaultThreshold, DefaultThresholds, and DefaultTopK prefill
+// TaggerInstance when an operator first enables a catalog row from
+// Settings; all are optional. A non-zero DefaultThreshold replaces the
+// package-wide DefaultConfidenceThreshold for that tagger;
+// DefaultThresholds maps category name → per-category override and
+// copies into the TaggerInstance's CategoryThresholds map; DefaultTopK
+// maps category name → per-category cap and copies into the
+// TaggerInstance's PerCategoryTopK map. Categories absent from
+// DefaultTopK fall back to the built-in DefaultPerCategoryTopK table.
 type CatalogEntry struct {
 	Name              string             `json:"name"`
 	Description       string             `json:"description"`
 	Files             []CatalogFile      `json:"files"`
 	DefaultThreshold  float64            `json:"default_threshold,omitempty"`
 	DefaultThresholds map[string]float64 `json:"default_thresholds,omitempty"`
+	DefaultTopK       map[string]int     `json:"default_top_k,omitempty"`
 }
 
 // CatalogFile is one URL-to-filename pair; Filename is the basename the file

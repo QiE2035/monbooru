@@ -62,8 +62,20 @@ type TaggerConfig struct {
 	// IdleReleaseAfterMinutes is how long the cached ORT session may sit
 	// idle before the reclaim loop tears it down. 0 disables caching, so
 	// every run loads the model fresh. Default 30.
-	IdleReleaseAfterMinutes int              `toml:"idle_release_after_minutes"`
-	Taggers                 []TaggerInstance `toml:"taggers"`
+	IdleReleaseAfterMinutes int                  `toml:"idle_release_after_minutes"`
+	Aggregation             TaggerAggregationCfg `toml:"aggregation"`
+	Taggers                 []TaggerInstance     `toml:"taggers"`
+}
+
+// TaggerAggregationCfg holds the frame-merge knob shared across every
+// configured tagger. MinHitFraction is the fraction of frames a label
+// must score above the pre-floor on to survive the per-row merge.
+// Resolves to min_hits = clamp(ceil(MinHitFraction * frame_count), 2, 10),
+// degrading to 1 when frame_count == 1 (single image). MinHitFraction
+// = 0 reverts to the legacy max-only behaviour (one hit is enough,
+// stored confidence is the peak score).
+type TaggerAggregationCfg struct {
+	MinHitFraction float64 `toml:"min_hit_fraction"`
 }
 
 type TaggerInstance struct {
@@ -77,6 +89,13 @@ type TaggerInstance struct {
 	// uses that threshold; missing keys fall back to the global one.
 	// Operator-managed via Settings → Auto-Tagger → Configure.
 	CategoryThresholds map[string]float64 `toml:"category_thresholds,omitempty"`
+	// PerCategoryTopK caps the number of tags this tagger may emit per
+	// category after thresholding. Map key is the category name; value
+	// 0 disables the cap for that category on this tagger. Missing
+	// keys fall back to the built-in default table (character=8,
+	// copyright=4, artist=4, general=25, rating=1, other=10).
+	// Operator-managed via Settings → Auto-Tagger → Configure.
+	PerCategoryTopK map[string]int `toml:"per_category_top_k,omitempty"`
 	// Galleries restricts this tagger to a named subset of galleries.
 	// Three persisted shapes:
 	//   - missing in TOML (decodes to nil) - applies to every gallery,
@@ -153,7 +172,11 @@ func Default() *Config {
 			WatchEnabled:  true,
 			MaxFileSizeMB: 500,
 		},
-		Tagger: TaggerConfig{Parallel: 4, IdleReleaseAfterMinutes: 30},
+		Tagger: TaggerConfig{
+			Parallel:                4,
+			IdleReleaseAfterMinutes: 30,
+			Aggregation:             TaggerAggregationCfg{MinHitFraction: 0.05},
+		},
 		Auth: AuthConfig{
 			SessionLifetimeDays: 7,
 		},

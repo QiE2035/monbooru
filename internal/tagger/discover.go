@@ -251,10 +251,13 @@ func contains(list []string, v string) bool {
 }
 
 // SeedTaggerInstance returns a fresh TaggerInstance with the given name
-// and enabled flag, prefilled from the catalog's default_threshold and
-// default_thresholds when a non-nil entry is supplied. Used both by the
-// discover-from-disk path and the per-row Enable handler so the same
-// catalog-supplied defaults land in either flow without restating them.
+// and enabled flag, prefilled from the catalog's default_threshold,
+// default_thresholds, and default_top_k when a non-nil entry is
+// supplied. Used both by the discover-from-disk path and the per-row
+// Enable handler so the same catalog-supplied defaults land in either
+// flow without restating them. Categories absent from the catalog's
+// DefaultTopK still resolve through DefaultPerCategoryTopK at merge
+// time, so leaving the map nil here picks up the built-ins.
 func SeedTaggerInstance(name string, enabled bool, catalog *CatalogEntry) config.TaggerInstance {
 	t := config.TaggerInstance{
 		Name:                name,
@@ -271,6 +274,12 @@ func SeedTaggerInstance(name string, enabled bool, catalog *CatalogEntry) config
 		t.CategoryThresholds = make(map[string]float64, len(catalog.DefaultThresholds))
 		for k, v := range catalog.DefaultThresholds {
 			t.CategoryThresholds[k] = v
+		}
+	}
+	if len(catalog.DefaultTopK) > 0 {
+		t.PerCategoryTopK = make(map[string]int, len(catalog.DefaultTopK))
+		for k, v := range catalog.DefaultTopK {
+			t.PerCategoryTopK[k] = v
 		}
 	}
 	return t

@@ -37,7 +37,7 @@ func AvailableTaggers(cfg *config.Config) []TaggerStatus {
 }
 
 // RunWithTaggers is the no-op stub matching the tagger build signature.
-func RunWithTaggers(_ context.Context, _ *db.DB, _ *config.Config, _ []int64, _ []TaggerStatus, _ *jobs.Manager, _ bool) (int, error) {
+func RunWithTaggers(_ context.Context, _ *db.DB, _ *config.Config, _ []int64, _ []TaggerStatus, _ *jobs.Manager, _ bool, _ string) (int, error) {
 	return 0, nil
 }
 

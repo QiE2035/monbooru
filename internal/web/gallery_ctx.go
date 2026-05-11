@@ -40,6 +40,7 @@ type galleryCtx struct {
 	// so "not cached" is distinguishable from "cached zero".
 	folderTree   atomic.Pointer[[]gallery.FolderNode]
 	sourceCounts atomic.Pointer[gallery.SourceCounts]
+	seriesCounts atomic.Pointer[[]gallery.SeriesCount]
 	visibleCount atomic.Pointer[int]
 	inboxCount   atomic.Pointer[int]
 	tagCount     atomic.Pointer[int]
@@ -47,6 +48,20 @@ type galleryCtx struct {
 
 	watcherCancel context.CancelFunc
 	watcherDone   chan struct{}
+
+	mangaReclaim *gallery.MangaCacheReclaimer
+}
+
+// Sync runs gallery.Sync against this context and drops the per-cx
+// caches that the sync's mark-missing / move / ingest steps touch.
+// Centralising the invalidation here keeps the contract local: every
+// caller (manual sync handler, scheduler, future scheduled phase) gets
+// the cache hygiene by construction instead of relying on the caller's
+// goroutine to remember the InvalidateCaches at the right point.
+func (cx *galleryCtx) Sync(ctx context.Context, maxFileSizeMB int, progress func(processed, total int, message string)) (gallery.SyncResult, error) {
+	result, err := gallery.Sync(ctx, cx.DB, cx.GalleryPath, cx.ThumbnailsPath, maxFileSizeMB, progress)
+	cx.InvalidateCaches()
+	return result, err
 }
 
 // InvalidateCaches drops the folder-tree and visible-count caches. Call after
@@ -60,6 +75,7 @@ func (cx *galleryCtx) InvalidateCaches() {
 	}
 	cx.folderTree.Store(nil)
 	cx.sourceCounts.Store(nil)
+	cx.seriesCounts.Store(nil)
 	cx.visibleCount.Store(nil)
 	cx.inboxCount.Store(nil)
 	cx.tagCount.Store(nil)
@@ -97,6 +113,22 @@ func (cx *galleryCtx) SourceCounts() (gallery.SourceCounts, error) {
 		return gallery.SourceCounts{}, err
 	}
 	cx.sourceCounts.Store(&sc)
+	return sc, nil
+}
+
+// SeriesCounts returns the cached top-25 series labels for the
+// gallery's non-missing manga rows. Empty when no manga carries a
+// series label - the sidebar partial gates rendering on the slice
+// being non-empty.
+func (cx *galleryCtx) SeriesCounts() ([]gallery.SeriesCount, error) {
+	if p := cx.seriesCounts.Load(); p != nil {
+		return *p, nil
+	}
+	sc, err := gallery.SeriesCountsQuery(cx.DB, 25)
+	if err != nil {
+		return nil, err
+	}
+	cx.seriesCounts.Store(&sc)
 	return sc, nil
 }
 
@@ -170,6 +202,7 @@ func (cx *galleryCtx) warmCaches() {
 	}
 	cx.FolderTree()   //nolint:errcheck
 	cx.SourceCounts() //nolint:errcheck
+	cx.SeriesCounts() //nolint:errcheck
 	cx.VisibleCount() //nolint:errcheck
 	cx.InboxCount()   //nolint:errcheck
 	cx.TagCount()     //nolint:errcheck
@@ -220,6 +253,15 @@ func openGalleryCtx(g config.Gallery) (*galleryCtx, error) {
 	}, nil
 }
 
+// MangaCacheDir returns the per-gallery manga page cache directory.
+// Sibling to ThumbnailsPath under the gallery's data root.
+func (cx *galleryCtx) MangaCacheDir() string {
+	if cx == nil {
+		return ""
+	}
+	return gallery.MangaCacheDir(cx.ThumbnailsPath)
+}
+
 // close stops the watcher and closes the DB. Keeps cx.DB non-nil afterwards:
 // a concurrent warmCaches goroutine (spawned by StartWatchers, not joined)
 // can still race against close at shutdown or gallery removal. A closed pool
@@ -228,6 +270,7 @@ func openGalleryCtx(g config.Gallery) (*galleryCtx, error) {
 // idempotent so a later close still behaves.
 func (cx *galleryCtx) close() {
 	cx.stopWatcher()
+	cx.stopMangaReclaim()
 	if cx.DB != nil {
 		cx.DB.Close()
 	}
@@ -267,6 +310,27 @@ func (cx *galleryCtx) stopWatcher() {
 	<-cx.watcherDone
 	cx.watcherCancel = nil
 	cx.watcherDone = nil
+}
+
+// startMangaReclaim spawns the per-gallery idle-page evictor. Idempotent
+// against repeated calls. The reclaimer is harmless on galleries that
+// have never ingested a manga - sweepOnce no-ops when the cache dir
+// doesn't exist.
+func (cx *galleryCtx) startMangaReclaim() {
+	if cx.mangaReclaim != nil {
+		return
+	}
+	r := gallery.NewMangaCacheReclaimer(cx.MangaCacheDir())
+	r.Start(context.Background())
+	cx.mangaReclaim = r
+}
+
+func (cx *galleryCtx) stopMangaReclaim() {
+	if cx.mangaReclaim == nil {
+		return
+	}
+	cx.mangaReclaim.Stop()
+	cx.mangaReclaim = nil
 }
 
 // Accessors below resolve to the active gallery's fields. The

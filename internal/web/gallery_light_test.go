@@ -221,8 +221,8 @@ func TestExportGalleryLightManifest_StreamsTagsJSON(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &manifest); err != nil {
 		t.Fatalf("decode manifest: %v (body=%q)", err, buf.String())
 	}
-	if manifest.Version != galleryExportVersion {
-		t.Errorf("manifest version = %d, want %d", manifest.Version, galleryExportVersion)
+	if manifest.Version != lightManifestVersion {
+		t.Errorf("manifest version = %d, want %d", manifest.Version, lightManifestVersion)
 	}
 	if len(manifest.Images) != 1 {
 		t.Fatalf("manifest images = %d, want 1", len(manifest.Images))
@@ -268,7 +268,7 @@ func TestImportLightJSON_ReplaceRebuildsFromOnDiskFiles(t *testing.T) {
 
 	// Build a manifest that references the keep file plus a phantom path.
 	manifest := lightManifest{
-		Version: galleryExportVersion,
+		Version: lightManifestVersion,
 		Images: []lightManifestImage{
 			{SHA256: keepImg.SHA256, Path: "keep.png", Tags: []string{"kept_tag"}},
 			{SHA256: "deadbeef", Path: "missing/from/disk.png", Tags: []string{"phantom_tag"}},
@@ -355,7 +355,7 @@ func TestMergeGalleryLightJSON_AppliesTagsBySha(t *testing.T) {
 	imgID, sha, _ := seedMergeTarget(t, srv, "stock")
 
 	manifest := lightManifest{
-		Version: galleryExportVersion,
+		Version: lightManifestVersion,
 		Images: []lightManifestImage{
 			{SHA256: sha, Path: "ignored.png", Tags: []string{"merged_via_json", "artist:painter"}},
 			{SHA256: "deadbeefnomatch", Path: "wherever.png", Tags: []string{"phantom"}},
@@ -405,7 +405,7 @@ func TestApplyLightReplace_NoFiles_PreservesGalleryDir(t *testing.T) {
 	galleryPath := cx.GalleryPath
 	cx.close()
 
-	mf := lightManifest{Version: galleryExportVersion}
+	mf := lightManifest{Version: lightManifestVersion}
 	if err := applyLightReplace(mf, nil, dbPath, thumbsPath, galleryPath, importSourceNative, 0); err != nil {
 		t.Fatalf("applyLightReplace: %v", err)
 	}

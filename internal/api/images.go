@@ -36,6 +36,9 @@ type imageResponse struct {
 	Origin        string         `json:"origin"`
 	Source        string         `json:"source"`
 	URL           string         `json:"url"`
+	PageCount     *int           `json:"page_count"`
+	Series        string         `json:"collection"`
+	SeriesOrder   *int           `json:"collection_order"`
 	IngestedAt    time.Time      `json:"ingested_at"`
 	ThumbnailURL  string         `json:"thumbnail_url"`
 	Tags          []imageTagJSON `json:"tags"`
@@ -57,15 +60,17 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 	var autoTaggedAt *string
 	var ingestedAt string
 
+	var pageCount, seriesOrder *int
 	err := g.DB.Read.QueryRow(`
 		SELECT id, sha256, canonical_path, file_type, width, height, file_size,
-		       is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, ingested_at
+		       is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, series, series_order, ingested_at
 		FROM images WHERE id = ?`, imageID,
 	).Scan(&img.ID, &img.SHA256, &img.CanonicalPath, &img.FileType, &img.Width, &img.Height,
-		&img.FileSize, &isMissing, &isFavorited, &isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &ingestedAt)
+		&img.FileSize, &isMissing, &isFavorited, &isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &img.Series, &seriesOrder, &ingestedAt)
 	if err != nil {
 		return nil, err
 	}
+	img.SeriesOrder = seriesOrder
 	img.IsMissing = isMissing == 1
 	img.IsFavorited = isFavorited == 1
 	img.IsInbox = isInbox == 1
@@ -130,6 +135,9 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 		Origin:        img.Origin,
 		Source:        img.Source,
 		URL:           img.URL,
+		PageCount:     pageCount,
+		Series:        img.Series,
+		SeriesOrder:   img.SeriesOrder,
 		IngestedAt:    img.IngestedAt,
 		ThumbnailURL:  "/thumbnails/" + g.Name + "/" + strconv.FormatInt(imageID, 10) + ".jpg",
 		Tags:          tags,
@@ -312,14 +320,24 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if isDuplicate {
-		// Ingest already recorded the new file as an alias path; leave
-		// it on disk so the alias remains valid.
-		apiError(w, http.StatusConflict, "conflict", "image with this SHA-256 already exists")
-		return
-	}
 	if g.InvalidateCaches != nil {
 		g.InvalidateCaches()
+	}
+	if isDuplicate {
+		// gallery.Ingest already recorded the new file as an alias path
+		// on the existing canonical row; leaving the file on disk keeps
+		// the alias valid. Surface the existing image with alias_added=
+		// true so a retry-on-409 client can recognise the partial-success.
+		resp, respErr := h.buildImageResponse(g, img.ID)
+		if respErr != nil {
+			apiError(w, http.StatusInternalServerError, "internal_error", "failed to build response")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"image":       resp,
+			"alias_added": true,
+		})
+		return
 	}
 
 	// Each initial tag is either a plain name (general category) or
@@ -356,8 +374,9 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 				imgID := img.ID
 				database := g.DB
 				invalidate := g.InvalidateCaches
+				mangaCache := gallery.MangaCacheDir(g.ThumbnailsPath)
 				go func() {
-					skipped, err := tagger.RunWithTaggers(h.jobs.Context(), database, h.cfg, []int64{imgID}, selected, h.jobs, h.cfg.Tagger.UseCUDA)
+					skipped, err := tagger.RunWithTaggers(h.jobs.Context(), database, h.cfg, []int64{imgID}, selected, h.jobs, h.cfg.Tagger.UseCUDA, mangaCache)
 					if invalidate != nil {
 						invalidate()
 					}
@@ -486,12 +505,22 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid search query: "+parseErr.Error())
 		return
 	}
+	// Stable random ordering across paginated calls relies on the caller
+	// passing the same seed back; without one, every call reseeds and
+	// pages overlap. Spec §8.3.
+	var randomSeed int64
+	if seedStr := q.Get("seed"); seedStr != "" {
+		if s, err := strconv.ParseInt(seedStr, 10, 64); err == nil && s != 0 {
+			randomSeed = s
+		}
+	}
 	sq := search.Query{
-		Expr:  expr,
-		Sort:  sortStr,
-		Order: orderStr,
-		Page:  pageNum,
-		Limit: limit,
+		Expr:       expr,
+		Sort:       sortStr,
+		Order:      orderStr,
+		Page:       pageNum,
+		Limit:      limit,
+		RandomSeed: randomSeed,
 	}
 
 	result, err := search.Execute(g.DB, sq)
@@ -500,8 +529,24 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ids := make([]int64, 0, len(result.Results))
+	for _, img := range result.Results {
+		ids = append(ids, img.ID)
+	}
+	tagsByID, tagsErr := loadTagsForImages(g, ids)
+	if tagsErr != nil {
+		// Tags load failure shouldn't blank the whole search response;
+		// log and fall through with empty tag lists per row.
+		logx.Warnf("api searchImages tag load: %v", tagsErr)
+		tagsByID = nil
+	}
+
 	images := make([]imageResponse, 0, len(result.Results))
 	for _, img := range result.Results {
+		tags := tagsByID[img.ID]
+		if tags == nil {
+			tags = []imageTagJSON{}
+		}
 		images = append(images, imageResponse{
 			ID:            img.ID,
 			SHA256:        img.SHA256,
@@ -519,9 +564,12 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 			Origin:        img.Origin,
 			Source:        img.Source,
 			URL:           img.URL,
+			PageCount:     img.PageCount,
+			Series:        img.Series,
+			SeriesOrder:   img.SeriesOrder,
 			IngestedAt:    img.IngestedAt,
 			ThumbnailURL:  "/thumbnails/" + g.Name + "/" + strconv.FormatInt(img.ID, 10) + ".jpg",
-			Tags:          []imageTagJSON{},
+			Tags:          tags,
 		})
 	}
 
@@ -531,6 +579,44 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 		"total":   result.Total,
 		"results": images,
 	})
+}
+
+// loadTagsForImages batch-loads image_tags ⋈ tags ⋈ tag_categories for
+// every id in the slice with a single round-trip. Empty input returns
+// an empty map so callers can skip the if-empty check.
+func loadTagsForImages(g Gallery, ids []int64) (map[int64][]imageTagJSON, error) {
+	out := make(map[int64][]imageTagJSON, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := g.DB.Read.Query(`
+		SELECT it.image_id, t.name, tc.name, it.is_auto, it.confidence, it.tagger_name
+		FROM image_tags it
+		JOIN tags t ON t.id = it.tag_id
+		JOIN tag_categories tc ON tc.id = t.category_id
+		WHERE it.image_id IN (`+placeholders+`)
+		ORDER BY it.image_id, tc.name, t.name`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var imageID int64
+		var tj imageTagJSON
+		var tn *string
+		if err := rows.Scan(&imageID, &tj.Name, &tj.Category, &tj.IsAuto, &tj.Confidence, &tn); err != nil {
+			return nil, err
+		}
+		tj.TaggerName = tn
+		out[imageID] = append(out[imageID], tj)
+	}
+	return out, rows.Err()
 }
 
 // addImageTags handles POST /api/v1/images/:id/tags. Each entry can
@@ -549,6 +635,11 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 	}
 	if !imageExists(g, id) {
 		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return
+	}
+	if imageIsManga(g, id) {
+		apiError(w, http.StatusUnsupportedMediaType, "unsupported_type",
+			"comic / manga tag mutation via API not supported in this version")
 		return
 	}
 
@@ -608,6 +699,17 @@ func imageExists(g Gallery, id int64) bool {
 	return g.DB.Read.QueryRow(`SELECT 1 FROM images WHERE id = ?`, id).Scan(&n) == nil
 }
 
+// imageIsManga reports whether the row is a cbz. Used by the tag
+// mutation guards to refuse manga ids in v1; an unknown id returns
+// (false, false) and the caller's imageExists guard surfaces 404.
+func imageIsManga(g Gallery, id int64) bool {
+	var ft string
+	if err := g.DB.Read.QueryRow(`SELECT file_type FROM images WHERE id = ?`, id).Scan(&ft); err != nil {
+		return false
+	}
+	return ft == "cbz"
+}
+
 // resolveCategoryTag splits "artist:foo" into (artist_id, "foo") when
 // "artist" names a real category, otherwise returns (general_id, input)
 // so colon-bearing tag names like "nier:automata" or ":3" round-trip
@@ -652,6 +754,11 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "not_found", "image not found")
 		return
 	}
+	if imageIsManga(g, id) {
+		apiError(w, http.StatusUnsupportedMediaType, "unsupported_type",
+			"comic / manga tag mutation via API not supported in this version")
+		return
+	}
 
 	var body struct {
 		Tags []string `json:"tags"`
@@ -661,6 +768,7 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var tagWarnings []string
 	for _, tagName := range body.Tags {
 		tagID, err := h.resolveImageTagID(g, id, tagName)
 		if err != nil {
@@ -671,7 +779,13 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 			// Tag not on this image; silently ignored per the docs.
 			continue
 		}
-		g.TagSvc.RemoveTagFromImage(id, tagID)
+		// Mirror addImageTags: capture per-tag failures into tagWarnings
+		// rather than swallowing them. The response envelope below carries
+		// the warnings alongside the post-delete tag list so the client
+		// can distinguish a clean remove from a partial one.
+		if err := g.TagSvc.RemoveTagFromImage(id, tagID); err != nil {
+			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
+		}
 	}
 	if g.InvalidateCaches != nil {
 		g.InvalidateCaches()
@@ -680,6 +794,13 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.buildImageResponse(g, id)
 	if err != nil {
 		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return
+	}
+	if len(tagWarnings) > 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"tags":         resp.Tags,
+			"tag_warnings": tagWarnings,
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, resp.Tags)

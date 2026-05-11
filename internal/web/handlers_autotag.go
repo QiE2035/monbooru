@@ -19,6 +19,20 @@ import (
 // uploadPage renders the multi-file upload form.
 func (s *Server) uploadPage(w http.ResponseWriter, r *http.Request) {
 	base := s.base(r, "upload", "Upload - Monbooru")
+	// The cached InboxCount is ceiling-blind; "View inbox (N)" would
+	// mis-promise the post-click match count whenever a rating ceiling
+	// hides higher-rated rows. Recompute against the active ceiling so
+	// the parenthesised number matches what a click would surface.
+	inboxCount := base.InboxCount
+	if base.ActiveRating != "" && base.ActiveRating != "explicit" {
+		expr, _ := search.Parse("inbox:true")
+		expr = applyRatingCeiling(expr, base.ActiveRating)
+		if result, err := search.Execute(s.db(), search.Query{
+			Expr: expr, Sort: "newest", Order: "desc", Page: 1, Limit: 1,
+		}); err == nil {
+			inboxCount = result.Total
+		}
+	}
 	s.renderTemplate(w, "upload.html", map[string]any{
 		"Title":           base.Title,
 		"ActiveNav":       base.ActiveNav,
@@ -32,7 +46,7 @@ func (s *Server) uploadPage(w http.ResponseWriter, r *http.Request) {
 		"ActiveGallery":   base.ActiveGallery,
 		"Galleries":       s.galleryList(),
 		"VisibleCount":    base.VisibleCount,
-		"InboxCount":      base.InboxCount,
+		"InboxCount":      inboxCount,
 		"TagCount":        base.TagCount,
 		"SavedCount":      base.SavedCount,
 		"RatingLevels":    base.RatingLevels,
@@ -185,7 +199,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName)
 		if selErr != nil {
 			msg += " (autotag skipped: " + selErr.Error() + ")"
-		} else if err := s.jobs.Start("autotag"); err != nil {
+		} else if err := s.jobs.Start(models.JobTypeAutotag); err != nil {
 			msg += " (autotag skipped: a job is already running)"
 		} else {
 			ids := addedIDs
@@ -193,7 +207,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 			cx := s.Active()
 			go func() {
 				ctx := s.jobs.Context()
-				skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.UseCUDA)
+				skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.UseCUDA, cx.MangaCacheDir())
 				cx.InvalidateCaches()
 				if ctx.Err() != nil {
 					s.jobs.Complete(fmt.Sprintf("auto-tagging cancelled (%d image(s) queued)", len(ids)))
@@ -298,7 +312,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.jobs.Start("autotag"); err != nil {
+	if err := s.jobs.Start(models.JobTypeAutotag); err != nil {
 		if isHTMXRequest(r) {
 			w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
 			return
@@ -315,7 +329,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 	cx := s.Active()
 	go func() {
 		ctx := s.jobs.Context()
-		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.UseCUDA)
+		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.UseCUDA, cx.MangaCacheDir())
 		// New tags are commonly created by a tagger run, so the cached
 		// tag count is stale once the worker returns regardless of
 		// outcome (cancelled runs still wrote rows for completed images).
@@ -374,7 +388,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.jobs.Start("autotag"); err != nil {
+	if err := s.jobs.Start(models.JobTypeAutotag); err != nil {
 		if isHTMXRequest(r) {
 			w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
 			return
@@ -382,6 +396,9 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "job already running", http.StatusConflict)
 		return
 	}
+	// Surface a starting line so the status bar isn't blank while the
+	// model loads. Mirrors the batch-trigger handler's preamble.
+	s.jobs.Update(0, 1, "starting (loading model may take a few seconds)…")
 
 	database := s.db()
 	cx := s.Active()
@@ -391,7 +408,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 		// time for a single image, so CPU finishes faster even when the
 		// global toggle is on.
 		ctx := s.jobs.Context()
-		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, []int64{id}, selected, s.jobs, false)
+		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, []int64{id}, selected, s.jobs, false, cx.MangaCacheDir())
 		cx.InvalidateCaches()
 		if ctx.Err() != nil {
 			s.jobs.Complete("auto-tagging cancelled")

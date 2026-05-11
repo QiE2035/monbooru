@@ -91,6 +91,14 @@ func buildSpec(baseURL string) map[string]any {
 						"autotag":      map[string]any{"type": "string", "nullable": true, "description": "Human-readable status about the auto-tag job"},
 					},
 				},
+				"DuplicateImageResponse": map[string]any{
+					"type":        "object",
+					"description": "Returned when the posted file's SHA-256 is already known. The existing image is returned and the new path is registered against it (multipart uploads land as alias paths; JSON path-references that match the existing canonical path are no-ops).",
+					"properties": map[string]any{
+						"image":       map[string]any{"$ref": "#/components/schemas/Image"},
+						"alias_added": map[string]any{"type": "boolean", "description": "Always true on this response; signals that the SHA was already known and the posted path is recorded against the existing image"},
+					},
+				},
 				"TagArray": map[string]any{
 					"type":  "array",
 					"items": map[string]any{"$ref": "#/components/schemas/Tag"},
@@ -114,6 +122,9 @@ func buildSpec(baseURL string) map[string]any {
 						"origin":         map[string]any{"type": "string", "description": "How the image got into the gallery: 'ingest' for watcher/sync, 'upload' for the web UI, or any caller-supplied string (app name, URL...) set via POST /images with 'via'"},
 						"source":         map[string]any{"type": "string", "description": "Operator-edited free-form provenance label (site name, scraper, ...). Empty string when unset. Edited from the detail page; filtered by the search keyword 'source:' (exact match). Read-only via the API in this revision."},
 						"url":            map[string]any{"type": "string", "description": "Operator-edited canonical web URL the image came from. Empty string when unset. Must start with http:// or https://. Read-only via the API in this revision."},
+						"page_count":     map[string]any{"type": "integer", "nullable": true, "description": "Number of pages for cbz / manga rows; null on every other file type."},
+						"collection":     map[string]any{"type": "string", "description": "Operator-edited collection label (the comic / manga grouping field). Empty string when unset. Filtered by the search keyword 'collection:' (exact match). Read-only via the API in this revision."},
+						"collection_order": map[string]any{"type": "integer", "nullable": true, "description": "Operator-edited 1-based position within collection. Null when unset. Read-only via the API in this revision."},
 						"ingested_at":    map[string]any{"type": "string", "format": "date-time"},
 						"thumbnail_url":  map[string]any{"type": "string"},
 						"tags":           map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/Tag"}},
@@ -174,9 +185,9 @@ func buildSpec(baseURL string) map[string]any {
 						},
 					},
 					"responses": map[string]any{
+						"200": map[string]any{"description": "Duplicate SHA-256: existing image returned with alias_added=true; the posted path is registered against the existing image", "content": jsonContent("#/components/schemas/DuplicateImageResponse")},
 						"201": map[string]any{"description": "Image created", "content": jsonContent("#/components/schemas/CreateImageResponse")},
 						"400": map[string]any{"description": "Invalid request or unsupported file type", "content": jsonContent("#/components/schemas/Error")},
-						"409": map[string]any{"description": "Duplicate SHA-256", "content": jsonContent("#/components/schemas/Error")},
 						"413": map[string]any{"description": "File exceeds max size", "content": jsonContent("#/components/schemas/Error")},
 						"500": map[string]any{"description": "Ingest failure", "content": jsonContent("#/components/schemas/Error")},
 					},

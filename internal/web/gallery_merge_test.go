@@ -247,7 +247,7 @@ func TestMergeGallery_Zip_IngestsNewImage(t *testing.T) {
 	// Build a light-format zip in memory: tags.json manifest + gallery/<file>.
 	imgBytes := makeUniquePNG(t, 77)
 	manifest := lightManifest{
-		Version: galleryExportVersion,
+		Version: lightManifestVersion,
 		Images: []lightManifestImage{{
 			SHA256: sha256OfBytes(t, imgBytes),
 			Path:   "merged_subdir/new.png",
@@ -377,7 +377,7 @@ func TestMergeGallery_Zip_RejectsTraversalEntry(t *testing.T) {
 	srv := newMultiGalleryServer(t)
 	// Build a manifest pointing at an entry outside `gallery/`.
 	manifest := lightManifest{
-		Version: galleryExportVersion,
+		Version: lightManifestVersion,
 		Images: []lightManifestImage{{
 			SHA256: "doesnotmatter",
 			Path:   "../escape.png",

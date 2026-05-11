@@ -21,13 +21,15 @@ var Keywords = []string{
 	"height",
 	"date",
 	"missing",
-	"animated",
 	"tagged",
 	"autotagged",
 	"folder",
 	"folderonly",
 	"generated",
 	"rating",
+	"type",
+	"collection",
+	"pages",
 }
 
 // keywordSet is the membership-test view of Keywords. Built once at
@@ -61,10 +63,11 @@ var Expansions = map[string][]string{
 	"height":     {">=", "<=", ">", "<", "="},
 	"date":       {">", "<", ">=", "<=", ".."},
 	"missing":    {"true", "false"},
-	"animated":   {"true", "false"},
 	"tagged":     {"true", "false"},
 	"autotagged": {"true", "false"},
 	"rating":     {"general", "sensitive", "questionable", "explicit"},
+	"type":       {"image", "archive", "animated"},
+	"pages":      {">=", "<=", ">", "<", "="},
 }
 
 // Descriptions maps each filter keyword to a short English label the
@@ -81,13 +84,15 @@ var Descriptions = map[string]string{
 	"height":     "image height",
 	"date":       "ingestion date",
 	"missing":    "files gone from disk",
-	"animated":   "animated files",
 	"tagged":     "has any tag",
 	"autotagged": "has auto-tag",
 	"folder":     "folder (recursive)",
 	"folderonly": "folder (exact)",
 	"generated":  "generation recipe",
 	"rating":     "safety rating",
+	"type":       "image or archive",
+	"collection": "manga collection label",
+	"pages":      "manga page count",
 }
 
 // ExpansionDescriptions maps level-2 rows to a short English label.
@@ -122,5 +127,17 @@ var ExpansionDescriptions = map[string]map[string]string{
 		"none":    "no metadata",
 		"any":     "any AI tool",
 		"sd":      "alias of a1111",
+	},
+	"pages": {
+		">=": "at least",
+		"<=": "at most",
+		">":  "more than",
+		"<":  "less than",
+		"=":  "exactly",
+	},
+	"type": {
+		"image":    "regular images and videos",
+		"archive":  "cbz / zip archives",
+		"animated": "gif / mp4 / webm",
 	},
 }

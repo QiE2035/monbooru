@@ -3,6 +3,7 @@ package metadata
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"testing"
 )
@@ -468,12 +469,200 @@ func writeTestChunk(w *bytes.Buffer, chunkType string, data []byte) {
 	w.Write([]byte{0, 0, 0, 0}) // CRC (zeroed)
 }
 
-func TestExtractSDFromJPEG_WithExif(t *testing.T) {
+// makeJPEGWithUserComment writes an in-memory JPEG containing an APP1
+// EXIF segment carrying a UserComment of the given type. Type 2 is
+// ASCII (the standard A1111 shape); type 7 is UNDEFINED (some writers
+// emit raw bytes the extractor must reject).
+//
+// Layout: SOI + APP1(Exif\0\0 + TIFF + IFD0 with UserComment tag) + EOI.
+// goexif scans for the APP1 marker; the absence of full image data is
+// fine because the extractor only reads metadata.
+func makeJPEGWithUserComment(t *testing.T, exifType uint16, comment string) string {
+	t.Helper()
+	// TIFF header: little-endian byte order ("II"), magic 0x002A, IFD0
+	// offset 8 (header is 8 bytes long).
+	var tiff bytes.Buffer
+	tiff.WriteString("II")
+	binary.Write(&tiff, binary.LittleEndian, uint16(0x002A))
+	binary.Write(&tiff, binary.LittleEndian, uint32(8))
+
+	// IFD0: 1 entry (UserComment), then 4-byte next-IFD = 0.
+	binary.Write(&tiff, binary.LittleEndian, uint16(1)) // entry count
+
+	// UserComment IFD entry. Tag 0x9286, type 7 (UNDEFINED) with an
+	// 8-byte charset prefix per EXIF 2.2 spec, OR type 2 (ASCII).
+	binary.Write(&tiff, binary.LittleEndian, uint16(0x9286)) // tag
+	binary.Write(&tiff, binary.LittleEndian, exifType)       // type
+	var payload []byte
+	switch exifType {
+	case 2: // ASCII - raw text + NUL terminator, no charset prefix
+		payload = append([]byte(comment), 0)
+	case 7: // UNDEFINED - 8-byte charset prefix + raw bytes per EXIF 2.2
+		payload = append([]byte("ASCII\x00\x00\x00"), []byte(comment)...)
+	default:
+		t.Fatalf("unsupported EXIF type %d", exifType)
+	}
+	binary.Write(&tiff, binary.LittleEndian, uint32(len(payload))) // count
+	// IFD0 ends at offset 8+2+12+4 = 26 bytes from the TIFF start;
+	// drop the payload immediately after the next-IFD marker.
+	dataOffset := uint32(8 + 2 + 12 + 4)
+	binary.Write(&tiff, binary.LittleEndian, dataOffset)
+	binary.Write(&tiff, binary.LittleEndian, uint32(0)) // next IFD
+	tiff.Write(payload)
+
+	// APP1 segment = "Exif\0\0" + TIFF blob. Length field is big-endian
+	// and includes itself but excludes the marker bytes.
+	exif := []byte{'E', 'x', 'i', 'f', 0, 0}
+	exif = append(exif, tiff.Bytes()...)
+	app1Len := uint16(len(exif) + 2)
+
+	var jpeg bytes.Buffer
+	jpeg.Write([]byte{0xFF, 0xD8}) // SOI
+	jpeg.Write([]byte{0xFF, 0xE1}) // APP1 marker
+	binary.Write(&jpeg, binary.BigEndian, app1Len)
+	jpeg.Write(exif)
+	jpeg.Write([]byte{0xFF, 0xD9}) // EOI
+
+	tmp, err := os.CreateTemp(t.TempDir(), "*.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tmp.Write(jpeg.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+	return tmp.Name()
+}
+
+// TestExtractSDFromJPEG_ParsesA1111UserComment pins T-F004: the
+// positive A1111-via-EXIF path must parse Steps / Sampler / CFG /
+// Seed / Model out of an ASCII-typed UserComment.
+func TestExtractSDFromJPEG_ParsesA1111UserComment(t *testing.T) {
 	t.Parallel()
-	// The committed testdata/sd_exif_jpeg.jpg carries a UserComment in
-	// type UNDEFINED, which goexif returns as a non-string. The extractor
-	// must return (nil, nil) for that shape - no error, no partial metadata.
-	sd, err := extractSDFromJPEG("/workspace/Projets/monbooru/testdata/sd_exif_jpeg.jpg")
+	params := "a beautiful landscape\nNegative prompt: ugly\nSteps: 20, Sampler: Euler, CFG scale: 7, Seed: 12345, Model: v1-5"
+	path := makeJPEGWithUserComment(t, 2, params)
+
+	sd, err := extractSDFromJPEG(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sd == nil {
+		t.Fatal("ASCII-typed UserComment with A1111 params must produce SDMetadata")
+	}
+	if sd.Prompt != "a beautiful landscape" {
+		t.Errorf("Prompt = %q", sd.Prompt)
+	}
+	if sd.NegativePrompt != "ugly" {
+		t.Errorf("NegativePrompt = %q", sd.NegativePrompt)
+	}
+	if sd.Steps == nil || *sd.Steps != 20 {
+		t.Errorf("Steps = %v", sd.Steps)
+	}
+	if sd.Sampler != "Euler" {
+		t.Errorf("Sampler = %q", sd.Sampler)
+	}
+	if sd.Seed == nil || *sd.Seed != 12345 {
+		t.Errorf("Seed = %v", sd.Seed)
+	}
+}
+
+// makeWebPWithExifChunk builds a RIFF/WEBP container carrying a single
+// EXIF chunk with a UserComment. Two variants: includeMagic=true
+// emits the JPEG-style "Exif\x00\x00" magic prefix the v0.x WebP
+// encoders ship; includeMagic=false matches the bare-TIFF shape some
+// modern writers emit. Both must round-trip through extractSDFromWebP.
+func makeWebPWithExifChunk(t *testing.T, includeMagic bool, comment string) string {
+	t.Helper()
+
+	// TIFF + IFD0 with a UserComment ASCII tag, identical layout to
+	// the JPEG fixture above.
+	var tiff bytes.Buffer
+	tiff.WriteString("II")
+	binary.Write(&tiff, binary.LittleEndian, uint16(0x002A))
+	binary.Write(&tiff, binary.LittleEndian, uint32(8))
+	binary.Write(&tiff, binary.LittleEndian, uint16(1))
+	binary.Write(&tiff, binary.LittleEndian, uint16(0x9286)) // UserComment
+	binary.Write(&tiff, binary.LittleEndian, uint16(2))      // ASCII
+	payload := append([]byte(comment), 0)
+	binary.Write(&tiff, binary.LittleEndian, uint32(len(payload)))
+	dataOffset := uint32(8 + 2 + 12 + 4)
+	binary.Write(&tiff, binary.LittleEndian, dataOffset)
+	binary.Write(&tiff, binary.LittleEndian, uint32(0))
+	tiff.Write(payload)
+
+	exifChunk := tiff.Bytes()
+	if includeMagic {
+		exifChunk = append([]byte("Exif\x00\x00"), exifChunk...)
+	}
+
+	// Build the WEBP RIFF: 12-byte header + per-chunk (id + size + data + pad).
+	var inner bytes.Buffer
+	inner.WriteString("WEBP")
+	inner.WriteString("EXIF")
+	binary.Write(&inner, binary.LittleEndian, uint32(len(exifChunk)))
+	inner.Write(exifChunk)
+	if len(exifChunk)%2 == 1 {
+		inner.WriteByte(0)
+	}
+
+	var webp bytes.Buffer
+	webp.WriteString("RIFF")
+	binary.Write(&webp, binary.LittleEndian, uint32(inner.Len()))
+	webp.Write(inner.Bytes())
+
+	tmp, err := os.CreateTemp(t.TempDir(), "*.webp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tmp.Write(webp.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+	return tmp.Name()
+}
+
+// TestExtractSDFromWebP_ParsesA1111UserComment pins T-F005: the
+// positive RIFF EXIF parse path. Covers both the with-magic-prefix
+// shape and the no-magic shape so future changes to the chunk
+// pre-processing keep both branches alive.
+func TestExtractSDFromWebP_ParsesA1111UserComment(t *testing.T) {
+	t.Parallel()
+	params := "a beautiful landscape\nNegative prompt: ugly\nSteps: 30, Sampler: Euler, CFG scale: 7, Seed: 42, Model: webp_v1"
+
+	for _, includeMagic := range []bool{false, true} {
+		includeMagic := includeMagic
+		t.Run(fmt.Sprintf("magic=%v", includeMagic), func(t *testing.T) {
+			t.Parallel()
+			path := makeWebPWithExifChunk(t, includeMagic, params)
+			sd, err := extractSDFromWebP(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sd == nil {
+				t.Fatal("WebP A1111 EXIF must parse")
+			}
+			if sd.Prompt != "a beautiful landscape" {
+				t.Errorf("Prompt = %q", sd.Prompt)
+			}
+			if sd.Steps == nil || *sd.Steps != 30 {
+				t.Errorf("Steps = %v", sd.Steps)
+			}
+			if sd.Seed == nil || *sd.Seed != 42 {
+				t.Errorf("Seed = %v", sd.Seed)
+			}
+		})
+	}
+}
+
+// TestExtractSDFromJPEG_RejectsUndefinedType pins T-F001: a UserComment
+// with type UNDEFINED must return (nil, nil) from extractSDFromJPEG -
+// no error, no partial metadata. The fixture is built in-memory so the
+// UNDEFINED-type branch is actually reached; a missing-file path would
+// short-circuit on os.Open and skip the assertion entirely.
+func TestExtractSDFromJPEG_RejectsUndefinedType(t *testing.T) {
+	t.Parallel()
+	path := makeJPEGWithUserComment(t, 7, "anything")
+	sd, err := extractSDFromJPEG(path)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,14 +8,14 @@
   {{if .Degraded}}
   <p class="field-hint">Upload is disabled for this gallery because its path is unreadable. Fix the configuration or switch to another gallery.</p>
   {{else}}
-  <p class="field-hint">Upload one or more image or video files to your gallery.</p>
+  <p class="field-hint">Upload one or more image, video, or comic / manga (.cbz / .zip) files to your gallery.</p>
 
   <form id="upload-form"
         hx-post="/upload"
         hx-target="#upload-result"
         hx-swap="innerHTML"
         hx-encoding="multipart/form-data"
-        hx-on::after-request="if(event.target===this&&event.detail.successful){this.reset();document.getElementById('upload-file-list').innerHTML='';}">
+        hx-on::after-request="if(event.target===this&&event.detail.successful){this.reset();var f=document.getElementById('upload-folder-input');var t=document.getElementById('upload-tags-input');if(f)f.value='';if(t)t.value='';document.getElementById('upload-file-list').innerHTML='';}">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="field">
       <label>Files</label>
@@ -68,10 +68,11 @@
         <button type="reset" id="upload-reset-btn" class="btn-sm">Reset form</button>
       </div>
     </div>
+    <p id="upload-progress" class="field-hint" hidden></p>
   </form>
 
   <div id="upload-result" style="margin-top:16px"></div>
-  <p style="margin-top:8px"><a id="upload-inbox-link" href="/?q=inbox:true">✱ View inbox{{if and (gt .InboxCount 0) (eq .ActiveRating "explicit")}} ({{.InboxCount}}){{end}}</a></p>
+  <p style="margin-top:8px"><a id="upload-inbox-link" href="/?q=inbox:true">✱ View inbox{{if gt .InboxCount 0}} ({{.InboxCount}}){{end}}</a></p>
   {{end}}
 </div>
 
@@ -123,6 +124,58 @@ document.addEventListener('DOMContentLoaded', function() {
       list.innerHTML = '';
       var dd = document.getElementById('upload-tags-suggest');
       if (dd) dd.innerHTML = '';
+    });
+  }
+
+  // Multipart streaming progress: htmx exposes the xhr upload as a
+  // progress event that fires roughly every chunk. Surfacing byte
+  // counts plus the percent at the bottom of the form keeps the user
+  // informed during multi-GiB cbz uploads where the post might take
+  // a minute or more, and disabling the submit button avoids a stack
+  // of duplicate requests if they re-click.
+  var submitBtn = document.getElementById('upload-submit-btn');
+  var progress = document.getElementById('upload-progress');
+  function formatBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KiB';
+    if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MiB';
+    return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GiB';
+  }
+  if (form && submitBtn && progress) {
+    form.addEventListener('htmx:beforeRequest', function() {
+      submitBtn.disabled = true;
+      progress.hidden = false;
+      progress.textContent = 'Uploading…';
+    });
+    form.addEventListener('htmx:xhr:progress', function(e) {
+      var loaded = e.detail.loaded || 0;
+      var totalRaw = e.detail.total || 0;
+      if (totalRaw > 0 && loaded >= totalRaw) {
+        // Bytes are sent; the server still has to save, ingest, and
+        // (optionally) auto-tag each file before responding. Without
+        // this swap the bar would freeze at 100% with the prior label
+        // for many seconds on a multi-GiB cbz, looking stalled.
+        progress.textContent = 'Saving on server… (this can take a moment for large files)';
+        return;
+      }
+      if (totalRaw > 0) {
+        var pct = Math.round((loaded / totalRaw) * 100);
+        progress.textContent = 'Uploading… ' + formatBytes(loaded) + ' / ' + formatBytes(totalRaw) + ' (' + pct + '%)';
+      } else {
+        progress.textContent = 'Uploading… ' + formatBytes(loaded);
+      }
+    });
+    form.addEventListener('htmx:xhr:loadend', function() {
+      // Once the XHR fires loadend, every progress event the browser
+      // is going to emit has been delivered. Switch to the server-side
+      // hold message even when the upload was so fast the >= total
+      // branch above didn't have time to land.
+      progress.textContent = 'Saving on server… (this can take a moment for large files)';
+    });
+    form.addEventListener('htmx:afterRequest', function() {
+      submitBtn.disabled = false;
+      progress.hidden = true;
+      progress.textContent = '';
     });
   }
 

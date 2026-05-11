@@ -73,7 +73,13 @@ CREATE TABLE IF NOT EXISTS image_paths (
     id           INTEGER PRIMARY KEY,
     image_id     INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
     path         TEXT    NOT NULL UNIQUE,
-    is_canonical INTEGER NOT NULL DEFAULT 0
+    is_canonical INTEGER NOT NULL DEFAULT 0,
+    -- File mtime (Unix seconds) at the time the row was last touched.
+    -- Sync's unchanged-shortcut requires (size, mtime) parity so a
+    -- same-size in-place edit is still re-hashed. 0 marks rows that
+    -- predate this column on upgraded libraries; sync re-hashes them
+    -- once and writes the real mtime back.
+    mtime_unix   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS image_tags (
@@ -119,10 +125,45 @@ CREATE TABLE IF NOT EXISTS comfyui_metadata (
     generation_hash  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS manga_metadata (
+    image_id         INTEGER PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
+    title            TEXT,
+    series           TEXT,
+    number           TEXT,
+    volume           TEXT,
+    count            INTEGER,
+    summary          TEXT,
+    notes            TEXT,
+    year             INTEGER,
+    month            INTEGER,
+    day              INTEGER,
+    writer           TEXT,
+    penciller        TEXT,
+    inker            TEXT,
+    colorist         TEXT,
+    letterer         TEXT,
+    cover_artist     TEXT,
+    editor           TEXT,
+    publisher        TEXT,
+    imprint          TEXT,
+    genre            TEXT,
+    web              TEXT,
+    language_iso     TEXT,
+    format           TEXT,
+    manga            TEXT,
+    age_rating       TEXT,
+    community_rating REAL,
+    xml_page_count   INTEGER,
+    raw_xml          TEXT
+);
+
 CREATE TABLE IF NOT EXISTS saved_searches (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL UNIQUE,
     query      TEXT NOT NULL,
+    sort       TEXT NOT NULL DEFAULT '',
+    sort_order TEXT NOT NULL DEFAULT '',
+    seed       TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 

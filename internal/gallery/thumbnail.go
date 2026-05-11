@@ -45,6 +45,9 @@ func Generate(srcPath, dstDir string, imageID int64, fileType string) error {
 		}
 		return nil
 	}
+	if fileType == "cbz" {
+		return generateMangaThumbnails(srcPath, dstDir, imageID)
+	}
 	if err := generateImageThumb(srcPath, dstPath, fileType); err != nil {
 		return err
 	}
@@ -55,6 +58,58 @@ func Generate(srcPath, dstDir string, imageID int64, fileType string) error {
 		}
 	}
 	return nil
+}
+
+// generateMangaThumbnails opens the archive once and writes the cover
+// thumbnail (`<dstDir>/<id>.jpg`) plus a per-page thumbnail
+// (`MangaImageDir/page_NNNN_thumb.jpg`) for every entry. Pre-generating
+// the per-page set turns the first /pages render into a static-file
+// serve. Page-thumb failures are logged at warn but do not fail the
+// ingest: a missing entry falls back to the lazy EnsureMangaPageThumb
+// path on next access.
+func generateMangaThumbnails(srcPath, dstDir string, imageID int64) error {
+	archive, err := OpenManga(srcPath)
+	if err != nil {
+		return fmt.Errorf("open manga thumb: %w", err)
+	}
+	defer archive.Close()
+
+	cover, err := archive.CoverImage()
+	if err != nil {
+		return fmt.Errorf("decode manga cover: %w", err)
+	}
+	if err := writeJPEGAtomic(scaleImage(cover, thumbMaxDim), ThumbnailPath(dstDir, imageID), thumbQuality); err != nil {
+		return err
+	}
+
+	imageDir := MangaImageDir(dstDir, imageID)
+	if err := os.MkdirAll(imageDir, 0o755); err != nil {
+		return fmt.Errorf("create manga thumb dir: %w", err)
+	}
+	for i := range archive.Pages {
+		pageNum := i + 1
+		thumbPath := MangaPageThumbPath(imageDir, pageNum)
+		if err := generateOneMangaPageThumb(archive, i, thumbPath); err != nil {
+			logx.Warnf("manga page thumb %d for %q: %v", pageNum, srcPath, err)
+		}
+	}
+	return nil
+}
+
+// generateOneMangaPageThumb decodes one page directly from the archive
+// (no raw-bytes cache write) and writes the thumbnail. Keeps the
+// per-page footprint to one file on disk - the raw bytes stay lazy.
+func generateOneMangaPageThumb(archive *Manga, idx int, dstPath string) error {
+	rc, err := archive.PageReader(idx)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	src, _, err := image.Decode(rc)
+	if err != nil {
+		return fmt.Errorf("decode page %d: %w", idx+1, err)
+	}
+	return writeJPEGAtomic(scaleImage(src, thumbMaxDim), dstPath, thumbQuality)
 }
 
 func generateImageThumb(srcPath, dstPath, fileType string) error {

@@ -65,8 +65,9 @@ func PathInside(root, target string) bool {
 var ErrUnsupportedType = errors.New("unsupported file type")
 
 // SupportedMIMETypes is the accept attribute value for file inputs, listing all
-// MIME types that Monbooru can ingest.
-const SupportedMIMETypes = "image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm"
+// MIME types that Monbooru can ingest. The cbz line covers both `.cbz` and
+// plain `.zip` uploads; both ingest as one manga row.
+const SupportedMIMETypes = "image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,application/vnd.comicbook+zip,application/zip,application/x-cbz"
 
 // UniqueDestPath returns a path under destDir that does not currently
 // exist, appending `_1`, `_2`, ... to the stem on collision. Shared by
@@ -124,6 +125,8 @@ func DetectFileType(path string) (string, error) {
 			return models.FileTypeMP4, nil
 		case ".webm":
 			return models.FileTypeWEBM, nil
+		case ".cbz", ".zip":
+			return models.FileTypeCBZ, nil
 		}
 	}
 
@@ -178,6 +181,12 @@ func detectMagic(buf []byte) (string, error) {
 	// WEBM: 1A 45 DF A3 (EBML header)
 	if buf[0] == 0x1A && buf[1] == 0x45 && buf[2] == 0xDF && buf[3] == 0xA3 {
 		return models.FileTypeWEBM, nil
+	}
+	// ZIP / CBZ: PK\x03\x04 (LFH) or PK\x05\x06 (empty zip EOCD).
+	// Both end up as FileTypeCBZ; an empty archive is rejected at ingest.
+	if buf[0] == 0x50 && buf[1] == 0x4B &&
+		(buf[2] == 0x03 && buf[3] == 0x04 || buf[2] == 0x05 && buf[3] == 0x06) {
+		return models.FileTypeCBZ, nil
 	}
 
 	return "", ErrUnsupportedType

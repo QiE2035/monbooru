@@ -29,9 +29,11 @@ func DeleteImage(database *db.DB, thumbnailsPath string, id int64, removeAllTags
 
 	// removeAllTags prunes zero-usage tags scoped to this image's own tag
 	// set, so we don't need a follow-up unscoped prune that could touch
-	// unrelated rows.
+	// unrelated rows. Surface the error rather than logging-and-continuing:
+	// a partial removal would let the FK cascade clear image_tags while
+	// leaving tags.usage_count drifting until the next RecalcCount.
 	if err := removeAllTags(id); err != nil {
-		logx.Warnf("remove tags for image %d: %v", id, err)
+		return nil, fmt.Errorf("remove tags for image %d: %w", id, err)
 	}
 
 	if _, err := database.Write.Exec(`DELETE FROM images WHERE id = ?`, id); err != nil {
@@ -40,6 +42,10 @@ func DeleteImage(database *db.DB, thumbnailsPath string, id int64, removeAllTags
 
 	os.Remove(ThumbnailPath(thumbnailsPath, id))
 	os.Remove(HoverPath(thumbnailsPath, id))
+	// Manga cache directory is keyed on image id, so a deleted manga's
+	// extracted pages and per-page thumbnails disappear with the row
+	// rather than waiting on the per-page TTL.
+	RemoveMangaCache(thumbnailsPath, id)
 
 	result := &DeleteImageResult{
 		CanonicalPath: canonPath,

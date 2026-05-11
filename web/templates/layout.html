@@ -172,6 +172,9 @@
             <tr><td><kbd>m</kbd></td><td>Move dialog</td></tr>
             <tr><td><kbd>Delete</kbd></td><td>Delete image</td></tr>
             <tr><td><kbd>Space</kbd></td><td>Play / pause video</td></tr>
+            <tr><td><kbd>e o</kbd> / <kbd>e s</kbd> / <kbd>e c</kbd> / <kbd>e u</kbd></td><td>Edit Order / Source / Collection / URL</td></tr>
+            <tr><td><kbd>R</kbd></td><td>Open in reader (manga only)</td></tr>
+            <tr><td><kbd>P</kbd></td><td>See all pages (manga only)</td></tr>
           </tbody>
         </table>
       </section>
@@ -198,6 +201,19 @@
         <table>
           <tbody>
             <tr><td><kbd>1</kbd>-<kbd>6</kbd></td><td>Jump to section heading</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section data-surface="reader">
+        <h4>Manga reader</h4>
+        <table>
+          <tbody>
+            <tr><td><kbd>← →</kbd> / <kbd>h l</kbd> / <kbd>Space</kbd></td><td>Previous / next page</td></tr>
+            <tr><td><kbd>Home</kbd> / <kbd>End</kbd></td><td>First / last page</td></tr>
+            <tr><td><kbd>p</kbd></td><td>Jump to page</td></tr>
+            <tr><td><kbd>P</kbd></td><td>See all pages</td></tr>
+            <tr><td><kbd>o</kbd></td><td>Open page in new tab</td></tr>
+            <tr><td><kbd>Esc</kbd> / <kbd>Backspace</kbd></td><td>Back</td></tr>
           </tbody>
         </table>
       </section>
@@ -229,6 +245,7 @@
         {{else}}
           <form hx-post="/internal/gallery/switch"
                 hx-target="#gallery-switch-flash" hx-swap="innerHTML"
+                hx-on::after-request="if(event.detail.successful){this.closest('dialog').close()}"
                 style="display:inline">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="name" value="{{.Name}}">

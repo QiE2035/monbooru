@@ -147,10 +147,33 @@ func (s *Server) gatherStats() statsData {
 		addProbe(g.Name, g.GalleryPath)
 		addProbe(g.Name, g.ThumbnailsPath)
 	}
+	// Second-pass dedup keyed on the size tuple. Statfs sometimes
+	// reports distinct fsids for the same physical filesystem (Docker
+	// bind mounts and overlay layers do this on Linux), so the fsid
+	// dedup above leaves the row repeated. Two filesystems reporting
+	// byte-identical TotalSize/FreeSize/UsedSize triples are
+	// effectively the same volume from the operator's perspective.
+	type sizeKey struct{ Total, Free, Used int64 }
+	bySize := map[sizeKey]int{}
 	out.Mounts = make([]mountStats, 0, len(order))
 	for _, m := range order {
 		st := m.stats
 		st.Labels = m.galleries
+		key := sizeKey{st.TotalSize, st.FreeSize, st.UsedSize}
+		if idx, ok := bySize[key]; ok {
+			seen := map[string]bool{}
+			for _, name := range out.Mounts[idx].Labels {
+				seen[name] = true
+			}
+			for _, name := range st.Labels {
+				if !seen[name] {
+					seen[name] = true
+					out.Mounts[idx].Labels = append(out.Mounts[idx].Labels, name)
+				}
+			}
+			continue
+		}
+		bySize[key] = len(out.Mounts)
 		out.Mounts = append(out.Mounts, st)
 	}
 	if len(out.Mounts) == 0 {

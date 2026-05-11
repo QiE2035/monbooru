@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/leqwin/monbooru/internal/db"
+	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/searchkw"
 )
@@ -36,6 +37,17 @@ var (
 	categoryColorRe = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
 
 	ErrInvalidCategoryColor = errors.New("invalid category color (must be #rgb or #rrggbb)")
+
+	// Category names round-trip through HTML form-field name attributes
+	// (per-tagger threshold inputs), URL query values (search syntax
+	// `cat:`), and template context. The allowlist mirrors the gallery-
+	// name shape so a user-typed category can't smuggle quotes, slashes,
+	// shell control characters, or whitespace through any of those
+	// surfaces. The colon is excluded because it doubles as the
+	// `category:tag` separator the search parser keys on.
+	categoryNameRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
+
+	ErrInvalidCategoryName = errors.New("invalid category name (use lowercase letters, digits, underscore, or hyphen)")
 )
 
 // IsValidCategoryColor reports whether s matches the #rgb / #rrggbb
@@ -159,7 +171,9 @@ func (s *Service) RatingCategoryID() int64 { return s.ratingCatID }
 // even at zero usage so user-declared aliases and implications survive
 // against an empty library.
 func RecalcDB(database *db.DB) {
-	_ = RecalcDBCount(database)
+	if _, err := RecalcDBCount(database); err != nil {
+		logx.Warnf("RecalcDB: %v", err)
+	}
 }
 
 // RecalcDBCount is RecalcDB with the count of rows whose usage_count
@@ -170,17 +184,21 @@ func RecalcDB(database *db.DB) {
 // out tags whose remaining usages all point at missing images, then
 // fills in the rest with one GROUP BY pass over image_tags, chunked
 // by tag_id range so the single writer is released between chunks.
-func RecalcDBCount(database *db.DB) (updated int64) {
+// Returns the first per-chunk SQL error encountered alongside the
+// (partial) updated count so callers can surface the failure; per-
+// chunk errors are also logged at WARN before the early return.
+func RecalcDBCount(database *db.DB) (int64, error) {
 	const chunkSize = 2000
 
+	var updated int64
 	var maxID int64
 	if err := database.Read.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM tags`).Scan(&maxID); err != nil {
-		return
+		return 0, fmt.Errorf("max tag id: %w", err)
 	}
 
 	for start := int64(0); start <= maxID; start += chunkSize {
 		end := start + chunkSize
-		if res, err := database.Write.Exec(`
+		res, err := database.Write.Exec(`
 			UPDATE tags SET usage_count = 0
 			WHERE usage_count != 0
 			  AND id >= ? AND id < ?
@@ -189,11 +207,15 @@ func RecalcDBCount(database *db.DB) (updated int64) {
 			      JOIN images i ON i.id = it.image_id
 			      WHERE it.tag_id = tags.id AND i.is_missing = 0
 			  )
-		`, start, end); err == nil {
-			n, _ := res.RowsAffected()
-			updated += n
+		`, start, end)
+		if err != nil {
+			logx.Warnf("RecalcDBCount zero-out chunk [%d, %d): %v", start, end, err)
+			return updated, fmt.Errorf("zero-out chunk [%d, %d): %w", start, end, err)
 		}
-		if res, err := database.Write.Exec(`
+		n, _ := res.RowsAffected()
+		updated += n
+
+		res, err = database.Write.Exec(`
 			UPDATE tags SET usage_count = c.cnt
 			FROM (
 			    SELECT it.tag_id, COUNT(*) AS cnt FROM image_tags it
@@ -202,19 +224,22 @@ func RecalcDBCount(database *db.DB) (updated int64) {
 			    GROUP BY it.tag_id
 			) c
 			WHERE c.tag_id = tags.id AND tags.usage_count != c.cnt
-		`, start, end); err == nil {
-			n, _ := res.RowsAffected()
-			updated += n
+		`, start, end)
+		if err != nil {
+			logx.Warnf("RecalcDBCount fill chunk [%d, %d): %v", start, end, err)
+			return updated, fmt.Errorf("fill chunk [%d, %d): %w", start, end, err)
 		}
+		n, _ = res.RowsAffected()
+		updated += n
 	}
-	return
+	return updated, nil
 }
 
 func (s *Service) Recalc() {
 	RecalcDB(s.db)
 }
 
-func (s *Service) RecalcCount() (updated int64) {
+func (s *Service) RecalcCount() (int64, error) {
 	return RecalcDBCount(s.db)
 }
 
@@ -370,6 +395,9 @@ func (s *Service) CreateCategory(name, color string) (*models.TagCategory, error
 	if name == "" {
 		return nil, fmt.Errorf("category name must not be empty")
 	}
+	if !categoryNameRe.MatchString(name) {
+		return nil, ErrInvalidCategoryName
+	}
 	if isReservedCategoryName(name) {
 		return nil, ErrReservedCategoryName
 	}
@@ -403,6 +431,9 @@ func (s *Service) RenameCategory(id int64, newName string) error {
 	newName = strings.TrimSpace(strings.ToLower(newName))
 	if newName == "" {
 		return fmt.Errorf("category name must not be empty")
+	}
+	if !categoryNameRe.MatchString(newName) {
+		return ErrInvalidCategoryName
 	}
 	if isReservedCategoryName(newName) {
 		return ErrReservedCategoryName
@@ -924,7 +955,7 @@ func (s *Service) GetImageTags(imageID int64) ([]models.ImageTag, error) {
 }
 
 func (s *Service) AddTagToImage(imageID, tagID int64, isAuto bool, confidence *float64) error {
-	_, _, err := s.AddTagToImageReportingDup(imageID, tagID, isAuto, confidence, "")
+	_, err := s.AddTagToImageReportingDup(imageID, tagID, isAuto, confidence, "")
 	return err
 }
 
@@ -932,26 +963,36 @@ func (s *Service) AddTagToImage(imageID, tagID int64, isAuto bool, confidence *f
 // stored alongside the row (auto-tagger subfolder name when isAuto, or
 // any caller-supplied string for manual/API adds).
 func (s *Service) AddTagToImageFromTagger(imageID, tagID int64, isAuto bool, confidence *float64, taggerName string) error {
-	_, _, err := s.AddTagToImageReportingDup(imageID, tagID, isAuto, confidence, taggerName)
+	_, err := s.AddTagToImageReportingDup(imageID, tagID, isAuto, confidence, taggerName)
 	return err
 }
 
+// AddResult bundles the dup-tracking and rating-overwrite signals so
+// callers can surface inline diagnostics without a second query. Added
+// reports a brand-new image_tags row; Promoted reports an existing
+// implied row flipped to user-owned. DisplacedRatings carries the names
+// of rating rows the manual add swept off the image (empty for non-
+// rating adds and for the auto-tagger path).
+type AddResult struct {
+	Added            bool
+	Promoted         bool
+	DisplacedRatings []string
+}
+
 // AddTagToImageReportingDup runs INSERT OR IGNORE inside a write-pool
-// transaction. The first bool reports whether a brand-new row was
-// inserted; the second reports whether an existing implied row was
-// promoted to user-owned (is_implied flipped 1 → 0). Both false means
-// the row already existed as user-owned.
-func (s *Service) AddTagToImageReportingDup(imageID, tagID int64, isAuto bool, confidence *float64, taggerName string) (bool, bool, error) {
+// transaction. Returns an AddResult describing what changed.
+func (s *Service) AddTagToImageReportingDup(imageID, tagID int64, isAuto bool, confidence *float64, taggerName string) (AddResult, error) {
 	tx, err := s.db.Write.Begin()
 	if err != nil {
-		return false, false, err
+		return AddResult{}, err
 	}
 	defer tx.Rollback()
 
-	added, promoted, err := addTagToImageTxReportingDup(tx, imageID, tagID, isAuto, confidence, taggerName)
+	added, promoted, err := addTagToImageTxReportingDup(tx, imageID, tagID, isAuto, confidence, taggerName, s.ratingCatID)
 	if err != nil {
-		return false, false, err
+		return AddResult{}, err
 	}
+	var displaced []string
 	// At most one rating row per image, but the rule splits on origin: a
 	// manual add overwrites whatever rating was there (so the user's
 	// chosen level always wins, even when it ranks below a pre-existing
@@ -962,24 +1003,26 @@ func (s *Service) AddTagToImageReportingDup(imageID, tagID int64, isAuto bool, c
 	if (added || promoted) && s.ratingCatID != 0 {
 		var catID int64
 		if err := tx.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, tagID).Scan(&catID); err == nil && catID == s.ratingCatID {
-			var pruneErr error
 			if isAuto {
-				pruneErr = pruneLowerRatingsTx(tx, s.ratingCatID, imageID)
+				if err := pruneLowerRatingsTx(tx, s.ratingCatID, imageID); err != nil {
+					return AddResult{}, err
+				}
 			} else {
-				pruneErr = pruneOtherRatingsTx(tx, s.ratingCatID, imageID, tagID)
-			}
-			if pruneErr != nil {
-				return false, false, pruneErr
+				names, err := pruneOtherRatingsTx(tx, s.ratingCatID, imageID, tagID)
+				if err != nil {
+					return AddResult{}, err
+				}
+				displaced = names
 			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return false, false, err
+		return AddResult{}, err
 	}
-	return added, promoted, nil
+	return AddResult{Added: added, Promoted: promoted, DisplacedRatings: displaced}, nil
 }
 
-func addTagToImageTxReportingDup(tx *sql.Tx, imageID, tagID int64, isAuto bool, confidence *float64, taggerName string) (bool, bool, error) {
+func addTagToImageTxReportingDup(tx *sql.Tx, imageID, tagID int64, isAuto bool, confidence *float64, taggerName string, ratingCatID int64) (bool, bool, error) {
 	isAutoInt := 0
 	if isAuto {
 		isAutoInt = 1
@@ -1002,13 +1045,17 @@ func addTagToImageTxReportingDup(tx *sql.Tx, imageID, tagID int64, isAuto bool, 
 	added, _ := res.RowsAffected()
 	var promoted int64
 	if added == 0 {
-		// Row already present. If it was an implication-side row, the
-		// caller's explicit add converts it to user-owned so removing a
-		// parent later won't sweep it out from under them.
+		// Row already present. Promote when the new add carries more
+		// authority than the existing row: an implication-side row
+		// becomes user-owned so removing a parent later won't sweep it
+		// out, and an auto-tagger row gets re-stamped as user-owned
+		// when the operator manually re-adds the same tag (manual >
+		// auto). Auto adds never demote a user-owned row.
 		upd, err := tx.Exec(
 			`UPDATE image_tags SET is_implied = 0, is_auto = ?, confidence = ?, tagger_name = ?
-			 WHERE image_id = ? AND tag_id = ? AND is_implied = 1`,
-			isAutoInt, confidence, tname, imageID, tagID,
+			 WHERE image_id = ? AND tag_id = ?
+			   AND (is_implied = 1 OR (is_auto = 1 AND ? = 0))`,
+			isAutoInt, confidence, tname, imageID, tagID, isAutoInt,
 		)
 		if err != nil {
 			return false, false, err
@@ -1028,7 +1075,7 @@ func addTagToImageTxReportingDup(tx *sql.Tx, imageID, tagID int64, isAuto bool, 
 		}
 	}
 
-	if err := fanOutImpliedTxImpl(tx, imageID, tagID, isAutoInt); err != nil {
+	if err := fanOutImpliedTxImpl(tx, imageID, tagID, ratingCatID, isAutoInt); err != nil {
 		return false, false, err
 	}
 
@@ -1093,6 +1140,60 @@ func transitiveImpliedTx(tx *sql.Tx, parents []int64) ([]int64, error) {
 		frontier = next
 	}
 	return out, nil
+}
+
+// BatchAddTagsTx applies an add for every (imageID, tagID) pair inside
+// the supplied transaction. Mirrors AddTagToImageReportingDup's per-row
+// logic (insert-or-promote, fan-out implied closure, prune lower
+// ratings on a manual rating add) but without opening N inner
+// transactions. Returns the number of (image, tag) pairs that resulted
+// in a fresh image_tags row so the caller can sum across chunks.
+func (s *Service) BatchAddTagsTx(tx *sql.Tx, imageIDs []int64, tagIDs []int64) (int, error) {
+	added := 0
+	for _, imageID := range imageIDs {
+		for _, tagID := range tagIDs {
+			a, p, err := addTagToImageTxReportingDup(tx, imageID, tagID, false, nil, "", s.ratingCatID)
+			if err != nil {
+				return added, err
+			}
+			if (a || p) && s.ratingCatID != 0 {
+				var catID int64
+				if err := tx.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, tagID).Scan(&catID); err == nil && catID == s.ratingCatID {
+					if _, err := pruneOtherRatingsTx(tx, s.ratingCatID, imageID, tagID); err != nil {
+						return added, err
+					}
+				}
+			}
+			if a {
+				added++
+			}
+		}
+	}
+	return added, nil
+}
+
+// BatchRemoveTagsTx is the remove twin of BatchAddTagsTx: removes each
+// (imageID, tagID) pair via removeTagFromImageTx so usage_count and the
+// implied closure stay consistent. Returns the count of pairs that
+// touched an existing row.
+func (s *Service) BatchRemoveTagsTx(tx *sql.Tx, imageIDs []int64, tagIDs []int64) (int, error) {
+	removed := 0
+	for _, imageID := range imageIDs {
+		for _, tagID := range tagIDs {
+			before := 0
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND tag_id = ?`, imageID, tagID).Scan(&before); err != nil {
+				return removed, err
+			}
+			if before == 0 {
+				continue
+			}
+			if err := removeTagFromImageTx(tx, imageID, tagID); err != nil {
+				return removed, err
+			}
+			removed++
+		}
+	}
+	return removed, nil
 }
 
 func (s *Service) RemoveTagFromImage(imageID, tagID int64) error {
@@ -1405,39 +1506,43 @@ func pruneLowerRatingsTx(tx *sql.Tx, ratingCatID, imageID int64) error {
 // image so the user's just-typed rating always wins, even when its
 // rank is below an existing auto-tagger value. Mirrors the prune
 // shape so the usage_count decrements still flow through
-// removeTagFromImageTx.
-func pruneOtherRatingsTx(tx *sql.Tx, ratingCatID, imageID, keepTagID int64) error {
+// removeTagFromImageTx. Returns the displaced tag names so the caller
+// can surface "replaced rating:general" in a flash.
+func pruneOtherRatingsTx(tx *sql.Tx, ratingCatID, imageID, keepTagID int64) ([]string, error) {
 	if ratingCatID == 0 {
-		return nil
+		return nil, nil
 	}
 	rows, err := tx.Query(
-		`SELECT it.tag_id FROM image_tags it
+		`SELECT it.tag_id, t.name FROM image_tags it
 		 JOIN tags t ON t.id = it.tag_id
 		 WHERE it.image_id = ? AND t.category_id = ? AND t.is_alias = 0 AND it.tag_id != ?`,
 		imageID, ratingCatID, keepTagID,
 	)
 	if err != nil {
-		return fmt.Errorf("scan rating rows for overwrite: %w", err)
+		return nil, fmt.Errorf("scan rating rows for overwrite: %w", err)
 	}
 	var others []int64
+	var displaced []string
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
 			rows.Close()
-			return err
+			return nil, err
 		}
 		others = append(others, id)
+		displaced = append(displaced, name)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	for _, id := range others {
 		if err := removeTagFromImageTx(tx, imageID, id); err != nil {
-			return fmt.Errorf("overwrite prior rating %d: %w", id, err)
+			return nil, fmt.Errorf("overwrite prior rating %d: %w", id, err)
 		}
 	}
-	return nil
+	return displaced, nil
 }
 
 // RatingTagIDsAbove returns the canonical rating tag ids whose level
@@ -1504,15 +1609,30 @@ const relatedMaxTagUsage = 10000
 // dropped via relatedMaxTagUsage so the candidate scan stays bounded);
 // candidates aggregate from image_tags alone with an inner LIMIT; the
 // images row is joined last so is_missing filtering costs O(buffer).
-// The SELECT only fetches what partials/related_images.html actually
-// consumes (currently `.ID`), since the rest of the row would be
-// unused payload across the SQL boundary.
+// The SELECT carries id + file_type + page_count so the related-images
+// partial can render the manga-pill ("N pages") on cbz candidates the
+// same way the gallery grid does.
+//
+// Type partition: a manga source (file_type='cbz') only surfaces
+// other manga; non-manga sources only surface non-manga (regular
+// images and animated). The split keeps "Similar entries" coherent -
+// the user navigating in a manga shouldn't get bounced into a regular
+// image grid and vice versa.
 //
 // ratingCeiling, when non-empty, drops candidates carrying any rating
 // tag above the ceiling level (highest-wins). Pass "" or "explicit" to
 // disable the filter.
 func (s *Service) RelatedImages(imageID int64, limit int, ratingCeiling string) ([]models.Image, error) {
 	excluded := s.RatingTagIDsAbove(ratingCeiling)
+
+	var sourceFileType string
+	if err := s.db.Read.QueryRow(`SELECT file_type FROM images WHERE id = ?`, imageID).Scan(&sourceFileType); err != nil {
+		return nil, err
+	}
+	typePredicate := "i.file_type = 'cbz'"
+	if sourceFileType != "cbz" {
+		typePredicate = "i.file_type != 'cbz'"
+	}
 
 	candidatesExtra := ""
 	args := []any{imageID, relatedMaxTagUsage, relatedGeneralTagsCap, imageID}
@@ -1553,10 +1673,10 @@ func (s *Service) RelatedImages(imageID int64, limit int, ratingCeiling string) 
 		     ORDER BY shared DESC, theirs.image_id DESC
 		     LIMIT ?
 		 )
-		 SELECT i.id
+		 SELECT i.id, i.file_type, i.page_count
 		 FROM candidates c
 		 JOIN images i ON i.id = c.image_id
-		 WHERE i.is_missing = 0
+		 WHERE i.is_missing = 0 AND `+typePredicate+`
 		 ORDER BY c.shared DESC, c.image_id DESC
 		 LIMIT ?`,
 		args...,
@@ -1569,9 +1689,11 @@ func (s *Service) RelatedImages(imageID int64, limit int, ratingCeiling string) 
 	var out []models.Image
 	for rows.Next() {
 		var img models.Image
-		if err := rows.Scan(&img.ID); err != nil {
+		var pageCount *int
+		if err := rows.Scan(&img.ID, &img.FileType, &pageCount); err != nil {
 			return nil, err
 		}
+		img.PageCount = pageCount
 		out = append(out, img)
 	}
 	return out, rows.Err()
@@ -1811,7 +1933,15 @@ func (s *Service) RenameTag(id int64, newName string) error {
 		return err
 	}
 	var catID int64
-	s.db.Read.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, id).Scan(&catID)
+	if err := s.db.Read.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, id).Scan(&catID); err != nil {
+		// Surface 404 for a missing id. The downstream UPDATE would
+		// otherwise no-op silently and the handler would report a
+		// successful rename for a tag that doesn't exist.
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTagNotFound
+		}
+		return fmt.Errorf("look up tag %d: %w", id, err)
+	}
 	if s.ratingCatID != 0 && catID == s.ratingCatID {
 		return ErrRatingTagImmutable
 	}

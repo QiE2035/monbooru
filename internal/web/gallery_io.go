@@ -41,14 +41,27 @@ func safeArchiveDest(root, rel string) (string, error) {
 	return dst, nil
 }
 
-const galleryExportVersion = 1
+// galleryExportVersion is the full-export JSON document's `"version"`
+// field. v2 carries manga_metadata + images.page_count + images.series;
+// older imports down to galleryExportMinSupported still round-trip
+// (the new columns default, manga_metadata stays empty).
+const galleryExportVersion = 2
+
+// galleryExportMinSupported is the oldest full-export version this
+// server reads; anything below is rejected.
+const galleryExportMinSupported = 1
+
+// lightManifestVersion is the on-disk version of the light tags.json
+// manifest. The light format carries only sha256 / path / tags per
+// row, so it doesn't track full-export schema bumps.
+const lightManifestVersion = 1
 
 // galleryExport is the root JSON document. Field order mirrors schema.sql so a
 // human opening the file reads the schema top-down.
 type galleryExport struct {
-	Version         int                `json:"version"`
-	GalleryName     string             `json:"gallery_name"`
-	GalleryPath     string             `json:"gallery_path"`
+	Version         int                 `json:"version"`
+	GalleryName     string              `json:"gallery_name"`
+	GalleryPath     string              `json:"gallery_path"`
 	TagCategories   []tagCategoryRow    `json:"tag_categories"`
 	Tags            []tagRow            `json:"tags"`
 	TagImplications []tagImplicationRow `json:"tag_implications"`
@@ -57,6 +70,7 @@ type galleryExport struct {
 	ImageTags       []imageTagRow       `json:"image_tags"`
 	SDMetadata      []sdMetadataRow     `json:"sd_metadata"`
 	ComfyUIMetadata []comfyMetadataRow  `json:"comfyui_metadata"`
+	MangaMetadata   []mangaMetadataRow  `json:"manga_metadata,omitempty"`
 	SavedSearches   []savedSearchRow    `json:"saved_searches"`
 }
 
@@ -94,6 +108,9 @@ type imageRow struct {
 	Origin        string         `json:"origin"`
 	Source        string         `json:"source"`
 	URL           string         `json:"url"`
+	PageCount     sql.NullInt64  `json:"page_count,omitempty"`
+	Series        string         `json:"collection,omitempty"`
+	SeriesOrder   sql.NullInt64  `json:"collection_order,omitempty"`
 	IngestedAt    string         `json:"ingested_at"`
 }
 
@@ -145,10 +162,45 @@ type comfyMetadataRow struct {
 	GenerationHash  sql.NullString  `json:"generation_hash"`
 }
 
+type mangaMetadataRow struct {
+	ImageID         int64           `json:"image_id"`
+	Title           sql.NullString  `json:"title"`
+	Series          sql.NullString  `json:"series"`
+	Number          sql.NullString  `json:"number"`
+	Volume          sql.NullString  `json:"volume"`
+	Count           sql.NullInt64   `json:"count"`
+	Summary         sql.NullString  `json:"summary"`
+	Notes           sql.NullString  `json:"notes"`
+	Year            sql.NullInt64   `json:"year"`
+	Month           sql.NullInt64   `json:"month"`
+	Day             sql.NullInt64   `json:"day"`
+	Writer          sql.NullString  `json:"writer"`
+	Penciller       sql.NullString  `json:"penciller"`
+	Inker           sql.NullString  `json:"inker"`
+	Colorist        sql.NullString  `json:"colorist"`
+	Letterer        sql.NullString  `json:"letterer"`
+	CoverArtist     sql.NullString  `json:"cover_artist"`
+	Editor          sql.NullString  `json:"editor"`
+	Publisher       sql.NullString  `json:"publisher"`
+	Imprint         sql.NullString  `json:"imprint"`
+	Genre           sql.NullString  `json:"genre"`
+	Web             sql.NullString  `json:"web"`
+	LanguageISO     sql.NullString  `json:"language_iso"`
+	Format          sql.NullString  `json:"format"`
+	Manga           sql.NullString  `json:"manga"`
+	AgeRating       sql.NullString  `json:"age_rating"`
+	CommunityRating sql.NullFloat64 `json:"community_rating"`
+	XMLPageCount    sql.NullInt64   `json:"xml_page_count"`
+	RawXML          sql.NullString  `json:"raw_xml"`
+}
+
 type savedSearchRow struct {
 	ID        int64  `json:"id"`
 	Name      string `json:"name"`
 	Query     string `json:"query"`
+	Sort      string `json:"sort"`
+	Order     string `json:"sort_order"`
+	Seed      string `json:"seed"`
 	CreatedAt string `json:"created_at"`
 }
 
@@ -224,13 +276,13 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 	}
 	if err := streamRows(bw, "images", cx.DB,
 		`SELECT id, sha256, canonical_path, folder_path, file_type, width, height,
-		        file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, ingested_at
+		        file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, series, series_order, ingested_at
 		 FROM images ORDER BY id`,
 		func(rows *sql.Rows) (any, error) {
 			var r imageRow
 			err := rows.Scan(&r.ID, &r.SHA256, &r.CanonicalPath, &r.FolderPath, &r.FileType,
 				&r.Width, &r.Height, &r.FileSize, &r.IsMissing, &r.IsFavorited, &r.IsInbox,
-				&r.AutoTaggedAt, &r.SourceType, &r.Origin, &r.Source, &r.URL, &r.IngestedAt)
+				&r.AutoTaggedAt, &r.SourceType, &r.Origin, &r.Source, &r.URL, &r.PageCount, &r.Series, &r.SeriesOrder, &r.IngestedAt)
 			return r, err
 		}); err != nil {
 		return err
@@ -273,11 +325,26 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 		}); err != nil {
 		return err
 	}
+	if err := streamRows(bw, "manga_metadata", cx.DB,
+		`SELECT image_id, title, series, number, volume, count, summary, notes,
+		        year, month, day, writer, penciller, inker, colorist, letterer, cover_artist, editor, publisher,
+		        imprint, genre, web, language_iso, format, manga, age_rating, community_rating, xml_page_count, raw_xml
+		 FROM manga_metadata`,
+		func(rows *sql.Rows) (any, error) {
+			var r mangaMetadataRow
+			err := rows.Scan(&r.ImageID, &r.Title, &r.Series, &r.Number, &r.Volume, &r.Count, &r.Summary, &r.Notes,
+				&r.Year, &r.Month, &r.Day, &r.Writer, &r.Penciller, &r.Inker, &r.Colorist, &r.Letterer, &r.CoverArtist,
+				&r.Editor, &r.Publisher, &r.Imprint, &r.Genre, &r.Web, &r.LanguageISO, &r.Format, &r.Manga, &r.AgeRating,
+				&r.CommunityRating, &r.XMLPageCount, &r.RawXML)
+			return r, err
+		}); err != nil {
+		return err
+	}
 	if err := streamRows(bw, "saved_searches", cx.DB,
-		`SELECT id, name, query, created_at FROM saved_searches ORDER BY id`,
+		`SELECT id, name, query, sort, sort_order, seed, created_at FROM saved_searches ORDER BY id`,
 		func(rows *sql.Rows) (any, error) {
 			var r savedSearchRow
-			err := rows.Scan(&r.ID, &r.Name, &r.Query, &r.CreatedAt)
+			err := rows.Scan(&r.ID, &r.Name, &r.Query, &r.Sort, &r.Order, &r.Seed, &r.CreatedAt)
 			return r, err
 		}); err != nil {
 		return err
@@ -606,8 +673,8 @@ func replaceDBFromJSON(srcPath, dbPath, thumbsPath, galleryPath string) error {
 	if err := json.NewDecoder(f).Decode(&exp); err != nil {
 		return fmt.Errorf("decode json: %w", err)
 	}
-	if exp.Version != galleryExportVersion {
-		return fmt.Errorf("unsupported export version %d (expected %d)", exp.Version, galleryExportVersion)
+	if exp.Version < galleryExportMinSupported || exp.Version > galleryExportVersion {
+		return fmt.Errorf("unsupported export version %d (supported: %d..%d)", exp.Version, galleryExportMinSupported, galleryExportVersion)
 	}
 
 	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
@@ -920,6 +987,7 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		`DELETE FROM image_paths`,
 		`DELETE FROM sd_metadata`,
 		`DELETE FROM comfyui_metadata`,
+		`DELETE FROM manga_metadata`,
 		`DELETE FROM saved_searches`,
 		`DELETE FROM images`,
 		`DELETE FROM tags`,
@@ -967,7 +1035,7 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		}
 	}
 	for _, r := range exp.Images {
-		var width, height, auto any
+		var width, height, auto, pageCount, seriesOrder any
 		if r.Width.Valid {
 			width = r.Width.Int64
 		}
@@ -977,12 +1045,18 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		if r.AutoTaggedAt.Valid {
 			auto = r.AutoTaggedAt.String
 		}
+		if r.PageCount.Valid {
+			pageCount = r.PageCount.Int64
+		}
+		if r.SeriesOrder.Valid {
+			seriesOrder = r.SeriesOrder.Int64
+		}
 		if _, err := tx.Exec(
 			`INSERT INTO images (id, sha256, canonical_path, folder_path, file_type, width, height,
-			                    file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, ingested_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                    file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, series, series_order, ingested_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.SHA256, r.CanonicalPath, r.FolderPath, r.FileType, width, height,
-			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, auto, r.SourceType, r.Origin, r.Source, r.URL, r.IngestedAt,
+			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, auto, r.SourceType, r.Origin, r.Source, r.URL, pageCount, r.Series, seriesOrder, r.IngestedAt,
 		); err != nil {
 			return fmt.Errorf("insert image %d: %w", r.ID, err)
 		}
@@ -1033,10 +1107,28 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 			return fmt.Errorf("insert comfyui_metadata %d: %w", r.ImageID, err)
 		}
 	}
+	for _, r := range exp.MangaMetadata {
+		if _, err := tx.Exec(
+			`INSERT INTO manga_metadata (image_id, title, series, number, volume, count, summary, notes,
+			     year, month, day, writer, penciller, inker, colorist, letterer, cover_artist, editor, publisher,
+			     imprint, genre, web, language_iso, format, manga, age_rating, community_rating, xml_page_count, raw_xml)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ImageID, nullStringArg(r.Title), nullStringArg(r.Series), nullStringArg(r.Number), nullStringArg(r.Volume),
+			nullInt64Arg(r.Count), nullStringArg(r.Summary), nullStringArg(r.Notes),
+			nullInt64Arg(r.Year), nullInt64Arg(r.Month), nullInt64Arg(r.Day),
+			nullStringArg(r.Writer), nullStringArg(r.Penciller), nullStringArg(r.Inker), nullStringArg(r.Colorist),
+			nullStringArg(r.Letterer), nullStringArg(r.CoverArtist), nullStringArg(r.Editor), nullStringArg(r.Publisher),
+			nullStringArg(r.Imprint), nullStringArg(r.Genre), nullStringArg(r.Web), nullStringArg(r.LanguageISO),
+			nullStringArg(r.Format), nullStringArg(r.Manga), nullStringArg(r.AgeRating),
+			nullFloat64Arg(r.CommunityRating), nullInt64Arg(r.XMLPageCount), nullStringArg(r.RawXML),
+		); err != nil {
+			return fmt.Errorf("insert manga_metadata %d: %w", r.ImageID, err)
+		}
+	}
 	for _, r := range exp.SavedSearches {
 		if _, err := tx.Exec(
-			`INSERT INTO saved_searches (id, name, query, created_at) VALUES (?, ?, ?, ?)`,
-			r.ID, r.Name, r.Query, r.CreatedAt,
+			`INSERT INTO saved_searches (id, name, query, sort, sort_order, seed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.Name, r.Query, r.Sort, r.Order, r.Seed, r.CreatedAt,
 		); err != nil {
 			return fmt.Errorf("insert saved_search %d: %w", r.ID, err)
 		}

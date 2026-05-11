@@ -1,6 +1,11 @@
 package models
 
-import "time"
+import (
+	"net/url"
+	"time"
+)
+
+func urlQueryEscape(s string) string { return url.QueryEscape(s) }
 
 const (
 	FileTypeJPEG = "jpeg"
@@ -9,6 +14,10 @@ const (
 	FileTypeGIF  = "gif"
 	FileTypeMP4  = "mp4"
 	FileTypeWEBM = "webm"
+	// FileTypeCBZ covers `.cbz` and `.zip` archives ingested as a single
+	// manga row. Page bytes are extracted lazily into a per-image cache;
+	// the cover thumbnail is page 1.
+	FileTypeCBZ = "cbz"
 
 	SourceTypeA1111   = "a1111"
 	SourceTypeComfyUI = "comfyui"
@@ -29,7 +38,7 @@ type Image struct {
 	SHA256        string
 	CanonicalPath string
 	FolderPath    string // relative dir from gallery_path root; "" = root
-	FileType      string // "jpeg" | "png" | "webp" | "gif" | "mp4" | "webm"
+	FileType      string // "jpeg" | "png" | "webp" | "gif" | "mp4" | "webm" | "cbz"
 	Width         *int
 	Height        *int
 	FileSize      int64
@@ -41,7 +50,47 @@ type Image struct {
 	Origin        string // "ingest" | "upload" | caller-supplied string (app name, URL...)
 	Source        string // free-form provenance label (site name, scraper, ...); operator-edited
 	URL           string // canonical web URL the image came from; http(s) only
+	PageCount     *int   // page entry count for cbz manga rows; NULL otherwise
+	Series        string // operator-edited free-form series label (max 200 chars); '' when unset
+	SeriesOrder   *int   // operator-edited position within Series; NULL = unspecified
 	IngestedAt    time.Time
+}
+
+// MangaMetadata mirrors sd_metadata / comfyui_metadata for the manga
+// feature: parsed read-only ComicInfo.xml descriptors surfaced on the
+// detail page. The authoritative page count lives on Image.PageCount;
+// XMLPageCount is whatever the XML declared and is shown for
+// information only.
+type MangaMetadata struct {
+	ImageID         int64
+	Title           string
+	Series          string
+	Number          string
+	Volume          string
+	Count           *int
+	Summary         string
+	Notes           string
+	Year            *int
+	Month           *int
+	Day             *int
+	Writer          string
+	Penciller       string
+	Inker           string
+	Colorist        string
+	Letterer        string
+	CoverArtist     string
+	Editor          string
+	Publisher       string
+	Imprint         string
+	Genre           string
+	Web             string
+	LanguageISO     string
+	Format          string
+	Manga           string // "Yes" | "YesAndRightToLeft" | "No" | "Unknown"
+	AgeRating       string
+	CommunityRating *float64
+	XMLPageCount    *int
+	RawXML          string // full XML body verbatim, capped at 64 KiB at parse time
 }
 
 type ImagePath struct {
@@ -153,12 +202,60 @@ type SavedSearch struct {
 	ID        int64
 	Name      string
 	Query     string
+	Sort      string
+	Order     string
+	Seed      string
 	CreatedAt time.Time
+}
+
+// HRef builds the `/?...` link a sidebar entry resolves to. Mirrors the
+// gallery handler's URL contract so reopening the entry lands the user
+// on the same view they saved (q + sort + order + seed).
+func (s SavedSearch) HRef() string {
+	out := "/?q=" + urlQueryEscape(s.Query)
+	if s.Sort != "" {
+		out += "&sort=" + urlQueryEscape(s.Sort)
+	}
+	if s.Order != "" {
+		out += "&order=" + urlQueryEscape(s.Order)
+	}
+	if s.Seed != "" {
+		out += "&seed=" + urlQueryEscape(s.Seed)
+	}
+	return out
+}
+
+// Background-job type identifiers. Use these constants instead of bare
+// strings at every jobs.Start / StartScheduled call site so a typo
+// surfaces at compile time and SPECIFICATIONS.md §1.3 stays in sync
+// with the code via the canonical JobTypes() list below.
+const (
+	JobTypeSync           = "sync"
+	JobTypeAutotag        = "autotag"
+	JobTypeReExtract      = "re-extract"
+	JobTypeDelete         = "delete"
+	JobTypeRebuildThumbs  = "rebuild-thumbs"
+	JobTypeMove           = "move"
+	JobTypeTag            = "tag"
+	JobTypeWatcher        = "watcher"
+	JobTypePruneThumbs    = "prune-thumbs"
+	JobTypeVacuum         = "vacuum"
+)
+
+// JobTypes is the authoritative ordered list of every JobType the
+// runtime emits. Templates and docs key off this list so adding a new
+// type forces a one-line update here.
+func JobTypes() []string {
+	return []string{
+		JobTypeSync, JobTypeAutotag, JobTypeReExtract, JobTypeDelete,
+		JobTypeRebuildThumbs, JobTypeMove, JobTypeTag, JobTypeWatcher,
+		JobTypePruneThumbs, JobTypeVacuum,
+	}
 }
 
 type JobState struct {
 	Running    bool
-	JobType    string // "sync" | "autotag" | "re-extract" | "delete" | "rebuild-thumbs" | "move" | "tag" | "watcher"
+	JobType    string // one of the JobType* constants above
 	Total      int
 	Processed  int
 	Message    string

@@ -163,7 +163,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	dataSQL := fmt.Sprintf(
 		`SELECT i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
 		        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
-		        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.ingested_at
+		        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.page_count, i.series, i.series_order, i.ingested_at
 		 FROM images i%s
 		 WHERE %s
 		 %s
@@ -184,14 +184,14 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	for rows.Next() {
 		var img models.Image
 		var isMissing, isFav, isInbox int
-		var width, height *int
+		var width, height, pageCount, seriesOrder *int
 		var autoTaggedAt *string
 		var ingestedAt string
 
 		if err := rows.Scan(
 			&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
 			&width, &height, &img.FileSize, &isMissing, &isFav,
-			&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &ingestedAt,
+			&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &img.Series, &seriesOrder, &ingestedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -200,6 +200,8 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 		img.IsInbox = isInbox == 1
 		img.Width = width
 		img.Height = height
+		img.PageCount = pageCount
+		img.SeriesOrder = seriesOrder
 		if autoTaggedAt != nil {
 			t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
 			img.AutoTaggedAt = &t
@@ -279,7 +281,7 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 	sql := fmt.Sprintf(
 		`SELECT i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
 		        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
-		        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.ingested_at
+		        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.page_count, i.series, i.series_order, i.ingested_at
 		 FROM images i WHERE i.id IN (%s)`, placeholders,
 	)
 	rows, err := database.Read.Query(sql, args...)
@@ -292,13 +294,13 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 	for rows.Next() {
 		var img models.Image
 		var isMissing, isFav, isInbox int
-		var width, height *int
+		var width, height, pageCount, seriesOrder *int
 		var autoTaggedAt *string
 		var ingestedAt string
 		if err := rows.Scan(
 			&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
 			&width, &height, &img.FileSize, &isMissing, &isFav,
-			&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &ingestedAt,
+			&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &img.Series, &seriesOrder, &ingestedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -307,6 +309,8 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 		img.IsInbox = isInbox == 1
 		img.Width = width
 		img.Height = height
+		img.PageCount = pageCount
+		img.SeriesOrder = seriesOrder
 		if autoTaggedAt != nil {
 			t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
 			img.AutoTaggedAt = &t
@@ -1352,20 +1356,12 @@ func fastCountAI(database *db.DB, e FilterExpr) (int, bool) {
 	return n, true
 }
 
-// fastCountTagged returns the fast-path count for tagged:true and
-// autotagged:true. Uses fastVisibleCount as the upper bound: count is
-// exact when every visible image carries at least one (auto) tag - the
-// typical state of a synced library and the audit's large fixture - and
-// over-shoots when many images have no tags. Pagination renders the
-// extra trailing pages empty, same trade as the wildcard / AND helpers
-// above. Falls through (ok=false) for the :false variants so untagged-
-// triage queries keep their exact slow-path count.
-//
-// The slow EXISTS-COUNT walks visible images one by one (1.08 M probes
-// on the audit fixture, 0.9-2.7 s p95 c=1, multiplied by concurrency).
-// COUNT(DISTINCT image_id) over image_tags forces a TEMP B-TREE that
-// runs slower than the slow path on real data; fastVisibleCount is one
-// index lookup.
+// fastCountTagged returns the exact fast-path count for tagged:true and
+// autotagged:true. Computes visible_total - untagged_visible: untagged
+// is the exact slow path's :false count (inexpensive at typical scale -
+// the EXISTS subquery rides the partial inbox-visible index), and the
+// difference is the partition-correct tagged-visible count. Falls back
+// to (0, false) on any DB error so the slow path takes over.
 func fastCountTagged(database *db.DB, e FilterExpr) (int, bool) {
 	if e.Key != "tagged" && e.Key != "autotagged" {
 		return 0, false
@@ -1373,7 +1369,19 @@ func fastCountTagged(database *db.DB, e FilterExpr) (int, bool) {
 	if e.Val != "true" {
 		return 0, false
 	}
-	return fastVisibleCount(database)
+	visible, ok := fastVisibleCount(database)
+	if !ok {
+		return 0, false
+	}
+	var untagged int
+	q := `SELECT COUNT(*) FROM images i WHERE is_missing = 0 AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = i.id)`
+	if e.Key == "autotagged" {
+		q = `SELECT COUNT(*) FROM images i WHERE is_missing = 0 AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = i.id AND it.is_auto = 1)`
+	}
+	if err := database.Read.QueryRow(q).Scan(&untagged); err != nil {
+		return 0, false
+	}
+	return visible - untagged, true
 }
 
 // fastCountInbox returns the visible count for inbox:true / inbox:false
@@ -1973,6 +1981,18 @@ func buildOrder(sort, order string, randomSeed int64) string {
 			dir = "ASC"
 		}
 		return "ORDER BY i.file_size " + dir + ", i.id " + dir
+	case "order":
+		// Group by series alphabetically, then by within-series position
+		// with NULLs last in both directions (a series with most rows
+		// unordered should still sit next to its ordered ones), then
+		// fall back to ingest order so untagged rows have a stable seat
+		// and pagination has a total order. ASC and DESC flip every
+		// axis except the NULLs-last bias.
+		dir := "ASC"
+		if order == "desc" {
+			dir = "DESC"
+		}
+		return "ORDER BY i.series " + dir + ", i.series_order IS NULL, i.series_order " + dir + ", i.id " + dir
 	case "random":
 		if randomSeed != 0 {
 			// Deterministic pseudo-random order, stable across page
@@ -2294,11 +2314,69 @@ func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
 		}
 		return "i.is_missing = 0"
 
-	case "animated":
-		if e.Val == "true" {
-			return "i.file_type IN ('gif', 'mp4', 'webm')"
+	case "type":
+		// Comma-separated union of named file-type buckets:
+		//   image     -> jpeg / png / webp / gif / mp4 / webm
+		//   archive   -> cbz (cbz and zip archives of images; the
+		//                ingest collapses both extensions onto the
+		//                'cbz' file_type)
+		//   animated  -> gif / mp4 / webm (subset of image)
+		// `-type:animated` is the inverse via the parser's NotExpr; no
+		// dedicated `animated:false` keyword exists.
+		buckets := map[string][]string{
+			"image":    {"jpeg", "png", "webp", "gif", "mp4", "webm"},
+			"archive":  {"cbz"},
+			"animated": {"gif", "mp4", "webm"},
 		}
-		return "i.file_type NOT IN ('gif', 'mp4', 'webm')"
+		all := map[string]bool{
+			"jpeg": true, "png": true, "webp": true, "gif": true,
+			"mp4": true, "webm": true, "cbz": true,
+		}
+		seen := map[string]bool{}
+		for _, v := range strings.Split(strings.ToLower(e.Val), ",") {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			fts, ok := buckets[v]
+			if !ok {
+				continue
+			}
+			for _, ft := range fts {
+				seen[ft] = true
+			}
+		}
+		if len(seen) == 0 {
+			return "1=0"
+		}
+		if len(seen) == len(all) {
+			return "1=1"
+		}
+		quoted := make([]string, 0, len(seen))
+		for ft := range seen {
+			quoted = append(quoted, "'"+ft+"'")
+		}
+		sort.Strings(quoted)
+		return "i.file_type IN (" + strings.Join(quoted, ", ") + ")"
+
+	case "collection":
+		// Operator-edited per-row collection label (the comic / manga
+		// "series" surface, generalised for plain image groupings).
+		// Schema column kept as `series` for backwards compatibility
+		// with existing databases; only the user-facing keyword and
+		// payload field names carry the new vocabulary.
+		b.args = append(b.args, e.Val)
+		return "i.series = ?"
+
+	case "pages":
+		op, n, ok := parseIntComp(e.Val)
+		if !ok {
+			return "1=0"
+		}
+		b.args = append(b.args, n)
+		// COALESCE so non-manga rows (NULL page_count) compare as 0;
+		// matches the spec contract that `pages:>=1` excludes images.
+		return fmt.Sprintf("COALESCE(i.page_count, 0) %s ?", op)
 
 	case "tagged":
 		return b.imageTagsPredicate("", e.Val != "true")

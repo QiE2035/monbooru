@@ -1,0 +1,29 @@
+{{define "pages.html"}}
+{{template "layout_head" .}}
+<div id="sidebar-inner" class="detail-sidebar-inner">
+  {{template "partials/detail_sidebar.html" .}}
+</div>
+{{template "layout_mid" .}}
+
+<div id="pages-grid-page" data-image-id="{{.Image.ID}}">
+  <div class="detail-topbar">
+    <div class="detail-nav-group">
+      <a href="/images/{{.Image.ID}}{{.BackQS}}" class="back-link">← Back to detail</a>
+      <span class="detail-nav-sep">·</span>
+      <span class="detail-filename mono-small">{{.Filename}} ({{.PageCount}} pages)</span>
+    </div>
+  </div>
+  <ul class="manga-pages-grid">
+    {{range $i := seq 1 .PageCount}}
+    <li class="manga-page-cell" id="page-{{$i}}">
+      <a href="/images/{{$.Image.ID}}/read?page={{$i}}{{$.BackKVQS}}&from=pages" class="manga-page-link">
+        <img src="/images/{{$.Image.ID}}/page/{{$i}}/thumb" alt="Page {{$i}}" class="manga-page-thumb" loading="lazy">
+        <span class="manga-page-num">{{$i}}</span>
+      </a>
+    </li>
+    {{end}}
+  </ul>
+</div>
+
+{{template "layout_end" .}}
+{{end}}

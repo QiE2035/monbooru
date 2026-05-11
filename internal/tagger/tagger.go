@@ -340,8 +340,12 @@ func ReleaseAll() {
 // so each image ends up with one row per unique tag. Callers must pass
 // only enabled+available taggers. useCUDA overrides cfg.Tagger.UseCUDA
 // so per-request callers can keep single-image runs on the CPU.
+// mangaCacheDir is the per-gallery <data_path>/<gallery>/manga directory
+// used to extract and cache cbz pages on demand; pass "" to fall back
+// to a per-image temp directory (covers tests that don't construct a
+// full gallery context).
 // Returns the count of submitted ids left without auto_tagged_at.
-func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, ids []int64, taggers []TaggerStatus, mgr *jobs.Manager, useCUDA bool) (int, error) {
+func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, ids []int64, taggers []TaggerStatus, mgr *jobs.Manager, useCUDA bool, mangaCacheDir string) (int, error) {
 	if len(taggers) == 0 {
 		return 0, fmt.Errorf("no tagger is enabled or available")
 	}
@@ -458,11 +462,51 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 		}
 	}
 
+	parallel := cfg.Tagger.Parallel
+	if parallel < 1 {
+		parallel = 1
+	}
+	if parallel > len(ids) {
+		parallel = len(ids)
+	}
+
 	// processOne runs the per-image tagging pipeline. Called from one
 	// or more worker goroutines; ORT sessions are safe for concurrent
 	// Run calls and the DB write pool serialises storeResults.
 	var skipped atomic.Int64
-	processOne := func(imageID int64) {
+	// completed / total feed both the worker's per-image tick and the
+	// per-page status line emitted from inside processOne for cbz rows.
+	// Declared up here so the closure can reference them.
+	total := len(ids)
+	var completed atomic.Int64
+
+	// jobs.Manager carries a single status string; parallel workers
+	// writing into it would each clobber the others' progress, making
+	// the displayed message hop between mangas. Per-worker slots plus
+	// a serialising mutex turn every emission into a single combined
+	// snapshot - workers see and write the same view of all peers, so
+	// the displayed message is always consistent regardless of which
+	// goroutine fired the update.
+	var statusMu sync.Mutex
+	workerStatus := make([]string, parallel)
+	emitStatus := func(workerIdx int, msg string) {
+		statusMu.Lock()
+		defer statusMu.Unlock()
+		workerStatus[workerIdx] = msg
+		var active []string
+		for _, s := range workerStatus {
+			if s != "" {
+				active = append(active, s)
+			}
+		}
+		out := "tagging images"
+		if len(active) > 0 {
+			out = strings.Join(active, " · ")
+		}
+		mgr.Update(int(completed.Load()), total, out)
+	}
+
+	processOne := func(imageID int64, workerIdx int) {
 		var canonPath, fileType string
 		if err := database.Read.QueryRowContext(ctx,
 			`SELECT canonical_path, file_type FROM images WHERE id = ?`, imageID,
@@ -472,53 +516,67 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 			return
 		}
 
-		framePaths, cleanup := framesForTagging(canonPath, fileType)
+		framePaths, cleanup := framesForTagging(canonPath, fileType, mangaCacheDir, imageID)
 		defer cleanup()
 		if len(framePaths) == 0 {
-			logx.Warnf("tagger: skip image %d: no frames available (missing file or ffmpeg)", imageID)
+			logx.Warnf("tagger: skip image %d: no frames available (missing file, archive, or ffmpeg)", imageID)
 			skipped.Add(1)
 			return
 		}
 
+		// Manga rows hold the inference loop for one cbz across many
+		// pages; without a per-page status line the operator stares at
+		// "starting…" for minutes. Videos finish in seconds (5 sampled
+		// frames) and stay quiet.
+		mangaProgress := fileType == "cbz" && len(framePaths) > 1
 		merged := map[tagKey]scored{}
-		for _, lt := range loaded {
-			// Videos keep the highest score per label across the sampled frames.
-			best := map[int]float32{}
-			for _, fp := range framePaths {
+		minHits := ResolveMinHits(cfg.Tagger.Aggregation.MinHitFraction, len(framePaths))
+		for tIdx, lt := range loaded {
+			// Cancel between taggers - returns without committing the
+			// partial merged map so the image stays untouched. The outer
+			// worker loop already short-circuits before picking the next
+			// image; this check covers the inside of a long-running cbz
+			// inference run.
+			if ctx.Err() != nil {
+				return
+			}
+			// Run inference page-by-page; cancellation between pages
+			// bounds the worst-case "time from click to stop" to a
+			// single inference rather than a 100+ page archive.
+			perFrame := make([][]float32, 0, len(framePaths))
+			for fIdx, fp := range framePaths {
+				if ctx.Err() != nil {
+					return
+				}
+				if mangaProgress {
+					msg := fmt.Sprintf("image %d: page %d/%d", imageID, fIdx+1, len(framePaths))
+					if len(loaded) > 1 {
+						msg = fmt.Sprintf("%s (tagger %d/%d)", msg, tIdx+1, len(loaded))
+					}
+					emitStatus(workerIdx, msg)
+				}
 				scores, err := inferImage(lt, fp)
 				if err != nil {
+					logx.Warnf("tagger: inference failed: image %d via %q frame %d/%d (%s): %v",
+						imageID, lt.cfg.Name, fIdx+1, len(framePaths), fp, err)
 					continue
 				}
-				for idx, score := range scores {
-					if score > best[idx] {
-						best[idx] = score
-					}
-				}
+				perFrame = append(perFrame, scores)
 			}
-			globalThreshold := float32(lt.cfg.ConfidenceThreshold)
-			for idx, score := range best {
-				if idx >= len(lt.labels) {
-					continue
-				}
-				label := lt.labels[idx]
+
+			// Pre-resolve every label's routing once (dispatch rule,
+			// single_general lift, category resolution) so the pure
+			// aggregator can hit a precomputed slice indexed by label
+			// id. Labels routed to "skip" are flagged as placeholders.
+			labels := make([]CandidateLabel, len(lt.labels))
+			for idx, label := range lt.labels {
 				if label.placeholder {
-					continue
-				}
-				// Cheap floor that drops the long tail of near-zero
-				// scores before we resolve the category for the
-				// per-category threshold lookup.
-				if score < 0.001 {
+					labels[idx].Placeholder = true
 					continue
 				}
 				res := resolveCategory(lt.profile, label, catIDs, lt.dispatch)
 				if res.skip {
-					continue
-				}
-				threshold := globalThreshold
-				if v, ok := lt.cfg.CategoryThresholds[res.catName]; ok {
-					threshold = float32(v)
-				}
-				if score < threshold {
+					labels[idx].Placeholder = true
 					continue
 				}
 				catID := res.catID
@@ -526,10 +584,6 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 				if rule, ok := lt.dispatch.Lookup(label.name); ok && rule.Name != "" {
 					name = rule.Name
 				}
-				// single_general taggers have no category info; if a
-				// unique categorised tag with this name already exists,
-				// attach to it instead of dropping into general. Skip the
-				// lift when a dispatch rule already routed the label.
 				if !res.override &&
 					lt.profile.CategoryScheme == "single_general" &&
 					catID == generalCatID {
@@ -537,9 +591,23 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 						catID = inferred
 					}
 				}
-				k := tagKey{name: name, catID: catID}
-				if prev, ok := merged[k]; !ok || score > prev.score {
-					merged[k] = scored{score: score, taggerName: lt.cfg.Name}
+				labels[idx] = CandidateLabel{
+					Name:    name,
+					CatID:   catID,
+					CatName: catNameByID(catIDs, catID),
+				}
+			}
+
+			cands := AggregateInferenceScores(perFrame, labels, AggregateOpts{
+				MinHits:            minHits,
+				GlobalThreshold:    float32(lt.cfg.ConfidenceThreshold),
+				CategoryThresholds: lt.cfg.CategoryThresholds,
+				PerCategoryTopK:    lt.cfg.PerCategoryTopK,
+			})
+			for _, c := range cands {
+				mk := tagKey{name: c.Name, catID: c.CatID}
+				if prev, ok := merged[mk]; !ok || c.Score > prev.score {
+					merged[mk] = scored{score: c.Score, taggerName: lt.cfg.Name}
 				}
 			}
 		}
@@ -550,31 +618,24 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 		}
 	}
 
-	parallel := cfg.Tagger.Parallel
-	if parallel < 1 {
-		parallel = 1
-	}
-	if parallel > len(ids) {
-		parallel = len(ids)
-	}
-
-	total := len(ids)
-	var completed atomic.Int64
 	queue := make(chan int64, parallel)
 	var wg sync.WaitGroup
 	for i := 0; i < parallel; i++ {
 		wg.Add(1)
-		go func() {
+		go func(workerIdx int) {
 			defer wg.Done()
 			for imageID := range queue {
 				if ctx.Err() != nil {
 					continue
 				}
-				processOne(imageID)
-				done := int(completed.Add(1))
-				mgr.Update(done, total, "tagging images")
+				processOne(imageID, workerIdx)
+				completed.Add(1)
+				// Drop this worker's per-page slot and refresh the
+				// combined status; the bumped completed count surfaces
+				// via the Update call inside emitStatus.
+				emitStatus(workerIdx, "")
 			}
-		}()
+		}(i)
 	}
 
 	for _, imageID := range ids {
@@ -590,24 +651,66 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 }
 
 // framesForTagging returns the file paths to feed the tagger plus a
-// cleanup func. Static images return [canonPath]; videos sample up to
-// five frames via ffmpeg. With ffmpeg missing or failing, videos
-// yield no frames and the caller skips the asset.
-func framesForTagging(canonPath, fileType string) ([]string, func()) {
-	if fileType != "mp4" && fileType != "webm" {
-		return []string{canonPath}, func() {}
-	}
-	positions := []float64{0.10, 0.30, 0.50, 0.70, 0.90}
-	frames, err := gallery.ExtractVideoFrames(canonPath, os.TempDir(), positions)
-	cleanup := func() {
-		for _, p := range frames {
-			os.Remove(p)
+// cleanup func. Branches by file type:
+//   - static images: [canonPath], no-op cleanup.
+//   - videos: up to five frames sampled via ffmpeg, removed by cleanup.
+//   - cbz manga: every page extracted into the per-gallery manga cache
+//     (or a temp directory when mangaCacheDir is empty); the cache
+//     entries are deliberately left on disk so idle reclaim handles
+//     eviction five minutes after the last use, mirroring the
+//     reader's serve path.
+//
+// With ffmpeg missing or failing, videos yield no frames and the
+// caller skips the asset; an unreadable archive does the same.
+func framesForTagging(canonPath, fileType, mangaCacheDir string, imageID int64) ([]string, func()) {
+	switch fileType {
+	case "mp4", "webm":
+		positions := []float64{0.10, 0.30, 0.50, 0.70, 0.90}
+		frames, err := gallery.ExtractVideoFrames(canonPath, os.TempDir(), positions)
+		cleanup := func() {
+			for _, p := range frames {
+				os.Remove(p)
+			}
 		}
-	}
-	if err != nil {
+		if err != nil {
+			return frames, cleanup
+		}
 		return frames, cleanup
+	case "cbz":
+		archive, err := gallery.OpenManga(canonPath)
+		if err != nil {
+			logx.Warnf("tagger: open manga %q: %v", canonPath, err)
+			return nil, func() {}
+		}
+		pageCount := len(archive.Pages)
+		archive.Close()
+		cacheRoot := mangaCacheDir
+		var tempDir string
+		if cacheRoot == "" {
+			tempDir, err = os.MkdirTemp("", "manga-frames-*")
+			if err != nil {
+				logx.Warnf("tagger: temp dir for manga frames: %v", err)
+				return nil, func() {}
+			}
+			cacheRoot = tempDir
+		}
+		paths := make([]string, 0, pageCount)
+		for i := 1; i <= pageCount; i++ {
+			path, err := gallery.EnsureMangaPageInCache(cacheRoot, canonPath, imageID, i)
+			if err != nil {
+				logx.Warnf("tagger: extract page %d of %q: %v", i, canonPath, err)
+				continue
+			}
+			paths = append(paths, path)
+		}
+		cleanup := func() {
+			if tempDir != "" {
+				os.RemoveAll(tempDir)
+			}
+		}
+		return paths, cleanup
 	}
-	return frames, cleanup
+	return []string{canonPath}, func() {}
 }
 
 // inferImage loads, preprocesses, and runs inference on a single image
@@ -800,7 +903,7 @@ func storeResults(
 		if _, err := tx.ExecContext(ctx, `UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?`, tid); err != nil {
 			return fmt.Errorf("increment usage for tag %d: %w", tid, err)
 		}
-		if err := tags.ApplyImpliedFanoutTx(tx, imageID, tid, true); err != nil {
+		if err := tags.ApplyImpliedFanoutTx(tx, imageID, tid, ratingCatID, true); err != nil {
 			return fmt.Errorf("fan out implications for tag %d: %w", tid, err)
 		}
 	}

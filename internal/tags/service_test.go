@@ -1,6 +1,9 @@
 package tags
 
 import (
+	"database/sql"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -181,6 +184,94 @@ func TestAddTagToImageFromTagger_ManualSource(t *testing.T) {
 	}
 }
 
+// TestAddTagToImage_PromotesAutoToUser pins the manual-re-add path: an
+// existing auto-tagger row should flip to user-owned (is_auto=0,
+// confidence=NULL, tagger_name=NULL) when the operator types the same
+// tag into the detail page. The AddResult signals the promotion so
+// the inline flash can say "promoted to user tag" instead of falling
+// through to the "already on image" branch.
+func TestAddTagToImage_PromotesAutoToUser(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	imgID := insertTestImage(t, database, "auto_to_user")
+
+	tag, _ := svc.GetOrCreateTag("auto_to_user_tag", catID)
+	conf := 0.87
+	if err := svc.AddTagToImageFromTagger(imgID, tag.ID, true, &conf, "wd-swin"); err != nil {
+		t.Fatalf("seed auto row: %v", err)
+	}
+
+	res, err := svc.AddTagToImageReportingDup(imgID, tag.ID, false, nil, "")
+	if err != nil {
+		t.Fatalf("manual re-add: %v", err)
+	}
+	if res.Added {
+		t.Error("Added should be false; the row already existed as auto")
+	}
+	if !res.Promoted {
+		t.Error("Promoted should be true; auto row should flip to user")
+	}
+
+	var isAuto int
+	var confidence sql.NullFloat64
+	var taggerName sql.NullString
+	if err := database.Read.QueryRow(
+		`SELECT is_auto, confidence, tagger_name FROM image_tags
+		 WHERE image_id = ? AND tag_id = ?`, imgID, tag.ID,
+	).Scan(&isAuto, &confidence, &taggerName); err != nil {
+		t.Fatalf("scan row: %v", err)
+	}
+	if isAuto != 0 {
+		t.Errorf("is_auto = %d, want 0", isAuto)
+	}
+	if confidence.Valid {
+		t.Errorf("confidence = %v, want NULL after promotion", confidence.Float64)
+	}
+	if taggerName.Valid {
+		t.Errorf("tagger_name = %q, want NULL after promotion", taggerName.String)
+	}
+}
+
+// TestAddTagToImage_AutoReAddDoesNotDemoteUser pins the inverse: an
+// auto-tagger pass over an image already carrying a user-owned tag
+// must leave the row untouched. Otherwise a routine re-tag would
+// silently strip the user's explicit choice.
+func TestAddTagToImage_AutoReAddDoesNotDemoteUser(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	imgID := insertTestImage(t, database, "user_keep")
+
+	tag, _ := svc.GetOrCreateTag("user_keep_tag", catID)
+	if err := svc.AddTagToImage(imgID, tag.ID, false, nil); err != nil {
+		t.Fatalf("seed user row: %v", err)
+	}
+
+	conf := 0.92
+	res, err := svc.AddTagToImageReportingDup(imgID, tag.ID, true, &conf, "wd-swin")
+	if err != nil {
+		t.Fatalf("auto re-add: %v", err)
+	}
+	if res.Added || res.Promoted {
+		t.Errorf("auto re-add of a user row should be a no-op, got %+v", res)
+	}
+
+	var isAuto int
+	var confidence sql.NullFloat64
+	var taggerName sql.NullString
+	if err := database.Read.QueryRow(
+		`SELECT is_auto, confidence, tagger_name FROM image_tags
+		 WHERE image_id = ? AND tag_id = ?`, imgID, tag.ID,
+	).Scan(&isAuto, &confidence, &taggerName); err != nil {
+		t.Fatalf("scan row: %v", err)
+	}
+	if isAuto != 0 {
+		t.Errorf("is_auto = %d, want 0 (user-owned row must stick)", isAuto)
+	}
+	if confidence.Valid || taggerName.Valid {
+		t.Errorf("user row should not gain confidence/tagger_name; got conf=%v tagger=%v", confidence, taggerName)
+	}
+}
+
 func TestRemoveTag_DecrementUsageCount(t *testing.T) {
 	database, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
@@ -251,6 +342,37 @@ func TestCreateCategory_RejectsSystemReservedName(t *testing.T) {
 
 	if _, err := svc.CreateCategory("system", "#aabbcc"); err != ErrReservedCategoryName {
 		t.Errorf("CreateCategory(system) err = %v, want ErrReservedCategoryName", err)
+	}
+}
+
+// TestCreateCategory_RejectsInvalidNames pins A-F015: the allowlist
+// stops payloads that would round-trip badly through the tagger
+// threshold form-field name attribute, the cat: search syntax, and
+// the rendered template context. Numbers/dashes/underscores are fine;
+// quotes, slashes, dates, whitespace, and shell control characters
+// must be refused.
+func TestCreateCategory_RejectsInvalidNames(t *testing.T) {
+	_, svc := setupTestDB(t)
+
+	bad := []string{
+		"' OR 1=1",
+		"<script>",
+		"2024/01/02",
+		"a b",
+		"foo bar",
+		"foo:bar",
+		"foo bar/baz",
+		"foo$bar",
+	}
+	for _, name := range bad {
+		if _, err := svc.CreateCategory(name, "#aabbcc"); err != ErrInvalidCategoryName {
+			t.Errorf("CreateCategory(%q) err = %v, want ErrInvalidCategoryName", name, err)
+		}
+	}
+
+	// Sanity: the legitimate shape still passes.
+	if _, err := svc.CreateCategory("mood-2", "#aabbcc"); err != nil {
+		t.Errorf("CreateCategory(mood-2) err = %v, want nil", err)
 	}
 }
 
@@ -477,6 +599,88 @@ func TestRelatedImages(t *testing.T) {
 	}
 }
 
+// RelatedImages must surface enough info on each candidate that the
+// related-images partial can render the manga-pill. Specifically the
+// FileType and PageCount fields need to carry through; without them
+// the template can't tell a cbz candidate from an image candidate.
+// Type partition: a manga source surfaces other manga, a non-manga
+// source surfaces other non-manga rows.
+func TestRelatedImages_CarriesFileTypeAndPageCount(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	var src int64
+	if err := database.Write.QueryRow(
+		`INSERT INTO images (sha256, canonical_path, file_type, file_size, page_count) VALUES (?, ?, 'cbz', 800, 5) RETURNING id`,
+		"src-cbz", "/gallery/src.cbz",
+	).Scan(&src); err != nil {
+		t.Fatalf("insert src manga: %v", err)
+	}
+	var manga int64
+	if err := database.Write.QueryRow(
+		`INSERT INTO images (sha256, canonical_path, file_type, file_size, page_count) VALUES (?, ?, 'cbz', 1000, 12) RETURNING id`,
+		"manga-sha", "/gallery/m.cbz",
+	).Scan(&manga); err != nil {
+		t.Fatalf("insert manga: %v", err)
+	}
+
+	tagA, _ := svc.GetOrCreateTag("shared", catID)
+	svc.AddTagToImage(src, tagA.ID, false, nil)
+	svc.AddTagToImage(manga, tagA.ID, false, nil)
+
+	related, err := svc.RelatedImages(src, 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(related) != 1 || related[0].ID != manga {
+		t.Fatalf("related = %+v, want one manga row", related)
+	}
+	if related[0].FileType != "cbz" {
+		t.Errorf("FileType = %q, want cbz", related[0].FileType)
+	}
+	if related[0].PageCount == nil || *related[0].PageCount != 12 {
+		t.Errorf("PageCount = %v, want 12", related[0].PageCount)
+	}
+}
+
+// Type partition: a non-manga source must not surface manga
+// candidates and vice versa, so "Similar entries" in the reader
+// doesn't bounce the user to a regular-image grid (or the inverse).
+func TestRelatedImages_TypePartition(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	imgSrc := insertTestImage(t, database, "img-src")
+	imgPeer := insertTestImage(t, database, "img-peer")
+	var manga int64
+	if err := database.Write.QueryRow(
+		`INSERT INTO images (sha256, canonical_path, file_type, file_size, page_count) VALUES (?, ?, 'cbz', 100, 3) RETURNING id`,
+		"manga-x", "/gallery/x.cbz",
+	).Scan(&manga); err != nil {
+		t.Fatal(err)
+	}
+	tag, _ := svc.GetOrCreateTag("link", catID)
+	svc.AddTagToImage(imgSrc, tag.ID, false, nil)
+	svc.AddTagToImage(imgPeer, tag.ID, false, nil)
+	svc.AddTagToImage(manga, tag.ID, false, nil)
+
+	rel, err := svc.RelatedImages(imgSrc, 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rel) != 1 || rel[0].ID != imgPeer {
+		t.Fatalf("img-source related = %+v, want only the peer image (manga must be filtered out)", rel)
+	}
+
+	relManga, err := svc.RelatedImages(manga, 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(relManga) != 0 {
+		t.Fatalf("manga-source related = %+v, want empty (no other manga)", relManga)
+	}
+}
+
 func TestRelatedImages_DropsPopularTags(t *testing.T) {
 	// A tag whose global usage_count is above relatedMaxTagUsage carries
 	// no discriminative signal, so it must not contribute to the seed
@@ -627,7 +831,10 @@ func TestRecalc_CountsOnlyNonMissing(t *testing.T) {
 	// Poison the counts so the recalc has work to do.
 	database.Write.Exec(`UPDATE tags SET usage_count = 99 WHERE id IN (?, ?)`, shared.ID, onlyGone.ID)
 
-	updated := svc.RecalcCount()
+	updated, err := svc.RecalcCount()
+	if err != nil {
+		t.Fatalf("RecalcCount: %v", err)
+	}
 	if updated < 2 {
 		t.Errorf("updated = %d, want >= 2", updated)
 	}
@@ -1375,6 +1582,47 @@ func TestMergeTags_RepointsImplicationsAndKeepsImpliedRowsCleanable(t *testing.T
 	}
 }
 
+// TestMergeTags_FansCanonicalImplicationsOntoMigratedRows pins A-F004:
+// an image previously tagged only with the alias must, after the
+// merge, carry both the canonical AND the canonical's declared implied
+// children. Without the fan-out the canonical lands but its implied
+// closure is silently absent.
+func TestMergeTags_FansCanonicalImplicationsOntoMigratedRows(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	imgID := insertTestImage(t, database, "merge_implication_fanout")
+
+	canonical, _ := svc.GetOrCreateTag("canon", catID)
+	implied, _ := svc.GetOrCreateTag("imp_child", catID)
+	alias, _ := svc.GetOrCreateTag("alias_src", catID)
+
+	if _, err := svc.AddImplication(canonical.ID, implied.ID); err != nil {
+		t.Fatalf("AddImplication: %v", err)
+	}
+	if err := svc.AddTagToImage(imgID, alias.ID, false, nil); err != nil {
+		t.Fatalf("AddTagToImage(alias): %v", err)
+	}
+
+	if err := svc.MergeTags(alias.ID, canonical.ID); err != nil {
+		t.Fatalf("MergeTags: %v", err)
+	}
+
+	imgTags, err := svc.GetImageTags(imgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carried := map[int64]bool{}
+	for _, t := range imgTags {
+		carried[t.TagID] = true
+	}
+	if !carried[canonical.ID] {
+		t.Errorf("canonical tag missing from image after merge: %+v", imgTags)
+	}
+	if !carried[implied.ID] {
+		t.Errorf("canonical's implied child missing from image after merge: %+v", imgTags)
+	}
+}
+
 // Merging a tag whose name is also the implied side of an edge must move
 // the inbound edge onto the canonical so future fan-outs don't insert
 // an alias as is_implied=1.
@@ -1699,6 +1947,156 @@ func TestAddRating_ManualOverwritesPriorLevel(t *testing.T) {
 	got = imageRatingNames()
 	if len(got) != 1 || got[0] != "sensitive" {
 		t.Fatalf("manual sensitive after manual general: image carries %v, want only [sensitive]", got)
+	}
+}
+
+// TestAddImplication_RejectsCycle pins T-F003: ErrImplicationCycle
+// fires when a new edge would close a loop through the existing
+// graph. Without this guard the depth-bound walk runs indefinitely
+// against a cyclic graph and the implied closure becomes ambiguous.
+func TestAddImplication_RejectsCycle(t *testing.T) {
+	_, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	a, _ := svc.GetOrCreateTag("cyc_a", catID)
+	b, _ := svc.GetOrCreateTag("cyc_b", catID)
+	c, _ := svc.GetOrCreateTag("cyc_c", catID)
+
+	if _, err := svc.AddImplication(a.ID, b.ID); err != nil {
+		t.Fatalf("a→b: %v", err)
+	}
+	if _, err := svc.AddImplication(b.ID, c.ID); err != nil {
+		t.Fatalf("b→c: %v", err)
+	}
+	// c→a closes the loop.
+	if _, err := svc.AddImplication(c.ID, a.ID); err != ErrImplicationCycle {
+		t.Errorf("c→a after a→b→c expected ErrImplicationCycle, got %v", err)
+	}
+}
+
+// TestAddImplication_RejectsSelf pins the self-edge guard (a different
+// branch from cycle detection: parent == implied returns earlier).
+func TestAddImplication_RejectsSelf(t *testing.T) {
+	_, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	a, _ := svc.GetOrCreateTag("self_loop", catID)
+
+	if _, err := svc.AddImplication(a.ID, a.ID); err == nil {
+		t.Errorf("AddImplication(a, a) should fail; got nil")
+	}
+}
+
+// TestAddImplication_HonoursDepthBound pins MaxImplicationDepth: a
+// chain of edges right at the bound succeeds; an edge that would
+// close a cycle inside the bound is refused.
+func TestAddImplication_HonoursDepthBound(t *testing.T) {
+	_, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	const chainLen = 6
+	tags := make([]int64, chainLen)
+	for i := 0; i < chainLen; i++ {
+		tag, err := svc.GetOrCreateTag(fmt.Sprintf("depth_%d", i), catID)
+		if err != nil {
+			t.Fatalf("create tag %d: %v", i, err)
+		}
+		tags[i] = tag.ID
+	}
+	for i := 0; i < chainLen-1; i++ {
+		if _, err := svc.AddImplication(tags[i], tags[i+1]); err != nil {
+			t.Fatalf("chain edge %d→%d: %v", i, i+1, err)
+		}
+	}
+	// Closing the chain should be refused even at small chain length
+	// because the cycle walk traces through the whole chain back to
+	// the starting node within the depth bound.
+	if _, err := svc.AddImplication(tags[chainLen-1], tags[0]); err != ErrImplicationCycle {
+		t.Errorf("close chain expected ErrImplicationCycle, got %v", err)
+	}
+}
+
+// TestAddImplication_RatingImpliedPrunesLower pins A-F013: an
+// implication whose implied side is a rating tag must trigger the
+// rating-prune sweep when fan-out lands the implied row, otherwise
+// the image carries multiple rating rows and breaks the highest-wins
+// invariant the executor's fast counts rely on.
+func TestAddImplication_RatingImpliedPrunesLower(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	imageID := insertTestImage(t, database, "rating_imply.png")
+
+	parent, _ := svc.GetOrCreateTag("hardcore_parent", catID)
+	expRatingID := ratingTagIDByName(t, database, "explicit")
+
+	// Pre-existing lower rating on the image.
+	if err := svc.AddTagToImage(imageID, ratingTagIDByName(t, database, "general"), false, nil); err != nil {
+		t.Fatalf("seed general rating: %v", err)
+	}
+
+	// Declare parent → explicit. The fan-out should land explicit and
+	// the prune should sweep general.
+	if _, err := svc.AddImplication(parent.ID, expRatingID); err != nil {
+		t.Fatalf("AddImplication: %v", err)
+	}
+	if err := svc.AddTagToImage(imageID, parent.ID, false, nil); err != nil {
+		t.Fatalf("AddTagToImage(parent): %v", err)
+	}
+
+	rows, err := database.Read.Query(
+		`SELECT t.name FROM image_tags it
+		 JOIN tags t ON t.id = it.tag_id
+		 WHERE it.image_id = ? AND t.category_id = ?`,
+		imageID, svc.RatingCategoryID(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var ratings []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		ratings = append(ratings, n)
+	}
+	if len(ratings) != 1 || ratings[0] != "explicit" {
+		t.Errorf("post-fanout image carries ratings %v, want only [explicit]", ratings)
+	}
+}
+
+// TestAddRating_ManualReportsDisplacedNames pins U-F014: callers
+// (the detail-page tag input) need to surface "replaced rating:X"
+// inline when a manual rating add sweeps a prior row.
+func TestAddRating_ManualReportsDisplacedNames(t *testing.T) {
+	database, svc := setupTestDB(t)
+	imageID := insertTestImage(t, database, "displaced.png")
+
+	expID := ratingTagIDByName(t, database, "explicit")
+	conf := 0.9
+	if err := svc.AddTagToImage(imageID, expID, true, &conf); err != nil {
+		t.Fatalf("seed explicit: %v", err)
+	}
+
+	genID := ratingTagIDByName(t, database, "general")
+	res, err := svc.AddTagToImageReportingDup(imageID, genID, false, nil, "")
+	if err != nil {
+		t.Fatalf("AddTagToImageReportingDup: %v", err)
+	}
+	if !res.Added {
+		t.Errorf("expected Added=true on a fresh manual rating, got %+v", res)
+	}
+	if got, want := res.DisplacedRatings, []string{"explicit"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("DisplacedRatings = %v, want %v", got, want)
+	}
+
+	// Re-adding the same rating shouldn't claim it displaced anything.
+	res2, err := svc.AddTagToImageReportingDup(imageID, genID, false, nil, "")
+	if err != nil {
+		t.Fatalf("re-add: %v", err)
+	}
+	if len(res2.DisplacedRatings) != 0 {
+		t.Errorf("DisplacedRatings on no-op re-add = %v, want empty", res2.DisplacedRatings)
 	}
 }
 

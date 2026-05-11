@@ -1,6 +1,7 @@
 {{define "partials/tag_list.html"}}
 <div id="image-tags" data-image-id="{{.ImageID}}">
   {{if .ErrMsg}}<div class="flash flash-err" style="margin-bottom:4px">{{.ErrMsg}}</div>{{end}}
+  {{if .WarnMsg}}<div class="flash flash-warn" style="margin-bottom:4px">{{.WarnMsg}}</div>{{end}}
   {{if .OkMsg}}<div class="flash flash-ok" style="margin-bottom:4px">{{.OkMsg}}</div>{{end}}
   {{$groups := groupByImageSource .ImageTags}}
   {{$implied := impliedFromImageTags .ImageTags}}

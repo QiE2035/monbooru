@@ -53,7 +53,7 @@ func mergeFromCompatArchive(cx *galleryCtx, files []*zip.File, format string, ma
 
 func toLightManifest(m compatibility.Manifest) lightManifest {
 	out := lightManifest{
-		Version: galleryExportVersion,
+		Version: lightManifestVersion,
 		Images:  make([]lightManifestImage, 0, len(m.Images)),
 	}
 	for _, img := range m.Images {

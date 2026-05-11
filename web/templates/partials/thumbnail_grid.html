@@ -10,21 +10,34 @@
            onerror="this.parentElement.innerHTML='<div class=thumb-placeholder title=&quot;preview unavailable&quot;>?</div>'">
       <div class="thumb-overlay">
         {{if or (eq .FileType "mp4") (eq .FileType "webm")}}
-          <span class="badge badge-video">▶</span>
+          <span class="badge badge-video" title="Video"></span>
         {{end}}
         {{if .IsFavorited}}
-          <span class="badge fav-heart">♥</span>
+          <span class="badge fav-heart" title="Favorited"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 11 L1.2 6.4 a2.6 2.6 0 0 1 3.7 -3.7 L6 3.7 l1.1 -1 a2.6 2.6 0 0 1 3.7 3.7 Z"/></svg></span>
         {{end}}
         {{if .IsInbox}}
-          <span class="badge badge-inbox">✱</span>
+          <span class="badge badge-inbox" title="Inbox"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1 v10 M1 6 h10 M2.4 2.4 l7.2 7.2 M9.6 2.4 l-7.2 7.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg></span>
         {{end}}
         {{if .IsMissing}}
-          <span class="badge badge-missing">✗</span>
+          <span class="badge badge-missing" title="Missing from disk"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></span>
         {{end}}
         {{if eq $.Sort "filesize"}}
           <span class="badge badge-filesize">{{humanBytes .FileSize}}</span>
         {{end}}
       </div>
+      {{if eq .FileType "cbz"}}
+        {{if .PageCount}}
+        <span class="manga-pill">{{deref .PageCount}} pages</span>
+        {{else}}
+        <span class="manga-pill">manga</span>
+        {{end}}
+      {{end}}
+      {{if .Series}}
+        <span class="series-pill" title="Series: {{.Series}}{{if .SeriesOrder}} #{{deref .SeriesOrder}}{{end}}">
+          {{if .SeriesOrder}}<span class="series-pill-order">#{{deref .SeriesOrder}}</span>{{end}}
+          <span class="series-pill-name">{{.Series}}</span>
+        </span>
+      {{end}}
     </a>
   </div>
   {{else}}

@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -99,6 +100,21 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 			return r
 		},
 		"add": func(a, b int) int { return a + b },
+		// urlQ percent-encodes a query value with uppercase hex pairs so
+		// the links the sidebar emits match the case the browser writes
+		// back into the address bar (browsers normalize to uppercase per
+		// RFC 3986). Without this the user's autocomplete history grows
+		// two entries per logical query (one with lowercase hex, one
+		// uppercase). url.QueryEscape emits lowercase; we re-case the
+		// %XX sequences without touching the surrounding letters.
+		//
+		// Returns template.URL so html/template's href-context URL
+		// autoescaper leaves the value alone. As a plain string it would
+		// re-percent-encode every `%`, double-encoding the link and
+		// turning `folder:"path"` into a literal query with no matches.
+		"urlQ": func(s string) template.URL {
+			return template.URL(uppercasePercentEscapes(url.QueryEscape(s)))
+		},
 		"sub": func(a, b int) int { return a - b },
 		"mul": func(a, b int) int { return a * b },
 		"dict": func(pairs ...any) map[string]any {
@@ -334,6 +350,9 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 			// can build `href="#comfy-node-<key>"` for in-page navigation.
 			return strings.TrimPrefix(s, "→ ")
 		},
+		"hasPrefix": func(s, prefix string) bool {
+			return strings.HasPrefix(s, prefix)
+		},
 		"truncate": func(s string, n int) string {
 			if len(s) <= n {
 				return s
@@ -407,6 +426,18 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 			return nil, err
 		}
 		s.contexts[g.Name] = cx
+	}
+
+	// Validate the operator-supplied custom CSS path lives in a directory
+	// monbooru already trusts (config dir, /config, or /data). Any other
+	// path could leak the file's contents at /custom.css to LAN viewers
+	// when the operator misconfigures the value (typo: /etc/passwd) - a
+	// footgun the threat model treats as in-scope.
+	if cfg.Server.CustomCSS != "" {
+		if !customCSSPathAllowed(cfg.Server.CustomCSS, configPath) {
+			logx.Warnf("server.custom_css %q lives outside the trusted dirs (configdir, /config, /data); the link is suppressed", cfg.Server.CustomCSS)
+			s.cfg.Server.CustomCSS = ""
+		}
 	}
 
 	// Periodically sweep expired sessions and login rate-limiter entries.
@@ -526,6 +557,7 @@ func (s *Server) StartWatchers() {
 	defer s.ctxMu.Unlock()
 	for _, cx := range s.contexts {
 		cx.startWatcher(s.cfg.Gallery.WatchEnabled, s.cfg.Gallery.MaxFileSizeMB, s.jobs)
+		cx.startMangaReclaim()
 		go cx.warmCaches()
 	}
 }
@@ -537,6 +569,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.staticFS))))
 	mux.HandleFunc("GET /custom.css", s.serveCustomCSS)
 	mux.HandleFunc("GET /thumbnails/{gallery}/{file}", s.serveThumbnail)
+	// Browsers request /favicon.ico unconditionally on first paint;
+	// without this alias every fresh tab logged a 404 in the console.
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/static/favicon.png", http.StatusMovedPermanently)
+	})
 
 	// Health check (unauthenticated)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -560,6 +597,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /images/{id}", s.detailHandler)
 	mux.HandleFunc("GET /images/{id}/related", s.relatedImagesHandler)
 	mux.HandleFunc("GET /images/{id}/file", s.serveImageFile)
+	mux.HandleFunc("GET /images/{id}/page/{n}", s.serveMangaPage)
+	mux.HandleFunc("GET /images/{id}/page/{n}/thumb", s.serveMangaPageThumb)
+	mux.HandleFunc("GET /images/{id}/read", s.readerHandler)
+	mux.HandleFunc("GET /images/{id}/pages", s.pagesGridHandler)
 	mux.HandleFunc("POST /images/{id}/tags", s.addTagToImage)
 	mux.HandleFunc("DELETE /images/{id}/tags", s.removeAllTagsFromImageHandler)
 	mux.HandleFunc("DELETE /images/{id}/user-tags", s.removeUserTagsFromImageHandler)
@@ -632,12 +673,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /internal/batch-tag", s.batchTag)
 	mux.HandleFunc("POST /internal/batch-strip", s.batchStrip)
 	mux.HandleFunc("POST /internal/batch-inbox", s.batchInbox)
+	mux.HandleFunc("POST /internal/batch-collection", s.batchCollection)
 	mux.HandleFunc("POST /internal/delete-search", s.deleteSearchPost)
 	mux.HandleFunc("POST /tags/delete-search", s.deleteTagsSearchPost)
 	mux.HandleFunc("POST /internal/delete-folder", s.deleteFolderPost)
 	mux.HandleFunc("GET /internal/tags/suggest", s.tagSuggest)
 	mux.HandleFunc("GET /internal/search/suggest", s.searchSuggest)
 	mux.HandleFunc("GET /internal/folders/suggest", s.foldersSuggest)
+	mux.HandleFunc("GET /internal/collection/suggest", s.collectionSuggest)
 	mux.HandleFunc("GET /internal/sidebar", s.gallerySidebar)
 	mux.HandleFunc("GET /internal/sidebar-browse", s.sidebarBrowse)
 	mux.HandleFunc("POST /internal/rating-ceiling", s.ratingCeilingPost)
@@ -880,13 +923,160 @@ func (s *Server) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 
 // serveCustomCSS serves the operator-supplied stylesheet pointed at by
 // server.custom_css. An empty config 404s so the layout's gated <link>
-// degrades cleanly when the knob is not set.
+// degrades cleanly when the knob is not set. Path scope is enforced at
+// config load (see customCSSPathAllowed) so any leak vector is closed
+// before this handler ever runs.
 func (s *Server) serveCustomCSS(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Server.CustomCSS == "" {
 		http.NotFound(w, r)
 		return
 	}
 	http.ServeFile(w, r, s.cfg.Server.CustomCSS)
+}
+
+// uppercasePercentEscapes rewrites every %XX hex pair in s to use
+// uppercase hex while leaving all other characters untouched. Used to
+// align url.QueryEscape's lowercase output with the browser address
+// bar's RFC 3986 normalization so the same logical query doesn't show
+// up twice in autocomplete history.
+func uppercasePercentEscapes(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) && isHexDigit(s[i+1]) && isHexDigit(s[i+2]) {
+			b.WriteByte('%')
+			b.WriteByte(toUpperHex(s[i+1]))
+			b.WriteByte(toUpperHex(s[i+2]))
+			i += 2
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func toUpperHex(c byte) byte {
+	if c >= 'a' && c <= 'f' {
+		return c - 'a' + 'A'
+	}
+	return c
+}
+
+// customCSSPathAllowed gates the operator-supplied path to a small set
+// of trusted root directories. The intent is to catch a misconfigured
+// CustomCSS like "/etc/passwd" before /custom.css can leak it; legit
+// uses (a CSS file alongside the config or under /config or /data) all
+// pass without further setup.
+func customCSSPathAllowed(cssPath, configPath string) bool {
+	if cssPath == "" {
+		return true
+	}
+	abs, err := filepath.Abs(cssPath)
+	if err != nil {
+		return false
+	}
+	roots := []string{"/config", "/data"}
+	if configPath != "" {
+		if cfgAbs, err := filepath.Abs(filepath.Dir(configPath)); err == nil {
+			roots = append(roots, cfgAbs)
+		}
+	}
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		rel, err := filepath.Rel(root, abs)
+		if err != nil {
+			continue
+		}
+		if rel != ".." && !strings.HasPrefix(rel, "../") {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveMangaImage looks up a manga row's canonical_path. Returns
+// (path, true) when the row is a cbz; (_, false) for non-manga ids and
+// missing rows. Callers respond 404 on the false return.
+func (s *Server) resolveMangaImage(idStr string) (string, bool) {
+	cx := s.Active()
+	if cx == nil {
+		return "", false
+	}
+	var canonPath, fileType string
+	if err := cx.DB.Read.QueryRow(
+		`SELECT canonical_path, file_type FROM images WHERE id = ?`, idStr,
+	).Scan(&canonPath, &fileType); err != nil {
+		return "", false
+	}
+	if fileType != "cbz" {
+		return "", false
+	}
+	return canonPath, true
+}
+
+// serveMangaPage serves the n-th page of a manga (1-based) from the
+// per-image cache, extracting on miss. Cache-Control fixes browser
+// behavior under prefetch / back-button so the same page isn't refetched
+// constantly during reader navigation.
+func (s *Server) serveMangaPage(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n < 1 {
+		http.NotFound(w, r)
+		return
+	}
+	canonPath, ok := s.resolveMangaImage(idStr)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	page, err := gallery.EnsureMangaPage(s.thumbnailsPath(), canonPath, id, n)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	http.ServeFile(w, r, page)
+}
+
+// serveMangaPageThumb serves the n-th page's thumbnail (300px-longest-
+// side JPEG) used by the pages-grid view. Same lazy-extract +
+// idle-evict path as serveMangaPage.
+func (s *Server) serveMangaPageThumb(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n < 1 {
+		http.NotFound(w, r)
+		return
+	}
+	canonPath, ok := s.resolveMangaImage(idStr)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	thumb, err := gallery.EnsureMangaPageThumb(s.thumbnailsPath(), canonPath, id, n)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	http.ServeFile(w, r, thumb)
 }
 
 // serveImageFile serves the raw image/video file.

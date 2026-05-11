@@ -74,6 +74,9 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 
 		if img.IsMissing {
 			// Previously-missing file has reappeared; reactivate it.
+			// Demote the previous canonical to alias and upsert the new
+			// path as canonical (mirrors the watcher-mv branch below) so
+			// the prior path stays in image_paths for history.
 			newFolder := FolderPath(galleryPath, path)
 			tx, txErr := database.Write.Begin()
 			if txErr != nil {
@@ -87,16 +90,17 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 				return nil, false, fmt.Errorf("reactivate image: %w", err)
 			}
 			if _, err := tx.Exec(
-				`UPDATE image_paths SET path = ?, is_canonical = 1 WHERE image_id = ? AND is_canonical = 1`,
-				path, existingID,
+				`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ? AND is_canonical = 1`,
+				existingID,
 			); err != nil {
-				return nil, false, fmt.Errorf("update canonical path: %w", err)
+				return nil, false, fmt.Errorf("demote previous canonical: %w", err)
 			}
 			if _, err := tx.Exec(
-				`INSERT OR IGNORE INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 1)`,
+				`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 1)
+				 ON CONFLICT(path) DO UPDATE SET is_canonical = 1`,
 				existingID, path,
 			); err != nil {
-				return nil, false, fmt.Errorf("insert path row: %w", err)
+				return nil, false, fmt.Errorf("install new canonical: %w", err)
 			}
 			// Restore the usage_count slots markFileMissing decremented
 			// when the file vanished. usage_count tracks visible images,
@@ -181,7 +185,36 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 	folderPath := FolderPath(galleryPath, path)
 
 	var imgWidth, imgHeight *int
-	if !IsVideoType(fileType) {
+	var pageCount *int
+	var prefilledSeries string
+	var mangaMeta *models.MangaMetadata
+	if fileType == models.FileTypeCBZ {
+		archive, openErr := OpenManga(path)
+		if openErr != nil {
+			// Empty / corrupt cbz: log and skip without inserting a
+			// row. The watcher / sync caller treats this as a
+			// non-fatal "skip" the same way a video without ffmpeg is
+			// treated - the file stays on disk for the operator.
+			logx.Warnf("ingest: skip manga %q: %v", path, openErr)
+			return nil, false, fmt.Errorf("ingest manga: %w", openErr)
+		}
+		w, h, dimErr := archive.CoverDimensions()
+		if dimErr == nil {
+			imgWidth, imgHeight = &w, &h
+		} else {
+			logx.Warnf("ingest manga %q: cover dimensions: %v", path, dimErr)
+		}
+		mm, mmErr := metadata.ParseComicInfo(archive.Reader())
+		if mmErr != nil {
+			logx.Warnf("ingest manga %q: ComicInfo: %v", path, mmErr)
+		} else if mm != nil {
+			mangaMeta = mm
+			prefilledSeries = mm.Series
+		}
+		pcVal := len(archive.Pages)
+		pageCount = &pcVal
+		archive.Close()
+	} else if !IsVideoType(fileType) {
 		f, openErr := os.Open(path)
 		if openErr == nil {
 			if cfg2, _, decErr := image.DecodeConfig(f); decErr == nil {
@@ -192,7 +225,11 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 		}
 	}
 
-	sdMeta, comfyMeta, _ := metadata.Extract(path, fileType)
+	var sdMeta *models.SDMetadata
+	var comfyMeta *models.ComfyUIMetadata
+	if fileType != models.FileTypeCBZ {
+		sdMeta, comfyMeta, _ = metadata.Extract(path, fileType)
+	}
 	sourceType := models.SourceTypeNone
 	if sdMeta != nil && comfyMeta != nil {
 		sourceType = models.SourceTypeBoth
@@ -213,11 +250,11 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 
 	var imgID int64
 	insertErr := tx.QueryRow(
-		`INSERT INTO images (sha256, canonical_path, folder_path, file_type, width, height, file_size, source_type, origin)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO images (sha256, canonical_path, folder_path, file_type, width, height, file_size, source_type, origin, page_count, series)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(sha256) DO NOTHING
 		 RETURNING id`,
-		hash, path, folderPath, fileType, toNullInt(imgWidth), toNullInt(imgHeight), fi.Size(), sourceType, origin,
+		hash, path, folderPath, fileType, toNullInt(imgWidth), toNullInt(imgHeight), fi.Size(), sourceType, origin, toNullInt(pageCount), prefilledSeries,
 	).Scan(&imgID)
 
 	if insertErr == sql.ErrNoRows {
@@ -254,8 +291,8 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 1)`,
-		imgID, path,
+		`INSERT INTO image_paths (image_id, path, is_canonical, mtime_unix) VALUES (?, ?, 1, ?)`,
+		imgID, path, fi.ModTime().Unix(),
 	); err != nil {
 		return nil, false, fmt.Errorf("inserting image_path: %w", err)
 	}
@@ -270,6 +307,12 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 		comfyMeta.ImageID = imgID
 		if err := insertComfyMeta(tx, comfyMeta); err != nil {
 			return nil, false, fmt.Errorf("inserting comfyui_metadata: %w", err)
+		}
+	}
+	if mangaMeta != nil {
+		mangaMeta.ImageID = imgID
+		if err := insertMangaMeta(tx, mangaMeta); err != nil {
+			return nil, false, fmt.Errorf("inserting manga_metadata: %w", err)
 		}
 	}
 
@@ -292,6 +335,8 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 		FileSize:      fi.Size(),
 		SourceType:    sourceType,
 		Origin:        origin,
+		PageCount:     pageCount,
+		Series:        prefilledSeries,
 		IngestedAt:    time.Now().UTC(),
 	}
 	return img, false, nil
@@ -320,4 +365,29 @@ func insertComfyMeta(tx *sql.Tx, comfy *models.ComfyUIMetadata) error {
 		comfy.ImageID, comfy.Prompt, comfy.ModelCheckpoint, comfy.Seed, comfy.Sampler, comfy.Steps, comfy.CFGScale, comfy.RawWorkflow, comfy.GenerationHash,
 	)
 	return err
+}
+
+func insertMangaMeta(tx *sql.Tx, m *models.MangaMetadata) error {
+	_, err := tx.Exec(
+		`INSERT OR REPLACE INTO manga_metadata (image_id, title, series, number, volume, count, summary, notes,
+		     year, month, day, writer, penciller, inker, colorist, letterer, cover_artist, editor, publisher,
+		     imprint, genre, web, language_iso, format, manga, age_rating, community_rating, xml_page_count, raw_xml)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+		         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ImageID, m.Title, m.Series, m.Number, m.Volume,
+		toNullInt(m.Count), m.Summary, m.Notes,
+		toNullInt(m.Year), toNullInt(m.Month), toNullInt(m.Day),
+		m.Writer, m.Penciller, m.Inker, m.Colorist, m.Letterer, m.CoverArtist, m.Editor, m.Publisher,
+		m.Imprint, m.Genre, m.Web, m.LanguageISO, m.Format, m.Manga, m.AgeRating,
+		toNullPtrFloat(m.CommunityRating), toNullInt(m.XMLPageCount), m.RawXML,
+	)
+	return err
+}
+
+func toNullPtrFloat(v *float64) interface{} {
+	if v == nil {
+		return nil
+	}
+	return *v
 }

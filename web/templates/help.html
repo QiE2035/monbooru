@@ -6,6 +6,9 @@
     <a href="#tag-input">Adding Tags</a>
     <a href="#tag-management">Managing Tags</a>
     <a href="#search-syntax">Search Syntax</a>
+    <a href="#inbox">Inbox</a>
+    <a href="#rating">Rating &amp; SFW Ceiling</a>
+    <a href="#manga">Manga, Comics &amp; Archives</a>
     <a href="#keymap">Keyboard Shortcuts</a>
     <a href="#settings">Settings &amp; Maintenance</a>
   </nav>
@@ -19,7 +22,7 @@
     <h3>Uploading Images</h3>
     <p>Use the <a href="/upload">Upload</a> page to add images directly through your browser.</p>
     <ul>
-      <li>Select one or more files (JPEG, PNG, WebP, GIF, MP4, WebM).</li>
+      <li>Select one or more files (JPEG, PNG, WebP, GIF, MP4, WebM, or a supported archive format : cbz or zip).</li>
       <li>Optionally add tags that will be applied to all uploaded files.</li>
       <li>Choose a destination folder (e.g. <code>2026/april</code>) to place the files under; leave blank to save at the gallery root. Missing folders are created automatically.</li>
     </ul>
@@ -88,11 +91,13 @@
         <tr><td><code>date:2024-01..2024-06</code></td><td>Images ingested within a date range</td></tr>
         <tr><td><code>date:2024-03-15</code></td><td>Images ingested on an exact date</td></tr>
         <tr><td><code>missing:true</code></td><td>Show images whose files are missing from disk</td></tr>
-        <tr><td><code>animated:true</code></td><td>Only animated files (GIF, MP4, WebM). <code>animated:false</code> excludes them.</td></tr>
         <tr><td><code>tagged:true</code></td><td>Only images with at least one tag. <code>tagged:false</code> restricts to images with no tags.</td></tr>
         <tr><td><code>autotagged:true</code></td><td>Only images with at least one auto-tag. <code>autotagged:false</code> restricts to images with no auto-tags.</td></tr>
         <tr><td><code>generated:abcd1234abcd</code></td><td>Other images sharing the same generation recipe (prompt + model + sampler + steps + cfg, seed ignored). The hash is shown at the top of the Generation data block on the detail page.</td></tr>
         <tr><td><code>rating:explicit</code></td><td>Filter by effective rating - one of <code>general</code> / <code>sensitive</code> / <code>questionable</code> / <code>explicit</code>. When an image carries more than one rating tag the highest wins. The footer's <code>sfw</code> level corresponds to <code>rating:general</code>.</td></tr>
+        <tr><td><code>type:image</code> / <code>type:archive</code> / <code>type:animated</code></td><td>Narrow by file-type bucket. <code>image</code> = jpeg/png/webp/gif/mp4/webm, <code>archive</code> = cbz / zip (comics, manga, and any image-zip), <code>animated</code> = gif/mp4/webm. Comma-separates as a union. Negate with <code>-type:animated</code> for static files only.</td></tr>
+        <tr><td><code>collection:"Touhou Suzunaan"</code></td><td>Exact-match against the user-edited per-image collection label.</td></tr>
+        <tr><td><code>pages:&gt;=100</code></td><td>Comparison filter on a manga's page count. Non-manga rows count as 0 pages.</td></tr>
         <tr><td><code>system:</code></td><td>Commands cheat sheet. </td></tr>
       </tbody>
     </table>
@@ -103,9 +108,44 @@
       <tbody>
         <tr><td>Newest</td><td>Sort by ingest date (default). Use the order toggle (↓/↑) next to the sort select to flip direction.</td></tr>
         <tr><td>File size</td><td>Sort by file size, largest first.</td></tr>
+        <tr><td>Order</td><td>Group by collection alphabetically, then by the per-image order field (1, 2, 3...). Images without a collection sit at the start; images with a collection but no order sit after the numbered ones.</td></tr>
         <tr><td>Random (⇄)</td><td>Shuffle images randomly. Stable across page turns; click again to re-shuffle.</td></tr>
       </tbody>
     </table>
+  </section>
+
+  <hr class="help-sep">
+
+  <section id="inbox">
+    <h3>Inbox</h3>
+    <p>Every newly ingested or uploaded image lands in the <strong>inbox</strong>. Flip it to <strong>archived</strong> (curated) once you've reviewed the tags.</p>
+    <ul>
+      <li>Gallery toolbar: the <kbd>✱</kbd> button left of the favorites toggle filters to the inbox.</li>
+      <li>Image detail: the <kbd>✱</kbd> button left of the favorite toggles the current image between inbox and archived.</li>
+      <li>Batch surface: the gallery's Actions chooser and the selection batch bar each carry a single <strong>Send / Remove from inbox</strong> entry that flips every targeted row (inbox rows become archived; archived become inbox).</li>
+      <li>Search: <code>inbox:true</code> for the triage view, <code>inbox:false</code> for the archived rows.</li>
+    </ul>
+  </section>
+
+  <hr class="help-sep">
+
+  <section id="rating">
+    <h3>Rating &amp; SFW Ceiling</h3>
+    <p>Each image carries at most one rating tag: <code>general</code> &lt; <code>sensitive</code> &lt; <code>questionable</code> &lt; <code>explicit</code>. A manual rating add overwrites whatever was on the image, even if the new level ranks below the existing one.</p>
+    <p>The footer carries the <strong>SFW ceiling</strong>: <code>rating: sfw · sensitive · questionable · explicit</code>. Click any level to hide images ranked above it. </p>
+  </section>
+
+  <hr class="help-sep">
+
+  <section id="manga">
+    <h3>Manga, Comics &amp; Archives</h3>
+    <p>Drop a <code>.cbz</code> or <code>.zip</code> archive of pages into the gallery (or upload via the Upload page) and it ingests as one library row, like an image. The cover thumbnail is page 1 (natural-sorted across the archive).</p>
+    <p>The detail page for an archive gains:</p>
+    <ul>
+      <li><strong>Read</strong> - opens the reader at page 1.</li>
+      <li><strong>Pages</strong> - opens a thumbnail grid of every page; click a cell to jump straight to that page in the reader.</li>
+      <li>A read-only <strong>Comic / manga metadata</strong> panel parsed from <code>ComicInfo.xml</code> at the archive root, when present.</li>
+    </ul>
   </section>
 
   <hr class="help-sep">
@@ -124,10 +164,11 @@
     <ul>
       <li><strong>General</strong> - toggle the gallery file watcher, set the max file size, and change the number of images per page.</li>
       <li><strong>Galleries</strong> - add, rename, switch between, set default, or delete configured galleries. The Add form takes an optional import file (.db / .json / .zip) so a populated gallery can be created in one step. </li>
-      <li><strong>Auto-Tagger</strong> - enable one or more taggers, set global and per-category confidence thresholds, scope a tagger to a subset of galleries, toggle GPU (CUDA), pick a worker count, and disable or delete a tagger row.</li>
+      <li><strong>Auto-Tagger</strong> - enable one or more taggers, set global and per-category confidence thresholds plus a per-category Max tags cap, scope a tagger to a subset of galleries, toggle GPU (CUDA), pick a worker count, and disable or delete a tagger row.</li>
       <li><strong>Authentication</strong> - set or remove a password, regenerate the API token.</li>
       <li><strong>Maintenance</strong> - prune missing images, clean up orphaned thumbnails, rebuild thumbnails, recalculate tag counts, merge auto-tagged-only general tags into their unique categorized counterparts, re-extract metadata, vacuum the database, and list or remove duplicate file paths.</li>
       <li><strong>Schedule</strong> - opt-in daily automation. Pick a time-of-day (default 01:00) and tick any of: Sync gallery, Remove orphaned thumbnails, Run enabled auto-taggers, Merge general tags. The scheduler iterates every configured gallery in turn at the chosen time and skips silently when another job is already running.</li>
+      <li><strong>Stats</strong> - read-only diagnostic block: process memory (PSS broken into Go heap, native, file-backed), per-gallery DB size, and filesystem free space.</li>
     </ul>
   </section>
 

@@ -281,10 +281,25 @@ type galleryRow struct {
 // warm until InvalidateCaches drops them. Errors degrade to zero so a
 // transient failure on one gallery never blanks the whole table.
 func (s *Server) galleryRows() []galleryRow {
+	return s.galleryRowsWithSnapshot("", 0, 0, 0)
+}
+
+// galleryRowsWithSnapshot is galleryRows with the active gallery's row
+// pinned to the supplied baseData snapshot. Without this, a cache
+// invalidation racing between the footer's read (in s.base) and the
+// per-row read here can land the two surfaces on different counts for
+// the same gallery; the operator sees a footer "47 img" next to a
+// table cell "46 img" and can't tell which is right.
+func (s *Server) galleryRowsWithSnapshot(activeName string, activeImages, activeTags, _ int) []galleryRow {
 	galleries := s.galleryList()
 	out := make([]galleryRow, len(galleries))
 	for i, g := range galleries {
 		out[i].Gallery = g
+		if g.Name == activeName {
+			out[i].Images = activeImages
+			out[i].Tags = activeTags
+			continue
+		}
 		cx := s.contexts[g.Name]
 		if cx == nil || cx.DB == nil {
 			continue

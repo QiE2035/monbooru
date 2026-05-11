@@ -1,5 +1,45 @@
 # Changelog
 
+## [v1.7.0] - 2026-05-11
+### Added
+- Comics & manga. `.cbz` / `.zip` archives ingest as single entries with `page_count`, optional `Collection` and order, and a parsed `ComicInfo.xml` panel. In app reader (`/images/{id}/read?page=N`) with bottom-bar controls and side click-to-prev/next chevrons; pages grid (`/images/{id}/pages`) with keyboard nav. Auto-tagger iterates every archive page. Search keywords `type:image` / `type:archive` / `pages:<op><n>`. Detail-page `Open in reader (R)` and `See all pages (P)` buttons. Manga `N pages` pill on gallery thumbnails.
+- Collections. Any image can carry a `Collection` label and an optional order integer (rendered `#N`). Surfaces: detail-page edit dialog with autocomplete, search keyword `collection:<value>`, sidebar Collections section above Folders, batch `Set collection` action, `Order` sort (collection then order), thumbnail pill bottom-left.
+- Search keyword `type:animated` replaces `animated:true` / `animated:false`. The `type:` vocabulary unions `image`, `archive`, and `animated`; static-only is reachable as `-type:animated`.
+- Detail-page e-leader chord shortcuts: `e o` order, `e s` source, `e c` collection, `e u` url.
+- Auto-tagger: frequency-gated merge with a per-category top-K cap (new `tagger.aggregation.min_hit_fraction` knob).  Manually re-adding an auto-tagged tag promotes the row to user-owned. Cancellation now responds inside the manga page loop, and status emission is serialised across parallel workers so progress reads as a stable side-by-side list.
+- Upload: live progress feedback (`Uploading… <loaded> / <total> (NN%)`) and a `Saving on server…` label once bytes are fully sent.
+- Detail page: orange warn-flash on mixed-outcome tag adds (some accepted, some rejected) bundling every applicable part; inline flash when a manual rating overwrites another.
+- Settings: confirm dialog before regenerating the API token.
+- Gallery grid: `ArrowDown` on the last visible row scrolls the layout to its bottom (and `ArrowUp` on the first to its top) so the search bar and pagination stay keyboard-reachable.
+
+### Changed
+- Detail-page metadata rows reorder to `Added via` / `Source` / `URL` / `Collection` / `Order` / `Pages`. `[edit]` markers render as inline text links. Duplicate-paths section relabelled `Duplicates` and restructured as a vertical list. `Similar images` renamed to `Similar entries` and partitioned by file type.
+- Sidebar heading `AI source` shortened to `AI`; Collections section moves above Folders.
+- Maintenance: `VACUUM` runs in a goroutine instead of on the request thread.
+- Gallery export JSON bumped to v2 (adds `manga_metadata` array); v1 imports stay supported. Light-manifest version split from the full-export version so it stays at `1`.
+- `tagged:true` / `autotagged:true` exact partition counts compute `visible_total - untagged_visible` so the two halves sum to the visible total.
+
+### Fixed
+- Sync: in-place edits (file rewritten at same byte length) detected via a new `image_paths.mtime` column; sha, dimensions, side-table metadata, and thumbnail refresh in place so user-curated tags survive.
+- Ingest / sync: when a known SHA reappears at a new path, the previous canonical row is demoted to alias instead of being silently rewritten in place.
+- Watcher: re-debounces on `Write` events so slow `.cbz` copies aren't ingested mid-flush.
+- Search: saved searches persist `sort` / `order` / `seed`; `View inbox` link on the upload page shows a ceiling-aware count; bare-category-prefix filter (`?q=character:`) routes to the category-only filter; pages clamped past the end issue `303` (or `HX-Push-Url`) so the URL matches what the user sees.
+- Gallery grid: overlay badges (favourite, inbox, missing) swap unicode for inline SVG so glyphs align across fonts; manga `N pages` pill anchors bottom-right of `.thumb-card`.
+- Settings: active-gallery row counts pinned to the `baseData` snapshot so footer and table cells agree; password verification gates on the stored hash, not the `EnablePassword` flag; password-set form gets a hidden `username` field for password managers and accessibility tools.
+- Maintenance: alias / duplicate-path deletes route through `gallery.PathInside` so they can't unlink files outside the gallery root; direct hits on `/settings/maintenance/duplicates-list` 303 to `/settings#maintenance`.
+- Server: `custom_css` path validated against a trusted-dir allowlist at config load; `/favicon.ico` aliases to `/static/favicon.png`.
+- Layout: footer wraps on viewports under 600 px; switch-gallery dialog closes on the success branch.
+- Jobs: `Manager.Cancel` releases `scheduleHeld` so an early-return doesn't leak the reservation; `prune-thumbs` joins the cancel-button gate.
+- Scheduler: cache invalidation moved into a `galleryCtx.Sync` wrapper so manual and scheduled syncs both refresh per-cx tag / folder / source caches.
+
+### Internal
+- `internal/web/handlers.go` split into 15 per-surface files. No behaviour change.
+- Schema bootstrap (additive): `images.page_count`, `images.series`, `images.series_order`, `image_paths.mtime`, `saved_searches.sort` / `order` / `seed`. New `manga_metadata` table; new `idx_images_series` partial index.
+- Per-page thumbnails pre-generated at ingest so the first `/pages` render is a static-file serve. 
+- Batch tag operations chunk the per-tag transaction (one tx per 500 rows), mirroring `runBulkDelete`.
+- Tests added: auto-tagger `storeResults` scope + rating prune, archive path-traversal, implication cycle / self-edge / depth-bound, user / auto tag-removal scope, bulk-delete cascade, vacuum handler, image-serve path-traversal, EXIF UserComment fixtures.
+- Docker / Podman image refresh.
+
 ## [v1.6.0] - 2026-05-09
 ### Added
 - Inbox/archive triage. Newly ingested or uploaded images land in the inbox (`is_inbox=1`); the user flips them to archived once curated. Pre-existing libraries upgrade as fully archived (the migration backfills `is_inbox=0` so nothing dumps into the inbox view on first boot). Surfaces: `inbox:true` / `inbox:false` search keywords, a toolbar `Inbox` toggle with a live count, a thumbnail grid badge, a detail-page button (`i` shortcut), and a single Send-to-inbox / Archive batch toggle on the selection bar and the Actions chooser.

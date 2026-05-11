@@ -19,6 +19,7 @@
     <select name="sort" id="search-sort">
       <option value="newest"   {{if eq .Sort "newest"}}selected{{end}}>Newest</option>
       <option value="filesize" {{if eq .Sort "filesize"}}selected{{end}}>File size</option>
+      <option value="order"    {{if eq .Sort "order"}}selected{{end}}>Order</option>
       {{if eq .Sort "random"}}<option value="random" selected>Random</option>{{end}}
     </select>
     <select name="order">
@@ -46,6 +47,7 @@
   <form id="batch-delete-form">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <button type="button" class="batch-bar-right" onclick="openInboxSelectedDialog()">Send/Remove from inbox</button>
+    <button type="button" onclick="openCollectionSelectedDialog()">Set collection</button>
     <span class="batch-bar-sep" aria-hidden="true"></span>
     <button type="button" onclick="openTagSelectedDialog()">Add tags manually</button>
     <button type="button" onclick="openStripSelectedDialog()">Remove tags</button>
@@ -67,6 +69,9 @@
         hx-swap="innerHTML">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <input type="hidden" name="query" id="save-search-query" value="{{.Query}}">
+    <input type="hidden" name="sort" id="save-search-sort" value="{{.Sort}}">
+    <input type="hidden" name="order" id="save-search-order" value="{{.Order}}">
+    <input type="hidden" name="seed" id="save-search-seed" value="{{if .RandomSeed}}{{.RandomSeed}}{{end}}">
     <p>Save search:<br><code id="save-search-preview" class="save-search-terms">{{.Query}}</code></p>
     <div class="field">
       <label>Name</label>
@@ -303,6 +308,60 @@
   </div>
 </dialog>
 
+<!-- Set-collection dialogs (one per scope, shared form shape). The
+     input drives /internal/collection/suggest autocomplete. -->
+<dialog id="batch-collection-search-dialog">
+  <p>Set collection for <strong id="batch-collection-search-count-display">0</strong> <span id="batch-collection-search-noun">images</span> in current search:</p>
+  <form id="batch-collection-search-form" onsubmit="event.preventDefault(); confirmBatchCollection('search');">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <div class="field">
+      <label>Collection label (leave blank to clear)</label>
+      <div class="series-input-wrap">
+        <input type="text" name="collection" id="batch-collection-search-input" maxlength="200"
+               autocomplete="off"
+               hx-get="/internal/collection/suggest"
+               hx-trigger="input changed delay:200ms"
+               hx-target="#batch-collection-search-suggest"
+               hx-swap="innerHTML"
+               hx-vals='js:{prefix: document.getElementById("batch-collection-search-input").value}'
+               onkeydown="handleSuggestKey(event, 'batch-collection-search-suggest', 'batch-collection-search-input')">
+        <div id="batch-collection-search-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
+      </div>
+    </div>
+    <div id="batch-collection-search-flash"></div>
+    <div class="dialog-actions">
+      <button type="submit">Apply</button>
+      <button type="button" onclick="closeDialogAndRestoreParent('batch-collection-search-dialog')">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="batch-collection-selected-dialog">
+  <p>Set collection for <strong id="batch-collection-selected-count">0</strong> selected <span id="batch-collection-selected-noun">images</span>:</p>
+  <form id="batch-collection-selected-form" onsubmit="event.preventDefault(); confirmBatchCollection('selection');">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <div class="field">
+      <label>Collection label (leave blank to clear)</label>
+      <div class="series-input-wrap">
+        <input type="text" name="collection" id="batch-collection-selected-input" maxlength="200"
+               autocomplete="off"
+               hx-get="/internal/collection/suggest"
+               hx-trigger="input changed delay:200ms"
+               hx-target="#batch-collection-selected-suggest"
+               hx-swap="innerHTML"
+               hx-vals='js:{prefix: document.getElementById("batch-collection-selected-input").value}'
+               onkeydown="handleSuggestKey(event, 'batch-collection-selected-suggest', 'batch-collection-selected-input')">
+        <div id="batch-collection-selected-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
+      </div>
+    </div>
+    <div id="batch-collection-selected-flash"></div>
+    <div class="dialog-actions">
+      <button type="submit">Apply</button>
+      <button type="button" onclick="document.getElementById('batch-collection-selected-dialog').close()">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Move search dialog -->
 <dialog id="move-search-dialog">
   <p>Move <strong id="move-search-count-display">0</strong> <span id="move-search-noun">images</span> in current search to folder:</p>
@@ -501,6 +560,16 @@ function pickBatchAction(action) {
       var sp = document.getElementById('save-search-preview');
       if (si && sq) sq.value = si.value;
       if (si && sp) sp.textContent = si.value || '(empty)';
+      // Snapshot the current URL's sort/order/seed so the saved entry
+      // reopens at the same view. Defaults stay empty so the gallery
+      // handler's defaults take over on reopen if nothing was set here.
+      var url = new URL(window.location.href);
+      var ss = document.getElementById('save-search-sort');
+      var so = document.getElementById('save-search-order');
+      var se = document.getElementById('save-search-seed');
+      if (ss) ss.value = url.searchParams.get('sort') || '';
+      if (so) so.value = url.searchParams.get('order') || '';
+      if (se) se.value = url.searchParams.get('seed') || '';
       document.getElementById('save-search-dialog').showModal();
       subId = 'save-search-dialog';
       break;
@@ -523,6 +592,10 @@ function pickBatchAction(action) {
     case 'inbox-toggle':
       openInboxSearchDialog();
       subId = 'batch-inbox-search-dialog';
+      break;
+    case 'collection':
+      openCollectionSearchDialog();
+      subId = 'batch-collection-search-dialog';
       break;
     case 'delete':
       openDeleteSearchDialog();
@@ -1096,6 +1169,88 @@ function postInboxBatch(body, csrf, dialogId, flashId, clearOnOk) {
     } else {
       res.text().then(function(t) {
         if (flash) flash.innerHTML = t || '<div class="flash flash-err">Inbox update failed.</div>';
+      });
+    }
+  }).catch(function() {
+    if (flash) flash.innerHTML = '<div class="flash flash-err">Request failed.</div>';
+  });
+}
+
+function openCollectionSearchDialog() {
+  var rcEl = document.querySelector('.result-count');
+  var n = 0;
+  if (rcEl) {
+    var m = rcEl.textContent.match(/(\d+)/);
+    if (m) n = parseInt(m[1], 10);
+  }
+  document.getElementById('batch-collection-search-count-display').textContent = n;
+  document.getElementById('batch-collection-search-noun').textContent = n === 1 ? 'image' : 'images';
+  var input = document.getElementById('batch-collection-search-input');
+  if (input) input.value = '';
+  var sg = document.getElementById('batch-collection-search-suggest');
+  if (sg) sg.innerHTML = '';
+  var flash = document.getElementById('batch-collection-search-flash');
+  if (flash) flash.innerHTML = '';
+  document.getElementById('batch-collection-search-dialog').showModal();
+  if (input) input.focus();
+}
+
+function openCollectionSelectedDialog() {
+  var checked = document.querySelectorAll('.thumb-checkbox:checked');
+  if (checked.length === 0) return;
+  document.getElementById('batch-collection-selected-count').textContent = checked.length;
+  document.getElementById('batch-collection-selected-noun').textContent = checked.length === 1 ? 'image' : 'images';
+  var input = document.getElementById('batch-collection-selected-input');
+  if (input) input.value = '';
+  var sg = document.getElementById('batch-collection-selected-suggest');
+  if (sg) sg.innerHTML = '';
+  var flash = document.getElementById('batch-collection-selected-flash');
+  if (flash) flash.innerHTML = '';
+  document.getElementById('batch-collection-selected-dialog').showModal();
+  if (input) input.focus();
+}
+
+function confirmBatchCollection(scope) {
+  var prefix = scope === 'search' ? 'batch-collection-search' : 'batch-collection-selected';
+  var dlgId = prefix + '-dialog';
+  var flash = document.getElementById(prefix + '-flash');
+  if (flash) flash.innerHTML = '';
+  var csrfEl = document.querySelector('input[name="_csrf"]');
+  var csrf = csrfEl ? csrfEl.value : '';
+  var collectionEl = document.getElementById(prefix + '-input');
+  var parts = ['_csrf=' + encodeURIComponent(csrf),
+               'scope=' + encodeURIComponent(scope),
+               'collection=' + encodeURIComponent(collectionEl ? collectionEl.value : '')];
+  if (scope === 'search') {
+    var si = document.getElementById('search-input');
+    var sortEl = document.getElementById('search-sort');
+    var orderSel = document.querySelector('#search-form select[name="order"]');
+    parts.push('q=' + encodeURIComponent(si ? si.value : ''));
+    parts.push('sort=' + encodeURIComponent(sortEl ? sortEl.value : 'newest'));
+    parts.push('order=' + encodeURIComponent(orderSel ? orderSel.value : 'desc'));
+  } else {
+    var checked = document.querySelectorAll('.thumb-checkbox:checked');
+    if (checked.length === 0) {
+      if (flash) flash.innerHTML = '<div class="flash flash-err">No images selected.</div>';
+      return;
+    }
+    Array.prototype.forEach.call(checked, function(cb) {
+      parts.push('ids=' + encodeURIComponent(cb.value));
+    });
+  }
+  fetch('/internal/batch-collection', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
+    body: parts.join('&')
+  }).then(function(res) {
+    if (res.ok) {
+      document.getElementById(dlgId).close();
+      if (scope === 'selection') clearSelection();
+      _pendingGalleryReload = true;
+      refreshJobStatus();
+    } else {
+      res.text().then(function(t) {
+        if (flash) flash.innerHTML = t || '<div class="flash flash-err">Apply failed.</div>';
       });
     }
   }).catch(function() {

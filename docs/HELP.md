@@ -50,14 +50,16 @@ Both open a dialog with an Add/Remove toggle and the same tag input syntax as ab
 
 ---
 
-## Source and URL
+## Source, URL, Collection, Order
 
-Each image carries two operator-edited free-form fields next to the metadata panel on the detail page. Click `[edit]` next to either to set them.
+Each image carries four user-edited free-form fields next to the metadata panel on the detail page. Click `[edit]` next to any of them to set them.
 
 - **Source** - provenance label (a site name, scraper, anything you want to remember). Surfaces in the `source:my_label` search filter (exact match). Bare `source:` matches images with nothing set. Max 200 chars.
 - **URL** - the canonical web URL the image came from. Must start with `http://` or `https://`. Rendered as a clickable link (new tab) on the detail page. Max 2048 chars.
+- **Collection** - free-form grouping label shared by every image you want to keep together (a series name, a comic, a photoshoot). Surfaces in the `collection:"my label"` search filter (exact match) and as a Collections section in the gallery sidebar; the `Order` sort groups by collection first. Cbz / zip uploads pre-fill this from `ComicInfo.xml` `<Series>` when present; re-extract never overwrites a non-empty value. Max 200 chars.
+- **Order** - 1-based position of this image inside its collection (e.g. page or chapter number). Renders as `#N` next to the collection chip and drives the within-collection ordering of the `Order` sort. NULL by default; the batch dialog can fan a starting integer across a selection so a freshly-labelled batch lands ordered.
 
-Both default to empty; leave them blank if you don't track this.
+All four default to empty; leave them blank if you don't track this.
 
 ---
 
@@ -67,7 +69,7 @@ Nine built-in categories: `general`, `character`, `artist`, `copyright`, `meta`,
 
 The `rating` category is locked to its four canonical names (see below).
 
-**Reserved category names.** A handful of names are refused at create / rename time because they double as search-filter prefixes and would collide with `category:tag` parsing: `fav`, `inbox`, `ai`, `source`, `cat`, `width`, `height`, `date`, `missing`, `animated`, `tagged`, `autotagged`, `folder`, `folderonly`, `generated`, `rating`, plus `system` (the search-bar cheat-sheet trigger). Anything else is fair game.
+**Reserved category names.** A handful of names are refused at create / rename time because they double as search-filter prefixes and would collide with `category:tag` parsing: `fav`, `inbox`, `ai`, `source`, `cat`, `width`, `height`, `date`, `missing`, `animated`, `tagged`, `autotagged`, `folder`, `folderonly`, `generated`, `rating`, plus `system` (the search-bar cheat-sheet trigger).
 
 **Aliasing a tag** is on the `/tags` page: pick a non-alias row and click `Alias→`. The dialog asks for the canonical to point at. After submit:
 
@@ -97,7 +99,7 @@ The auto-tagger keeps the highest rank when an inference emits more than one rat
 
 The footer carries the **SFW ceiling**: a row labelled `rating: sfw · sensitive · questionable · explicit`. Click any level to ceiling the gallery to that and below. The active level renders as `[label]`. Default is `[explicit]` (no ceiling). The setting is stored in a HttpOnly cookie scoped to the current browser.
 
-The folder tree and source counts ignore the ceiling - they always show the true gallery shape - so you can tell when something is hidden.
+The folder tree ignore the ceiling - it always shows the true gallery shape - so you can tell when something is hidden.
 
 ---
 
@@ -124,16 +126,18 @@ Tags separated by spaces means AND. Everything else stacks on top:
 | `cat:character` | any tag in that category |
 | `character:cat` | tag "cat" in the character category |
 | `missing:true` | files gone from disk |
-| `animated:true` / `animated:false` | gif/mp4/webm |
 | `tagged:true` / `tagged:false` | images with or without tags |
 | `autotagged:true` / `autotagged:false` | images with or without auto-tags |
 | `generated:abcd1234abcd` | same generation recipe (hash shown on the image page) |
 | `rating:explicit` | effective rating one of `general` / `sensitive` / `questionable` / `explicit` |
+| `type:image` / `type:archive` / `type:animated` | narrow by file-type bucket. `image` = jpeg/png/webp/gif/mp4/webm, `archive` = cbz / zip (manga, comics, image-zips), `animated` = gif/mp4/webm. `type:archive,animated` matches archives + gif/video. Negate with `-type:animated` for static-only. |
+| `collection:"Touhou Suzunaan"` | exact-match against the operator-edited per-image collection label. |
+| `pages:>=100` | manga page count comparison (`>`, `<`, `>=`, `<=`, `=`). Non-manga rows count as 0 pages. |
 | `system:` (autocomplete only) | cheat-sheet trigger. Lists every filter prefix and tag category (`fav:`, `date:`, ..., `character:`, `artist:`, ...). |
 
 Autocomplete is combination-aware: the count next to each suggestion is for the full query, and suggestions that would return zero results are hidden.
 
-**Sort:** newest (default), file size, random shuffle. Random stays stable across page turns; click again to re-shuffle.
+**Sort:** newest (default), file size, order, random shuffle. Order groups by collection alphabetically then by the per-image order field (NULLs last; images with no collection sit at the start). Random stays stable across page turns; click again to re-shuffle.
 
 **Saved searches:** click "Save search" in the gallery sidebar to store the current query under a name. Click the entry to run it again. Delete with the × button.
 
@@ -149,13 +153,41 @@ The gallery sidebar has:
 
 - A tag filter (client-side, restricts the visible tags from the current page).
 - Tags from the current page, grouped by category.
-- AI-Source buttons (a1111 / comfyui / none).
+- The list of collections in the gallery.
 - The folder tree - every folder with a count. Click the name to recurse into the folder; click the small `·` next to it to filter to images directly in that folder, no subfolders.
+- AI-Source buttons (a1111 / comfyui / none).
 - Saved searches.
 
 The image detail page reuses the folder tree, AI-source buttons, and saved searches in its sidebar; the current image's tag list sits above them.
 
 **Related images:** the bottom of the detail page shows up to 9 images sharing tags with the current one, ranked by overlap.
+
+---
+
+## Comics & manga (Archives)
+
+Drop a `.cbz` or `.zip` archive of page images into your gallery (or upload one via the web upload form) and it ingests as a single library row, just like an image. The cover thumbnail is page 1 (natural-sorted across the archive).
+
+The detail page for a manga gains two extras:
+- **Read** - opens a reader at page 1.
+- **Pages** - opens a thumbnail grid of every page, click a cell to jump straight to that page in the reader.
+
+Reader controls (also reachable from the keyboard):
+
+| Key | Action |
+|---|---|
+| `→` / `l` / `Space` | Next page |
+| `←` / `h` | Previous page |
+| `Home` / `End` | First / last page |
+| `p` | Jump to a page by number |
+| `P` | See all pages (jumps to the page-thumbnail grid) |
+| `o` | Open the current page bytes in a new tab |
+| `Esc` / `Backspace` | Back |
+
+
+`ComicInfo.xml` at the archive root, when present, is parsed into a read-only metadata panel on the detail page (title, series, volume, writer, summary, ...).
+
+Auto-tagging a manga reads every page in the archive, runs each through the configured taggers, and merges the results as one tag set on the comic row.
 
 ---
 
@@ -194,6 +226,11 @@ REST API requests can target any gallery via `?gallery=<name>` or the `X-Monboor
 
 A `.json` upload may be either a full monbooru export or a bare `tags.json` light manifest; the importer sniffs the document and routes accordingly. For the foreign formats and the light manifest, only image bytes and tags are preserved. See `docs/MIGRATING.md` for details.
 
+The dialog has two modes:
+
+- **Merge** (default) - add new images and tags from the upload to the target gallery. Existing rows are kept; tags from the upload are layered onto matching SHA-256 rows.
+- **Replace** - wipe the target gallery's DB and thumbnails, then load the upload into the empty gallery. Type-to-confirm the gallery's name. Refused on the active gallery and the default gallery (switch / demote first).
+
 ---
 
 ## Auto-tagger
@@ -221,7 +258,9 @@ To run it, use the auto-tag button in the image detail or in batch actions.
 
 Multiple taggers can run together; per-image results are merged so a tag detected by two taggers is inserted once with the higher confidence.
 
-**Thresholds:** each tagger has a global confidence threshold plus an optional per-category override map. Open Settings → Auto-Tagger → Configure on a row to edit the global threshold and add overrides for individual categories (e.g. raise `character` to 0.85 to suppress false-positive character tags while keeping `general` permissive). Empty per-category cells fall back to the global threshold; click Reset to drop an override.
+**Thresholds and per-category caps:** each tagger has a global confidence threshold plus an optional per-category override map. Open Settings → Auto-Tagger → Configure on a row to edit the global threshold, add overrides for individual categories (e.g. raise `character` to 0.85 to suppress false-positive character tags while keeping `general` permissive), and set a **Max tags** per category - the maximum number of tags this tagger may emit for that category on one image after thresholding. Empty Max tags cells fall back to the built-in defaults (`character` 8, `copyright` 4, `artist` 4, `general` 25, `rating` 1, anything else 10); `0` keeps every tag that survives the threshold. Empty per-category threshold cells fall back to the global threshold; click Reset to drop an override.
+
+**Frame-merge gate (videos and manga only):** when a tagger runs against a video (5 sampled frames) or a manga (every page), monbooru merges per-frame scores into a single set of tags per image. The `tagger.aggregation.min_hit_fraction` TOML knob (default `0.05`) controls how many frames a label must score above the threshold on to survive the merge: the cutoff is `clamp(ceil(min_hit_fraction × frame_count), 2, 10)`. A single noisy hit on a 200-page manga is not enough; the same label appearing on 10+ pages does survive. Set the knob to `0` to revert to "any single hit wins". Static images are unaffected (always single-frame).
 
 **Per-gallery enabling:** each tagger row has a Galleries column with a Configure button. Tick "All galleries" so the tagger fires on every gallery (default). Tick individual galleries to restrict it to just those - useful when one gallery holds anime work and another holds photos and you don't want WD14 firing on the photos.
 
@@ -249,6 +288,16 @@ Settings → Maintenance has the manual tools:
 Each action reports how many rows it affected.
 
 **Sync edge case.** Sync skips re-hashing a file when its `(path, size)` already exists in the DB. A re-encoded JPEG that happens to keep the exact byte length will silently keep the previous SHA, so its tags and metadata stay attached even though the bytes changed. Recovery: delete the row from the Tags / image detail page and re-sync, or replace the file with one of a different size.
+
+---
+
+## Stats
+
+Settings → Stats is a read-only diagnostic block:
+
+- **Process memory** - PSS broken into Go heap, native (SQLite caches, taggers, CGO), and file-backed (DB pages, binary, shared libs) on Linux. Falls back to `runtime.MemStats` on platforms without `/proc/self/smaps_rollup`.
+- **Database size per gallery** - one row per gallery, sum of `monbooru.db` plus its `-wal` / `-shm` sidecars.
+- **Filesystem free space** - one row per distinct mount that holds the gallery / data / model directories. Mounts reporting the same totals collapse into a single row.
 
 ---
 

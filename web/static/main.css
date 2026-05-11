@@ -104,8 +104,12 @@ button:hover { border-color: var(--accent); }
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
 }
-#footer-left, #footer-right { display: flex; gap: 8px; align-items: center; }
+#footer-left, #footer-right { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+@media (max-width: 600px) {
+  #footer { flex-direction: column; align-items: flex-start; }
+}
 #footer a { color: var(--fg-dim); }
 #footer a:hover { color: var(--fg); }
 .footer-gallery { color: var(--accent); }
@@ -297,7 +301,7 @@ button.footer-rating-link:hover { color: var(--fg); }
 .tag-link { flex: 1; overflow: hidden; text-overflow: ellipsis; }
 
 /* Folder tree section */
-#folder-tree-section, #saved-searches-section, #source-filter-section {
+#folder-tree-section, #saved-searches-section, #source-filter-section, #series-filter-section {
   border-top: 1px solid var(--border);
   margin-top: 8px;
   padding-top: 4px;
@@ -308,7 +312,7 @@ button.footer-rating-link:hover { color: var(--fg); }
   gap: 6px;
   padding: 3px 8px;
 }
-#folder-tree-toggle, #source-tree-toggle {
+#folder-tree-toggle, #source-tree-toggle, #series-tree-toggle {
   background: none;
   border: none;
   padding: 0;
@@ -510,28 +514,34 @@ button.footer-rating-link:hover { color: var(--fg); }
 .badge {
   background: rgba(0,0,0,0.7);
   color: var(--fg);
-  font-size: 14px;
   padding: 2px 4px;
   border: 1px solid var(--border);
-  line-height: 1;
+  line-height: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   /* Lock the inner content box so every overlay slot is exactly the
-     same square regardless of which glyph it carries. Without this,
-     character-width variance (▶ vs ♥ vs ✱) and the flex container's
-     default cross-axis stretch reflow neighbours when one badge has
-     a slightly heavier glyph. */
+     same square regardless of which icon it carries. Each glyph is an
+     inline SVG sized to fill the box, so font-metric variance (a
+     unicode heart vs asterisk centring at different y-offsets) is
+     gone - SVG paths position deterministically. */
   box-sizing: content-box;
   width: 12px;
   height: 12px;
 }
+.badge svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
 .badge-inbox { color: var(--accent); }
 .fav-heart { color: var(--error); }
-/* The play badge is rendered as a CSS triangle: the ▶ unicode glyph
-   has asymmetric side bearings and pixel-rendering quirks that drift
-   off-centre in the box. A bordered pseudo-element gives a precise,
-   font-independent triangle. */
+.badge-missing { color: var(--warning); }
+/* The play badge is rendered as a CSS triangle: a 9x12 right-pointing
+   shape sized to fit the same 12x12 inner box as the SVG icons.
+   font-size:0 keeps the surrounding flex layout from reserving any
+   text line-height. */
 .badge-video {
   color: var(--warning);
   font-size: 0;
@@ -551,6 +561,7 @@ button.footer-rating-link:hover { color: var(--fg); }
    restore the legacy small font. */
 .badge-filesize {
   font-size: 10px;
+  line-height: 1;
   width: auto;
 }
 
@@ -673,16 +684,19 @@ button.footer-rating-link:hover { color: var(--fg); }
   color: var(--fg);
   padding-left: 6px;
 }
+/* Dot-leader between th and td. Tiled background-image rather than
+   text content so screen readers don't announce filler dots on
+   every row. */
 .meta-table tr:has(> th)::before {
-  content: "................................................................................................................................";
+  content: "";
   position: absolute;
   left: 0;
   right: 0;
-  top: 5px;
-  color: var(--border);
-  white-space: nowrap;
-  overflow: hidden;
-  font-size: 12px;
+  top: 14px;
+  height: 1px;
+  background-image: radial-gradient(circle, var(--border) 0.6px, transparent 0.7px);
+  background-size: 4px 1px;
+  background-repeat: repeat-x;
   pointer-events: none;
 }
 
@@ -802,6 +816,16 @@ details summary:hover { color: var(--fg); }
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
+/* Heading row that lines up the section title with a top-right marker
+   (e.g. the tagger CPU/GPU badge) without disturbing the rest of the
+   section's vertical rhythm. */
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.settings-section-header h3 { margin: 0; }
 .form-row {
   display: flex;
   align-items: center;
@@ -813,6 +837,7 @@ details summary:hover { color: var(--fg); }
 
 .flash { padding: 6px 12px; font-size: 12px; margin-top: 8px; }
 .flash-ok { color: var(--success); border: 1px solid var(--success); background: transparent; }
+.flash-warn { color: var(--warning); border: 1px solid var(--warning); background: transparent; }
 .flash-err { color: var(--error); border: 1px solid var(--error); background: transparent; }
 
 .settings-sub { margin-bottom: 12px; }
@@ -864,10 +889,10 @@ kbd {
   font-size: 12px;
 }
 
-#shortcuts-help { width: min(1200px, 95vw); }
+#shortcuts-help { width: min(1400px, 95vw); }
 #shortcuts-help h3 { margin: 0 0 6px 0; font-size: 13px; }
 #shortcuts-help h4 { margin: 0 0 2px 0; font-size: 11px; color: var(--fg-dim); font-weight: normal; text-transform: uppercase; letter-spacing: 0.05em; }
-.shortcuts-help-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 20px; font-size: 11px; line-height: 1.35; }
+.shortcuts-help-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 24px; font-size: 12px; line-height: 1.35; }
 .shortcuts-help-grid section { break-inside: avoid; }
 .shortcuts-help-grid table { border-collapse: collapse; width: 100%; }
 .shortcuts-help-grid td { padding: 0 6px 0 0; vertical-align: top; }
@@ -970,10 +995,7 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   max-height: 80vh;
 }
 
-.add-tag-wrapper {
-  position: relative;
-  margin-top: 4px;
-}
+#autotag-result:not(:empty) { margin-bottom: 8px; }
 
 .detail-topbar {
   display: flex;
@@ -996,6 +1018,13 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+/* Pages grid only carries one button on the right; without an override
+   the 420px-wide block plus space-between push it left of the topbar
+   edge, breaking visual alignment with the topbar sync button. */
+#pages-grid-page .detail-topbar-right {
+  width: auto;
+  justify-content: flex-end;
 }
 .nav-arrow {
   color: var(--fg-dim);
@@ -1141,6 +1170,19 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   cursor: pointer;
 }
 .btn-sm:hover { color: var(--fg); border-color: var(--fg-dim); }
+/* The metadata-table edit markers (Source / URL / Series) read as inline
+   links sitting next to the value, not buttons. Strip the .btn-sm chrome
+   on these specific buttons and lean on the accent-coloured underline-on-
+   hover convention used elsewhere for in-prose links. */
+.btn-edit-external {
+  background: none;
+  border: none;
+  padding: 0 0 0 4px;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn-edit-external:hover { text-decoration: underline; }
 .btn-danger {
   color: var(--bg);
   border-color: var(--error);
@@ -1214,6 +1256,40 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   margin-top: 8px;
 }
 .add-tag-form input { flex: 1; }
+/* Wraps just the input + its suggest dropdown so the absolute-positioned
+   dropdown anchors to the input's width, not the form's (which would
+   otherwise stretch past the input under the Add button). */
+.add-tag-input-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.add-tag-input-wrap input { width: 100%; }
+/* Same shape as .add-tag-input-wrap: the wrap anchors the absolute
+   suggest dropdown to the input's width inside the Set-series dialog,
+   instead of the dialog .field which is wider than the input. */
+.series-input-wrap {
+  position: relative;
+  width: 100%;
+  /* Match the .field input[type="text"] cap so the dropdown anchors
+     to the same right edge as the input - otherwise a wide dialog
+     stretches the wrap past the 300px input clip and the suggest
+     list overhangs. */
+  max-width: 300px;
+}
+.series-input-wrap input { width: 100%; }
+.series-suggest-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 200;
+}
+.series-suggest-dropdown .suggest-list {
+  position: static;
+  width: 100%;
+  min-width: unset;
+}
 .suggest-dropdown {
   position: relative;
 }
@@ -1267,15 +1343,47 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .suggest-description { color: var(--fg-dim); font-size: 11px; font-style: italic; }
 .suggest-sep { color: var(--fg-dim); font-size: 11px; }
 
-/* Aliases section */
-.aliases-section { margin-bottom: 16px; }
-.aliases-section h3 { font-size: 13px; margin-bottom: 8px; }
-.badge-canonical {
-  font-size: 10px;
-  padding: 1px 5px;
-  border: 1px solid var(--success);
+/* Duplicate filesystem paths section on the detail page. Each entry
+   stacks the path on its own row and the action buttons below so the
+   narrow metadata panel doesn't crush the path/buttons together. The
+   Set canonical / Remove buttons and the Canonical chip share
+   .btn-sm sizing so the action area reads as a tidy row of uniform
+   pills regardless of which row the operator is looking at. */
+.duplicates-section { margin-bottom: 16px; }
+.duplicates-section h3 { font-size: 13px; margin-bottom: 8px; }
+.duplicates-list { list-style: none; padding: 0; margin: 0; }
+.duplicates-entry {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  background: var(--bg-surface);
+}
+.duplicates-path {
+  word-break: break-all;
+  margin-bottom: 6px;
+}
+.duplicates-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  align-items: stretch;
+  white-space: nowrap;
+}
+.duplicates-actions form { display: inline-flex; }
+.duplicates-actions .btn-sm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 9em;
+  height: 22px;
+  box-sizing: border-box;
+  line-height: 1;
+}
+.btn-canonical {
+  border-color: var(--success);
   color: var(--success);
-  display: inline-block;
+  background: transparent;
+  cursor: default;
 }
 
 /* Danger zone */
@@ -1408,11 +1516,16 @@ section#tagger .tagger-table tr.tagger-sep td { color: var(--fg-dim); font-size:
 .tagger-thresh-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: normal; color: var(--fg-dim); font-size: 12px; }
 .tagger-thresh-table td { padding: 4px 8px; vertical-align: middle; }
 .tagger-thresh-table th:nth-child(2),
-.tagger-thresh-table td:nth-child(2) { width: 9em; }
+.tagger-thresh-table td:nth-child(2),
 .tagger-thresh-table th:nth-child(3),
-.tagger-thresh-table td:nth-child(3) { width: 5em; text-align: right; }
+.tagger-thresh-table td:nth-child(3) { width: 9em; }
 .tagger-thresh-table input[type=number] { width: 8em; }
 .tagger-thresh-table tr.tagger-thresh-global td { border-bottom: 1px solid var(--border); }
+/* Per-row Reset clears every input on its row. Hidden until the row carries
+   a value; :placeholder-shown flips as the operator types, so the link
+   appears live without the dialog body re-rendering after Save. */
+.tagger-thresh-table .reset-thresh { visibility: hidden; }
+.tagger-thresh-table tr:has(input[type=number]:not(:placeholder-shown)) .reset-thresh { visibility: visible; }
 
 /* Per-tagger Galleries dialog: tight checkbox list. */
 .tagger-gal-dialog { max-width: 480px; }
@@ -1498,6 +1611,7 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 }
 .related-mini-card {
   display: block;
+  position: relative;
   aspect-ratio: 1 / 1;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -1664,3 +1778,179 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 
 /* Settings sub sections */
 .settings-sub { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+
+/* Centered action bar between the cover and the tag editor on a manga
+   detail page. Holds the Open-in-reader / See-all-pages buttons. */
+.manga-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  padding: 8px 0 12px;
+}
+.btn-manga-action {
+  display: inline-block;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--fg);
+  text-decoration: none;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-manga-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* Dim shortcut hint inside a button label so the key letter sits one
+   step back from the verb without taking equal visual weight. */
+.btn-key-hint {
+  color: var(--fg-dim);
+  font-size: 11px;
+  margin-left: 4px;
+}
+.btn-manga-action:hover .btn-key-hint { color: var(--accent); }
+
+/* Pill rendered on top of a manga thumbnail in the gallery grid. Sits at
+   the bottom-right corner of the card, off the top-right overlay where
+   the favourite / inbox badges live, so the page count never gets
+   clipped by another glyph. */
+.manga-pill {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, 0.7);
+  color: var(--fg);
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Series chip on a thumbnail: pinned to the bottom-left so it doesn't
+   collide with the bottom-right manga-pill on cbz rows. The label is
+   trimmed at 60% of the card width with text-overflow: ellipsis so a
+   long series name doesn't blow out the card. Children stack so the
+   order number sits above the name. */
+.series-pill {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  max-width: 60%;
+  background: rgba(0, 0, 0, 0.7);
+  color: var(--fg);
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+.series-pill-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Reader: full-bleed black, single page paginated. The body class hides any
+   inherited chrome and the stage centers the page bytes. */
+body.reader-body {
+  margin: 0;
+  background: #000;
+  color: var(--fg);
+}
+body.reader-body #topbar,
+body.reader-body #sidebar,
+body.reader-body #footer,
+body.reader-body #main-layout > aside,
+body.reader-body #gallery-status { display: none; }
+#reader { display: flex; flex-direction: column; height: 100vh; }
+.reader-stage { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; position: relative; }
+.reader-img { max-width: 100%; max-height: 100vh; object-fit: contain; display: block; }
+.reader-page-link { display: contents; }
+/* Side chevrons for click-to-prev/next. Pinned to the stage edges so
+   they sit in the whitespace beside a portrait page without obscuring
+   the centred image. The bottom inset clears the reader-bar so the
+   click target doesn't overlap the bar's controls. */
+.reader-side {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 56px;
+  line-height: 1;
+  color: var(--fg-dim);
+  text-decoration: none;
+  background: rgba(0, 0, 0, 0);
+  transition: background 0.12s, color 0.12s;
+  z-index: 2;
+  user-select: none;
+}
+.reader-side-prev { left: 0; }
+.reader-side-next { right: 0; }
+.reader-side:hover {
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--fg);
+}
+.reader-side-disabled {
+  opacity: 0.2;
+  pointer-events: none;
+}
+.reader-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: #111;
+  border-top: 1px dashed var(--border);
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.reader-bar a, .reader-bar button { color: var(--fg-dim); text-decoration: none; background: transparent; border: 0; cursor: pointer; padding: 2px 6px; font: inherit; }
+.reader-bar a:hover, .reader-bar button:hover { color: var(--accent); }
+.reader-counter { border: 1px dashed var(--border); padding: 2px 8px; }
+.reader-disabled { opacity: 0.3; padding: 2px 6px; }
+.reader-back { margin-right: 0; }
+.reader-pages { margin-right: auto; }
+.reader-open { margin-left: auto; }
+
+/* Pages grid - reuses the gallery grid styling but cells are smaller so a
+   long manga fits on screen at once. */
+.manga-pages-grid {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  padding: 12px 0;
+  margin: 0;
+}
+.manga-page-cell { margin: 0; }
+.manga-page-link {
+  display: block;
+  position: relative;
+  background: var(--bg-dim);
+  border: 1px solid var(--border);
+  text-align: center;
+  text-decoration: none;
+  color: var(--fg);
+}
+.manga-page-link:hover { border-color: var(--accent); }
+.manga-page-cell.focused .manga-page-link {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.manga-page-thumb { width: 100%; height: auto; display: block; max-height: 180px; object-fit: contain; background: #000; }
+.manga-page-num { display: block; font-size: 11px; color: var(--fg-dim); padding: 2px; }
+
+/* Comic-info metadata table (mirrors meta-table styling). */
+.comic-info-summary { white-space: pre-wrap; }

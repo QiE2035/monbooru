@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     ca-certificates \
     curl \
+    libcap2-bin \
     && rm -rf /var/lib/apt/lists/*
 
 # Download ONNX Runtime shared library needed by the autotagger at runtime.
@@ -34,5 +35,6 @@ RUN ARCH=$(dpkg --print-architecture) && \
     rm -rf /tmp/onnxruntime-*
 
 COPY --from=builder /monbooru /usr/local/bin/monbooru
+RUN setcap cap_chown,cap_dac_override+ep /usr/local/bin/monbooru
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/monbooru", "-config", "/config/monbooru.toml"]

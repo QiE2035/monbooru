@@ -132,6 +132,38 @@ func Bootstrap(db *DB) error {
 	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_source ON images(source)`); err != nil {
 		return fmt.Errorf("create idx_images_source: %w", err)
 	}
+	if err := ensureColumn(db, "images", "page_count", `ALTER TABLE images ADD COLUMN page_count INTEGER`); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "images", "series", `ALTER TABLE images ADD COLUMN series TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	// Operator-edited per-image position within its series. NULL means
+	// "no specific order" - the search executor sorts those after rows
+	// with a numeric position when a series: filter pins the result set.
+	if err := ensureColumn(db, "images", "series_order", `ALTER TABLE images ADD COLUMN series_order INTEGER`); err != nil {
+		return err
+	}
+	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_series ON images(series) WHERE series != ''`); err != nil {
+		return fmt.Errorf("create idx_images_series: %w", err)
+	}
+	// Saved-search reproduces the URL the operator was looking at; the
+	// seed bit lets a `random` save reopen at the same shuffle. `sort_order`
+	// is the URL's `order` value - column name is suffixed because `order`
+	// is a SQLite reserved word that breaks plain UPDATE/INSERT statements
+	// even with quoting in some driver paths.
+	if err := ensureColumn(db, "saved_searches", "sort", `ALTER TABLE saved_searches ADD COLUMN sort TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "saved_searches", "sort_order", `ALTER TABLE saved_searches ADD COLUMN sort_order TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "saved_searches", "seed", `ALTER TABLE saved_searches ADD COLUMN seed TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "image_paths", "mtime_unix", `ALTER TABLE image_paths ADD COLUMN mtime_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
 	// PRAGMA optimize refreshes sqlite_stat1 for any table whose stats
 	// are out of date - cheap on a steady-state DB, but load-bearing
 	// after a schema change (CREATE/DROP INDEX leave the planner with

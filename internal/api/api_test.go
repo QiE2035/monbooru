@@ -164,6 +164,41 @@ func TestSearchImagesReturnsEnvelope(t *testing.T) {
 	}
 }
 
+// TestSearchImages_PopulatesTags pins U-F010: the search response shape
+// matches the per-image GET shape on the same Image.tags property.
+func TestSearchImages_PopulatesTags(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "search_tags.png", 12, 12)
+
+	body, _ := json.Marshal(map[string]any{"tags": []string{"red", "blue"}})
+	addReq := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/tags", id), bytes.NewReader(body))
+	addReq.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, addReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("seed tags failed: %d %s", w.Code, w.Body.String())
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/images/search", nil)
+	rec := httptest.NewRecorder()
+	env.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	results, _ := resp["results"].([]any)
+	if len(results) == 0 {
+		t.Fatal("expected at least one result")
+	}
+	tags, _ := results[0].(map[string]any)["tags"].([]any)
+	if len(tags) < 2 {
+		t.Errorf("expected >= 2 tags on the search result, got %d (full response: %s)", len(tags), rec.Body.String())
+	}
+}
+
 func TestListTagsReturnsEnvelope(t *testing.T) {
 	mux := newTestMux(t)
 	req := httptest.NewRequest("GET", "/api/v1/tags", nil)
@@ -363,8 +398,20 @@ func TestCreateImage_JSONPath_Duplicate(t *testing.T) {
 	w := httptest.NewRecorder()
 	env.mux.ServeHTTP(w, req)
 
-	if w.Code != http.StatusConflict {
-		t.Errorf("expected 409 for duplicate, got %d: %s", w.Code, w.Body.String())
+	// U-F008: duplicate-SHA returns 200 + alias_added so a retry-on-409
+	// client doesn't keep re-pushing the same file expecting rejection.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for duplicate, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["alias_added"] != true {
+		t.Errorf("expected alias_added=true, got %v", resp["alias_added"])
+	}
+	if resp["image"] == nil {
+		t.Errorf("expected image object in response, got %v", resp)
 	}
 }
 
@@ -833,6 +880,47 @@ func TestSearchImages_WithSort(t *testing.T) {
 			t.Errorf("random expected 2 results, got %d", len(got))
 		}
 	})
+}
+
+// TestSearchImages_RandomSeedStable pins the spec §8.3 contract that
+// `seed=` produces a stable random ordering across paginated calls. Without
+// the seed plumbed through, each call reseeds and pages overlap.
+func TestSearchImages_RandomSeedStable(t *testing.T) {
+	env := newTestEnv(t)
+	for i := 0; i < 8; i++ {
+		env.createTestImage(t, fmt.Sprintf("seed%d.png", i), 10+i, 10+i)
+	}
+	idsFor := func(t *testing.T) []float64 {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/api/v1/images/search?sort=random&seed=42&limit=8", nil)
+		w := httptest.NewRecorder()
+		env.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		raw, _ := resp["results"].([]any)
+		out := make([]float64, len(raw))
+		for i, item := range raw {
+			out[i] = item.(map[string]any)["id"].(float64)
+		}
+		return out
+	}
+	first := idsFor(t)
+	for i := 0; i < 2; i++ {
+		again := idsFor(t)
+		if len(again) != len(first) {
+			t.Fatalf("run %d returned %d results, want %d", i+1, len(again), len(first))
+		}
+		for j := range first {
+			if first[j] != again[j] {
+				t.Fatalf("run %d order diverged at %d: got %v want %v", i+1, j, again, first)
+			}
+		}
+	}
 }
 
 func TestSearchImages_WithPagination(t *testing.T) {

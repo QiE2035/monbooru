@@ -14,13 +14,13 @@
   <li class="no-tags">No implications declared.</li>
   {{end}}
 </ul>
-<div class="add-tag-wrapper" style="position:relative">
-  <form id="implication-add-form" class="add-tag-form"
-        hx-post="/tags/{{.Parent.ID}}/implications"
-        hx-target="#implication-add-flash"
-        hx-swap="innerHTML"
-        hx-on::after-request="handleImplicationAdded(event)">
-    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+<form id="implication-add-form" class="add-tag-form"
+      hx-post="/tags/{{.Parent.ID}}/implications"
+      hx-target="#implication-add-flash"
+      hx-swap="innerHTML"
+      hx-on::after-request="handleImplicationAdded(event)">
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+  <div class="add-tag-input-wrap">
     <input type="text" name="implied_id" id="implication-add-input"
            placeholder="Imply tag(s)..." required autocomplete="off"
            data-multi-tags="1"
@@ -30,9 +30,9 @@
            hx-swap="innerHTML"
            hx-vals='js:{q: (document.getElementById("implication-add-input").value || "").split(/\s+/).pop()}'
            onkeydown="handleSuggestKey(event, 'implication-add-suggest', 'implication-add-input')">
-    <button type="submit" class="btn-sm">Add</button>
-  </form>
-  <div id="implication-add-suggest" class="suggest-dropdown tag-suggest-dropdown"></div>
-</div>
+    <div id="implication-add-suggest" class="suggest-dropdown tag-suggest-dropdown"></div>
+  </div>
+  <button type="submit" class="btn-sm">Add</button>
+</form>
 <div id="implication-add-flash"></div>
 {{end}}

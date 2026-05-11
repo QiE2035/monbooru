@@ -1,6 +1,7 @@
 package search
 
 import (
+	"archive/zip"
 	"context"
 	"image"
 	"image/png"
@@ -145,6 +146,34 @@ func TestParse_Filter_Source(t *testing.T) {
 	}
 }
 
+func TestParse_Filter_Type(t *testing.T) {
+	for _, val := range []string{"image", "archive", "image,archive"} {
+		e, _ := Parse("type:" + val)
+		f, ok := e.(FilterExpr)
+		if !ok || f.Key != "type" || f.Val != val {
+			t.Errorf("type:%s parsed as %T %+v", val, e, e)
+		}
+	}
+}
+
+func TestParse_Filter_Collection(t *testing.T) {
+	e, _ := Parse("collection:naruto")
+	f, ok := e.(FilterExpr)
+	if !ok || f.Key != "collection" || f.Val != "naruto" {
+		t.Errorf("parse collection:naruto failed: %+v", e)
+	}
+}
+
+func TestParse_Filter_Pages(t *testing.T) {
+	for _, val := range []string{">=100", "<200", "=42", "0"} {
+		e, _ := Parse("pages:" + val)
+		f, ok := e.(FilterExpr)
+		if !ok || f.Key != "pages" || f.Val != val {
+			t.Errorf("pages:%s parsed as %T %+v", val, e, e)
+		}
+	}
+}
+
 func TestParse_Wildcard_Prefix(t *testing.T) {
 	e, _ := Parse("blue*")
 	tag, ok := e.(TagExpr)
@@ -259,8 +288,8 @@ func TestBuildWhere_MissingTrue(t *testing.T) {
 	}
 }
 
-func TestBuildWhere_AnimatedTrue(t *testing.T) {
-	expr := FilterExpr{Key: "animated", Val: "true"}
+func TestBuildWhere_TypeAnimated(t *testing.T) {
+	expr := FilterExpr{Key: "type", Val: "animated"}
 	where, args, _ := buildWhere(expr)
 	if len(args) != 0 {
 		t.Fatalf("expected 0 args, got %d", len(args))
@@ -270,10 +299,10 @@ func TestBuildWhere_AnimatedTrue(t *testing.T) {
 	}
 }
 
-func TestBuildWhere_AnimatedFalse(t *testing.T) {
-	expr := FilterExpr{Key: "animated", Val: "false"}
+func TestBuildWhere_TypeAnimatedNegated(t *testing.T) {
+	expr := NotExpr{Expr: FilterExpr{Key: "type", Val: "animated"}}
 	where, _, _ := buildWhere(expr)
-	if !strings.Contains(where, "file_type NOT IN ('gif', 'mp4', 'webm')") {
+	if !strings.Contains(where, "NOT") || !strings.Contains(where, "file_type IN ('gif', 'mp4', 'webm')") {
 		t.Errorf("where clause missing negated animated set: %s", where)
 	}
 }
@@ -425,6 +454,123 @@ func TestExecute_FolderFilter(t *testing.T) {
 	}
 }
 
+// ingestTestManga writes a tiny one-page cbz into the gallery and
+// ingests it. Returns the new image id. Each call produces a unique
+// page bitmap so successive calls don't dedup against each other.
+func ingestTestManga(t *testing.T, database *db.DB, env *searchEnv, name string, series string) int64 {
+	t.Helper()
+	ingestCounter++
+	pic := image.NewRGBA(image.Rect(0, 0, 8+ingestCounter, 8))
+	cbzPath := filepath.Join(env.galleryDir, name)
+	f, err := os.Create(cbzPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, err := zw.Create("01.png")
+	if err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := png.Encode(w, pic); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+	rec, _, err := gallery.Ingest(database, env.galleryDir, env.thumbnailsDir, cbzPath, "cbz", "")
+	if err != nil {
+		t.Fatalf("Ingest cbz: %v", err)
+	}
+	if series != "" {
+		if _, err := database.Write.Exec(`UPDATE images SET series = ? WHERE id = ?`, series, rec.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return rec.ID
+}
+
+func TestExecute_TypeArchive_FindsCBZRow(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "regular.png")
+	ingestTestManga(t, database, env, "m.cbz", "")
+
+	res, err := Execute(database, Query{
+		Expr:  FilterExpr{Key: "type", Val: "archive"},
+		Page:  1, Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 {
+		t.Errorf("type:archive total = %d, want 1", res.Total)
+	}
+	if len(res.Results) != 1 || res.Results[0].FileType != "cbz" {
+		t.Errorf("type:archive returned %+v", res.Results)
+	}
+}
+
+func TestExecute_TypeImage_ExcludesManga(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "regular.png")
+	ingestTestManga(t, database, env, "m.cbz", "")
+
+	res, err := Execute(database, Query{
+		Expr:  FilterExpr{Key: "type", Val: "image"},
+		Page:  1, Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 {
+		t.Errorf("type:image total = %d, want 1", res.Total)
+	}
+	if len(res.Results) != 1 || res.Results[0].FileType == "cbz" {
+		t.Errorf("type:image returned %+v", res.Results)
+	}
+}
+
+func TestExecute_CollectionExactMatch(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestManga(t, database, env, "naruto.cbz", "Naruto")
+	ingestTestManga(t, database, env, "bleach.cbz", "Bleach")
+
+	res, err := Execute(database, Query{
+		Expr:  FilterExpr{Key: "collection", Val: "Naruto"},
+		Page:  1, Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 {
+		t.Errorf("collection:Naruto total = %d, want 1", res.Total)
+	}
+}
+
+func TestExecute_PagesComparison(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "regular.png")
+	ingestTestManga(t, database, env, "small.cbz", "")
+	mid := ingestTestManga(t, database, env, "mid.cbz", "")
+	if _, err := database.Write.Exec(`UPDATE images SET page_count = 100 WHERE id = ?`, mid); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Execute(database, Query{
+		Expr:  FilterExpr{Key: "pages", Val: ">=10"},
+		Page:  1, Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 {
+		t.Errorf("pages:>=10 total = %d, want 1 (only the 100-page manga)", res.Total)
+	}
+}
+
 func TestExecute_TagAliasResolvesToCanonical(t *testing.T) {
 	// After a merge the image_tags row lives on the canonical; searching
 	// for the alias name must still surface the image.
@@ -477,6 +623,30 @@ func ratingTagID(t *testing.T, database *db.DB, name string) int64 {
 	).Scan(&id); err != nil {
 		t.Fatalf("rating tag %q not seeded: %v", name, err)
 	}
+	return id
+}
+
+// getOrCreateTagID returns the id of a general-category tag with the
+// given name, creating the row if absent. Used by tests that don't go
+// through the tags.Service helper layer.
+func getOrCreateTagID(t *testing.T, database *db.DB, name string) int64 {
+	t.Helper()
+	var id int64
+	err := database.Read.QueryRow(`SELECT id FROM tags WHERE name = ?`, name).Scan(&id)
+	if err == nil {
+		return id
+	}
+	var catID int64
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&catID); err != nil {
+		t.Fatalf("look up general category: %v", err)
+	}
+	res, err := database.Write.Exec(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 0)`, name, catID,
+	)
+	if err != nil {
+		t.Fatalf("insert tag %q: %v", name, err)
+	}
+	id, _ = res.LastInsertId()
 	return id
 }
 
@@ -1082,30 +1252,39 @@ func TestFastCountAI_Csv(t *testing.T) {
 	}
 }
 
-// TestFastCountTagged_UpperBound verifies the fast-path returns the
-// visible-image count for tagged:true / autotagged:true. The bound is
-// exact when every visible image is tagged (the audit fixture's state
-// and any synced library's typical state) and over-shoots for fresh
-// imports - same trade-off the wildcard / AND helpers already accept.
-// The :false variants fall through so untagged-triage queries keep
-// their exact slow-path count.
-func TestFastCountTagged_UpperBound(t *testing.T) {
+// TestFastCountTagged_PartitionsVisible pins the fix for U-F012:
+// `tagged:true` and `tagged:false` must partition the visible image
+// set (sum = visible_total, no overlap). Mixed fixture: one tagged,
+// one untagged, one auto-tagged.
+func TestFastCountTagged_PartitionsVisible(t *testing.T) {
 	database, env := setupSearchDB(t)
-	ingestTestImage(t, database, env, "ft_a.png")
-	ingestTestImage(t, database, env, "ft_b.png")
+	ingestTestImage(t, database, env, "ft_tagged.png")
+	ingestTestImage(t, database, env, "ft_untagged.png")
+	ingestTestImage(t, database, env, "ft_auto.png")
+	var taggedID, autoID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ft_tagged.png'`).Scan(&taggedID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ft_auto.png'`).Scan(&autoID)
+	tagID := getOrCreateTagID(t, database, "blue")
+	attachTag(t, database, taggedID, tagID)
+	if _, err := database.Write.Exec(
+		`INSERT INTO image_tags (image_id, tag_id, is_auto) VALUES (?, ?, 1)`, autoID, tagID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?`, tagID); err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
-		key  string
-		val  string
-		want int
-		ok   bool
+		key, val string
+		want     int
+		ok       bool
 	}{
 		{"tagged", "true", 2, true},
-		{"autotagged", "true", 2, true},
-		// :false stays on the slow path so the count is exact.
+		{"autotagged", "true", 1, true},
+		// :false stays on the slow path; the helper falls through.
 		{"tagged", "false", 0, false},
 		{"autotagged", "false", 0, false},
-		// Other keys never enter this helper.
 		{"rating", "true", 0, false},
 	}
 	for _, tc := range cases {
@@ -1119,6 +1298,26 @@ func TestFastCountTagged_UpperBound(t *testing.T) {
 				t.Errorf("count = %d, want %d", got, tc.want)
 			}
 		})
+	}
+
+	// Cross-check Execute round-trips the partition: tagged:true total
+	// + tagged:false total = visible total, and the result rows obey
+	// the same predicate.
+	tres, err := Execute(database, Query{Expr: FilterExpr{Key: "tagged", Val: "true"}, Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fres, err := Execute(database, Query{Expr: FilterExpr{Key: "tagged", Val: "false"}, Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tres.Total+fres.Total != 3 {
+		t.Errorf("tagged:true+tagged:false = %d, want 3 (no overlap)", tres.Total+fres.Total)
+	}
+	for _, img := range tres.Results {
+		if img.ID != taggedID && img.ID != autoID {
+			t.Errorf("tagged:true returned untagged image id=%d", img.ID)
+		}
 	}
 }
 
@@ -2310,6 +2509,20 @@ func TestBuildOrder_FilesizeAsc(t *testing.T) {
 	}
 }
 
+func TestBuildOrder_Order(t *testing.T) {
+	got := buildOrder("order", "", 0)
+	if !strings.Contains(got, "i.series ASC") || !strings.Contains(got, "i.series_order IS NULL") || !strings.Contains(got, "i.series_order ASC") || !strings.Contains(got, "i.id ASC") {
+		t.Errorf("order default: %q", got)
+	}
+}
+
+func TestBuildOrder_OrderDesc(t *testing.T) {
+	got := buildOrder("order", "desc", 0)
+	if !strings.Contains(got, "i.series DESC") || !strings.Contains(got, "i.series_order IS NULL") || !strings.Contains(got, "i.series_order DESC") || !strings.Contains(got, "i.id DESC") {
+		t.Errorf("order desc: %q", got)
+	}
+}
+
 func TestBuildOrder_Unknown(t *testing.T) {
 	// Unknown sorts fall back to newest (ingested_at DESC)
 	got := buildOrder("unknown_sort", "", 0)
@@ -2778,6 +2991,61 @@ func TestExecute_SortRandom(t *testing.T) {
 	_, err := Execute(database, Query{Sort: "random", Page: 1, Limit: 40})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestExecute_SortOrder_GroupsBySeriesThenOrder(t *testing.T) {
+	database, cfg := setupSearchDB(t)
+	// Three rows in series "A" with explicit + NULL order, one row in
+	// series "B", one row with no series at all. Verify that the result
+	// groups by series alphabetically (empty first), then by
+	// series_order with NULL last.
+	ingestTestImage(t, database, cfg, "a1.png")
+	ingestTestImage(t, database, cfg, "a2.png")
+	ingestTestImage(t, database, cfg, "a3.png")
+	ingestTestImage(t, database, cfg, "b1.png")
+	ingestTestImage(t, database, cfg, "none.png")
+	imageID := func(name string) int64 {
+		var id int64
+		if err := database.Read.QueryRow(
+			`SELECT id FROM images WHERE canonical_path LIKE '%' || ? ORDER BY id LIMIT 1`, name,
+		).Scan(&id); err != nil {
+			t.Fatalf("look up %q: %v", name, err)
+		}
+		return id
+	}
+	a1, a2, a3, b1, none := imageID("a1.png"), imageID("a2.png"), imageID("a3.png"), imageID("b1.png"), imageID("none.png")
+	for _, set := range []struct {
+		id    int64
+		ser   string
+		order interface{}
+	}{
+		{a1, "A", 2},
+		{a2, "A", 1},
+		{a3, "A", nil},
+		{b1, "B", 1},
+	} {
+		if _, err := database.Write.Exec(`UPDATE images SET series=?, series_order=? WHERE id=?`, set.ser, set.order, set.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := Execute(database, Query{Sort: "order", Order: "asc", Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Results) != 5 {
+		t.Fatalf("len(results) = %d, want 5", len(result.Results))
+	}
+	gotOrder := make([]int64, len(result.Results))
+	for i, r := range result.Results {
+		gotOrder[i] = r.ID
+	}
+	want := []int64{none, a2, a1, a3, b1}
+	for i, id := range want {
+		if gotOrder[i] != id {
+			t.Errorf("position %d: id=%d, want %d (full order: %v)", i, gotOrder[i], id, gotOrder)
+		}
 	}
 }
 

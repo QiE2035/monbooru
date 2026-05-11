@@ -507,3 +507,46 @@ func buildMultipart(t *testing.T, fields map[string]string, fileField, filename 
 	}
 	return &buf, mw.FormDataContentType()
 }
+
+// TestSafeArchiveDest pins T-F006: the central path-traversal defense
+// for every zip-import path (gallery import db / json / zip / light,
+// Blombooru / Hydrus translators) must reject absolute entries, plain
+// `..` traversal, nested `..` after a normal segment, and the equal-
+// prefix sibling-directory attack the docstring calls out. Names that
+// merely contain `..` as a substring stay legal.
+func TestSafeArchiveDest(t *testing.T) {
+	root := t.TempDir()
+
+	cases := []struct {
+		rel     string
+		wantErr bool
+	}{
+		// Legal shapes.
+		{"a.png", false},
+		{"sub/a.png", false},
+		{"deeper/nested/photo.webp", false},
+		{"foo..bar.png", false},
+		{"a/b/c.png", false},
+		// Illegal shapes.
+		{"/etc/passwd", true},
+		{"../escape.txt", true},
+		{"a/../../escape.png", true},
+		{"a/../b/../../escape.png", true},
+	}
+	for _, tc := range cases {
+		dst, err := safeArchiveDest(root, tc.rel)
+		gotErr := err != nil
+		if gotErr != tc.wantErr {
+			t.Errorf("safeArchiveDest(root, %q) err=%v want err=%v (dst=%q)",
+				tc.rel, err, tc.wantErr, dst)
+			continue
+		}
+		if !tc.wantErr {
+			rootAbs, _ := filepath.Abs(root)
+			if !strings.HasPrefix(dst, rootAbs) {
+				t.Errorf("safeArchiveDest(root, %q) returned %q, expected under %q",
+					tc.rel, dst, rootAbs)
+			}
+		}
+	}
+}

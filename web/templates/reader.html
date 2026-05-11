@@ -1,0 +1,80 @@
+{{define "reader.html"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <meta name="csrf-token" content="{{.CSRFToken}}">
+  <link rel="icon" type="image/png" href="/static/favicon.png">
+  <link rel="stylesheet" href="/static/main.css">
+  {{if .CustomCSS}}<link rel="stylesheet" href="/custom.css">{{end}}
+  <script src="/static/main.js" defer></script>
+  {{if .NextPage}}
+  <link rel="prefetch" href="/images/{{.Image.ID}}/page/{{.NextPage}}">
+  {{end}}
+</head>
+{{/* When the reader was reached from /images/{id}/pages, anchor the
+     back link, the dialog form, and the page-nav extras at the pages
+     grid so the user lands where they came from. The from=pages flag
+     persists across page-flip clicks via the per-link query tail.
+     The #page-N fragment carries the current page so the pages grid
+     can focus + scroll to that cell on load. */}}
+{{$detailHref := printf "/images/%d%s" .Image.ID .BackQS}}{{if .BackToPages}}{{$detailHref = printf "/images/%d/pages%s#page-%d" .Image.ID .BackQS .Page}}{{end}}
+{{$pagesHref := printf "/images/%d/pages%s#page-%d" .Image.ID .BackQS .Page}}
+<body class="reader-body">
+  <main id="reader" data-image-id="{{.Image.ID}}" data-page="{{.Page}}" data-total="{{.PageCount}}" data-detail-url="{{$detailHref}}">
+    <div class="reader-stage">
+      <a href="/images/{{.Image.ID}}/page/{{.Page}}" target="_blank" rel="noopener" class="reader-page-link" title="Open page in new tab (o)">
+        <img src="/images/{{.Image.ID}}/page/{{.Page}}" alt="Page {{.Page}}" class="reader-img">
+      </a>
+      {{if gt .Page 1}}
+      <a class="reader-side reader-side-prev" href="/images/{{.Image.ID}}/read?page={{sub .Page 1}}{{.BackKVQS}}" title="Previous page (←)" aria-label="Previous page">‹</a>
+      {{else}}
+      <span class="reader-side reader-side-prev reader-side-disabled" aria-hidden="true">‹</span>
+      {{end}}
+      {{if lt .Page .PageCount}}
+      <a class="reader-side reader-side-next" href="/images/{{.Image.ID}}/read?page={{add .Page 1}}{{.BackKVQS}}" title="Next page (→)" aria-label="Next page">›</a>
+      {{else}}
+      <span class="reader-side reader-side-next reader-side-disabled" aria-hidden="true">›</span>
+      {{end}}
+    </div>
+    <nav class="reader-bar">
+      <a class="reader-back" href="{{$detailHref}}" title="Back ({{if .BackToPages}}to all pages{{else}}to detail{{end}}) (Esc)">← Back</a>
+      {{if gt .PageCount 1}}
+      <a class="reader-pages" href="{{$pagesHref}}" title="See all pages (P)">≡ Pages <span class="btn-key-hint">(P)</span></a>
+      {{end}}
+      {{if gt .Page 1}}
+      <a class="reader-nav reader-first" href="/images/{{.Image.ID}}/read?page=1{{.BackKVQS}}" title="First page (Home)">|&lt;</a>
+      <a class="reader-nav reader-prev" href="/images/{{.Image.ID}}/read?page={{sub .Page 1}}{{.BackKVQS}}" title="Previous page (←)">&lt;</a>
+      {{else}}
+      <span class="reader-nav reader-disabled" aria-hidden="true">|&lt;</span>
+      <span class="reader-nav reader-disabled" aria-hidden="true">&lt;</span>
+      {{end}}
+      <button type="button" class="reader-counter" id="reader-counter" title="Jump to page (p)">{{.Page}} / {{.PageCount}}</button>
+      {{if lt .Page .PageCount}}
+      <a class="reader-nav reader-next" href="/images/{{.Image.ID}}/read?page={{add .Page 1}}{{.BackKVQS}}" title="Next page (→)">&gt;</a>
+      <a class="reader-nav reader-last" href="/images/{{.Image.ID}}/read?page={{.PageCount}}{{.BackKVQS}}" title="Last page (End)">&gt;|</a>
+      {{else}}
+      <span class="reader-nav reader-disabled" aria-hidden="true">&gt;</span>
+      <span class="reader-nav reader-disabled" aria-hidden="true">&gt;|</span>
+      {{end}}
+      <a class="reader-open" href="/images/{{.Image.ID}}/page/{{.Page}}" target="_blank" rel="noopener" title="Open page in new tab (o)">↗</a>
+    </nav>
+  </main>
+  <dialog id="reader-jump-dialog">
+    <form method="GET" action="/images/{{.Image.ID}}/read">
+      {{if .BackToPages}}<input type="hidden" name="from" value="pages">{{end}}
+      <p>Jump to page (1 - {{.PageCount}})</p>
+      <div class="field">
+        <input type="number" name="page" id="reader-jump-input" min="1" max="{{.PageCount}}" value="{{.Page}}" autocomplete="off">
+      </div>
+      <div class="dialog-actions">
+        <button type="submit">Go</button>
+        <button type="button" onclick="document.getElementById('reader-jump-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
+{{end}}

@@ -29,7 +29,7 @@ func TestBootstrap(t *testing.T) {
 	tables := []string{
 		"tag_categories", "tags",
 		"images", "image_paths", "image_tags",
-		"sd_metadata", "comfyui_metadata", "saved_searches",
+		"sd_metadata", "comfyui_metadata", "manga_metadata", "saved_searches",
 	}
 	for _, tbl := range tables {
 		var n int
@@ -242,6 +242,48 @@ func TestBootstrapInboxMigration(t *testing.T) {
 	}
 	if stillInbox != 1 {
 		t.Errorf("user-toggled is_inbox=1 row was reset to 0 by re-Bootstrap")
+	}
+}
+
+// TestBootstrapMangaColumns asserts that the manga schema additions
+// (page_count, series, idx_images_series) land on a fresh DB and on
+// libraries that predate the columns.
+func TestBootstrapMangaColumns(t *testing.T) {
+	db := openTestDB(t)
+	if err := Bootstrap(db); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	for _, col := range []string{"page_count", "series"} {
+		var n int
+		if err := db.Read.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('images') WHERE name = ?`, col,
+		).Scan(&n); err != nil {
+			t.Fatalf("inspect images.%s: %v", col, err)
+		}
+		if n != 1 {
+			t.Errorf("images.%s missing after Bootstrap", col)
+		}
+	}
+	var idxN int
+	if err := db.Read.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_images_series'`,
+	).Scan(&idxN); err != nil {
+		t.Fatalf("read idx metadata: %v", err)
+	}
+	if idxN != 1 {
+		t.Errorf("idx_images_series not registered after Bootstrap")
+	}
+}
+
+// TestBootstrapMangaIdempotent re-runs Bootstrap and asserts the manga
+// column adds are no-ops on the second pass.
+func TestBootstrapMangaIdempotent(t *testing.T) {
+	db := openTestDB(t)
+	if err := Bootstrap(db); err != nil {
+		t.Fatalf("first Bootstrap: %v", err)
+	}
+	if err := Bootstrap(db); err != nil {
+		t.Fatalf("second Bootstrap: %v", err)
 	}
 }
 

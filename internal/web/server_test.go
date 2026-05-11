@@ -100,6 +100,34 @@ func TestCustomCSS_ServesConfiguredFile(t *testing.T) {
 	}
 }
 
+// TestCustomCSSPathAllowed pins A-F009: the path scope check must
+// accept paths under config dir / /config / /data and reject every
+// other absolute or relative path - including the operator footgun
+// /etc/passwd.
+func TestCustomCSSPathAllowed(t *testing.T) {
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "monbooru.toml")
+
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{filepath.Join(configDir, "custom.css"), true},
+		{filepath.Join(configDir, "sub", "ok.css"), true},
+		{"/config/custom.css", true},
+		{"/data/custom.css", true},
+		{"/etc/passwd", false},
+		{"/proc/self/environ", false},
+		{"/tmp/leak.css", false},
+	}
+	for _, tc := range cases {
+		got := customCSSPathAllowed(tc.path, configPath)
+		if got != tc.want {
+			t.Errorf("customCSSPathAllowed(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
 // Walks every full-layout page so a handler that hand-copies baseData
 // fields into a map and forgets CustomCSS fails loudly here, instead of
 // silently dropping the override link on whichever page it forgot.

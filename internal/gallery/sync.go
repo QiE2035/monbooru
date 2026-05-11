@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"image"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,10 @@ import (
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/tags"
 )
+
+// imageDecodeConfig is image.DecodeConfig spelled inline so the
+// applyInPlaceEdit helper doesn't need a fresh import block.
+var imageDecodeConfig = image.DecodeConfig
 
 // SyncResult summarizes the outcome of a gallery sync.
 type SyncResult struct {
@@ -39,6 +44,43 @@ type SourceCounts struct {
 	A1111   int // standalone or combined
 	Comfyui int // standalone or combined
 	None    int
+}
+
+// SeriesCount is one row of the sidebar's Series section: a series
+// label and the number of non-missing image rows tagged with it.
+// Series spans every file type so operators can group images, videos,
+// and archives under a shared label.
+type SeriesCount struct {
+	Series string
+	Count  int
+}
+
+// SeriesCountsQuery returns the top series labels (by row count desc)
+// across non-missing rows of any file type. Empty series strings are
+// excluded - the index is partial on `series != ''` so the read hits
+// it directly. Sorted Count desc, then alphabetical to make the
+// sidebar deterministic.
+func SeriesCountsQuery(database *db.DB, limit int) ([]SeriesCount, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := database.Read.Query(
+		`SELECT series, COUNT(*) c FROM images
+		 WHERE is_missing = 0 AND series != ''
+		 GROUP BY series ORDER BY c DESC, series ASC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SeriesCount
+	for rows.Next() {
+		var sc SeriesCount
+		if err := rows.Scan(&sc.Series, &sc.Count); err != nil {
+			return out, err
+		}
+		out = append(out, sc)
+	}
+	return out, rows.Err()
 }
 
 // SourceCountsQuery returns the source-tree counts for the given database.
@@ -91,31 +133,33 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 		sha256   string
 		fileType string
 		size     int64
+		mtime    int64
 	}
 	var found []fileInfo
 
-	// Preload (path, size, sha256) so the walk skips hashing files whose
-	// size hasn't changed since the last sync. Re-hashing every file
-	// dominates idle-sync time on 10k+ libraries.
+	// Preload (path, size, sha256, mtime_unix) so the walk skips hashing
+	// files whose size + mtime haven't changed since the last sync. Re-
+	// hashing every file dominates idle-sync time on 10k+ libraries.
 	type knownEntry struct {
 		size   int64
 		sha256 string
+		mtime  int64
 	}
 	known := map[string]knownEntry{}
 	krows, kerr := database.Read.Query(
-		`SELECT ip.path, i.file_size, i.sha256 FROM image_paths ip JOIN images i ON i.id = ip.image_id`,
+		`SELECT ip.path, i.file_size, i.sha256, ip.mtime_unix FROM image_paths ip JOIN images i ON i.id = ip.image_id`,
 	)
 	if kerr != nil {
 		return result, fmt.Errorf("preloading known paths: %w", kerr)
 	}
 	for krows.Next() {
 		var p, sha string
-		var sz int64
-		if err := krows.Scan(&p, &sz, &sha); err != nil {
+		var sz, mt int64
+		if err := krows.Scan(&p, &sz, &sha, &mt); err != nil {
 			krows.Close()
 			return result, fmt.Errorf("scanning known paths: %w", err)
 		}
-		known[p] = knownEntry{size: sz, sha256: sha}
+		known[p] = knownEntry{size: sz, sha256: sha, mtime: mt}
 	}
 	if err := krows.Err(); err != nil {
 		krows.Close()
@@ -148,10 +192,12 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 		}
 
 		var hash string
-		if k, ok := known[path]; ok && k.size == info.Size() {
-			// Same path and size: assume unchanged content. A same-size
-			// in-place edit is missed here; force a re-hash by removing
-			// the DB row.
+		mtimeUnix := info.ModTime().Unix()
+		if k, ok := known[path]; ok && k.size == info.Size() && k.mtime != 0 && k.mtime == mtimeUnix {
+			// Same path, size, and mtime: assume unchanged content. The
+			// mtime gate catches the same-size in-place edit case the
+			// size-only check missed; rows that predate the mtime column
+			// (mtime=0) re-hash once and persist the real mtime back.
 			hash = k.sha256
 		} else {
 			h, hashErr := HashFile(path)
@@ -165,7 +211,7 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 			ClaimOwnership(path)
 		}
 
-		found = append(found, fileInfo{path: path, sha256: hash, fileType: ft, size: info.Size()})
+		found = append(found, fileInfo{path: path, sha256: hash, fileType: ft, size: info.Size(), mtime: mtimeUnix})
 		return nil
 	})
 	if err != nil {
@@ -229,11 +275,44 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 			progress(i, total, "Phase 2: reconciling...")
 		}
 
+		// In-place edit: same path on disk, but the freshly hashed SHA
+		// differs from what image_paths last saw. The mtime gate at the
+		// top of the walk forced a re-hash; here we apply the new SHA,
+		// size, dimensions, and metadata to the existing image row so
+		// tags survive the rewrite. The audit's "delete row and resync"
+		// recovery becomes unnecessary; the operator's edit lands cleanly.
+		if k, knownPath := known[fi.path]; knownPath && k.sha256 != fi.sha256 {
+			if err := applyInPlaceEdit(database, galleryPath, thumbnailsPath, fi.path, fi.fileType, fi.sha256, fi.mtime, fi.size); err != nil {
+				logx.Warnf("sync: in-place edit %q: %v", fi.path, err)
+				continue
+			}
+			// Refresh the bySHA map: the old sha row may be gone (if the
+			// path was its canonical and unique alias) or have its
+			// canonical_path repointed; either way the new sha now points
+			// at this path so a later same-SHA file falls into duplicate.
+			var imgID int64
+			if err := database.Read.QueryRow(`SELECT id FROM images WHERE sha256 = ?`, fi.sha256).Scan(&imgID); err == nil {
+				bySHA[fi.sha256] = bySHARow{id: imgID, canonicalPath: fi.path, isMissing: 0}
+			}
+			delete(bySHA, k.sha256)
+			known[fi.path] = knownEntry{size: fi.size, sha256: fi.sha256, mtime: fi.mtime}
+			continue
+		}
+
 		row, ok := bySHA[fi.sha256]
 		if ok {
 			imgID := row.id
 			canonPath := row.canonicalPath
 			isMissing := row.isMissing
+
+			// Persist the freshly-observed mtime on the touched row so the
+			// next sync's unchanged-shortcut can fire. Cheap UPDATE keyed
+			// on the UNIQUE path index.
+			if _, wErr := database.Write.Exec(
+				`UPDATE image_paths SET mtime_unix = ? WHERE path = ?`, fi.mtime, fi.path,
+			); wErr != nil {
+				logx.Warnf("sync: persist mtime for %q: %v", fi.path, wErr)
+			}
 
 			if canonPath == fi.path {
 				if isMissing == 1 {
@@ -284,6 +363,9 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 			// is gone, otherwise another copy/alias.
 			_, canonErr := os.Stat(canonPath)
 			if canonErr != nil {
+				// Demote the previous canonical to alias and upsert the
+				// new one so the prior path stays in image_paths instead
+				// of being rewritten in place.
 				newFolder := FolderPath(galleryPath, fi.path)
 				if _, wErr := database.Write.Exec(
 					`UPDATE images SET canonical_path = ?, folder_path = ?, is_missing = 0 WHERE id = ?`,
@@ -292,16 +374,17 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 					logx.Warnf("sync: move %d: %v", imgID, wErr)
 				}
 				if _, wErr := database.Write.Exec(
-					`UPDATE image_paths SET path = ?, is_canonical = 1 WHERE image_id = ? AND is_canonical = 1`,
-					fi.path, imgID,
+					`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ? AND is_canonical = 1`,
+					imgID,
 				); wErr != nil {
-					logx.Warnf("sync: update canonical path %d: %v", imgID, wErr)
+					logx.Warnf("sync: demote old canonical %d: %v", imgID, wErr)
 				}
 				if _, wErr := database.Write.Exec(
-					`INSERT OR IGNORE INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 1)`,
+					`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 1)
+					 ON CONFLICT(path) DO UPDATE SET is_canonical = 1`,
 					imgID, fi.path,
 				); wErr != nil {
-					logx.Warnf("sync: insert canonical path %d: %v", imgID, wErr)
+					logx.Warnf("sync: install new canonical %d: %v", imgID, wErr)
 				}
 				result.Moved++
 			} else {
@@ -408,6 +491,81 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 		result.Added, result.Removed, result.Moved, result.Duplicates))
 
 	return result, nil
+}
+
+// applyInPlaceEdit handles the case where sync re-hashed a known path
+// and observed a different SHA. The image_id stays so user-curated tags
+// survive; sha, size, dimensions, source_type, and side-table metadata
+// (sd_metadata, comfyui_metadata) are refreshed to match the new bytes
+// on disk, and the thumbnail is regenerated. The mtime gate at the top
+// of the walk is what triggers entry; the corresponding image_paths
+// row's mtime is updated here so the next sync's shortcut can fire.
+func applyInPlaceEdit(database *db.DB, galleryPath, thumbnailsPath, path, fileType, newSHA string, newMtime, newSize int64) error {
+	var imageID int64
+	if err := database.Read.QueryRow(
+		`SELECT image_id FROM image_paths WHERE path = ?`, path,
+	).Scan(&imageID); err != nil {
+		return fmt.Errorf("locate image for path %q: %w", path, err)
+	}
+
+	var imgWidth, imgHeight *int
+	var pageCount *int
+	if fileType == "cbz" {
+		archive, openErr := OpenManga(path)
+		if openErr == nil {
+			if w, h, dimErr := archive.CoverDimensions(); dimErr == nil {
+				imgWidth, imgHeight = &w, &h
+			}
+			pcVal := len(archive.Pages)
+			pageCount = &pcVal
+			archive.Close()
+		}
+	} else if !IsVideoType(fileType) {
+		f, openErr := os.Open(path)
+		if openErr == nil {
+			if cfg2, _, decErr := imageDecodeConfig(f); decErr == nil {
+				w, h := cfg2.Width, cfg2.Height
+				imgWidth, imgHeight = &w, &h
+			}
+			f.Close()
+		}
+	}
+
+	tx, err := database.Write.Begin()
+	if err != nil {
+		return fmt.Errorf("begin in-place edit tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(
+		`UPDATE images SET sha256 = ?, file_size = ?, width = ?, height = ?, page_count = ? WHERE id = ?`,
+		newSHA, newSize, toNullInt(imgWidth), toNullInt(imgHeight), toNullInt(pageCount), imageID,
+	); err != nil {
+		return fmt.Errorf("update images row: %w", err)
+	}
+	if _, err := tx.Exec(
+		`UPDATE image_paths SET mtime_unix = ? WHERE path = ?`, newMtime, path,
+	); err != nil {
+		return fmt.Errorf("update image_paths mtime: %w", err)
+	}
+	// Drop the side-table metadata so the regenerated row reflects what
+	// the new bytes actually carry. Re-extract is best-effort below.
+	if _, err := tx.Exec(`DELETE FROM sd_metadata WHERE image_id = ?`, imageID); err != nil {
+		return fmt.Errorf("clear sd_metadata: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM comfyui_metadata WHERE image_id = ?`, imageID); err != nil {
+		return fmt.Errorf("clear comfyui_metadata: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit in-place edit: %w", err)
+	}
+
+	if err := Generate(path, thumbnailsPath, imageID, fileType); err != nil {
+		logx.Warnf("in-place edit: thumbnail regen for %q: %v", path, err)
+	}
+	logx.Infof("sync: applied in-place edit to image id=%d at %q (sha %s)", imageID, path, newSHA)
+	return nil
 }
 
 // DeleteEmptyFolderIfEmpty removes folderPath (relative to gallery root)

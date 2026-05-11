@@ -2,9 +2,9 @@
 <form hx-post="/settings/tagger/{{.Name}}/thresholds"
       hx-target="#flash-tagger-thresh-{{.Name}}" hx-swap="innerHTML">
   <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-  <p class="field-hint">Per-category thresholds override the global one.</p>
+  <p class="field-hint">Threshold and Max tags override the defaults per category. Leave Max tags blank to use the built-in cap; set it to 0 to keep every tag this tagger emits.</p>
   <table class="tagger-thresh-table">
-    <thead><tr><th>Category</th><th>Threshold</th><th></th></tr></thead>
+    <thead><tr><th>Category</th><th>Threshold</th><th>Max tags</th><th></th></tr></thead>
     <tbody>
       <tr class="tagger-thresh-global">
         <td><strong>Global</strong></td>
@@ -12,6 +12,7 @@
           <input type="number" name="global_threshold" value="{{printf "%.2f" .Global}}"
                  min="0" max="1" step="0.01" required>
         </td>
+        <td></td>
         <td></td>
       </tr>
       {{range .Rows}}
@@ -25,8 +26,12 @@
                  placeholder="(global)" min="0" max="1" step="0.01">
         </td>
         <td>
-          {{if .Override}}<a href="#" class="reset-thresh"
-             onclick="this.closest('tr').querySelector('input[type=number]').value=''; return false;">Reset</a>{{end}}
+          <input type="number" name="maxtags_{{.Category}}" value="{{.MaxTags}}"
+                 placeholder="({{.MaxDefault}})" min="0" step="1">
+        </td>
+        <td>
+          <a href="#" class="reset-thresh"
+             onclick="var tr=this.closest('tr'); tr.querySelectorAll('input[type=number]').forEach(function(i){i.value='';}); return false;">Reset</a>
         </td>
       </tr>
       {{end}}
@@ -40,7 +45,7 @@
             hx-vals='{"_csrf":"{{.CSRFToken}}"}'
             hx-target="#tagger-thresh-{{.Name}}-body"
             hx-swap="innerHTML"
-            hx-confirm="Reset all thresholds for {{.Name}} to defaults?">Reset to defaults</button>
+            hx-confirm="Reset all thresholds and max-tag caps for {{.Name}} to defaults?">Reset to defaults</button>
     <button type="button" onclick="this.closest('dialog').close()">Close</button>
   </div>
 </form>

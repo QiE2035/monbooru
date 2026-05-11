@@ -247,6 +247,99 @@ func TestSync_NoChange(t *testing.T) {
 	}
 }
 
+// TestSync_MovePreservesPriorPathAsAlias pins the A-F003 fix: the
+// previous canonical entry must be demoted to an alias so the move
+// history isn't silently overwritten. Counts both image_paths rows
+// after the move and asserts the prior path is still in the table.
+func TestSync_MovePreservesPriorPathAsAlias(t *testing.T) {
+	database, env, galleryDir := setupSyncTest(t)
+	subDir := filepath.Join(galleryDir, "moved")
+	os.MkdirAll(subDir, 0755)
+
+	original := createTestPNGFile(t, galleryDir, "wander.png")
+	env.sync(t, database)
+
+	// Move the file to the new folder; sync must record the new path
+	// as canonical and keep the old one as a non-canonical alias.
+	newPath := filepath.Join(subDir, "wander.png")
+	if err := os.Rename(original, newPath); err != nil {
+		t.Fatal(err)
+	}
+	env.sync(t, database)
+
+	rows, err := database.Read.Query(
+		`SELECT path, is_canonical FROM image_paths ORDER BY is_canonical DESC, path`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var paths []string
+	canonicals := 0
+	for rows.Next() {
+		var p string
+		var ic int
+		if err := rows.Scan(&p, &ic); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, p)
+		if ic == 1 {
+			canonicals++
+		}
+	}
+	if len(paths) != 2 {
+		t.Errorf("image_paths rows = %d, want 2 (canonical + alias); got paths = %v", len(paths), paths)
+	}
+	if canonicals != 1 {
+		t.Errorf("canonical rows = %d, want exactly 1; paths = %v", canonicals, paths)
+	}
+}
+
+// TestSync_DetectsSameSizeInPlaceEdit pins the A-F001 fix: a same-
+// size in-place rewrite must surface (re-hash) on the next sync via
+// the mtime gate, not silently keep the prior SHA. The unchanged-
+// shortcut keeps idle syncs cheap on libraries that haven't seen
+// edits, but a touch + same-size overwrite must invalidate it.
+func TestSync_DetectsSameSizeInPlaceEdit(t *testing.T) {
+	database, env, galleryDir := setupSyncTest(t)
+	path := createTestPNGFile(t, galleryDir, "edit.png")
+
+	env.sync(t, database)
+	var origSHA string
+	database.Read.QueryRow(`SELECT sha256 FROM images`).Scan(&origSHA)
+
+	// Stat the seeded file, build a new payload of the same byte length
+	// (different content), and write it back with a fresh mtime so the
+	// (size, mtime) parity gate trips.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overwrite := make([]byte, info.Size())
+	for i := range overwrite {
+		overwrite[i] = byte((i * 7) ^ 0x5a)
+	}
+	if err := os.WriteFile(path, overwrite, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Force a distinguishable mtime even on coarse-grained filesystems.
+	future := info.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	env.sync(t, database)
+
+	var nextSHA string
+	database.Read.QueryRow(`SELECT sha256 FROM images`).Scan(&nextSHA)
+	if nextSHA == origSHA {
+		// Either the row stayed pinned to the old SHA, or re-ingest
+		// landed in a state where SHA isn't refreshed in-row. Both
+		// leave the catalog out of sync with disk: surface as fail.
+		t.Errorf("post-edit SHA still %q; expected the row to be re-hashed", nextSHA)
+	}
+}
+
 func TestSync_FileDeleted(t *testing.T) {
 	database, env, galleryDir := setupSyncTest(t)
 	path := createTestPNGFile(t, galleryDir, "test.png")

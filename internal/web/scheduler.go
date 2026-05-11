@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/leqwin/monbooru/internal/config"
-	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/tagger"
 )
 
@@ -162,14 +162,12 @@ func (s *Server) runScheduledActions() {
 }
 
 func (s *Server) scheduledSync(cx *galleryCtx) error {
-	if err := s.jobs.StartScheduled("sync"); err != nil {
+	if err := s.jobs.StartScheduled(models.JobTypeSync); err != nil {
 		logx.Warnf("scheduler sync %q: %v", cx.Name, err)
 		return err
 	}
 	ctx := s.jobs.Context()
-	result, err := gallery.Sync(ctx, cx.DB, cx.GalleryPath, cx.ThumbnailsPath,
-		s.cfg.Gallery.MaxFileSizeMB, s.jobs.Update)
-	cx.InvalidateCaches()
+	result, err := cx.Sync(ctx, s.cfg.Gallery.MaxFileSizeMB, s.jobs.Update)
 	// Match the user-trigger handlers' shape: ctx cancellation produces
 	// a clean Complete summary, only real failures fall to Fail().
 	if ctx.Err() != nil {
@@ -188,7 +186,7 @@ func (s *Server) scheduledSync(cx *galleryCtx) error {
 }
 
 func (s *Server) scheduledRemoveOrphans(cx *galleryCtx) error {
-	if err := s.jobs.StartScheduled("prune-thumbs"); err != nil {
+	if err := s.jobs.StartScheduled(models.JobTypePruneThumbs); err != nil {
 		logx.Warnf("scheduler orphans %q: %v", cx.Name, err)
 		return err
 	}
@@ -304,12 +302,12 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) error {
 	if len(enabled) == 0 {
 		return nil
 	}
-	if err := s.jobs.StartScheduled("autotag"); err != nil {
+	if err := s.jobs.StartScheduled(models.JobTypeAutotag); err != nil {
 		logx.Warnf("scheduler autotag %q: %v", cx.Name, err)
 		return err
 	}
 	ctx := s.jobs.Context()
-	skipped, err := tagger.RunWithTaggers(ctx, cx.DB, s.cfg, ids, enabled, s.jobs, s.cfg.Tagger.UseCUDA)
+	skipped, err := tagger.RunWithTaggers(ctx, cx.DB, s.cfg, ids, enabled, s.jobs, s.cfg.Tagger.UseCUDA, cx.MangaCacheDir())
 	cx.InvalidateCaches()
 	if ctx.Err() != nil {
 		s.jobs.Complete(fmt.Sprintf("[%s] auto-tagging cancelled (%d image(s) queued)", cx.Name, len(ids)))
@@ -333,6 +331,14 @@ func (s *Server) scheduledMergeGeneral(cx *galleryCtx) error {
 	if err != nil {
 		logx.Warnf("scheduler merge-general %q: %v", cx.Name, err)
 		return err
+	}
+	if merged > 0 {
+		// MergeGeneralIntoCategorized rewires image_tags rows and the
+		// tag catalog itself, so the per-cx tag/folder/source caches
+		// observe the wrong totals until the next mutation through
+		// this same context. Drop them here so a Settings or sidebar
+		// hit in the same gallery sees the merged state.
+		cx.InvalidateCaches()
 	}
 	logx.Infof("scheduler: [%s] merged %d general tag(s)", cx.Name, merged)
 	return nil

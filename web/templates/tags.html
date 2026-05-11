@@ -150,7 +150,7 @@
             {{end}}
             <button class="btn-sm btn-danger btn-delete-tag"
                     title="{{if eq .CategoryName "rating"}}Strip this rating from every image (the catalog row stays){{else}}Delete this tag from every image{{end}}"
-                    data-id="{{.ID}}" data-name="{{.Name}}">Delete</button>
+                    data-id="{{.ID}}" data-name="{{.Name}}" data-category="{{.CategoryName}}">Delete</button>
           </div>
         </td>
       </tr>
@@ -303,10 +303,18 @@
   </form>
 </dialog>
 
-<!-- Delete-tags-in-search dialog. Mirrors gallery's delete-search dialog. -->
+<!-- Delete-tags-in-search dialog. Mirrors gallery's delete-search dialog.
+     Wording adapts when no filter narrows the listing so "in current
+     search" doesn't lie when the count is the whole gallery. The count
+     excludes built-in rating rows, which DeleteTag treats as a usage-
+     strip rather than a catalog delete. -->
 <dialog id="delete-tags-search-dialog">
-  <p>Delete <strong>{{.Total}}</strong> tag{{if ne .Total 1}}s{{end}} in current search?</p>
-  <p style="color:var(--error);font-size:12px">Tags are removed from every image they touch. This cannot be undone.</p>
+  {{if .HasFilter}}
+  <p>Delete <strong>{{.DeletableTotal}}</strong> tag{{if ne .DeletableTotal 1}}s{{end}} in current search?</p>
+  {{else}}
+  <p>Delete all <strong>{{.DeletableTotal}}</strong> tag{{if ne .DeletableTotal 1}}s{{end}} in this gallery?</p>
+  {{end}}
+  <p style="color:var(--error);font-size:12px">Tags are removed from every image they touch. This cannot be undone. Built-in rating tags are usage-stripped (the catalog row stays).</p>
   <div id="delete-tags-search-flash"></div>
   <div class="dialog-actions">
     <button type="button" class="btn-danger" onclick="confirmDeleteTagsSearch()">Delete</button>
@@ -345,7 +353,16 @@ document.querySelectorAll('.btn-delete-tag').forEach(function(btn) {
   btn.addEventListener('click', function() {
     var id = this.dataset.id;
     var name = this.dataset.name;
-    showConfirm('Delete tag "' + name + '" and remove it from every image?', function() {
+    var category = this.dataset.category;
+    var isRating = category === 'rating';
+    var msg = isRating
+      ? 'Strip "' + name + '" from every image?'
+      : 'Delete tag "' + name + '" and remove it from every image?';
+    var danger = isRating
+      ? 'The rating tag itself stays in the catalog and can be re-added later.'
+      : 'This cannot be undone.';
+    var btnLabel = isRating ? 'Strip' : 'Delete';
+    showConfirm(msg, function() {
       var csrf = getCSRFToken();
       fetch('/tags/' + id, {
         method: 'DELETE',
@@ -360,7 +377,7 @@ document.querySelectorAll('.btn-delete-tag').forEach(function(btn) {
           });
         }
       });
-    }, 'This cannot be undone.', 'Delete');
+    }, danger, btnLabel);
   });
 });
 

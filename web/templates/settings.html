@@ -423,9 +423,10 @@
   </script>
 
   <section id="tagger" class="settings-section">
-    <h3>Auto-Tagger
+    <div class="settings-section-header">
+      <h3>Auto-Tagger</h3>
       {{template "partials/tagger_mode_badge.html" (dict "UseCUDA" $cfg.Tagger.UseCUDA)}}
-    </h3>
+    </div>
     <div id="flash-tagger"></div>
     {{$taggers := index . "Taggers"}}
     {{$rows := index . "TaggerRows"}}
@@ -565,7 +566,8 @@
       {{template "partials/auth_password_section.html" (dict "AuthEnabled" $cfg.Auth.EnablePassword "CSRFToken" $csrf)}}
       <div class="settings-sub">
         <h4>API Token</h4>
-        <form hx-post="/settings/auth/token" hx-target="#flash-auth" hx-swap="innerHTML">
+        <form hx-post="/settings/auth/token" hx-target="#flash-auth" hx-swap="innerHTML"
+              hx-confirm="Regenerate the API token? Existing scripts and integrations using the current token will stop working.">
           <input type="hidden" name="_csrf" value="{{$csrf}}">
           <button type="submit">Regenerate API token</button>
         </form>
@@ -668,11 +670,11 @@
 
     <div class="settings-sub">
       <h4>Duplicate images</h4>
-      <p class="field-hint">Images stored at multiple paths (same content, different locations). Each row is one image with its canonical path and aliases.</p>
+      <p class="field-hint">Images stored at multiple paths (same content, different locations). Each row is one image with its canonical path and the duplicate path sharing its content.</p>
       <form hx-post="/settings/maintenance/remove-duplicates"
             hx-target="#flash-maintenance" hx-swap="innerHTML"
             hx-on::after-request="if(event.detail.successful){document.getElementById('duplicates-list').innerHTML=''}"
-            hx-confirm="Remove all duplicate alias paths and their files from disk?"
+            hx-confirm="Remove all duplicate paths and their files from disk?"
             data-confirm-ok="Remove">
         <input type="hidden" name="_csrf" value="{{$csrf}}">
         <input type="hidden" name="all" value="true">

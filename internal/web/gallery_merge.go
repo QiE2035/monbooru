@@ -79,7 +79,7 @@ func (s *Server) ExportGalleryLightManifest(name string, w io.Writer) error {
 func writeLightManifest(cx *galleryCtx, w io.Writer) error {
 	bw := newJSONWriter(w)
 	bw.objStart()
-	bw.field("version", galleryExportVersion)
+	bw.field("version", lightManifestVersion)
 	bw.arrayStart("images")
 
 	rows, err := cx.DB.Read.Query(`
@@ -182,8 +182,8 @@ type translatedFile struct {
 // db that ingests every manifest entry. Shared by the native light-zip
 // replacer and the compat (hydrus...) replacer.
 func applyLightReplace(mf lightManifest, files []translatedFile, dbPath, thumbsPath, galleryPath, source string, maxFileSizeMB int) error {
-	if mf.Version != galleryExportVersion {
-		return fmt.Errorf("unsupported light export version %d (expected %d)", mf.Version, galleryExportVersion)
+	if mf.Version != lightManifestVersion {
+		return fmt.Errorf("unsupported light export version %d (expected %d)", mf.Version, lightManifestVersion)
 	}
 	if err := resetDBAndThumbs(dbPath, thumbsPath); err != nil {
 		return err
@@ -257,8 +257,8 @@ func replaceFromLightManifest(srcPath, dbPath, thumbsPath, galleryPath string) e
 	if err != nil {
 		return fmt.Errorf("decode tags.json: %w", err)
 	}
-	if mf.Version != galleryExportVersion {
-		return fmt.Errorf("unsupported light export version %d (expected %d)", mf.Version, galleryExportVersion)
+	if mf.Version != lightManifestVersion {
+		return fmt.Errorf("unsupported light export version %d (expected %d)", mf.Version, lightManifestVersion)
 	}
 	if err := resetDBAndThumbs(dbPath, thumbsPath); err != nil {
 		return err
@@ -462,8 +462,8 @@ func mergeFromJSON(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 	if err := json.NewDecoder(f).Decode(&exp); err != nil {
 		return fmt.Errorf("decode json: %w", err)
 	}
-	if exp.Version != galleryExportVersion {
-		return fmt.Errorf("unsupported export version %d (expected %d)", exp.Version, galleryExportVersion)
+	if exp.Version < galleryExportMinSupported || exp.Version > galleryExportVersion {
+		return fmt.Errorf("unsupported export version %d (supported: %d..%d)", exp.Version, galleryExportMinSupported, galleryExportVersion)
 	}
 	applyMergeRecords(cx, readExportMergeRecords(exp), importSourceNative, maxFileSizeMB)
 	return nil
@@ -484,8 +484,8 @@ func mergeFromLightJSON(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error
 	if err != nil {
 		return fmt.Errorf("decode tags.json: %w", err)
 	}
-	if mf.Version != galleryExportVersion {
-		return fmt.Errorf("unsupported light export version %d (expected %d)", mf.Version, galleryExportVersion)
+	if mf.Version != lightManifestVersion {
+		return fmt.Errorf("unsupported light export version %d (expected %d)", mf.Version, lightManifestVersion)
 	}
 	records := make([]mergeRecord, 0, len(mf.Images))
 	for _, img := range mf.Images {
@@ -532,8 +532,8 @@ func mergeFromZip(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 		if err != nil {
 			return fmt.Errorf("decode tags.json: %w", err)
 		}
-		if mf.Version != galleryExportVersion {
-			return fmt.Errorf("unsupported light export version %d (expected %d)", mf.Version, galleryExportVersion)
+		if mf.Version != lightManifestVersion {
+			return fmt.Errorf("unsupported light export version %d (expected %d)", mf.Version, lightManifestVersion)
 		}
 		for _, img := range mf.Images {
 			records = append(records, mergeRecord{SHA256: img.SHA256, Tags: img.Tags, SourcePath: img.Path})
@@ -567,8 +567,8 @@ func mergeFromZip(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 		if err != nil {
 			return fmt.Errorf("decode inner json: %w", err)
 		}
-		if exp.Version != galleryExportVersion {
-			return fmt.Errorf("unsupported export version %d (expected %d)", exp.Version, galleryExportVersion)
+		if exp.Version < galleryExportMinSupported || exp.Version > galleryExportVersion {
+			return fmt.Errorf("unsupported export version %d (supported: %d..%d)", exp.Version, galleryExportMinSupported, galleryExportVersion)
 		}
 		records = readExportMergeRecords(exp)
 	default:

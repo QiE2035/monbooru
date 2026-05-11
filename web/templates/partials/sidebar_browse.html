@@ -1,5 +1,27 @@
 {{define "partials/sidebar_browse.html"}}
-  {{/* Folder tree */}}
+  {{/* Collections, folder tree, AI source - in that order so the
+       operator's most navigational sections sit above the noise.
+       Collections rank first when present because they surface
+       deliberate per-image grouping rather than the filesystem
+       layout. */}}
+  {{if .SeriesCounts}}
+  <div id="series-filter-section">
+    <div class="sidebar-section-header">
+      <span class="sidebar-section-title">Collections</span>
+      <button id="series-tree-toggle" class="folder-toggle-btn" data-target="series-tree-list">▶</button>
+    </div>
+    <ul id="series-tree-list" class="folder-tree" style="display:none">
+      {{range .SeriesCounts}}
+      <li class="folder-node-wrap">
+        <div class="folder-node-row">
+          <span class="folder-spacer"></span>
+          <a href="/?q={{urlQ (printf "collection:\"%s\"" .Series)}}" class="folder-link" title="{{.Series}}">{{.Series}} ({{.Count}})</a>
+        </div>
+      </li>
+      {{end}}
+    </ul>
+  </div>
+  {{end}}
   {{if .FolderTree}}
   {{$root := index .FolderTree 0}}
   <div id="folder-tree-section">
@@ -20,10 +42,12 @@
       {{end}}
     </ul>
   </div>
+  {{end}}
+  {{if .SourceCounts}}
   {{$src := .SourceCounts}}
   <div id="source-filter-section">
     <div class="sidebar-section-header">
-      <span class="sidebar-section-title">AI source</span>
+      <span class="sidebar-section-title">AI</span>
       <button id="source-tree-toggle" class="folder-toggle-btn" data-target="source-tree-list">▶</button>
     </div>
     <ul id="source-tree-list" class="folder-tree" style="display:none">
@@ -35,7 +59,7 @@
       </li>
       <li class="folder-node-wrap">
         <div class="folder-node-row">
-          <button class="folder-toggle-btn folder-expand-btn" data-path="__ai_source__" data-target="fc-__ai_source__" title="Toggle AI sources">▶</button>
+          <button class="folder-toggle-btn folder-expand-btn" data-path="__ai_source__" data-target="fc-__ai_source__" title="Toggle AI">▶</button>
           <a href="/?q=ai:any" class="folder-link{{if eq $.Query "ai:any"}} active{{end}}">AI ({{$src.AI}})</a>
         </div>
         <ul id="fc-__ai_source__" class="folder-children" style="display:none">
@@ -67,7 +91,7 @@
       {{$csrf := $.CSRFToken}}
       {{range .SavedSearches}}
       <li class="saved-search-entry" id="ss-{{.ID}}">
-        <a href="/?q={{.Query}}" class="saved-search-link" title="{{.Query}}">{{.Name}}</a>
+        <a href="{{.HRef}}" class="saved-search-link" title="{{.Query}}">{{.Name}}</a>
         <button class="saved-search-del"
                 hx-delete="/search/saved/{{.ID}}"
                 hx-target="#ss-{{.ID}}"
@@ -95,10 +119,10 @@
     {{else}}
     <span class="folder-spacer"></span>
     {{end}}
-    <a href="/?q={{$quotedActive}}" class="folder-link{{if or (eq $query $active) (eq $query $quotedActive)}} active{{end}}">
+    <a href="/?q={{urlQ $quotedActive}}" class="folder-link{{if or (eq $query $active) (eq $query $quotedActive)}} active{{end}}">
       {{$node.Name}}/ ({{$node.Count}})
     </a>
-    <a href="/?q={{$quotedOnlyActive}}" class="folder-only-btn{{if or (eq $query $onlyActive) (eq $query $quotedOnlyActive)}} active{{end}}" title="Only this folder (no subfolders)">[·]</a>
+    <a href="/?q={{urlQ $quotedOnlyActive}}" class="folder-only-btn{{if or (eq $query $onlyActive) (eq $query $quotedOnlyActive)}} active{{end}}" title="Only this folder (no subfolders)">[·]</a>
   </div>
   {{if $node.Children}}
   <ul id="fc-{{$node.Path}}" class="folder-children" style="display:none">

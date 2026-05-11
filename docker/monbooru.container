@@ -1,0 +1,30 @@
+[Container]
+ContainerName=monbooru
+# you can use monbooru:latest-cuda if you have a CUDA compatible GPU for faster auto-tagging
+Image=ghcr.io/leqwin/monbooru:latest
+# if using CUDA, pass the GPU to the container
+#AddDevice=nvidia.com/gpu=all
+
+PublishPort=127.0.0.1:8080:8080
+
+NoNewPrivileges=true
+## Drop all capabilities, only keep CHOWN and DAC_OVERRIDE so monbooru can set permissions for files in the galleries
+DropCapability=ALL
+AddCapability=CHOWN DAC_OVERRIDE
+
+Volume=/path/to/your/models:/models:ro
+Volume=/path/to/your/gallery:/gallery
+# Additional galleries (need to be mounted in settings)
+#Volume=/path/to/your/gallery2:/gallery2
+#Volume=/path/to/your/gallery3:/gallery3
+Volume=/path/to/monbooru/config:/config
+Volume=/path/to/monbooru/data:/data
+
+Environment=MONBOORU_SERVER_BIND_ADDRESS=0.0.0.0:8080
+
+HealthCmd=["sh","-c","curl --fail --silent --max-time 5 http://localhost:8081/health || exit 1"]
+HealthInterval=30s
+HealthRetries=3
+HealthStartPeriod=10s
+HealthTimeout=5s
+HealthOnFailure=restart
