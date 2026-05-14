@@ -16,6 +16,24 @@ import (
 	"github.com/leqwin/monbooru/internal/tagger"
 )
 
+// logAutotagPeak writes the peak-RSS-delta for a finished autotag run
+// at INFO level. baselineRSS is sampled before the run; post-run we
+// read VmHWM (the kernel's RSS high-water mark) and subtract. No-op
+// when the sample is missing or no peak over baseline is observed.
+// scope identifies the run (e.g. the gallery name, image id, batch
+// size) so operators reading logs can match deltas to the job that
+// caused them.
+func logAutotagPeak(scope string, baselineRSS uint64) {
+	if baselineRSS == 0 {
+		return
+	}
+	peak := readVmHWM()
+	if peak <= baselineRSS {
+		return
+	}
+	logx.Infof("autotag %s: peak RSS +%s", scope, humanBytesFmt(int64(peak-baselineRSS)))
+}
+
 // uploadPage renders the multi-file upload form.
 func (s *Server) uploadPage(w http.ResponseWriter, r *http.Request) {
 	base := s.base(r, "upload", "Upload - Monbooru")
@@ -205,6 +223,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 			ids := addedIDs
 			database := s.db()
 			cx := s.Active()
+			baseline := readVmRSS()
 			go func() {
 				ctx := s.jobs.Context()
 				skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.UseCUDA, cx.MangaCacheDir())
@@ -217,6 +236,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 					s.jobs.Fail(err.Error())
 					return
 				}
+				logAutotagPeak(fmt.Sprintf("upload %d image(s)", len(ids)), baseline)
 				if skipped > 0 {
 					s.jobs.Complete(fmt.Sprintf("auto-tagged %d of %d uploaded image(s), %d skipped", len(ids)-skipped, len(ids), skipped))
 					return
@@ -327,6 +347,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 
 	database := s.db()
 	cx := s.Active()
+	baseline := readVmRSS()
 	go func() {
 		ctx := s.jobs.Context()
 		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.UseCUDA, cx.MangaCacheDir())
@@ -342,6 +363,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 			s.jobs.Fail(err.Error())
 			return
 		}
+		logAutotagPeak(fmt.Sprintf("batch %d image(s)", len(ids)), baseline)
 		if skipped > 0 {
 			s.jobs.Complete(fmt.Sprintf("auto-tagged %d of %d image(s), %d skipped", len(ids)-skipped, len(ids), skipped))
 			return
@@ -402,6 +424,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 
 	database := s.db()
 	cx := s.Active()
+	baseline := readVmRSS()
 	go func() {
 		// Force CPU inference for one-shot detail-page runs: spinning up the
 		// CUDA session and loading the model onto the GPU dwarfs the tagging
@@ -418,6 +441,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 			s.jobs.Fail(err.Error())
 			return
 		}
+		logAutotagPeak("image #"+idStr, baseline)
 		if skipped > 0 {
 			s.jobs.Complete("auto-tagger skipped image #" + idStr)
 			return

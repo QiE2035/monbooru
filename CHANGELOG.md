@@ -1,5 +1,31 @@
 # Changelog
 
+## [v1.7.2] - 2026-05-14
+### Added
+- Auto-tagger runs in a `tagger-worker` subprocess by default. ORT runtime and CUDA libraries live in the child; releasing idle (or the new `Free memory` button) SIGTERMs the worker so its ~1 GB RSS returns to the kernel rather than staying mapped to the parent. Settings → Stats grows an Auto-tagger row with worker PID, mode, cache state, and per-job RSS; cache transitions log on load / reuse / release. CUDA JIT cache persists under `<data_path>/.nv-cache` to speed up next starts.
+- Settings → Maintenance: `Free memory` button runs the same reclaim bundle the idle ticker uses (SQLite caches, Go heap, tagger worker SIGTERM) on demand and reports freed bytes.
+- Settings → Auto-Tagger form exposes `idle_release_after_minutes` next to `use_cuda` and `parallel`
+- Search autocomplete covers `source:` label values.
+- Tags page: the Alias→ / Repoint→ dialog mints a canonical when the typed name doesn't yet exist, matching the Create-alias dialog.
+
+### Changed
+- Auto-tagger default `idle_release_after_minutes` drops from 30 to 10.
+- Tags page: Alias/Repoint redirects to `/tags?origin=alias&q=<source>` so the user lands on the fresh alias row.
+- Stats panel: Native row no longer counts the auto-tagger; the worker's ORT heap is on its own row.
+- Detail page: tag-focus mode anchors the cursor to the previous tag after a delete instead of falling back to the first row.
+
+### Fixed
+- Detail page: `t` shortcut finds the Auto-tag button.
+- Tags page: `delete-search` reloads the listing once the background job finishes instead of on a fixed 800 ms timer; create-tag redirect lands on `/tags?q=<name>` instead of being clobbered by a reload race; create-tag and create-alias names URL-escape in the redirect.
+- Dialogs: autocomplete dropdowns render past the dialog edge instead of being trapped in an inner scrollbar.
+- Gallery: inbox-filter tooltip count honours the rating ceiling.
+- Search: `date:>=YYYY-MM-DD` and `date:<=YYYY-MM-DD` parse correctly (the two-char operators were never tried before the single-char ones).
+
+### Internal
+- Auto-tagger Backend interface lifts the cache, session pool, and per-image inference loop behind a single abstraction; the in-process implementation registers itself via `SetBackend`. The IPC backend pairs with a `tagger-worker` subcommand and a Unix-domain socket; `MONBOORU_TAGGER_BACKEND=inproc` remains as an escape hatch for a regression.
+- Auto-tagger memory: glibc arena trim every 256 processed images bounds mid-run RSS; CUDA provider options retuned for batch=1 inference (HEURISTIC algo search, kSameAsRequested arena, in-default-stream copies); CPU initializer copies dropped when the CUDA EP is enabled; ORT intra/inter-op thread budget split across `parallel` workers.
+- Auto-tagger hot path: float32 input buffer pooled by tile size; pad-white walk fused with the canvas zero; label-routing slice computed once per loaded tagger and reused.
+
 ## [v1.7.1] - 2026-05-14
 ### Added
 - API: `GET /api/v1/images/{id}/tags` returns the per-image tag list with the same shape as the POST/DELETE counterparts.

@@ -3,6 +3,9 @@ package web
 import (
 	"runtime"
 	"strconv"
+	"time"
+
+	"github.com/leqwin/monbooru/internal/tagger"
 )
 
 // rssBreakdown is what the Linux helper returns. anon comes from
@@ -32,11 +35,10 @@ type memStats struct {
 	// so it's the part that puts real pressure on host RAM.
 	Anon int64
 	// Native is the slice of Anon that Go's runtime didn't allocate:
-	// Anon - Sys, clamped at zero. Three feeders: modernc/libc
-	// holding SQLite's page cache; the ONNX runtime's malloc heap
-	// (model weights and session arenas) when taggers are loaded;
-	// any other CGO allocation. None of these flow through
-	// runtime.MemStats so they're invisible to Sys.
+	// Anon - Sys, clamped at zero. Two feeders in this process:
+	// modernc/libc holding SQLite's page cache, and any other CGO
+	// allocation. The auto-tagger's ORT heap lives in the worker
+	// subprocess and reports separately under the Auto-tagger row.
 	Native int64
 	// File is the file-backed slice (mmap'd SQLite DB pages, the
 	// binary's text/rodata, shared libs). Cheap under pressure: the
@@ -72,19 +74,38 @@ type mountStats struct {
 	UsedPct   int
 }
 
+// taggerCacheStats is the auto-tagger panel rendered under Stats. When
+// the cache is cold every field except Loaded is zero, and the template
+// shows a single "not loaded" row. Worker* fields surface the
+// tagger-worker subprocess's residency so the operator can see where
+// the 1 GB+ of inference state is parked.
+type taggerCacheStats struct {
+	Loaded            bool
+	UseCUDA           bool
+	InUse             bool
+	Sessions          []string
+	IdleFor           time.Duration // zero when in use
+	IdleReleaseAfter  time.Duration // 0 == caching disabled
+	WorkerPID         int
+	WorkerRSS         int64 // bytes; 0 when no worker is alive
+	WorkerAnon        int64
+	WorkerFile        int64
+}
+
 // statsData is the bundle threaded into the settings template.
 type statsData struct {
 	Mem        memStats
 	Galleries  []galleryDBStats
 	Mounts     []mountStats
 	FSWarnings []string // non-empty when mountUsage failed; rendered as a hint
+	Tagger     taggerCacheStats
 }
 
 // gatherStats builds the snapshot rendered in the Stats section. Cheap by
 // design: a runtime.ReadMemStats, three os.Stat per gallery, one Statfs per
 // unique filesystem. No directory walks.
 func (s *Server) gatherStats() statsData {
-	out := statsData{Mem: gatherMemStats()}
+	out := statsData{Mem: gatherMemStats(), Tagger: gatherTaggerStats(s)}
 
 	// Galleries: stable name order for table render. The settings page
 	// already shows galleries name-sorted; matching that avoids a "two
@@ -179,6 +200,39 @@ func (s *Server) gatherStats() statsData {
 	if len(out.Mounts) == 0 {
 		out.FSWarnings = append(out.FSWarnings,
 			"Filesystem usage unavailable on this platform.")
+	}
+	return out
+}
+
+// gatherTaggerStats snapshots the cache state via tagger.Status() and
+// pairs it with the config's idle-release window so the template can
+// say when the next idle teardown will fire. The non-tagger build
+// returns Loaded=false here, which the template handles by hiding
+// every dependent row.
+func gatherTaggerStats(s *Server) taggerCacheStats {
+	st := tagger.Status()
+	out := taggerCacheStats{
+		Loaded:   st.Loaded,
+		UseCUDA:  st.UseCUDA,
+		InUse:    st.InUse,
+		Sessions: st.Sessions,
+	}
+	s.cfgMu.Lock()
+	mins := s.cfg.Tagger.IdleReleaseAfterMinutes
+	s.cfgMu.Unlock()
+	if mins > 0 {
+		out.IdleReleaseAfter = time.Duration(mins) * time.Minute
+	}
+	if st.Loaded && !st.InUse && !st.LastUsed.IsZero() {
+		out.IdleFor = time.Since(st.LastUsed)
+	}
+	if pid, ok := tagger.WorkerPID(); ok {
+		out.WorkerPID = pid
+		if r, rok := procRSSAt(pid); rok {
+			out.WorkerRSS = int64(r.total)
+			out.WorkerAnon = int64(r.anon)
+			out.WorkerFile = int64(r.file)
+		}
 	}
 	return out
 }

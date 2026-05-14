@@ -333,6 +333,7 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) error {
 		return err
 	}
 	ctx := s.jobs.Context()
+	baseline := readVmRSS()
 	skipped, err := tagger.RunWithTaggers(ctx, cx.DB, s.cfg, ids, enabled, s.jobs, s.cfg.Tagger.UseCUDA, cx.MangaCacheDir())
 	cx.InvalidateCaches()
 	if ctx.Err() != nil {
@@ -344,6 +345,7 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) error {
 		logx.Warnf("scheduler autotag %q: %v", cx.Name, err)
 		return err
 	}
+	logAutotagPeak(fmt.Sprintf("scheduled %s %d image(s)", cx.Name, len(ids)), baseline)
 	if skipped > 0 {
 		s.jobs.Complete(fmt.Sprintf("[%s] auto-tagged %d of %d image(s), %d skipped", cx.Name, len(ids)-skipped, len(ids), skipped))
 		return nil

@@ -4,11 +4,81 @@ package web
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"syscall"
 )
+
+// readVmRSS returns this process's VmRSS in bytes, or 0 on parse
+// failure. Used for cheap before/after RSS deltas in log lines and
+// job completion summaries without re-walking smaps.
+func readVmRSS() uint64 {
+	f, err := os.Open("/proc/self/status")
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "VmRSS:") {
+			return parseStatusKB(line[len("VmRSS:"):])
+		}
+	}
+	return 0
+}
+
+// readVmHWM returns the kernel's high-water mark for resident set
+// size, the peak VmRSS observed for this process since start. Useful
+// for honest "peak during run" reporting without sampling RSS in a
+// loop. Returns 0 on parse failure.
+func readVmHWM() uint64 {
+	f, err := os.Open("/proc/self/status")
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "VmHWM:") {
+			return parseStatusKB(line[len("VmHWM:"):])
+		}
+	}
+	return 0
+}
+
+// procRSSAt is the per-pid version of procRSS: reads /proc/<pid>/
+// status (and smaps for the file-vs-db split) so the stats panel can
+// sample the tagger-worker child's residency next to the parent's.
+// Returns ok=false when the pid is gone or unreadable.
+func procRSSAt(pid int) (rssBreakdown, bool) {
+	statusPath := fmt.Sprintf("/proc/%d/status", pid)
+	f, err := os.Open(statusPath)
+	if err != nil {
+		return rssBreakdown{}, false
+	}
+	defer f.Close()
+	var out rssBreakdown
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "VmRSS:"):
+			out.total = parseStatusKB(line[len("VmRSS:"):])
+		case strings.HasPrefix(line, "RssAnon:"):
+			out.anon = parseStatusKB(line[len("RssAnon:"):])
+		case strings.HasPrefix(line, "RssFile:"):
+			out.file = parseStatusKB(line[len("RssFile:"):])
+		}
+	}
+	if out.total == 0 {
+		return rssBreakdown{}, false
+	}
+	return out, true
+}
 
 // procRSS reports resident set size and its breakdown in bytes. The
 // totals come from /proc/self/smaps as Pss sums rather than the

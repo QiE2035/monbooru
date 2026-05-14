@@ -174,7 +174,7 @@ func Default() *Config {
 		},
 		Tagger: TaggerConfig{
 			Parallel:                4,
-			IdleReleaseAfterMinutes: 30,
+			IdleReleaseAfterMinutes: 10,
 			Aggregation:             TaggerAggregationCfg{MinHitFraction: 0.05},
 		},
 		Auth: AuthConfig{

@@ -7,6 +7,7 @@ import (
 	"html"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/leqwin/monbooru/internal/logx"
 	meta "github.com/leqwin/monbooru/internal/metadata"
 	"github.com/leqwin/monbooru/internal/models"
+	"github.com/leqwin/monbooru/internal/tagger"
 )
 
 // pruneMissingImagesPost queues the missing-row sweep as a background
@@ -399,6 +401,41 @@ func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`<div class="flash flash-ok">Vacuum started. Watch the status bar for the reclaimed-space report.</div>`))
 }
 
+// freeMemoryPost runs the on-demand version of runMemoryReclaim: trims
+// every gallery's SQLite page cache, returns the Go heap, and SIGTERMs
+// the auto-tagger worker so its CUDA libraries (when loaded) go with
+// it. Refused while a job holds the manager because ShrinkMemory and
+// ReleaseAll race the inference loop otherwise.
+func (s *Server) freeMemoryPost(w http.ResponseWriter, r *http.Request) {
+	if s.jobs.IsRunning() {
+		w.Write([]byte(`<div class="flash flash-err">A job is running; try again when it finishes.</div>`))
+		return
+	}
+	before := readVmRSS()
+	s.ctxMu.RLock()
+	ctxs := make([]*galleryCtx, 0, len(s.contexts))
+	for _, cx := range s.contexts {
+		ctxs = append(ctxs, cx)
+	}
+	s.ctxMu.RUnlock()
+	for _, cx := range ctxs {
+		if err := cx.DB.ShrinkMemory(context.Background()); err != nil {
+			logx.Warnf("free memory: shrink %q: %v", cx.Name, err)
+		}
+	}
+	debug.FreeOSMemory()
+	tagger.ReleaseAll()
+	after := readVmRSS()
+	if before > 0 && after > 0 && before > after {
+		w.Write([]byte(fmt.Sprintf(
+			`<div class="flash flash-ok">Freed %s.</div>`,
+			html.EscapeString(humanBytesFmt(int64(before-after))),
+		)))
+		return
+	}
+	w.Write([]byte(`<div class="flash flash-ok">Memory caches released.</div>`))
+}
+
 // dbFileSize returns the total on-disk footprint of the SQLite database -
 // the main file plus the WAL and shared-memory sidecars. A post-VACUUM
 // "reclaimed N" figure that only counts the main file misleads the user
@@ -413,9 +450,8 @@ func dbFileSize(path string) int64 {
 	return total
 }
 
-// humanBytesFmt mirrors the humanBytes template helper from the router for
-// use in handler responses. Kept tiny so the two formatters stay trivially
-// consistent.
+// humanBytesFmt formats a byte count with binary units. The template
+// function "humanBytes" exposes the same body to template authors.
 func humanBytesFmt(b int64) string {
 	const unit = 1024
 	if b < unit {

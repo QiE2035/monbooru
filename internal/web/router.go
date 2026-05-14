@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -314,18 +313,7 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 			}
 			return "Stop"
 		},
-		"humanBytes": func(b int64) string {
-			const unit = 1024
-			if b < unit {
-				return fmt.Sprintf("%d B", b)
-			}
-			div, exp := int64(unit), 0
-			for n := b / unit; n >= unit; n /= unit {
-				div *= unit
-				exp++
-			}
-			return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
-		},
+		"humanBytes": humanBytesFmt,
 		"isLongValue": func(s string) bool {
 			return len(s) > 200 || strings.ContainsAny(s, "\n\r")
 		},
@@ -337,6 +325,12 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 				return d.Round(time.Second).String()
 			}
 			return d.Round(time.Millisecond).String()
+		},
+		"minusDuration": func(a, b time.Duration) time.Duration {
+			return a - b
+		},
+		"int64Duration": func(d time.Duration) int64 {
+			return int64(d)
 		},
 		"plural": func(n int, one, many string) string {
 			if n == 1 {
@@ -492,8 +486,14 @@ func (s *Server) runMemoryReclaim() {
 			mins := s.cfg.Tagger.IdleReleaseAfterMinutes
 			s.cfgMu.Unlock()
 			if mins > 0 {
+				before := readVmRSS()
 				if tagger.ReleaseIdle(time.Duration(mins) * time.Minute) {
-					logx.Infof("memory reclaim: released idle auto-tagger session")
+					after := readVmRSS()
+					if before > 0 && after > 0 && before > after {
+						logx.Infof("memory reclaim: released idle auto-tagger session (-%s)", humanBytesFmt(int64(before-after)))
+					} else {
+						logx.Infof("memory reclaim: released idle auto-tagger session")
+					}
 				}
 			}
 		case <-s.done:
@@ -648,6 +648,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/maintenance/re-extract-metadata", s.reExtractMetadataPost)
 	mux.HandleFunc("POST /settings/maintenance/rebuild-thumbnails", s.rebuildThumbnailsPost)
 	mux.HandleFunc("POST /settings/maintenance/vacuum-db", s.vacuumDBPost)
+	mux.HandleFunc("POST /settings/maintenance/free-memory", s.freeMemoryPost)
 	mux.HandleFunc("POST /settings/tagger/{name}/enable", s.settingsTaggerEnablePost)
 	mux.HandleFunc("POST /settings/tagger/{name}/disable", s.settingsTaggerDisablePost)
 	mux.HandleFunc("POST /settings/tagger/{name}/delete", s.settingsTaggerDeletePost)

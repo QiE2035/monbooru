@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -220,12 +221,15 @@ func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, msg, http.StatusBadRequest)
 	}
-	canonID, msg := s.resolveCanonicalTag(canonInput)
+	canonID, msg := s.resolveOrCreateCanonicalTag(canonInput)
 	if msg != "" {
 		mergeErr(msg)
 		return
 	}
 
+	// Capture the source name for the post-merge redirect to
+	// /tags?origin=alias&q=<source>.
+	srcTag, _ := s.tagSvc().GetTag(aliasID)
 	if err := s.tagSvc().MergeTags(aliasID, canonID); err != nil {
 		if isHTMXRequest(r) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -238,15 +242,21 @@ func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
 	s.Active().InvalidateCaches()
 
 	if isHTMXRequest(r) {
-		// Refresh the current URL so the user's active /tags filter
-		// - q, sort, origin, page - survives the merge / repoint.
 		canon, _ := s.tagSvc().GetTag(canonID)
 		canonName := canonInput
 		if canon != nil && canon.Name != "" {
 			canonName = canon.Name
 		}
 		setTagsFlash(w, "Aliased to "+canonName+".")
-		w.Header().Set("HX-Refresh", "true")
+		// Land on the alias-only filtered listing so the freshly-created
+		// alias row is the only thing on screen, mirroring the create-
+		// alias dialog's post-submit redirect. Falls back to /tags if
+		// the source lookup couldn't recover a name.
+		dest := "/tags?origin=alias"
+		if srcTag != nil && srcTag.Name != "" {
+			dest = "/tags?origin=alias&q=" + url.QueryEscape(srcTag.Name)
+		}
+		w.Header().Set("HX-Redirect", dest)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -262,13 +272,14 @@ func setTagsFlash(w http.ResponseWriter, msg string) {
 	w.Header().Set("HX-Trigger", `{"tagsFlash":`+strconv.Quote(msg)+`}`)
 }
 
-// resolveOrCreateCanonicalTag is the create-alias variant of
+// resolveOrCreateCanonicalTag is the alias-side variant of
 // resolveCanonicalTag: when the canonical name doesn't yet name a
 // tag, the missing row is created via GetOrCreateTag instead of
 // surfacing a "Tag not found" error. Mirrors the implications dialog's
 // parseTagInput → GetOrCreateTag flow so users can declare an alias
-// to a still-pending name. A numeric input still requires the id to
-// exist (a typo'd id shouldn't silently mint a fresh tag).
+// (Create alias / Alias→ / Repoint→) to a still-pending name. A
+// numeric input still requires the id to exist (a typo'd id shouldn't
+// silently mint a fresh tag).
 func (s *Server) resolveOrCreateCanonicalTag(input string) (int64, string) {
 	input = strings.TrimSpace(input)
 	if input == "" {
@@ -331,54 +342,6 @@ func (s *Server) resolveOrCreateCanonicalTag(input string) (int64, string) {
 	}
 }
 
-// resolveCanonicalTag turns the merge-style canonical input (numeric id,
-// "category:name", or plain name) into a tag id. The plain-name branch
-// requires the name to live in a single category; ambiguity returns a
-// human-readable error message the caller surfaces verbatim.
-func (s *Server) resolveCanonicalTag(input string) (int64, string) {
-	input = strings.TrimSpace(input)
-	if input == "" {
-		return 0, "Tag name is required."
-	}
-	if id, err := strconv.ParseInt(input, 10, 64); err == nil {
-		return id, ""
-	}
-	if idx := strings.Index(input, ":"); idx > 0 && s.categoryExists(input[:idx]) {
-		catName := input[:idx]
-		tagName := input[idx+1:]
-		var canonID int64
-		if err := s.db().Read.QueryRow(
-			`SELECT t.id FROM tags t JOIN tag_categories tc ON tc.id = t.category_id
-			 WHERE t.name = ? AND tc.name = ?`, tagName, catName,
-		).Scan(&canonID); err != nil {
-			return 0, "Tag not found: " + input
-		}
-		return canonID, ""
-	}
-	rows, err := s.db().Read.Query(`SELECT id FROM tags WHERE name = ?`, input)
-	if err != nil {
-		return 0, "Tag lookup failed: " + err.Error()
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			logx.Warnf("resolveCanonicalTag scan: %v", err)
-			continue
-		}
-		ids = append(ids, id)
-	}
-	switch len(ids) {
-	case 0:
-		return 0, "Tag not found: " + input
-	case 1:
-		return ids[0], ""
-	default:
-		return 0, "Tag name " + input + " exists in multiple categories; use category:name or the tag ID"
-	}
-}
-
 func (s *Server) createTagPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
@@ -406,7 +369,7 @@ func (s *Server) createTagPost(w http.ResponseWriter, r *http.Request) {
 	s.Active().InvalidateCaches()
 	if isHTMXRequest(r) {
 		setTagsFlash(w, "Tag "+name+" created.")
-		w.Header().Set("HX-Redirect", "/tags?q="+name)
+		w.Header().Set("HX-Redirect", "/tags?q="+url.QueryEscape(name))
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -448,7 +411,7 @@ func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
 
 	if isHTMXRequest(r) {
 		setTagsFlash(w, "Alias "+name+" created.")
-		w.Header().Set("HX-Redirect", "/tags?origin=alias&q="+name)
+		w.Header().Set("HX-Redirect", "/tags?origin=alias&q="+url.QueryEscape(name))
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

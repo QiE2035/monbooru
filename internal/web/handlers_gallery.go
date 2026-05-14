@@ -208,6 +208,20 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		SavedSearches:  savedSearches,
 		EnabledTaggers: tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
 	}
+	// The cached InboxCount is ceiling-blind; the inbox-filter button's
+	// tooltip would mis-promise the post-click match count whenever a
+	// rating ceiling hides higher-rated rows. Recompute against the
+	// active ceiling so the parenthesised number matches what clicking
+	// the button would surface. Mirrors the same fix on /upload.
+	if data.ActiveRating != "" && data.ActiveRating != "explicit" {
+		inboxExpr, _ := search.Parse("inbox:true")
+		inboxExpr = applyRatingCeiling(inboxExpr, data.ActiveRating)
+		if res, err := search.Execute(s.db(), search.Query{
+			Expr: inboxExpr, Sort: "newest", Order: "desc", Page: 1, Limit: 1,
+		}); err == nil {
+			data.InboxCount = res.Total
+		}
+	}
 
 	if htmxGridTarget {
 		s.renderTemplate(w, "partials/gallery_htmx.html", data)

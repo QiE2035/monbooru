@@ -429,13 +429,12 @@ document.querySelectorAll('.btn-merge-trigger').forEach(function(btn) {
 });
 
 function handleMergeResult(event) {
-  // Only close/reload on success (no flash-err in the response)
+  // The success path returns 204 + HX-Redirect to the alias listing;
+  // htmx navigates and the dialog goes away with the page swap. A
+  // trailing window.location.reload() here would race the redirect
+  // and clobber the destination URL.
   var elt = event.detail.elt;
   if (elt && elt.querySelector && elt.querySelector('.flash-err')) return;
-  if (event.detail.xhr.status === 204 || event.detail.xhr.status === 302) {
-    document.getElementById('merge-dialog').close();
-    window.location.reload();
-  }
 }
 
 (function() {
@@ -472,12 +471,13 @@ function handleAliasCreateResult(event) {
 })();
 
 function handleTagCreateResult(event) {
+  // The success path returns 204 + HX-Redirect to /tags?q=<name>; htmx
+  // navigates and the tagsFlash event seeds the destination's #tag-flash
+  // slot. A trailing window.location.reload() here would race and reload
+  // the current URL (without the q=), undoing the redirect. Errors stay
+  // in the dialog as flash-err so the user can correct input.
   var elt = event.detail.elt;
   if (elt && elt.querySelector && elt.querySelector('.flash-err')) return;
-  if (event.detail.xhr.status === 204 || event.detail.xhr.status === 302) {
-    document.getElementById('tag-create-dialog').close();
-    window.location.reload();
-  }
 }
 
 function reloadImplicationsBody() {
@@ -559,10 +559,11 @@ function confirmDeleteTagsSearch() {
   }).then(function(res) {
     if (res.ok) {
       document.getElementById('delete-tags-search-dialog').close();
+      // Latch the global pending-reload flag and let the job-status
+      // afterSettle hook reload once the background tag-delete job
+      // actually reports done, instead of racing a fixed timer.
+      _pendingGalleryReload = true;
       if (typeof refreshJobStatus === 'function') refreshJobStatus();
-      // Reload after a short delay so the bulk-delete job has a chance
-      // to make progress; the user can also reload manually.
-      setTimeout(function() { window.location.reload(); }, 800);
     } else {
       res.text().then(function(t) {
         if (flash) flash.innerHTML = t || '<div class="flash flash-err">Delete failed.</div>';

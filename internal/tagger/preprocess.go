@@ -5,10 +5,34 @@ package tagger
 import (
 	"fmt"
 	"image"
+	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
 	"golang.org/x/image/draw"
 )
+
+// inputTensorPools holds one float32-slice sync.Pool per model input
+// size. buildTensor writes every element of the returned slice so a
+// recycled buffer needs no zeroing; ort.NewTensor aliases the slice in
+// place, and callers must put the buffer back only after Destroy on
+// the tensor.
+var inputTensorPools sync.Map
+
+func acquireTensor(size int) []float32 {
+	if p, ok := inputTensorPools.Load(size); ok {
+		return p.(*sync.Pool).Get().([]float32)
+	}
+	n := size
+	fresh := &sync.Pool{New: func() any { return make([]float32, 3*n*n) }}
+	actual, _ := inputTensorPools.LoadOrStore(size, fresh)
+	return actual.(*sync.Pool).Get().([]float32)
+}
+
+func releaseTensor(size int, buf []float32) {
+	if p, ok := inputTensorPools.Load(size); ok {
+		p.(*sync.Pool).Put(buf)
+	}
+}
 
 // imageNetMean / imageNetStd are the per-channel ImageNet statistics most
 // EfficientNet / ResNet exports were trained with. Camie v2 documents
@@ -49,6 +73,12 @@ func padAndResize(src image.Image, size int, profile Profile) *image.RGBA {
 // sees the same background regardless of source alpha. Resize-first keeps
 // peak transient allocation bounded by `size²` so a parallel inference
 // burst on multi-megapixel sources stays inside small container caps.
+//
+// image.NewRGBA returns a zero-initialised buffer (alpha=0 everywhere),
+// so draw.Src into the scaled sub-rect leaves the padding region with
+// alpha=0. One final walk over alpha covers both jobs - the padding
+// region and any transparent source pixel land on the same "fill white"
+// branch in a single pass instead of two.
 func padWhiteSquare(src image.Image, size int) *image.RGBA {
 	b := src.Bounds()
 	w, h := b.Max.X-b.Min.X, b.Max.Y-b.Min.Y
@@ -68,9 +98,6 @@ func padWhiteSquare(src image.Image, size int) *image.RGBA {
 	draw.ApproxBiLinear.Scale(scaled, scaled.Bounds(), src, b, draw.Src, nil)
 
 	dst := image.NewRGBA(image.Rect(0, 0, size, size))
-	for i := range dst.Pix {
-		dst.Pix[i] = 0xFF
-	}
 	offX := (size - scaleW) / 2
 	offY := (size - scaleH) / 2
 	draw.Draw(dst, image.Rect(offX, offY, offX+scaleW, offY+scaleH), scaled, image.Point{}, draw.Src)
@@ -123,15 +150,17 @@ func padMeanColorAspect(src image.Image, size int, fill [3]uint8) *image.RGBA {
 	return dst
 }
 
-// buildTensor fills the ORT input buffer from the resized RGBA image.
-// Reading Pix directly skips the per-pixel image.Image interface dispatch
-// that would otherwise keep the GPU idle between inferences.
+// buildTensor fills the supplied ORT input buffer from the resized RGBA
+// image. tensor must have len >= 3*size*size; every element is
+// overwritten so a recycled buffer needs no zeroing. Reading Pix
+// directly skips the per-pixel image.Image interface dispatch that
+// would otherwise keep the GPU idle between inferences.
 //
 // The branches diverge on layout (NHWC vs NCHW), channel order (BGR vs
 // RGB), and per-channel normalisation (none, ImageNet, CLIP). A profile
 // resolved to (NHWC, BGR, none) reproduces the WD14 path bit-for-bit;
 // (NCHW, RGB, CLIP) reproduces joytag's.
-func buildTensor(img *image.RGBA, size int, profile Profile) ([]float32, ort.Shape, error) {
+func buildTensor(img *image.RGBA, tensor []float32, size int, profile Profile) (ort.Shape, error) {
 	pix := img.Pix
 	stride := img.Stride
 
@@ -142,9 +171,8 @@ func buildTensor(img *image.RGBA, size int, profile Profile) ([]float32, ort.Sha
 		// A future NHWC profile that needs a per-channel transform can
 		// fold it in here.
 		if profile.Normalize != "" && profile.Normalize != "none" {
-			return nil, nil, fmt.Errorf("buildTensor: NHWC + normalize=%q is not implemented", profile.Normalize)
+			return nil, fmt.Errorf("buildTensor: NHWC + normalize=%q is not implemented", profile.Normalize)
 		}
-		tensor := make([]float32, size*size*3)
 		bgr := profile.Channels == "bgr"
 		for y := 0; y < size; y++ {
 			row := pix[y*stride:]
@@ -163,7 +191,7 @@ func buildTensor(img *image.RGBA, size int, profile Profile) ([]float32, ort.Sha
 				}
 			}
 		}
-		return tensor, ort.NewShape(1, int64(size), int64(size), 3), nil
+		return ort.NewShape(1, int64(size), int64(size), 3), nil
 
 	case "nchw":
 		var mean, std [3]float32
@@ -175,7 +203,6 @@ func buildTensor(img *image.RGBA, size int, profile Profile) ([]float32, ort.Sha
 		}
 		bgr := profile.Channels == "bgr"
 		plane := size * size
-		tensor := make([]float32, 3*plane)
 		for y := 0; y < size; y++ {
 			row := pix[y*stride:]
 			for x := 0; x < size; x++ {
@@ -203,8 +230,8 @@ func buildTensor(img *image.RGBA, size int, profile Profile) ([]float32, ort.Sha
 				}
 			}
 		}
-		return tensor, ort.NewShape(1, 3, int64(size), int64(size)), nil
+		return ort.NewShape(1, 3, int64(size), int64(size)), nil
 	}
-	return nil, nil, fmt.Errorf("buildTensor: unsupported layout %q", profile.Layout)
+	return nil, fmt.Errorf("buildTensor: unsupported layout %q", profile.Layout)
 }
 

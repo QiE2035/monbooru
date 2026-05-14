@@ -85,6 +85,46 @@ func (s *Server) collectionSuggest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// querySourceLabels returns distinct existing images.source values whose
+// prefix matches the typed value. Drives the `source:` autocomplete in
+// the search-bar `system:` level-2 dropdown, mirroring the same shape as
+// queryCollectionLabels (indexed range, top-N).
+func (s *Server) querySourceLabels(prefix string, limit int) []string {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if prefix == "" {
+		rows, err = s.db().Read.Query(
+			`SELECT DISTINCT source FROM images INDEXED BY idx_images_source
+			 WHERE source != ''
+			 ORDER BY source LIMIT ?`,
+			limit,
+		)
+	} else {
+		rows, err = s.db().Read.Query(
+			`SELECT DISTINCT source FROM images INDEXED BY idx_images_source
+			 WHERE source != '' AND source >= ? AND source < ?
+			 ORDER BY source LIMIT ?`,
+			prefix, nextPrefix(prefix), limit,
+		)
+	}
+	if err != nil {
+		logx.Warnf("source suggest: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var sv string
+		if err := rows.Scan(&sv); err != nil {
+			continue
+		}
+		out = append(out, sv)
+	}
+	return out
+}
+
 // queryCollectionLabels lifts the SQL out of collectionSuggest so the
 // search-bar `collection:` autocomplete can reuse it from
 // systemSuggestLevel2 without duplicating the indexed-range query.
@@ -391,6 +431,17 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
 		for _, lbl := range labels {
 			rows = append(rows, searchSuggestRow{
 				Name:     `collection:"` + lbl + `"`,
+				Category: "system",
+			})
+		}
+		return rows
+	}
+	if key == "source" {
+		labels := s.querySourceLabels(valPrefix, 10)
+		rows := make([]searchSuggestRow, 0, len(labels))
+		for _, lbl := range labels {
+			rows = append(rows, searchSuggestRow{
+				Name:     "source:" + lbl,
 				Category: "system",
 			})
 		}

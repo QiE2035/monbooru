@@ -225,7 +225,9 @@ Multiple taggers can run together; per-image results are merged so a tag detecte
 
 **GPU (CUDA):** the default image is CPU-only (~210 MB). For GPU inference, switch to the `-cuda` image (~2.3 GB), pass the GPU into the container the usual way, then enable Settings → Auto-Tagger → Use GPU (CUDA) (or set `MONBOORU_TAGGER_USE_CUDA=true`). The current mode is shown as a badge. Worker count is configurable from Settings → Auto-Tagger or `tagger.parallel` in TOML (default 4); raise it on GPU if preprocessing becomes the bottleneck.
 
-The model stays loaded for 30 minutes after the last run, then unloads to free memory. Tune via `tagger.idle_release_after_minutes`; `0` releases immediately after every run.
+The very first GPU inference on a new host pays a one-time JIT-compilation cost (cuDNN compiles its kernels for the live compute capability; tens of seconds on a recent GPU like Blackwell). The compiled kernels are cached under `<data_path>/.nv-cache/`; every restart after that loads them in ~2 s. The cache can be set explicitly with the standard `CUDA_CACHE_PATH` env var if you want it elsewhere. Mount the data path on a persistent volume so the cache survives container recycles.
+
+The model stays loaded for 10 minutes after the last run, then unloads to free memory. Tune via `tagger.idle_release_after_minutes`; `0` releases immediately after every run.
 
 ---
 

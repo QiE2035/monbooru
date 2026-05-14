@@ -1125,11 +1125,11 @@ func TestRenameTag_HTMXCollisionSurfacesError(t *testing.T) {
 	}
 }
 
-// TestMergeTags_HTMXSuccessRefreshes mirrors the rename refresh
-// guarantee: a successful alias / repoint posts back HX-Refresh so
-// the dialog's parent /tags page reloads at the same URL, keeping
-// the user's q / sort / origin / page filter in scope.
-func TestMergeTags_HTMXSuccessRefreshes(t *testing.T) {
+// TestMergeTags_HTMXSuccessRedirectsToAlias pins the post-merge
+// destination: a successful alias / repoint lands the user on
+// /tags?origin=alias&q=<src> so the freshly-aliased row is in scope,
+// mirroring the create-alias dialog's redirect.
+func TestMergeTags_HTMXSuccessRedirectsToAlias(t *testing.T) {
 	srv := newTestServer(t)
 	cx := srv.Active()
 	var generalID int64
@@ -1153,11 +1153,11 @@ func TestMergeTags_HTMXSuccessRefreshes(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Errorf("expected 204 on HTMX merge, got %d: %s", w.Code, w.Body.String())
 	}
-	if w.Header().Get("HX-Refresh") != "true" {
-		t.Errorf("HX-Refresh = %q, want true", w.Header().Get("HX-Refresh"))
+	if got := w.Header().Get("HX-Redirect"); got != "/tags?origin=alias&q=alias_src" {
+		t.Errorf("HX-Redirect = %q, want /tags?origin=alias&q=alias_src", got)
 	}
-	if got := w.Header().Get("HX-Redirect"); got != "" {
-		t.Errorf("HX-Redirect = %q, want empty (HX-Refresh handles reload)", got)
+	if w.Header().Get("HX-Refresh") != "" {
+		t.Errorf("HX-Refresh = %q, want empty (HX-Redirect handles nav)", w.Header().Get("HX-Refresh"))
 	}
 }
 

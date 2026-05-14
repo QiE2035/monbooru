@@ -2519,21 +2519,19 @@ func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
 var dateFilterRe = regexp.MustCompile(`^\d{4}(-\d{2}(-\d{2})?)?$`)
 
 func (b *whereBuilder) buildDateFilter(val string) string {
-	if strings.HasPrefix(val, ">") {
-		date := val[1:]
+	// Two-character operators must be checked before their one-character
+	// prefixes so `>=2026-05-14` doesn't match the `>` arm and strip a
+	// single char, leaving an unparseable `=2026-05-14`.
+	for _, op := range []string{">=", "<=", ">", "<"} {
+		if !strings.HasPrefix(val, op) {
+			continue
+		}
+		date := val[len(op):]
 		if !dateFilterRe.MatchString(date) {
 			return "1=0"
 		}
 		b.args = append(b.args, date)
-		return "i.ingested_at > ?"
-	}
-	if strings.HasPrefix(val, "<") {
-		date := val[1:]
-		if !dateFilterRe.MatchString(date) {
-			return "1=0"
-		}
-		b.args = append(b.args, date)
-		return "i.ingested_at < ?"
+		return "i.ingested_at " + op + " ?"
 	}
 	if idx := strings.Index(val, ".."); idx >= 0 {
 		from := val[:idx]

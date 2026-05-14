@@ -594,7 +594,7 @@ document.addEventListener('keydown', function(e) {
       e.preventDefault(); openAutotagSelectedDialog(); return;
     }
     if (isDetailPage()) {
-      var btn = document.querySelector('.detail-actions .btn-autotag');
+      var btn = document.querySelector('.btn-autotag');
       if (btn) { e.preventDefault(); btn.click(); return; }
     }
   }
@@ -771,6 +771,13 @@ document.addEventListener('keydown', function(e) {
     var focusedTag = document.querySelector('#image-tags .tag-item.focused');
     if (focusedTag) {
       e.preventDefault();
+      // Stash the focused tag's flat-list index so the htmx:afterSettle
+      // swap below can land the cursor on the previous sibling instead
+      // of dropping back to index 0 (the natural restart point with no
+      // .focused element to anchor to).
+      var allTags = Array.from(document.querySelectorAll('#image-tags .tag-item'));
+      var idx = allTags.indexOf(focusedTag);
+      if (idx >= 0) document.body.dataset.tagFocusIdx = String(idx);
       var tagBtn = focusedTag.querySelector('.tag-remove-btn');
       if (tagBtn) tagBtn.click();
       return;
@@ -1419,6 +1426,26 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
     return;
   }
 
+  // After a tag-remove swap in tag-focus mode, restore .focused on the
+  // tag-item one position before the one just deleted. Without this the
+  // mode flag survives but the .focused class is wiped, so cycleTagFocus's
+  // `current ? indexOf : 0` fallback drops the cursor to the first tag.
+  if (el && el.id === 'image-tags' && document.body.classList.contains('tag-focus')) {
+    var stash = document.body.dataset.tagFocusIdx;
+    if (stash !== undefined) {
+      delete document.body.dataset.tagFocusIdx;
+      var items = document.querySelectorAll('#image-tags .tag-item');
+      if (items.length === 0) {
+        document.body.classList.remove('tag-focus');
+      } else {
+        var prev = Math.max(0, parseInt(stash, 10) - 1);
+        if (prev >= items.length) prev = items.length - 1;
+        items[prev].classList.add('focused');
+        items[prev].scrollIntoView({block: 'nearest'});
+      }
+    }
+  }
+
   if (!el || el.id !== 'job-status') return;
 
   // Latch first-settle once per page load. Used below to suppress the
@@ -1492,11 +1519,12 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
     }, 30000);
   }
 
-  // Post-delete: full reload guarantees the gallery reflects the deletions.
+  // Post-delete: full reload guarantees the gallery / tags table
+  // reflects the deletions once the background job finishes.
   if (isDone && _pendingGalleryReload) {
     _pendingGalleryReload = false;
     if (finishedAt) _lastReloadedFinishedAt = finishedAt;
-    if (document.getElementById('gallery-grid')) {
+    if (document.getElementById('gallery-grid') || document.getElementById('tags-page')) {
       window.location.reload();
       return;
     }

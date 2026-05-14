@@ -86,6 +86,11 @@ func (s *Server) settingsTaggerPost(w http.ResponseWriter, r *http.Request) {
 	if n, err := strconv.Atoi(r.FormValue("parallel")); err == nil && n >= 1 {
 		s.cfg.Tagger.Parallel = n
 	}
+	if v := r.FormValue("idle_release_after_minutes"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			s.cfg.Tagger.IdleReleaseAfterMinutes = n
+		}
+	}
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
 		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))

@@ -49,7 +49,7 @@
           </div>
         </div>
       </div>
-      <button type="submit">Save</button>
+      <div class="settings-actions"><button type="submit">Save</button></div>
     </form>
   </section>
 
@@ -113,8 +113,10 @@
       </tbody>
     </table>
     </div>
-    <button type="button" id="add-gallery-btn"
-            onclick="openAddGalleryDialog()">Add gallery</button>
+    <div class="settings-actions">
+      <button type="button" id="add-gallery-btn"
+              onclick="openAddGalleryDialog()">Add gallery</button>
+    </div>
 
     <dialog id="gallery-add-dialog">
       <form hx-post="/settings/galleries" hx-target="#flash-gallery-add" hx-swap="innerHTML"
@@ -443,10 +445,14 @@
           </div>
           <div class="field">
             <label>Parallel workers <input type="number" name="parallel" value="{{$cfg.Tagger.Parallel}}" min="1" style="width:6em"></label>
-            <p class="field-hint">Images tagged in parallel. Helps mostly on GPU, where preprocessing otherwise keeps the GPU idle.</p>
+            <p class="field-hint">Images tagged in parallel.</p>
+          </div>
+          <div class="field">
+            <label>Tagger RAM/VRAM idle release (minutes) <input type="number" name="idle_release_after_minutes" value="{{$cfg.Tagger.IdleReleaseAfterMinutes}}" min="0" style="width:6em"></label>
+            <p class="field-hint">Use 0 to free it just after inference.</p>
           </div>
         </div>
-        <button type="submit">Save</button>
+        <div class="settings-actions"><button type="submit">Save</button></div>
       </div>
     </form>
     <div class="settings-sub">
@@ -664,6 +670,15 @@
             </form>
           </td>
         </tr>
+        <tr>
+          <td><strong>Free memory</strong> <span class="field-hint">- shrink SQLite caches, return the Go heap, and release the auto-tagger from RAM/VRAM.</span></td>
+          <td>
+            <form hx-post="/settings/maintenance/free-memory" hx-target="#flash-maintenance" hx-swap="innerHTML" style="display:inline">
+              <input type="hidden" name="_csrf" value="{{$csrf}}">
+              <button type="submit" class="btn-sm">Free</button>
+            </form>
+          </td>
+        </tr>
       </tbody>
     </table>
     </div>
@@ -718,7 +733,7 @@
           <label><input type="checkbox" name="merge_general_tags"{{if $sched.MergeGeneralTags}} checked{{end}}> Merge general tags</label>
         </div>
       </div>
-      <button type="submit">Save</button>
+      <div class="settings-actions"><button type="submit">Save</button></div>
     </form>
   </section>
 
@@ -735,7 +750,7 @@
           <tr><th class="stats-d1">Anonymous</th><td>{{humanBytes $stats.Mem.Anon}}</td></tr>
           <tr><th class="stats-d2">Go reserved (from OS)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
           <tr><th class="stats-d3">Go heap (in use)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
-          <tr><th class="stats-d2">Native (SQLite cache, taggers, CGO)</th><td>{{humanBytes $stats.Mem.Native}}</td></tr>
+          <tr><th class="stats-d2">Native (SQLite cache, CGO)</th><td>{{humanBytes $stats.Mem.Native}}</td></tr>
           <tr><th class="stats-d1">File-backed</th><td>{{humanBytes $stats.Mem.File}}</td></tr>
           {{if $stats.Mem.DB}}
           <tr><th class="stats-d2">DB pages (mmap'd)</th><td>{{humanBytes $stats.Mem.DB}}</td></tr>
@@ -750,6 +765,35 @@
           <tr><th class="stats-d1">Go heap (in use)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
           {{end}}
           <tr><th>Goroutines</th><td>{{$stats.Mem.Goroutines}}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    {{$tg := $stats.Tagger}}
+    <div class="settings-sub">
+      <h4>Auto-tagger</h4>
+      <table class="stats-table">
+        <tbody>
+          {{if $tg.Loaded}}
+          <tr><th>Mode</th><td>{{if $tg.UseCUDA}}CUDA{{else}}CPU{{end}}</td></tr>
+          <tr><th>Status</th><td>
+            {{if $tg.InUse}}running
+            {{else}}idle {{schedDuration $tg.IdleFor}}
+              {{if $tg.IdleReleaseAfter}}
+                {{$remain := minusDuration $tg.IdleReleaseAfter $tg.IdleFor}}
+                {{if gt (int64Duration $remain) 0}}(releases in {{schedDuration $remain}}){{else}}(release pending){{end}}
+              {{end}}
+            {{end}}
+          </td></tr>
+          <tr><th>Models</th><td>{{range $i, $n := $tg.Sessions}}{{if $i}}, {{end}}{{$n}}{{end}}</td></tr>
+          {{if $tg.WorkerRSS}}
+          <tr><th>Worker PID</th><td>{{$tg.WorkerPID}}</td></tr>
+          <tr><th class="stats-d1">Worker RSS</th><td>{{humanBytes $tg.WorkerRSS}}</td></tr>
+          <tr><th class="stats-d2">Worker anon (CGO + ORT)</th><td>{{humanBytes $tg.WorkerAnon}}</td></tr>
+          <tr><th class="stats-d2">Worker file-backed</th><td>{{humanBytes $tg.WorkerFile}}</td></tr>
+          {{end}}
+          {{else}}
+          <tr><th>Status</th><td>not loaded</td></tr>
+          {{end}}
         </tbody>
       </table>
     </div>

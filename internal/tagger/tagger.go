@@ -6,12 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"image"
-	_ "image/jpeg"
-	_ "image/png"
-	"math"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -81,276 +76,49 @@ func AvailableTaggers(cfg *config.Config) []TaggerStatus {
 	return DiscoverTaggers(cfg)
 }
 
-// tagKey identifies one (name, category_id) pair so multi-tagger merges
-// never insert the same tag twice on the same image.
-type tagKey struct {
-	name  string
-	catID int64
-}
-
-// scored carries the highest confidence seen across taggers for one
-// tagKey plus the tagger that produced that score, so attribution
-// survives multi-tagger merges.
-type scored struct {
-	score      float32
-	taggerName string
-}
-
-// loadedTagger pairs a cached ORT session with the per-call config the
-// inference loop reads, so threshold edits take effect without
-// rebuilding the session.
-type loadedTagger struct {
-	cfg       config.TaggerInstance
-	session   *ort.DynamicAdvancedSession
-	labels    []tagLabel
-	profile   Profile
-	inputSize int
-	dispatch  *DispatchTable
-}
-
-// loadedSession is the cached half of loadedTagger: ORT state keyed by
-// tagger name. modelFile and tagsFile gate cache reuse - a TOML edit
-// that swaps either invalidates the entry; profileFP additionally
-// invalidates on a tagger.json sidecar edit.
-type loadedSession struct {
-	modelFile  string
-	tagsFile   string
-	profileFP  string
-	session    *ort.DynamicAdvancedSession
-	labels     []tagLabel
-	profile    Profile
-	inputSize  int
-	dispatch   *DispatchTable
-}
-
-// taggerCache holds the warm ORT environment and per-tagger sessions
-// across RunWithTaggers calls. Without it the bytes ORT frees on
-// teardown stay parked in glibc's arenas; teardown calls mallocTrim to
-// hand them back. inUse blocks the idle reaper from racing a run.
-type taggerCache struct {
-	mu          sync.Mutex
-	inUse       bool
-	initialized bool
-	useCUDA     bool
-	sessionOpts *ort.SessionOptions
-	cudaOpts    *ort.CUDAProviderOptions
-	sessions    map[string]*loadedSession
-	lastUsed    time.Time
-}
-
-var cache taggerCache
-
-// satisfies returns true when the cached set covers every requested
-// tagger with the same execution-provider mode, the same model / tags
-// filenames, and the same profile fingerprint. The profile check picks
-// up tagger.json sidecar edits without a manual reload. Caller must
-// hold c.mu.
-func (c *taggerCache) satisfies(modelPath string, taggers []TaggerStatus, useCUDA bool) bool {
-	if !c.initialized || c.useCUDA != useCUDA {
-		return false
+// Status snapshots the registered backend's cache state for the
+// operator UI.
+func Status() CacheStatus {
+	if b := activeBackend(); b != nil {
+		return b.Status()
 	}
-	for _, t := range taggers {
-		s, ok := c.sessions[t.Name]
-		if !ok {
-			return false
-		}
-		if s.modelFile != t.ModelFile || s.tagsFile != t.TagsFile {
-			return false
-		}
-		profile, err := ResolveProfile(modelPath, t.Name, t.TagsFile)
-		if err != nil {
-			return false
-		}
-		if profile.fingerprint() != s.profileFP {
-			return false
-		}
-	}
-	return true
-}
-
-// ensure populates the cache for (taggers, useCUDA). On signature
-// mismatch the existing cache is torn down first. Caller must hold
-// c.mu. catIDs feeds dispatch resolution at session-build time so a
-// dispatch rule pointing at a renamed/deleted category surfaces as a
-// debug log instead of mis-routing labels.
-func (c *taggerCache) ensure(cfg *config.Config, taggers []TaggerStatus, useCUDA bool, catIDs map[string]int64) error {
-	if c.satisfies(cfg.Paths.ModelPath, taggers, useCUDA) {
-		return nil
-	}
-	if c.initialized {
-		c.teardownLocked()
-	}
-
-	ort.SetSharedLibraryPath(sharedLibPath())
-	if err := ort.InitializeEnvironment(); err != nil {
-		return fmt.Errorf("ort init: %w", err)
-	}
-	c.initialized = true
-
-	if useCUDA {
-		opts, err := ort.NewSessionOptions()
-		if err != nil {
-			c.teardownLocked()
-			return fmt.Errorf("ort session options: %w", err)
-		}
-		c.sessionOpts = opts
-		cudaOpts, err := ort.NewCUDAProviderOptions()
-		if err != nil {
-			c.teardownLocked()
-			return fmt.Errorf("ort cuda options (ensure libonnxruntime was built with CUDA): %w", err)
-		}
-		c.cudaOpts = cudaOpts
-		if err := opts.AppendExecutionProviderCUDA(cudaOpts); err != nil {
-			c.teardownLocked()
-			return fmt.Errorf("append cuda provider: %w", err)
-		}
-	}
-	c.useCUDA = useCUDA
-
-	c.sessions = make(map[string]*loadedSession, len(taggers))
-	for _, t := range taggers {
-		onnxPath := filepath.Join(cfg.Paths.ModelPath, t.Name, t.ModelFile)
-		tagsPath := filepath.Join(cfg.Paths.ModelPath, t.Name, t.TagsFile)
-		profile, err := ResolveProfile(cfg.Paths.ModelPath, t.Name, t.TagsFile)
-		if err != nil {
-			c.teardownLocked()
-			return fmt.Errorf("resolve profile for %q: %w", t.Name, err)
-		}
-		labels, err := loadLabels(tagsPath, profile)
-		if err != nil {
-			c.teardownLocked()
-			return fmt.Errorf("load labels for %q: %w", t.Name, err)
-		}
-		inputs, outputs, err := ort.GetInputOutputInfo(onnxPath)
-		if err != nil {
-			c.teardownLocked()
-			return fmt.Errorf("inspect ort model for %q: %w", t.Name, err)
-		}
-		if len(inputs) == 0 || len(outputs) == 0 {
-			c.teardownLocked()
-			return fmt.Errorf("ort model for %q has no input/output", t.Name)
-		}
-		outIdx := profile.OutputIndex
-		if outIdx < 0 || outIdx >= len(outputs) {
-			c.teardownLocked()
-			return fmt.Errorf("ort model for %q: profile output_index %d out of range (have %d)", t.Name, outIdx, len(outputs))
-		}
-		inputSize := profile.InputSize
-		if inputSize == 0 {
-			inputSize = inferInputSize(inputs[0].Dimensions, profile.Layout)
-			if inputSize <= 0 {
-				c.teardownLocked()
-				return fmt.Errorf("ort model for %q: cannot infer input size from dimensions %v", t.Name, inputs[0].Dimensions)
-			}
-		}
-		session, err := ort.NewDynamicAdvancedSession(onnxPath,
-			[]string{inputs[0].Name}, []string{outputs[outIdx].Name}, c.sessionOpts)
-		if err != nil {
-			c.teardownLocked()
-			return fmt.Errorf("create ort session for %q: %w", t.Name, err)
-		}
-		c.sessions[t.Name] = &loadedSession{
-			modelFile: t.ModelFile,
-			tagsFile:  t.TagsFile,
-			profileFP: profile.fingerprint(),
-			session:   session,
-			labels:    labels,
-			profile:   profile,
-			inputSize: inputSize,
-			dispatch:  LoadDispatch(cfg.Paths.ModelPath, t.Name, catIDs),
-		}
-	}
-	return nil
-}
-
-// inferInputSize picks the spatial axis from an ONNX input's Dimensions
-// shape based on the profile's layout. Returns 0 when the shape is
-// degenerate (dynamic axis as -1, or unexpected rank). NHWC: shape is
-// [N,H,W,C]; NCHW: shape is [N,C,H,W]. We prefer H over W; the two are
-// equal for every square-input tagger we ship.
-func inferInputSize(dims ort.Shape, layout string) int {
-	if len(dims) != 4 {
-		return 0
-	}
-	var d int64
-	switch layout {
-	case "nhwc":
-		d = dims[1]
-	case "nchw":
-		d = dims[2]
-	default:
-		return 0
-	}
-	if d <= 0 {
-		return 0
-	}
-	return int(d)
-}
-
-// teardownLocked destroys every cached ORT object and asks glibc to
-// return the freed bytes to the kernel. Caller must hold c.mu.
-func (c *taggerCache) teardownLocked() {
-	for _, s := range c.sessions {
-		s.session.Destroy()
-	}
-	c.sessions = nil
-	if c.cudaOpts != nil {
-		c.cudaOpts.Destroy()
-		c.cudaOpts = nil
-	}
-	if c.sessionOpts != nil {
-		c.sessionOpts.Destroy()
-		c.sessionOpts = nil
-	}
-	if c.initialized {
-		ort.DestroyEnvironment()
-		c.initialized = false
-	}
-	c.useCUDA = false
-	mallocTrim()
+	return CacheStatus{}
 }
 
 // ReleaseIdle tears down the cached session set when it has been idle
-// for at least `after` and no run is in flight. Returns true on
-// teardown so the caller can log it.
+// for at least `after`.
 func ReleaseIdle(after time.Duration) bool {
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	if cache.inUse || !cache.initialized {
-		return false
+	if b := activeBackend(); b != nil {
+		return b.ReleaseIdle(after)
 	}
-	if time.Since(cache.lastUsed) < after {
-		return false
-	}
-	cache.teardownLocked()
-	return true
+	return false
 }
 
-// ReleaseAll unconditionally tears down the cached session set, e.g.
-// on shutdown or when use_cuda flips and the cache must be rebuilt.
+// ReleaseAll unconditionally tears down the cached session set.
 func ReleaseAll() {
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	if cache.initialized {
-		cache.teardownLocked()
+	if b := activeBackend(); b != nil {
+		b.ReleaseAll()
 	}
 }
 
-// RunWithTaggers tags ids through the supplied taggers, merging results
-// so each image ends up with one row per unique tag. Callers must pass
-// only enabled+available taggers. useCUDA overrides cfg.Tagger.UseCUDA
-// so per-request callers can keep single-image runs on the CPU.
-// mangaCacheDir is the per-gallery <data_path>/<gallery>/manga directory
-// used to extract and cache cbz pages on demand; pass "" to fall back
-// to a per-image temp directory (covers tests that don't construct a
-// full gallery context).
+// RunWithTaggers tags ids through the supplied taggers, merging
+// results so each image ends up with one row per unique tag. Callers
+// must pass only enabled+available taggers. useCUDA overrides
+// cfg.Tagger.UseCUDA so per-request callers can keep single-image
+// runs on the CPU. mangaCacheDir is the per-gallery <data_path>/
+// <gallery>/manga directory used to extract and cache cbz pages on
+// demand; pass "" to fall back to a per-image temp directory.
 // Returns the count of submitted ids left without auto_tagged_at.
 func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, ids []int64, taggers []TaggerStatus, mgr *jobs.Manager, useCUDA bool, mangaCacheDir string) (int, error) {
 	if len(taggers) == 0 {
 		return 0, fmt.Errorf("no tagger is enabled or available")
 	}
+	backend := activeBackend()
+	if backend == nil {
+		return 0, fmt.Errorf("auto-tagger disabled (no backend registered)")
+	}
 
-	// Loaded ahead of cache.ensure so a fresh session set picks up the
+	// Loaded ahead of the backend so a fresh session set picks up the
 	// current tag_categories rows when LoadDispatch resolves rule
 	// targets. Reused below for the rating / wd14 / inferred chains.
 	catIDs := map[string]int64{}
@@ -369,45 +137,6 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 	}
 	generalCatID := catIDs["general"]
 
-	cache.mu.Lock()
-	if err := cache.ensure(cfg, taggers, useCUDA, catIDs); err != nil {
-		cache.mu.Unlock()
-		return 0, err
-	}
-	loaded := make([]loadedTagger, len(taggers))
-	for i, t := range taggers {
-		s := cache.sessions[t.Name]
-		loaded[i] = loadedTagger{
-			cfg:       t.TaggerInstance,
-			session:   s.session,
-			labels:    s.labels,
-			profile:   s.profile,
-			inputSize: s.inputSize,
-			dispatch:  s.dispatch,
-		}
-	}
-	cache.inUse = true
-	cache.mu.Unlock()
-
-	defer func() {
-		cache.mu.Lock()
-		cache.inUse = false
-		cache.lastUsed = time.Now()
-		// idle_release_after_minutes <= 0 disables caching: tear
-		// down right after the run so RSS drops back to baseline.
-		if cfg.Tagger.IdleReleaseAfterMinutes <= 0 {
-			cache.teardownLocked()
-		}
-		cache.mu.Unlock()
-	}()
-
-	// Names of the taggers running this job; used so the replace step
-	// only wipes rows produced by these taggers.
-	taggerNames := make([]string, 0, len(loaded))
-	for _, lt := range loaded {
-		taggerNames = append(taggerNames, lt.cfg.Name)
-	}
-
 	// Inference map for taggers whose category scheme can't tell apart
 	// general from categorised counterparts (joytag's single_general,
 	// camie when its category is "general"). Maps tag name → catID for
@@ -417,8 +146,9 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 	// `character:hakurei_reimu` instead of going under general.
 	inferredCats := map[string]int64{}
 	hasSingleGeneral := false
-	for _, lt := range loaded {
-		if lt.profile.CategoryScheme == "single_general" {
+	for _, t := range taggers {
+		profile, perr := ResolveProfile(cfg.Paths.ModelPath, t.Name, t.TagsFile)
+		if perr == nil && profile.CategoryScheme == "single_general" {
 			hasSingleGeneral = true
 			break
 		}
@@ -470,16 +200,6 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 		parallel = len(ids)
 	}
 
-	// processOne runs the per-image tagging pipeline. Called from one
-	// or more worker goroutines; ORT sessions are safe for concurrent
-	// Run calls and the DB write pool serialises storeResults.
-	var skipped atomic.Int64
-	// completed / total feed both the worker's per-image tick and the
-	// per-page status line emitted from inside processOne for cbz rows.
-	// Declared up here so the closure can reference them.
-	total := len(ids)
-	var completed atomic.Int64
-
 	// jobs.Manager carries a single status string; parallel workers
 	// writing into it would each clobber the others' progress, making
 	// the displayed message hop between mangas. Per-worker slots plus
@@ -487,8 +207,14 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 	// snapshot - workers see and write the same view of all peers, so
 	// the displayed message is always consistent regardless of which
 	// goroutine fired the update.
+	total := len(ids)
+	var completed atomic.Int64
 	var statusMu sync.Mutex
 	workerStatus := make([]string, parallel)
+	// Cap the number of per-worker entries the status bar shows; at
+	// parallel=8 with every worker on a long cbz the joined string
+	// otherwise overflows the flash slot.
+	const maxVisibleWorkers = 3
 	emitStatus := func(workerIdx int, msg string) {
 		statusMu.Lock()
 		defer statusMu.Unlock()
@@ -501,152 +227,106 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 		}
 		out := "tagging images"
 		if len(active) > 0 {
-			out = strings.Join(active, " · ")
+			shown := active
+			if len(shown) > maxVisibleWorkers {
+				shown = shown[:maxVisibleWorkers]
+			}
+			out = strings.Join(shown, " · ")
+			if extra := len(active) - len(shown); extra > 0 {
+				out = fmt.Sprintf("%s (+%d more)", out, extra)
+			}
 		}
 		mgr.Update(int(completed.Load()), total, out)
 	}
 
-	processOne := func(imageID int64, workerIdx int) {
+	taggerNames := make([]string, 0, len(taggers))
+	for _, t := range taggers {
+		taggerNames = append(taggerNames, t.Name)
+	}
+
+	// Build the batch payload: look up each id's canonical path and
+	// file type, extract frames (videos, cbz pages), and ship the
+	// resolved paths to the backend. Frame cleanup runs after the
+	// backend returns this image's slot in the response.
+	var skipped atomic.Int64
+	requests := make([]BackendImageRequest, 0, len(ids))
+	cleanups := make([]func(), 0, len(ids))
+	for _, imageID := range ids {
+		if ctx.Err() != nil {
+			break
+		}
 		var canonPath, fileType string
 		if err := database.Read.QueryRowContext(ctx,
 			`SELECT canonical_path, file_type FROM images WHERE id = ?`, imageID,
 		).Scan(&canonPath, &fileType); err != nil {
 			logx.Warnf("tagger: skip image %d: lookup failed: %v", imageID, err)
 			skipped.Add(1)
-			return
+			continue
 		}
-
 		framePaths, cleanup := framesForTagging(canonPath, fileType, mangaCacheDir, imageID)
-		defer cleanup()
 		if len(framePaths) == 0 {
 			logx.Warnf("tagger: skip image %d: no frames available (missing file, archive, or ffmpeg)", imageID)
 			skipped.Add(1)
-			return
+			cleanup()
+			continue
 		}
-
-		// Manga rows hold the inference loop for one cbz across many
-		// pages; without a per-page status line the operator stares at
-		// "starting…" for minutes. Videos finish in seconds (5 sampled
-		// frames) and stay quiet.
-		mangaProgress := fileType == "cbz" && len(framePaths) > 1
-		merged := map[tagKey]scored{}
-		minHits := ResolveMinHits(cfg.Tagger.Aggregation.MinHitFraction, len(framePaths))
-		for tIdx, lt := range loaded {
-			// Cancel between taggers - returns without committing the
-			// partial merged map so the image stays untouched. The outer
-			// worker loop already short-circuits before picking the next
-			// image; this check covers the inside of a long-running cbz
-			// inference run.
-			if ctx.Err() != nil {
-				return
-			}
-			// Run inference page-by-page; cancellation between pages
-			// bounds the worst-case "time from click to stop" to a
-			// single inference rather than a 100+ page archive.
-			perFrame := make([][]float32, 0, len(framePaths))
-			for fIdx, fp := range framePaths {
-				if ctx.Err() != nil {
-					return
-				}
-				if mangaProgress {
-					msg := fmt.Sprintf("image %d: page %d/%d", imageID, fIdx+1, len(framePaths))
-					if len(loaded) > 1 {
-						msg = fmt.Sprintf("%s (tagger %d/%d)", msg, tIdx+1, len(loaded))
-					}
-					emitStatus(workerIdx, msg)
-				}
-				scores, err := inferImage(lt, fp)
-				if err != nil {
-					logx.Warnf("tagger: inference failed: image %d via %q frame %d/%d (%s): %v",
-						imageID, lt.cfg.Name, fIdx+1, len(framePaths), fp, err)
-					continue
-				}
-				perFrame = append(perFrame, scores)
-			}
-
-			// Pre-resolve every label's routing once (dispatch rule,
-			// single_general lift, category resolution) so the pure
-			// aggregator can hit a precomputed slice indexed by label
-			// id. Labels routed to "skip" are flagged as placeholders.
-			labels := make([]CandidateLabel, len(lt.labels))
-			for idx, label := range lt.labels {
-				if label.placeholder {
-					labels[idx].Placeholder = true
-					continue
-				}
-				res := resolveCategory(lt.profile, label, catIDs, lt.dispatch)
-				if res.skip {
-					labels[idx].Placeholder = true
-					continue
-				}
-				catID := res.catID
-				name := label.name
-				if rule, ok := lt.dispatch.Lookup(label.name); ok && rule.Name != "" {
-					name = rule.Name
-				}
-				if !res.override &&
-					lt.profile.CategoryScheme == "single_general" &&
-					catID == generalCatID {
-					if inferred, ok := inferredCats[label.name]; ok {
-						catID = inferred
-					}
-				}
-				labels[idx] = CandidateLabel{
-					Name:    name,
-					CatID:   catID,
-					CatName: catNameByID(catIDs, catID),
-				}
-			}
-
-			cands := AggregateInferenceScores(perFrame, labels, AggregateOpts{
-				MinHits:            minHits,
-				GlobalThreshold:    float32(lt.cfg.ConfidenceThreshold),
-				CategoryThresholds: lt.cfg.CategoryThresholds,
-				PerCategoryTopK:    lt.cfg.PerCategoryTopK,
-			})
-			for _, c := range cands {
-				mk := tagKey{name: c.Name, catID: c.CatID}
-				if prev, ok := merged[mk]; !ok || c.Score > prev.score {
-					merged[mk] = scored{score: c.Score, taggerName: lt.cfg.Name}
-				}
-			}
+		requests = append(requests, BackendImageRequest{
+			ID:            imageID,
+			FramePaths:    framePaths,
+			MangaProgress: fileType == "cbz" && len(framePaths) > 1,
+		})
+		cleanups = append(cleanups, cleanup)
+	}
+	defer func() {
+		for _, c := range cleanups {
+			c()
 		}
+	}()
 
-		if err := storeResults(ctx, database, imageID, merged, taggerNames, catIDs["rating"]); err != nil {
-			logx.Warnf("tagger: store results for image %d: %v", imageID, err)
+	resp, err := backend.Run(ctx, RunRequest{
+		Cfg:            cfg,
+		Taggers:        taggers,
+		UseCUDA:        useCUDA,
+		CatIDs:         catIDs,
+		GeneralCatID:   generalCatID,
+		InferredCats:   inferredCats,
+		MinHitFraction: cfg.Tagger.Aggregation.MinHitFraction,
+		Parallel:       parallel,
+		Images:         requests,
+		OnProgress: func(workerIdx int, msg string) {
+			// The backend's per-image-done convention is OnProgress
+			// with an empty msg; non-empty msg is per-page cbz
+			// status. Use the empty-msg event to drive the live
+			// counter so the flash shows N/total during the run
+			// instead of jumping from 0 to total at completion.
+			if msg == "" {
+				completed.Add(1)
+			}
+			emitStatus(workerIdx, msg)
+		},
+	})
+	if err != nil {
+		return int(skipped.Load()), err
+	}
+
+	for _, r := range resp.Results {
+		if r.Err != "" {
+			skipped.Add(1)
+			continue
+		}
+		if r.Tags == nil {
+			// Cancelled mid-image - skip writing partial state.
+			continue
+		}
+		if storeErr := storeResults(ctx, database, r.ID, r.Tags, taggerNames, catIDs["rating"]); storeErr != nil {
+			logx.Warnf("tagger: store results for image %d: %v", r.ID, storeErr)
 			skipped.Add(1)
 		}
 	}
 
-	queue := make(chan int64, parallel)
-	var wg sync.WaitGroup
-	for i := 0; i < parallel; i++ {
-		wg.Add(1)
-		go func(workerIdx int) {
-			defer wg.Done()
-			for imageID := range queue {
-				if ctx.Err() != nil {
-					continue
-				}
-				processOne(imageID, workerIdx)
-				completed.Add(1)
-				// Drop this worker's per-page slot and refresh the
-				// combined status; the bumped completed count surfaces
-				// via the Update call inside emitStatus.
-				emitStatus(workerIdx, "")
-			}
-		}(i)
-	}
-
-	for _, imageID := range ids {
-		if ctx.Err() != nil {
-			break
-		}
-		queue <- imageID
-	}
-	close(queue)
-	wg.Wait()
-
+	// Final status update so the progress bar reaches total when the
+	// last image is the cancelled / skipped tail.
+	mgr.Update(int(completed.Load()), total, "tagging images")
 	return int(skipped.Load()), ctx.Err()
 }
 
@@ -713,56 +393,6 @@ func framesForTagging(canonPath, fileType, mangaCacheDir string, imageID int64) 
 	return []string{canonPath}, func() {}
 }
 
-// inferImage loads, preprocesses, and runs inference on a single image
-// against the tagger's resolved profile. The profile drives every
-// preprocessing axis (pad, layout, channel order, normalisation) and
-// the output transform (raw logits get sigmoid'd; sigmoid_in_model
-// outputs pass through).
-func inferImage(lt loadedTagger, path string) ([]float32, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	img, _, err := image.Decode(f)
-	if err != nil {
-		return nil, err
-	}
-
-	processed := padAndResize(img, lt.inputSize, lt.profile)
-	tensor, inputShape, err := buildTensor(processed, lt.inputSize, lt.profile)
-	if err != nil {
-		return nil, err
-	}
-	inputTensor, err := ort.NewTensor(inputShape, tensor)
-	if err != nil {
-		return nil, err
-	}
-	defer inputTensor.Destroy()
-
-	// nil output lets DynamicAdvancedSession allocate it.
-	outputs := []ort.Value{nil}
-	if err := lt.session.Run([]ort.Value{inputTensor}, outputs); err != nil {
-		return nil, err
-	}
-	defer outputs[0].Destroy()
-
-	outTensor, ok := outputs[0].(*ort.Tensor[float32])
-	if !ok {
-		return nil, fmt.Errorf("unexpected output type: %T", outputs[0])
-	}
-	data := outTensor.GetData()
-	if lt.profile.Activation == "logits" {
-		out := make([]float32, len(data))
-		for i, v := range data {
-			out[i] = float32(1 / (1 + math.Exp(-float64(v))))
-		}
-		return out, nil
-	}
-	return data, nil
-}
-
 // storeResults commits the merged auto-tag set for one image and keeps
 // usage_count in sync. The replace step is scoped to taggerNames so
 // other taggers' rows survive. ratingCatID gates the highest-rank-wins
@@ -770,7 +400,7 @@ func inferImage(lt loadedTagger, path string) ([]float32, error) {
 // row; pass 0 to skip (pre-bootstrap DB).
 func storeResults(
 	ctx context.Context, database *db.DB,
-	imageID int64, merged map[tagKey]scored, taggerNames []string, ratingCatID int64,
+	imageID int64, merged map[TagKey]Scored, taggerNames []string, ratingCatID int64,
 ) error {
 	tx, err := database.Write.BeginTx(ctx, nil)
 	if err != nil {
@@ -792,22 +422,22 @@ func storeResults(
 		var isAlias int
 		var canonicalID sql.NullInt64
 		err := tx.QueryRowContext(ctx,
-			`SELECT id, is_alias, canonical_tag_id FROM tags WHERE name = ? AND category_id = ?`, k.name, k.catID,
+			`SELECT id, is_alias, canonical_tag_id FROM tags WHERE name = ? AND category_id = ?`, k.Name, k.CatID,
 		).Scan(&tagID, &isAlias, &canonicalID)
 		if err == sql.ErrNoRows {
 			res, err2 := tx.ExecContext(ctx,
-				`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 0)`, k.name, k.catID)
+				`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 0)`, k.Name, k.CatID)
 			if err2 != nil {
-				return fmt.Errorf("insert tag %q (cat=%d): %w", k.name, k.catID, err2)
+				return fmt.Errorf("insert tag %q (cat=%d): %w", k.Name, k.CatID, err2)
 			}
 			tagID, _ = res.LastInsertId()
 		} else if err != nil {
-			return fmt.Errorf("lookup tag %q (cat=%d): %w", k.name, k.catID, err)
+			return fmt.Errorf("lookup tag %q (cat=%d): %w", k.Name, k.CatID, err)
 		} else if isAlias == 1 && canonicalID.Valid {
 			tagID = canonicalID.Int64
 		}
-		if prev, ok := targets[tagID]; !ok || s.score > prev.score {
-			targets[tagID] = target{score: s.score, taggerName: s.taggerName}
+		if prev, ok := targets[tagID]; !ok || s.Score > prev.score {
+			targets[tagID] = target{score: s.Score, taggerName: s.TaggerName}
 		}
 	}
 
@@ -915,7 +545,7 @@ func storeResults(
 	if ratingCatID != 0 {
 		hasRating := false
 		for k := range merged {
-			if k.catID == ratingCatID {
+			if k.CatID == ratingCatID {
 				hasRating = true
 				break
 			}
@@ -981,23 +611,4 @@ func sanitizeLabel(raw string, idx int) (string, bool) {
 		return fmt.Sprintf("_unsupported_%d", idx), false
 	}
 	return out, true
-}
-
-// sharedLibPath finds the ONNX Runtime shared library. ORT_LIB_PATH
-// overrides; otherwise we try the usual install locations.
-func sharedLibPath() string {
-	if p := os.Getenv("ORT_LIB_PATH"); p != "" {
-		return p
-	}
-	candidates := []string{
-		"/usr/lib/libonnxruntime.so",
-		"/usr/local/lib/libonnxruntime.so",
-		"libonnxruntime.so",
-	}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c
-		}
-	}
-	return "libonnxruntime.so"
 }

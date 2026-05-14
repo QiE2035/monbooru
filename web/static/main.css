@@ -845,6 +845,7 @@ details summary:hover { color: var(--fg); }
 .settings-cols { display: flex; gap: 24px; flex-wrap: wrap; }
 .settings-cols > .settings-sub { flex: 1 1 240px; min-width: 0; }
 .settings-cols > .field { flex: 1 1 220px; min-width: 0; }
+.settings-actions { text-align: right; margin-top: 12px; }
 .schedule-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 24px; margin-bottom: 12px; }
 .schedule-grid .field { margin-bottom: 0; }
 
@@ -946,6 +947,13 @@ dialog {
   left: 50%;
   transform: translate(-50%, -50%);
   margin: 0;
+  /* Absolutely-positioned descendants (the autocomplete dropdowns under
+     `.series-input-wrap`) contribute to scrollHeight, so the browser's
+     default `overflow: auto` would give the dialog its own scrollbar
+     and trap the dropdown inside. Keep the dialog box visible-overflow
+     so the dropdown extends past the bottom; each .suggest-list still
+     self-caps at max-height: 200px and scrolls inside that. */
+  overflow: visible;
 }
 dialog::backdrop { background: rgba(0,0,0,0.7); }
 dialog p { margin-bottom: 16px; }

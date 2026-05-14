@@ -96,8 +96,8 @@ func TestStoreResults_ScopesDeleteToTaggerNames(t *testing.T) {
 	//   - keep manual_tag (not auto, never in scope)
 	//   - keep keep_auto_b (not in scope)
 	//   - insert the new tag
-	merged := map[tagKey]scored{
-		{name: "fresh_auto_a", catID: general}: {score: 0.9, taggerName: "tagger-A"},
+	merged := map[TagKey]Scored{
+		{Name: "fresh_auto_a", CatID: general}: {Score: 0.9, TaggerName: "tagger-A"},
 	}
 
 	if err := storeResults(context.Background(), database, imageID, merged, []string{"tagger-A"}, 0); err != nil {
@@ -172,8 +172,8 @@ func TestStoreResults_RatingPruneKeepsHighestRank(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	merged := map[tagKey]scored{
-		{name: "explicit", catID: ratingCat}: {score: 0.95, taggerName: "tagger-A"},
+	merged := map[TagKey]Scored{
+		{Name: "explicit", CatID: ratingCat}: {Score: 0.95, TaggerName: "tagger-A"},
 	}
 	if err := storeResults(context.Background(), database, imageID, merged, []string{"tagger-A"}, ratingCat); err != nil {
 		t.Fatalf("storeResults: %v", err)

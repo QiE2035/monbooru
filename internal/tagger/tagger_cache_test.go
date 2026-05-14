@@ -23,7 +23,7 @@ func TestCacheSatisfies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve joytag profile: %v", err)
 	}
-	c := taggerCache{
+	c := inprocBackend{
 		initialized: true,
 		useCUDA:     false,
 		sessions: map[string]*loadedSession{
@@ -64,7 +64,7 @@ func TestCacheSatisfies(t *testing.T) {
 }
 
 func TestCacheSatisfies_Uninitialized(t *testing.T) {
-	c := taggerCache{}
+	c := inprocBackend{}
 	if c.satisfies("", nil, false) {
 		t.Fatalf("uninitialized cache must not satisfy any request")
 	}
@@ -83,7 +83,7 @@ func TestCacheSatisfies_ProfileSidecarInvalidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve cached: %v", err)
 	}
-	c := taggerCache{
+	c := inprocBackend{
 		initialized: true,
 		sessions: map[string]*loadedSession{
 			"wd-swinv2": {modelFile: "model.onnx", tagsFile: "tags.csv", profileFP: cached.fingerprint()},

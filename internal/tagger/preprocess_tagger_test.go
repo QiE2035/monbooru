@@ -35,7 +35,8 @@ func TestBuildTensor_WD14_BitIdentical(t *testing.T) {
 	const size = 16
 	src := makeTestImage(20, 12)
 	processed := padAndResize(src, size, wd14Profile)
-	got, shape, err := buildTensor(processed, size, wd14Profile)
+	got := make([]float32, 3*size*size)
+	shape, err := buildTensor(processed, got, size, wd14Profile)
 	if err != nil {
 		t.Fatalf("buildTensor: %v", err)
 	}
@@ -75,7 +76,8 @@ func TestBuildTensor_Camie_ImageNet(t *testing.T) {
 	src := makeTestImage(20, 12)
 	prof := Profile{Layout: "nchw", Channels: "rgb", Normalize: "imagenet", Pad: "white_square"}
 	processed := padAndResize(src, size, prof)
-	got, shape, err := buildTensor(processed, size, prof)
+	got := make([]float32, 3*size*size)
+	shape, err := buildTensor(processed, got, size, prof)
 	if err != nil {
 		t.Fatalf("buildTensor: %v", err)
 	}
@@ -109,7 +111,8 @@ func TestBuildTensor_JoyTag_BitIdentical(t *testing.T) {
 	const size = 16
 	src := makeTestImage(20, 12)
 	processed := padAndResize(src, size, joytagProfile)
-	got, shape, err := buildTensor(processed, size, joytagProfile)
+	got := make([]float32, 3*size*size)
+	shape, err := buildTensor(processed, got, size, joytagProfile)
 	if err != nil {
 		t.Fatalf("buildTensor: %v", err)
 	}
@@ -217,6 +220,43 @@ func TestPadAndResize_MeanColorAspect_FillColorOverride(t *testing.T) {
 	if dst.Pix[off] != 10 || dst.Pix[off+1] != 20 || dst.Pix[off+2] != 30 {
 		t.Errorf("override fill = (%d,%d,%d), want (10,20,30)",
 			dst.Pix[off], dst.Pix[off+1], dst.Pix[off+2])
+	}
+}
+
+// TestBuildTensor_PoolReuse_NoStaleData seeds the input buffer with
+// sentinel bytes and confirms buildTensor rewrites every position - if
+// any path were to skip writing a cell, recycled buffers from the
+// inputTensorPools would leak last call's data into the next inference.
+func TestBuildTensor_PoolReuse_NoStaleData(t *testing.T) {
+	const size = 16
+	src := makeTestImage(20, 12)
+	processed := padAndResize(src, size, wd14Profile)
+
+	buf := make([]float32, 3*size*size)
+	for i := range buf {
+		buf[i] = -777
+	}
+	if _, err := buildTensor(processed, buf, size, wd14Profile); err != nil {
+		t.Fatalf("buildTensor: %v", err)
+	}
+	for i, v := range buf {
+		if v == -777 {
+			t.Fatalf("tensor[%d] left at sentinel - buildTensor missed this position", i)
+		}
+	}
+
+	prof := Profile{Layout: "nchw", Channels: "rgb", Normalize: "imagenet", Pad: "white_square"}
+	processed = padAndResize(src, size, prof)
+	for i := range buf {
+		buf[i] = -777
+	}
+	if _, err := buildTensor(processed, buf, size, prof); err != nil {
+		t.Fatalf("buildTensor (nchw): %v", err)
+	}
+	for i, v := range buf {
+		if v == -777 {
+			t.Fatalf("nchw tensor[%d] left at sentinel", i)
+		}
 	}
 }
 

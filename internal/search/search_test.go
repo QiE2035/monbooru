@@ -2875,6 +2875,22 @@ func TestBuildDateFilter_Before(t *testing.T) {
 	}
 }
 
+func TestBuildDateFilter_AfterOrEqual(t *testing.T) {
+	b := &whereBuilder{}
+	clause := b.buildDateFilter(">=2024-01-01")
+	if !strings.Contains(clause, ">= ?") || b.args[0] != "2024-01-01" {
+		t.Errorf("clause = %q, args = %v", clause, b.args)
+	}
+}
+
+func TestBuildDateFilter_BeforeOrEqual(t *testing.T) {
+	b := &whereBuilder{}
+	clause := b.buildDateFilter("<=2024-12-31")
+	if !strings.Contains(clause, "<= ?") || b.args[0] != "2024-12-31" {
+		t.Errorf("clause = %q, args = %v", clause, b.args)
+	}
+}
+
 func TestBuildDateFilter_Range(t *testing.T) {
 	b := &whereBuilder{}
 	clause := b.buildDateFilter("2024-01-01..2024-12-31")

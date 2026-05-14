@@ -47,3 +47,6 @@ func ReleaseIdle(_ time.Duration) bool { return false }
 
 // ReleaseAll is a no-op stub on the non-tagger build.
 func ReleaseAll() {}
+
+// Status reports "not loaded" since the non-tagger build never caches.
+func Status() CacheStatus { return CacheStatus{} }

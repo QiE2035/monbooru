@@ -19,6 +19,13 @@ import (
 )
 
 func main() {
+	// Subcommand dispatch happens before flag.Parse so the
+	// subcommand's own flag set gets the argv tail unchanged.
+	if len(os.Args) >= 2 && os.Args[1] == "tagger-worker" {
+		runWorker(os.Args[2:])
+		return
+	}
+
 	configPath := flag.String("config", "./monbooru.toml", "path to monbooru.toml config file")
 	hashPassword := flag.String("hash-password", "", "print bcrypt hash of the given password and exit")
 	flag.Parse()
