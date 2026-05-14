@@ -3,6 +3,7 @@ package gallery
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -136,6 +137,47 @@ func TestMoveImage_RenameFailureRollsBackTx(t *testing.T) {
 	}
 	if _, err := os.Stat(srcPath); err != nil {
 		t.Errorf("source file gone after failed move: %v", err)
+	}
+}
+
+// When the computed destination path already lives in image_paths
+// against a different image (a stale alias whose file is gone), the
+// move fails with a clean diagnostic that points at the colliding
+// image, not a raw UNIQUE constraint error.
+func TestMoveImage_RejectsAliasPathCollision(t *testing.T) {
+	database, env, galleryDir := setupSyncTest(t)
+	srcPath := createTestPNGFile(t, galleryDir, "src.png")
+	if _, _, err := Ingest(database, galleryDir, env.thumbnailsPath, srcPath, "png", ""); err != nil {
+		t.Fatalf("ingest src: %v", err)
+	}
+	var srcID int64
+	database.Read.QueryRow(`SELECT id FROM images ORDER BY id LIMIT 1`).Scan(&srcID)
+
+	// Seed a stale alias row on a different image whose path is exactly
+	// where MoveImage would land (`<galleryDir>/dst/src.png`).
+	dstDir := filepath.Join(galleryDir, "dst")
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	otherPath := createTestPNGFileSize(t, galleryDir, "other.png", 11, 11)
+	if _, _, err := Ingest(database, galleryDir, env.thumbnailsPath, otherPath, "png", ""); err != nil {
+		t.Fatal(err)
+	}
+	var otherID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE id != ?`, srcID).Scan(&otherID)
+	if _, err := database.Write.Exec(
+		`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 0)`,
+		otherID, filepath.Join(dstDir, "src.png"),
+	); err != nil {
+		t.Fatalf("seed stale alias: %v", err)
+	}
+
+	_, err := MoveImage(database, galleryDir, srcID, "dst")
+	if err == nil {
+		t.Fatal("expected move to fail on alias collision")
+	}
+	if !strings.Contains(err.Error(), "collides with an existing alias") {
+		t.Errorf("error %v should call out the alias collision shape", err)
 	}
 }
 

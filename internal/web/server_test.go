@@ -13,6 +13,7 @@ import (
 	"github.com/leqwin/monbooru/internal/config"
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/jobs"
+	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/search"
 )
 
@@ -125,6 +126,32 @@ func TestCustomCSSPathAllowed(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("customCSSPathAllowed(%q) = %v, want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+// A symlink under a trusted root that points at /etc/passwd (or any
+// path outside the trusted roots) must fail the gate. EvalSymlinks
+// runs before the containment check so the resolved target has to
+// land under a trusted root, not just the symlink path itself.
+func TestCustomCSSPathAllowed_RejectsSymlinkEscape(t *testing.T) {
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "monbooru.toml")
+
+	// Drop a target outside any trusted root (a sibling of configDir).
+	outsideDir := t.TempDir()
+	outside := filepath.Join(outsideDir, "secret.css")
+	if err := os.WriteFile(outside, []byte("/* secret */"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink inside configDir pointing at the outside file.
+	link := filepath.Join(configDir, "style.css")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unsupported on this filesystem: %v", err)
+	}
+
+	if customCSSPathAllowed(link, configPath) {
+		t.Errorf("symlink %q -> %q passed the gate; EvalSymlinks must dereference before containment", link, outside)
 	}
 }
 
@@ -796,8 +823,13 @@ func TestToggleInboxReturnsButtonAndInvalidatesCount(t *testing.T) {
 	if !strings.Contains(body, "inbox-btn") {
 		t.Errorf("toggle inbox response missing inbox-btn, got: %s", body)
 	}
-	if !strings.Contains(body, "Archived") {
-		t.Errorf("toggle inbox response should label the new state Archived, got: %s", body)
+	// After archive the label names the new state ("Archived"); the
+	// title still names the click action ("Send to inbox").
+	if !strings.Contains(body, "✱ Archived") {
+		t.Errorf("toggle inbox response should label the new state, got: %s", body)
+	}
+	if !strings.Contains(body, `title="Send to inbox (i)"`) {
+		t.Errorf("toggle inbox response title should name the action, got: %s", body)
 	}
 
 	post, err := cx.InboxCount()
@@ -1070,8 +1102,21 @@ func TestPruneMissingImages(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("prune missing expected 200, got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "Removed") {
-		t.Error("expected 'Removed' in response")
+	if !strings.Contains(w.Body.String(), "started") {
+		t.Errorf("expected 'started' flash, got: %s", w.Body.String())
+	}
+
+	// Wait for the goroutine to finish the prune.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		state := srv.jobs.Get()
+		if state != nil && !state.Running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("prune-missing job did not finish within 2s")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	// Verify pruned
@@ -1079,6 +1124,34 @@ func TestPruneMissingImages(t *testing.T) {
 	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images WHERE sha256 = 'prune_test_hash'`).Scan(&count)
 	if count != 0 {
 		t.Error("missing image should have been pruned")
+	}
+}
+
+// A second click while the first prune is running must be rejected
+// with the same "A job is already running" flash the other long
+// maintenance handlers surface, not interleave two writers.
+func TestPruneMissingImages_RejectsConcurrentRun(t *testing.T) {
+	srv := newTestServer(t)
+	// Hold the job slot manually so the handler's Start call collides.
+	if err := srv.jobs.Start(models.JobTypeVacuum); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.jobs.Complete("test cleanup")
+
+	// Need at least one missing row so the handler reaches the Start call.
+	srv.db().Write.Exec(`
+		INSERT INTO images (canonical_path, file_type, file_size, sha256, is_missing, ingested_at)
+		VALUES ('/nonexistent/conflict.jpg', 'jpg', 1024, 'conflict_hash', 1, datetime('now'))`)
+
+	body := "_csrf=" + srv.csrfToken("anon")
+	req := httptest.NewRequest("POST", "/settings/maintenance/prune-missing", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409 with a job running, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

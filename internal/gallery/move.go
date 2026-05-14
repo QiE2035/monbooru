@@ -62,6 +62,20 @@ func MoveImage(database *db.DB, galleryPath string, id int64, targetFolder strin
 
 	newPath := UniqueDestPath(destDir, filepath.Base(oldCanonical))
 
+	// UniqueDestPath only checks the filesystem, not image_paths. A stale
+	// alias row for a different image (file long gone but row never
+	// pruned) would otherwise trip the UNIQUE constraint on path mid-tx
+	// with no useful diagnostic. Surface the collision up front so the
+	// caller can suggest "prune duplicate paths" from the Settings
+	// maintenance page.
+	var collidingImage int64
+	if err := database.Read.QueryRow(
+		`SELECT image_id FROM image_paths WHERE path = ? AND image_id != ?`,
+		newPath, id,
+	).Scan(&collidingImage); err == nil {
+		return nil, fmt.Errorf("destination collides with an existing alias on image %d", collidingImage)
+	}
+
 	// Rename inside the open tx so a rename failure rolls the row updates
 	// back automatically. The watcher suppresses events while the move job
 	// runs, so the brief window where on-disk newPath exists but the tx

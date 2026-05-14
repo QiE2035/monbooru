@@ -100,6 +100,16 @@ func (m *Manager) EndSchedule() {
 	m.scheduleHeld = false
 }
 
+// IsScheduleHeld reports whether a scheduler run is currently active.
+// Used by the scheduler's outer loop to bail between phases when a
+// user cancel has cleared the reservation; without this the cancelled
+// phase finishes and the next phase's StartScheduled fires normally.
+func (m *Manager) IsScheduleHeld() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.scheduleHeld
+}
+
 // Context returns the cancellation context for the running job so the
 // Cancel endpoint can interrupt long-running work. Returns a background
 // context when no job runs.

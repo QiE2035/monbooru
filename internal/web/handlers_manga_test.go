@@ -106,12 +106,24 @@ func TestReader_OutOfRangePageClamped(t *testing.T) {
 	})
 	h := srv.Handler()
 
-	for _, page := range []string{"0", "-3", "999"} {
-		req := httptest.NewRequest("GET", "/images/"+strconv.FormatInt(id, 10)+"/read?page="+page, nil)
+	// Each out-of-range page redirects to the clamped value (URL
+	// coherence: bookmark to `?page=999` shouldn't disagree with what
+	// the reader actually renders).
+	cases := map[string]string{
+		"0":   "1",
+		"-3":  "1",
+		"999": "2",
+	}
+	for raw, want := range cases {
+		req := httptest.NewRequest("GET", "/images/"+strconv.FormatInt(id, 10)+"/read?page="+raw, nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
-		if w.Code != 200 {
-			t.Fatalf("page=%s: status %d", page, w.Code)
+		if w.Code != http.StatusSeeOther {
+			t.Fatalf("page=%s: status %d, want 303", raw, w.Code)
+		}
+		loc := w.Header().Get("Location")
+		if !strings.Contains(loc, "page="+want) {
+			t.Errorf("page=%s redirected to %q, want page=%s", raw, loc, want)
 		}
 	}
 }

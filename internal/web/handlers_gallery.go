@@ -48,8 +48,19 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	pageStr := q.Get("page")
 	page := 1
-	if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
-		page = p
+	pageNonPositive := false
+	if pageStr != "" {
+		if p, err := strconv.Atoi(pageStr); err == nil {
+			if p > 0 {
+				page = p
+			} else {
+				// `?page=0` or `?page=-1` would render page 1 but leave
+				// the URL pointing at the bogus value; flag for the
+				// clamp+redirect path below so bookmark coherence matches
+				// the past-end branch.
+				pageNonPositive = true
+			}
+		}
 	}
 
 	// For random sort, use a stable seed so the order doesn't change on every reload.
@@ -136,15 +147,18 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	// deletions dropped the total to 1 page), re-run at the last valid page
 	// so the grid isn't empty while "N images" still shows a non-zero count.
 	// Sync the URL so a bookmark of the clamped view doesn't keep replaying
-	// the bogus page number.
-	if result.Total > 0 && page > totalPages {
-		page = totalPages
-		sq.Page = page
-		result, err = search.Execute(s.db(), sq)
-		if err != nil {
-			logx.Errorf("gallery search (clamped): %v", err)
-			http.Error(w, "search error", http.StatusInternalServerError)
-			return
+	// the bogus page number. `?page=0` / `?page=-1` ride the same path so
+	// the past-end and below-1 branches share the redirect.
+	if (result.Total > 0 && page > totalPages) || pageNonPositive {
+		if page > totalPages {
+			page = totalPages
+			sq.Page = page
+			result, err = search.Execute(s.db(), sq)
+			if err != nil {
+				logx.Errorf("gallery search (clamped): %v", err)
+				http.Error(w, "search error", http.StatusInternalServerError)
+				return
+			}
 		}
 		clampedQ := r.URL.Query()
 		clampedQ.Set("page", strconv.Itoa(page))

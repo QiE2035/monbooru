@@ -22,7 +22,7 @@ type NotExpr struct{ Expr Expr }
 // TagExpr matches a literal or wildcard tag name.
 type TagExpr struct {
 	Tag      string // normalized lowercase
-	Wildcard string // "" | "prefix" | "substring"
+	Wildcard string // "" | "prefix" | "suffix" | "substring"
 }
 
 // FilterExpr is a `key:value` filter.
@@ -235,6 +235,9 @@ func (p *parser) parseTerm() Expr {
 		}
 		if strings.HasSuffix(tag, "*") {
 			return TagExpr{Tag: strings.TrimSuffix(tag, "*"), Wildcard: "prefix"}
+		}
+		if strings.HasPrefix(tag, "*") && len(tag) > 1 {
+			return TagExpr{Tag: strings.TrimPrefix(tag, "*"), Wildcard: "suffix"}
 		}
 		return TagExpr{Tag: tag, Wildcard: ""}
 	}

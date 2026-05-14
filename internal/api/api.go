@@ -65,6 +65,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/images/search", h.auth(h.searchImages))
 	mux.HandleFunc("GET /api/v1/images/{id}", h.auth(h.getImage))
 	mux.HandleFunc("DELETE /api/v1/images/{id}", h.auth(h.deleteImage))
+	mux.HandleFunc("GET /api/v1/images/{id}/tags", h.auth(h.listImageTags))
 	mux.HandleFunc("POST /api/v1/images/{id}/tags", h.auth(h.addImageTags))
 	mux.HandleFunc("DELETE /api/v1/images/{id}/tags", h.auth(h.removeImageTags))
 
@@ -137,16 +138,23 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // parsePage reads page + limit from the query string and clamps limit
-// to maxLimit.
+// to maxLimit. `page_size` is accepted as a synonym for `limit` so a
+// caller using the more common page_size convention isn't silently
+// clamped to defaultLimit.
 func parsePage(r *http.Request, defaultLimit, maxLimit int) (offset, limit int) {
 	page := 1
 	limit = defaultLimit
-	if p := r.URL.Query().Get("page"); p != "" {
+	q := r.URL.Query()
+	if p := q.Get("page"); p != "" {
 		if n, err := parseInt(p); err == nil && n > 0 {
 			page = n
 		}
 	}
-	if l := r.URL.Query().Get("limit"); l != "" {
+	l := q.Get("limit")
+	if l == "" {
+		l = q.Get("page_size")
+	}
+	if l != "" {
 		if n, err := parseInt(l); err == nil && n > 0 {
 			if n > maxLimit {
 				n = maxLimit

@@ -84,11 +84,6 @@
         {{end}}
       </div>
       <div class="detail-actions">
-        {{if .EnabledTaggers}}
-        <button type="button" class="btn-autotag" title="Auto-tag this image (t)"
-                onclick="document.getElementById('autotag-dialog').showModal()">Auto-tag</button>
-        {{end}}
-        <a href="/images/{{.Image.ID}}/file" download class="btn-sm" title="Download image">⤓</a>
         <form id="inbox-form" hx-post="/images/{{.Image.ID}}/inbox"
               hx-target="#inbox-btn" hx-swap="outerHTML"
               hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}' style="display:inline">
@@ -105,6 +100,7 @@
             {{if .Image.IsFavorited}}♥{{else}}♡{{end}}
           </button>
         </form>
+        <a href="/images/{{.Image.ID}}/file" download class="btn-sm" title="Download image">⤓</a>
       </div>
     </div>
   </div>
@@ -266,6 +262,10 @@
             <div id="tag-suggest-dropdown" class="suggest-dropdown tag-suggest-dropdown"></div>
           </div>
           <button type="submit">Add</button>
+          {{if .EnabledTaggers}}
+          <button type="button" class="btn-autotag" title="Auto-tag this image (t)"
+                  onclick="document.getElementById('autotag-dialog').showModal()">Auto-tag</button>
+          {{end}}
         </form>
       </div>
 

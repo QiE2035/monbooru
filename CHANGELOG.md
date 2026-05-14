@@ -1,5 +1,38 @@
 # Changelog
 
+## [v1.7.1] - 2026-05-14
+### Added
+- API: `GET /api/v1/images/{id}/tags` returns the per-image tag list with the same shape as the POST/DELETE counterparts.
+- Search: `*xyz` parses as a suffix wildcard; `collection:` values autocomplete.
+- Tags page: alias rows accept a category change; the create-alias dialog auto-creates a missing canonical target.
+- Tag and alias mutations surface their result in the tag-flash slot.
+- Detail page: topbar reshuffled; the inbox button labels by current state.
+- Batch: selection bar and Actions chooser share one ordering; new `Toggle favorite` action; `Send to inbox` / `Remove from inbox` collapse into `Toggle inbox`.
+
+### Changed
+- Logger levels reorder `Debug < Info < Warn` to match slog; runtime semantics unchanged.
+
+### Fixed
+- Auto-tagger: pad-and-resize peak allocation capped to `size^2` so large sources can't OOM-kill the container with multiple taggers loaded.
+- Search: `tagged:true` / `autotagged:true` partition counts cached and invalidated alongside image-tag membership writes; `inbox:` shapes pin `idx_images_ingested_visible` to stay inside the search budget.
+- Search: bare `system:` returns no-match instead of matching every image; random sort with a small seed actually shuffles.
+- Reader and gallery: out-of-range `?page=N`, `?page=0`, and `?page=-1` 303 to the clamped value so the URL agrees with what the pager renders.
+- Detail page: clearing the collection nulls the stored order; pasting many tags commits in a single transaction.
+- Tags page: duplicate category names surface as a friendly error; zero-usage rows skip the origin badge; alias canonical-suggest dropdown anchors to the input width.
+- Categories: new-category color picker aligns with the text and Add controls.
+- API: `tags` is required on POST/DELETE image-tag mutations; `page_size` aliases `limit`; `via` rejects selector-breaking characters; cbz tag mutation drops its leftover 415; path-mode ingest enforces gallery-root containment and rejects non-decodable files; delete cleans up an emptied source folder by default.
+- Maintenance: prune-missing runs as a job, blocking concurrent submissions.
+- Gallery: alias path collisions caught before the move transaction; watcher suppresses events during delete and tag jobs; thumb checkbox blurs on change so keyboard shortcuts fire after a click; bulk delete skips `RemoveMangaCache` for non-cbz rows.
+- Tagger service: rating-category lookup miss is logged instead of silently producing a Service with `ratingCatID=0`.
+- Router: `custom_css` containment check resolves symlinks first so an operator can't accidentally point it at a symlinked escape.
+- Scheduler: cancel aborts the whole run instead of just the current phase.
+- UI: toolbar tooltip keeps the inbox count visible when a rating ceiling is applied.
+- Batch tag: chunk size drops to 100 rows when at least one resolved tag has implications so foreground requests slip between commits.
+
+### Internal
+- DB bootstrap: ANALYZE gated on `PRAGMA user_version`; partial-index ANALYZE bounded with `analysis_limit = 400`. Steady-state cold starts skip the pass.
+- `internal/web/handlers_batch.go` extracts `resolveBatchScope`; `gallery.Sync` splits into per-case helpers; `galleryCtx` cached-count accessors share one helper; favorite/inbox toggle handlers share `toggleBoolColumn`.
+
 ## [v1.7.0] - 2026-05-11
 ### Added
 - Comics & manga. `.cbz` / `.zip` archives ingest as single entries with `page_count`, optional `Collection` and order, and a parsed `ComicInfo.xml` panel. In app reader (`/images/{id}/read?page=N`) with bottom-bar controls and side click-to-prev/next chevrons; pages grid (`/images/{id}/pages`) with keyboard nav. Auto-tagger iterates every archive page. Search keywords `type:image` / `type:archive` / `pages:<op><n>`. Detail-page `Open in reader (R)` and `See all pages (P)` buttons. Manga `N pages` pill on gallery thumbnails.

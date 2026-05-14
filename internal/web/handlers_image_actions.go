@@ -92,62 +92,53 @@ func (s *Server) ratingCeilingPost(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) toggleFavorite(w http.ResponseWriter, r *http.Request) {
+// toggleBoolColumn flips a 0/1 column in images via RETURNING, drops
+// the per-gallery caches, and writes one of two pre-rendered button
+// fragments depending on the new value. Shared by toggleFavorite and
+// toggleInbox.
+func (s *Server) toggleBoolColumn(w http.ResponseWriter, r *http.Request, column, onHTML, offHTML string) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	// Toggle atomically and read the new value in a single statement using RETURNING,
-	// avoiding a separate read query and any read-after-write race.
-	var newFav int
+	var newVal int
 	if err := s.db().Write.QueryRow(
-		`UPDATE images SET is_favorited = 1 - is_favorited WHERE id = ? RETURNING is_favorited`, id,
-	).Scan(&newFav); err != nil {
+		`UPDATE images SET `+column+` = 1 - `+column+` WHERE id = ? RETURNING `+column, id,
+	).Scan(&newVal); err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	// Drop the per-gallery match-id cache so a cached `?q=fav:true`
-	// snapshot can't survive a toggle that flipped membership.
+	// Cached match-id sets keyed off the toggled column (`?q=fav:true`,
+	// `?q=inbox:true`) and the cached inbox count both go stale on flip.
 	if cx := s.Active(); cx != nil {
 		cx.InvalidateCaches()
 	}
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if newFav == 1 {
-		w.Write([]byte(`<button type="submit" id="fav-btn" class="btn-fav active" title="Unfavorite">♥</button>`))
+	if newVal == 1 {
+		w.Write([]byte(onHTML))
 	} else {
-		w.Write([]byte(`<button type="submit" id="fav-btn" class="btn-fav" title="Favorite">♡</button>`))
+		w.Write([]byte(offHTML))
 	}
 }
 
-func (s *Server) toggleInbox(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	var newInbox int
-	if err := s.db().Write.QueryRow(
-		`UPDATE images SET is_inbox = 1 - is_inbox WHERE id = ? RETURNING is_inbox`, id,
-	).Scan(&newInbox); err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	// InboxCount on the gallery toolbar is now stale; drop the cache so the
-	// next render reflects the toggle.
-	if cx := s.Active(); cx != nil {
-		cx.InvalidateCaches()
-	}
+func (s *Server) toggleFavorite(w http.ResponseWriter, r *http.Request) {
+	s.toggleBoolColumn(w, r, "is_favorited",
+		`<button type="submit" id="fav-btn" class="btn-fav active" title="Unfavorite">♥</button>`,
+		`<button type="submit" id="fav-btn" class="btn-fav" title="Favorite">♡</button>`,
+	)
+}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if newInbox == 1 {
-		w.Write([]byte(`<button type="submit" id="inbox-btn" class="btn-inbox active" title="Archive">✱ In inbox</button>`))
-	} else {
-		w.Write([]byte(`<button type="submit" id="inbox-btn" class="btn-inbox" title="Send to inbox">✱ Archived</button>`))
-	}
+// toggleInbox returns the swap HTML for the inbox button. The title
+// names the click action (Archive / Send to inbox); the label names
+// the row's current state (In inbox / Archived) so the button reads
+// as "this is what it is" with the action surfaced on hover.
+func (s *Server) toggleInbox(w http.ResponseWriter, r *http.Request) {
+	s.toggleBoolColumn(w, r, "is_inbox",
+		`<button type="submit" id="inbox-btn" class="btn-inbox active" title="Archive (i)">✱ In inbox</button>`,
+		`<button type="submit" id="inbox-btn" class="btn-inbox" title="Send to inbox (i)">✱ Archived</button>`,
+	)
 }
 
 func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
@@ -386,6 +377,15 @@ func (s *Server) updateExternal(w http.ResponseWriter, r *http.Request) {
 		updates = append(updates, "series = ?")
 		args = append(args, collectionVal)
 		collectionChanged = true
+		// Symmetry with the "order has no collection to anchor" reject:
+		// clearing the collection while leaving an order behind would
+		// leave a `#N` chip stranded next to "(none)" and a row the
+		// `collection:` search filter never surfaces. Null the order in
+		// the same write unless the form is also setting one explicitly.
+		if collectionVal == "" && !r.Form.Has("collection_order") {
+			updates = append(updates, "series_order = ?")
+			args = append(args, nil)
+		}
 	}
 	if r.Form.Has("collection_order") {
 		raw := strings.TrimSpace(r.FormValue("collection_order"))

@@ -227,6 +227,67 @@ func TestImportGallery_RebasesPathsToTargetGallery(t *testing.T) {
 	}
 }
 
+// An alias path that lives in a different folder than the canonical
+// must keep that folder through the rebase; collapsing it into the
+// canonical's folder would lose the operator's hand-maintained
+// location and risk a UNIQUE-on-path collision with the canonical
+// row. The rebase derives the alias's folder from the inferred
+// source root so its relative position survives.
+func TestImportGallery_PreservesAliasFolderOnRebase(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+
+	cx := srv.Get("stock")
+	if cx == nil {
+		t.Fatal("stock gallery missing")
+	}
+	if _, err := cx.DB.Write.Exec(
+		`INSERT INTO images (sha256, canonical_path, folder_path, file_type, file_size, ingested_at)
+		 VALUES ('sha-alias', '/source/gallery/portraits/cat.jpg', 'portraits', 'jpeg', 10, datetime('now'))`,
+	); err != nil {
+		t.Fatalf("seed image: %v", err)
+	}
+	if _, err := cx.DB.Write.Exec(
+		`INSERT INTO image_paths (image_id, path, is_canonical)
+		 VALUES ((SELECT id FROM images WHERE sha256 = 'sha-alias'),
+		         '/source/gallery/portraits/cat.jpg', 1)`,
+	); err != nil {
+		t.Fatalf("seed canonical alias: %v", err)
+	}
+	// Alias path lives in a different folder ("photos") under the same
+	// source root - an operator who rsync'd the same file twice would
+	// register this shape.
+	if _, err := cx.DB.Write.Exec(
+		`INSERT INTO image_paths (image_id, path, is_canonical)
+		 VALUES ((SELECT id FROM images WHERE sha256 = 'sha-alias'),
+		         '/source/gallery/photos/cat.jpg', 0)`,
+	); err != nil {
+		t.Fatalf("seed alias in different folder: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := srv.ExportGalleryJSON("stock", &buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ImportGallery("stock", "json", bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	cx = srv.Get("stock")
+	prefix := cx.GalleryPath
+
+	var aliasPath string
+	if err := cx.DB.Read.QueryRow(
+		`SELECT path FROM image_paths
+		 WHERE image_id = (SELECT id FROM images WHERE sha256 = 'sha-alias')
+		   AND is_canonical = 0`,
+	).Scan(&aliasPath); err != nil {
+		t.Fatalf("read alias path: %v", err)
+	}
+	wantAlias := prefix + "/photos/cat.jpg"
+	if aliasPath != wantAlias {
+		t.Errorf("alias path = %q, want %q (alias folder must survive rebase)", aliasPath, wantAlias)
+	}
+}
+
 func TestImportGallery_QueuesRebuildThumbsJob(t *testing.T) {
 	srv := newMultiGalleryServer(t)
 	seedImportExportFixture(t, srv)

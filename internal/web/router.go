@@ -673,6 +673,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /internal/batch-tag", s.batchTag)
 	mux.HandleFunc("POST /internal/batch-strip", s.batchStrip)
 	mux.HandleFunc("POST /internal/batch-inbox", s.batchInbox)
+	mux.HandleFunc("POST /internal/batch-favorite", s.batchFavorite)
 	mux.HandleFunc("POST /internal/batch-collection", s.batchCollection)
 	mux.HandleFunc("POST /internal/delete-search", s.deleteSearchPost)
 	mux.HandleFunc("POST /tags/delete-search", s.deleteTagsSearchPost)
@@ -970,7 +971,9 @@ func toUpperHex(c byte) byte {
 // of trusted root directories. The intent is to catch a misconfigured
 // CustomCSS like "/etc/passwd" before /custom.css can leak it; legit
 // uses (a CSS file alongside the config or under /config or /data) all
-// pass without further setup.
+// pass without further setup. EvalSymlinks runs before the containment
+// check so a symlink under a trusted root that points at a file
+// outside (e.g. /config/style.css → /etc/passwd) fails the gate.
 func customCSSPathAllowed(cssPath, configPath string) bool {
 	if cssPath == "" {
 		return true
@@ -978,6 +981,13 @@ func customCSSPathAllowed(cssPath, configPath string) bool {
 	abs, err := filepath.Abs(cssPath)
 	if err != nil {
 		return false
+	}
+	// EvalSymlinks fails when the target doesn't exist yet; fall back
+	// to the cleaned absolute path in that case so operator misspellings
+	// still fail the file-serve below (rather than appearing to pass
+	// the gate because the symlink check errored).
+	if resolved, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
+		abs = resolved
 	}
 	roots := []string{"/config", "/data"}
 	if configPath != "" {
@@ -988,6 +998,12 @@ func customCSSPathAllowed(cssPath, configPath string) bool {
 	for _, root := range roots {
 		if root == "" {
 			continue
+		}
+		// Evaluate symlinks on the root too so a containerised /config
+		// that resolves to /var/lib/monbooru/config still matches the
+		// resolved file path.
+		if resolved, evalErr := filepath.EvalSymlinks(root); evalErr == nil {
+			root = resolved
 		}
 		rel, err := filepath.Rel(root, abs)
 		if err != nil {

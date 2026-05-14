@@ -131,7 +131,24 @@ func (s *Server) runScheduledActions() {
 	}
 	s.ctxMu.RUnlock()
 
+	// User cancel mid-run clears scheduleHeld (Manager.Cancel does this)
+	// so the outer loop can bail at the next phase boundary. Without
+	// the gate, the cancelled phase would observe ctx.Err and complete,
+	// then the next phase's StartScheduled would fire and run normally,
+	// so one user click would cancel exactly one phase rather than the
+	// remaining run.
+	abort := func() bool {
+		if !s.jobs.IsScheduleHeld() {
+			logx.Infof("scheduler: run cancelled mid-flight; remaining phases skipped")
+			return true
+		}
+		return false
+	}
+
 	for _, name := range names {
+		if abort() {
+			return
+		}
 		cx := s.Get(name)
 		if cx == nil {
 			continue
@@ -142,15 +159,24 @@ func (s *Server) runScheduledActions() {
 			if err := s.scheduledSync(cx); err != nil {
 				failures = append(failures, "sync "+name+": "+err.Error())
 			}
+			if abort() {
+				return
+			}
 		}
 		if sched.RemoveOrphans {
 			if err := s.scheduledRemoveOrphans(cx); err != nil {
 				failures = append(failures, "remove-orphans "+name+": "+err.Error())
 			}
+			if abort() {
+				return
+			}
 		}
 		if sched.RunAutoTaggers && tagger.IsAvailable(s.cfg) {
 			if err := s.scheduledAutotag(cx); err != nil {
 				failures = append(failures, "autotag "+name+": "+err.Error())
+			}
+			if abort() {
+				return
 			}
 		}
 		if sched.MergeGeneralTags {

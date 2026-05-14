@@ -17,6 +17,48 @@ import (
 	"github.com/leqwin/monbooru/internal/search"
 )
 
+// resolveBatchScope returns the image-id slice the caller's batch
+// operates on, materialised from either the "selection" (checked ids)
+// or "search" (everything matching the current query) form scope.
+// Writes an error fragment and returns ok=false on bad input.
+func (s *Server) resolveBatchScope(w http.ResponseWriter, r *http.Request, errLabel string) ([]int64, bool) {
+	scope := strings.TrimSpace(r.FormValue("scope"))
+	switch scope {
+	case "selection":
+		var ids []int64
+		for _, idStr := range r.Form["ids"] {
+			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+				ids = append(ids, id)
+			}
+		}
+		return ids, true
+	case "search":
+		expr, parseErr := search.Parse(r.FormValue("q"))
+		if parseErr != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`<div class="flash flash-err">Could not parse search: ` +
+				html.EscapeString(parseErr.Error()) + `</div>`))
+			return nil, false
+		}
+		var ids []int64
+		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
+			ids = append(ids, t.ID)
+			return nil
+		})
+		if err != nil {
+			logx.Errorf("%s search: %v", errLabel, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`<div class="flash flash-err">Search error.</div>`))
+			return nil, false
+		}
+		return ids, true
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`<div class="flash flash-err">scope must be search or selection</div>`))
+		return nil, false
+	}
+}
+
 func (s *Server) batchDelete(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
@@ -327,38 +369,8 @@ func (s *Server) batchTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scope := strings.TrimSpace(r.FormValue("scope"))
-	var ids []int64
-	switch scope {
-	case "selection":
-		for _, idStr := range r.Form["ids"] {
-			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-				ids = append(ids, id)
-			}
-		}
-	case "search":
-		expr, parseErr := search.Parse(r.FormValue("q"))
-		if parseErr != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`<div class="flash flash-err">Could not parse search: ` +
-				html.EscapeString(parseErr.Error()) + `</div>`))
-			return
-		}
-		// ExecuteForDeleteStream is just "iterate matching image ids"; reuse
-		// it so the search → ids materialisation is identical to delete-all.
-		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
-			ids = append(ids, t.ID)
-			return nil
-		})
-		if err != nil {
-			logx.Errorf("batch-tag search: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`<div class="flash flash-err">Search error.</div>`))
-			return
-		}
-	default:
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">scope must be search or selection</div>`))
+	ids, ok := s.resolveBatchScope(w, r, "batch-tag")
+	if !ok {
 		return
 	}
 
@@ -373,6 +385,30 @@ func (s *Server) batchTag(w http.ResponseWriter, r *http.Request) {
 	}
 	go s.runBatchTag(ids, op, catTags)
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// anyTagHasImplications reports whether any of the supplied tag ids
+// appears as a parent in tag_implications. Used by runBatchTag to pick
+// a smaller chunk size when the fan-out closure would otherwise pin
+// the writer for tens of seconds per 500-row chunk.
+func (s *Server) anyTagHasImplications(tagIDs []int64) bool {
+	if len(tagIDs) == 0 {
+		return false
+	}
+	placeholders := strings.Repeat("?,", len(tagIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(tagIDs))
+	for i, id := range tagIDs {
+		args[i] = id
+	}
+	var n int
+	if err := s.db().Read.QueryRow(
+		`SELECT 1 FROM tag_implications WHERE parent_tag_id IN (`+placeholders+`) LIMIT 1`,
+		args...,
+	).Scan(&n); err != nil {
+		return false
+	}
+	return n == 1
 }
 
 // runBatchTag resolves each (catID, name) token to a tag id once up front
@@ -431,7 +467,15 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 	}
 
 	s.jobs.Update(0, total, fmt.Sprintf("%s 0/%d…", label, total))
-	const chunkSize = 500
+	// Chunk size compresses to 100 when any resolved tag carries
+	// implications so the per-row fan-out cost in addTagToImageTxReportingDup
+	// doesn't hold the writer for tens of seconds on a 500-row chunk.
+	// The 500-row default still applies to bare-add jobs where the
+	// per-row work is just an INSERT OR IGNORE + usage_count bump.
+	chunkSize := 500
+	if op == "add" && s.anyTagHasImplications(tagIDs) {
+		chunkSize = 100
+	}
 	for start := 0; start < total; start += chunkSize {
 		if ctx.Err() != nil {
 			cancelled = true
@@ -511,36 +555,8 @@ func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
 		taggerName = ""
 	}
 
-	scope := strings.TrimSpace(r.FormValue("scope"))
-	var ids []int64
-	switch scope {
-	case "selection":
-		for _, idStr := range r.Form["ids"] {
-			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-				ids = append(ids, id)
-			}
-		}
-	case "search":
-		expr, parseErr := search.Parse(r.FormValue("q"))
-		if parseErr != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`<div class="flash flash-err">Could not parse search: ` +
-				html.EscapeString(parseErr.Error()) + `</div>`))
-			return
-		}
-		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
-			ids = append(ids, t.ID)
-			return nil
-		})
-		if err != nil {
-			logx.Errorf("batch-strip search: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`<div class="flash flash-err">Search error.</div>`))
-			return
-		}
-	default:
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">scope must be search or selection</div>`))
+	ids, ok := s.resolveBatchScope(w, r, "batch-strip")
+	if !ok {
 		return
 	}
 
@@ -633,36 +649,8 @@ func (s *Server) batchInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scope := strings.TrimSpace(r.FormValue("scope"))
-	var ids []int64
-	switch scope {
-	case "selection":
-		for _, idStr := range r.Form["ids"] {
-			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-				ids = append(ids, id)
-			}
-		}
-	case "search":
-		expr, parseErr := search.Parse(r.FormValue("q"))
-		if parseErr != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`<div class="flash flash-err">Could not parse search: ` +
-				html.EscapeString(parseErr.Error()) + `</div>`))
-			return
-		}
-		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
-			ids = append(ids, t.ID)
-			return nil
-		})
-		if err != nil {
-			logx.Errorf("batch-inbox search: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`<div class="flash flash-err">Search error.</div>`))
-			return
-		}
-	default:
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">scope must be search or selection</div>`))
+	ids, ok := s.resolveBatchScope(w, r, "batch-inbox")
+	if !ok {
 		return
 	}
 
@@ -738,6 +726,87 @@ func (s *Server) runBatchInbox(ids []int64) {
 	s.jobs.Complete(fmt.Sprintf("Toggled inbox state for %d image(s).", processed))
 }
 
+// batchFavorite mirrors batchInbox for the is_favorited column: a
+// per-row toggle that flips favorited rows to unfavorited and vice
+// versa across the resolved scope.
+func (s *Server) batchFavorite(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+
+	ids, ok := s.resolveBatchScope(w, r, "batch-favorite")
+	if !ok {
+		return
+	}
+
+	if len(ids) == 0 {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if err := s.jobs.Start(models.JobTypeTag); err != nil {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+		return
+	}
+	go s.runBatchFavorite(ids)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) runBatchFavorite(ids []int64) {
+	ctx := s.jobs.Context()
+	const chunkSize = 500
+	total := len(ids)
+	processed := 0
+	cancelled := false
+
+	s.jobs.Update(0, total, fmt.Sprintf("toggling favorite state 0/%d…", total))
+
+	for start := 0; start < total; start += chunkSize {
+		if ctx.Err() != nil {
+			cancelled = true
+			break
+		}
+		end := start + chunkSize
+		if end > total {
+			end = total
+		}
+		chunk := ids[start:end]
+		placeholders := strings.Repeat("?,", len(chunk))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+
+		tx, err := s.db().Write.Begin()
+		if err != nil {
+			s.jobs.Fail(err.Error())
+			return
+		}
+		if _, err := tx.Exec(
+			`UPDATE images SET is_favorited = 1 - is_favorited WHERE id IN (`+placeholders+`)`, args...,
+		); err != nil {
+			tx.Rollback()
+			s.jobs.Fail(err.Error())
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			s.jobs.Fail(err.Error())
+			return
+		}
+		processed = end
+		s.jobs.Update(processed, total, fmt.Sprintf("toggling favorite state %d/%d…", processed, total))
+	}
+
+	s.Active().InvalidateCaches()
+
+	if cancelled {
+		s.jobs.Complete(fmt.Sprintf("favorite toggle cancelled (%d/%d toggled)", processed, total))
+		return
+	}
+	s.jobs.Complete(fmt.Sprintf("Toggled favorite state for %d image(s).", processed))
+}
+
 // batchCollection assigns a collection label to every image in
 // `scope=search` (q + sort + order) or every checked id in
 // `scope=selection`. Mirrors batchInbox's id-collection shape; the
@@ -755,36 +824,8 @@ func (s *Server) batchCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scope := strings.TrimSpace(r.FormValue("scope"))
-	var ids []int64
-	switch scope {
-	case "selection":
-		for _, idStr := range r.Form["ids"] {
-			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-				ids = append(ids, id)
-			}
-		}
-	case "search":
-		expr, parseErr := search.Parse(r.FormValue("q"))
-		if parseErr != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`<div class="flash flash-err">Could not parse search: ` +
-				html.EscapeString(parseErr.Error()) + `</div>`))
-			return
-		}
-		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
-			ids = append(ids, t.ID)
-			return nil
-		})
-		if err != nil {
-			logx.Errorf("batch-collection search: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`<div class="flash flash-err">Search error.</div>`))
-			return
-		}
-	default:
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">scope must be search or selection</div>`))
+	ids, ok := s.resolveBatchScope(w, r, "batch-collection")
+	if !ok {
 		return
 	}
 

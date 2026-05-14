@@ -109,7 +109,7 @@
           {{end}}
         </td>
         <td>
-          {{if or .IsAlias (eq .CategoryName "rating")}}
+          {{if eq .CategoryName "rating"}}
           <span style="color:{{.CategoryColor}}">{{.CategoryName}}</span>
           {{else}}
           <select class="cat-select"
@@ -130,6 +130,7 @@
         <td>{{.UsageCount}}</td>
         <td>
           {{if .IsAlias}}<span class="alias-badge">alias</span>
+          {{else if eq .UsageCount 0}}<span class="origin-none">—</span>
           {{else if .IsAutoOnly}}<span class="auto-badge">auto</span>
           {{else}}user{{end}}
         </td>
@@ -268,7 +269,7 @@
         hx-swap="innerHTML"
         hx-on::after-request="handleAliasCreateResult(event)">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <p>Create an alias that resolves to an existing tag.</p>
+    <p>Create an alias resolving to another tag. The canonical tag is created if it doesn't exist yet.</p>
     <div class="field">
       <label>Alias name</label>
       <input type="text" name="name" id="alias-create-name" required autocomplete="off">
@@ -283,7 +284,7 @@
     </div>
     <div class="field">
       <label>Resolves to (canonical tag)</label>
-      <div style="position:relative">
+      <div class="series-input-wrap">
         <input type="text" name="canonical_id" id="alias-create-canon"
                placeholder="tag name, category:name, or ID" required autocomplete="off"
                hx-get="/internal/tags/suggest"
@@ -332,6 +333,30 @@
 </dialog>
 
 <script>
+// Cross-navigation flash slot: tag mutations that reload or redirect set
+// sessionStorage.tagsFlash via the HX-Trigger `tagsFlash` event; the next
+// /tags load drains the value into #tag-flash. Same-page mutations
+// (category change) still swap straight into #tag-flash via HTMX.
+(function () {
+  var slot = document.getElementById('tag-flash');
+  if (!slot) return;
+  var msg = sessionStorage.getItem('tagsFlash');
+  if (!msg) return;
+  sessionStorage.removeItem('tagsFlash');
+  var div = document.createElement('div');
+  div.className = 'flash flash-ok';
+  div.textContent = msg;
+  slot.appendChild(div);
+})();
+document.body.addEventListener('tagsFlash', function (e) {
+  // htmx 1.9 surfaces the JSON string value on detail.value; fall back to
+  // detail when the header used the bare-string form.
+  var val = e.detail && typeof e.detail === 'object' ? e.detail.value : e.detail;
+  if (typeof val === 'string' && val !== '') {
+    sessionStorage.setItem('tagsFlash', val);
+  }
+});
+
 document.querySelectorAll('.btn-rename-trigger').forEach(function(btn) {
   btn.addEventListener('click', function() {
     var id = this.dataset.id;
@@ -428,12 +453,11 @@ function handleMergeResult(event) {
 })();
 
 function handleAliasCreateResult(event) {
+  // The success path returns 204 + HX-Redirect; htmx navigates and the
+  // tagsFlash event seeds the #tag-flash slot on the destination page.
+  // Errors stay in the dialog as flash-err so the user can correct input.
   var elt = event.detail.elt;
   if (elt && elt.querySelector && elt.querySelector('.flash-err')) return;
-  if (event.detail.xhr.status === 204 || event.detail.xhr.status === 302) {
-    document.getElementById('alias-create-dialog').close();
-    window.location.reload();
-  }
 }
 
 (function() {
@@ -477,8 +501,10 @@ function handleImplicationAdded(event) {
   // (full success - no flash to render) or 200 with a partial-failure
   // flash body. Either way, re-fetch the dialog body so new rows render
   // without a full page refresh, and clear the input so the user can
-  // type the next batch.
-  var added = event.detail.xhr.getResponseHeader('HX-Trigger') === 'implication-added';
+  // type the next batch. The header carries a JSON object since the
+  // tagsFlash event piggybacks on the same trigger, so match by substring.
+  var hdr = event.detail.xhr.getResponseHeader('HX-Trigger') || '';
+  var added = hdr.indexOf('implication-added') !== -1;
   if (added) {
     var input = document.getElementById('implication-add-input');
     if (input) input.value = '';

@@ -1023,6 +1023,31 @@ func TestGalleryHandler_RandomSeedFitsInt32(t *testing.T) {
 	}
 }
 
+// `?page=0` and `?page=-1` must redirect to `?page=1` so the URL
+// agrees with the rendered pager, the same way past-end values
+// redirect to the actual last page.
+func TestGalleryHandler_NonPositivePageRedirects(t *testing.T) {
+	srv := newTestServer(t)
+	seedImage(t, srv, "p0.png", 10, 10)
+
+	for _, raw := range []string{"0", "-1"} {
+		req := httptest.NewRequest("GET", "/?page="+raw, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusSeeOther {
+			t.Fatalf("page=%s expected 303 redirect, got %d", raw, w.Code)
+		}
+		loc := w.Header().Get("Location")
+		parsed, err := url.Parse(loc)
+		if err != nil {
+			t.Fatalf("parse Location %q: %v", loc, err)
+		}
+		if got := parsed.Query().Get("page"); got != "1" {
+			t.Errorf("page=%s redirected to page=%q, want 1", raw, got)
+		}
+	}
+}
+
 // TestCreateSavedSearch_RejectsDuplicateName pins the no-overwrite
 // promise: a second save under an existing name surfaces an error
 // instead of silently clobbering the previous saved search's query.
@@ -1620,6 +1645,52 @@ func TestUpdateExternal_RejectsCollectionOrderWithoutCollection(t *testing.T) {
 	}
 }
 
+// Setting collection="" while a stored order is non-NULL must null
+// that order in the same transaction; otherwise the detail page
+// renders an orphan #N next to "(none)" and the collection: search
+// never surfaces the row.
+func TestUpdateExternal_ClearingCollectionNullsOrder(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "ext_clear.png", 10, 10)
+	csrf := srv.csrfToken("anon")
+
+	// Seed with collection + order set.
+	seed := url.Values{"_csrf": {csrf}, "collection": {"My Set"}, "collection_order": {"5"}}
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(seed.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code/100 != 2 && w.Code != http.StatusSeeOther {
+		t.Fatalf("seed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Clear the collection without sending an explicit order.
+	clr := url.Values{"_csrf": {csrf}, "collection": {""}}
+	req = httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(clr.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code/100 != 2 && w.Code != http.StatusSeeOther {
+		t.Fatalf("clear collection: %d %s", w.Code, w.Body.String())
+	}
+
+	var collection string
+	var order sql.NullInt64
+	if err := srv.Active().DB.Read.QueryRow(
+		`SELECT series, series_order FROM images WHERE id = ?`, id,
+	).Scan(&collection, &order); err != nil {
+		t.Fatal(err)
+	}
+	if collection != "" {
+		t.Errorf("collection = %q, want empty", collection)
+	}
+	if order.Valid {
+		t.Errorf("collection_order = %d (valid=true), want NULL", order.Int64)
+	}
+}
+
 // TestUpdateExternal_RejectsZeroOrNegativeOrder pins the U-F006 fix:
 // zero and negative integers fall outside the 1-based position model.
 func TestUpdateExternal_RejectsZeroOrNegativeOrder(t *testing.T) {
@@ -1732,40 +1803,28 @@ func uploadInboxLink(t *testing.T, body string) string {
 	return body[idx : idx+end+4]
 }
 
-// TestGalleryInboxTooltip_DropsCountUnderCeiling pins F011: the
-// InboxCount cache deliberately ignores the cookie-applied rating
-// ceiling, so a tooltip "Inbox (39)" would lie when the ceiling
-// hides higher-rated rows from the click result. Drop the parens
-// when a ceiling is active so the badge doesn't masquerade as the
-// post-click match count.
-func TestGalleryInboxTooltip_DropsCountUnderCeiling(t *testing.T) {
+// The inbox tooltip always carries the count when > 0, regardless of
+// the active rating ceiling. The cached count is ceiling-blind, but
+// a stale-leaning number is more useful than a missing one for the
+// triage-backlog read.
+func TestGalleryInboxTooltip_AlwaysShowsCount(t *testing.T) {
 	srv := newTestServer(t)
-	// Seed one inbox image so InboxCount > 0 in both branches.
 	seedImage(t, srv, "in.png", 10, 10)
 
-	// No cookie → ActiveRating = "explicit" → count parenthesised.
-	req := httptest.NewRequest("GET", "/", nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET / expected 200, got %d", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, `title="Inbox (1) (I)"`) {
-		t.Errorf("no-ceiling tooltip should carry the count; body slice: %s", inboxTooltip(t, body))
-	}
-
-	// With ceiling=sensitive set, the badge must drop the count.
-	req = httptest.NewRequest("GET", "/", nil)
-	req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: "sensitive"})
-	w = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET / with ceiling expected 200, got %d", w.Code)
-	}
-	body = w.Body.String()
-	if !strings.Contains(body, `title="Inbox (I)"`) {
-		t.Errorf("ceiling-active tooltip should drop the count; body slice: %s", inboxTooltip(t, body))
+	for _, ceiling := range []string{"", "sensitive", "questionable", "explicit"} {
+		req := httptest.NewRequest("GET", "/", nil)
+		if ceiling != "" {
+			req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: ceiling})
+		}
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("ceiling=%q expected 200, got %d", ceiling, w.Code)
+		}
+		body := w.Body.String()
+		if !strings.Contains(body, `title="Inbox (1) (I)"`) {
+			t.Errorf("ceiling=%q tooltip should keep the count; body slice: %s", ceiling, inboxTooltip(t, body))
+		}
 	}
 }
 
@@ -1815,12 +1874,11 @@ func TestAddTagToImage_CategoryPrefixOnlyRejected(t *testing.T) {
 	}
 }
 
-// TestTagsPage_AliasRowOmitsCategorySelect pins the spec §5.6 read-only
-// claim for alias rows: the Category cell is read-only because the
-// alias's category is set at creation and ChangeTagCategory wouldn't
-// know which side to move. Render a colored span instead of the
-// editable <select>.
-func TestTagsPage_AliasRowOmitsCategorySelect(t *testing.T) {
+// TestTagsPage_AliasRowExposesCategorySelect pins the spec §5.6
+// editable-cell behaviour for alias rows: the Category cell is the
+// same editable <select> non-alias rows use, riding the same
+// PATCH /tags/{id}/category path.
+func TestTagsPage_AliasRowExposesCategorySelect(t *testing.T) {
 	srv := newTestServer(t)
 	cx := srv.Active()
 	var generalID int64
@@ -1845,12 +1903,12 @@ func TestTagsPage_AliasRowOmitsCategorySelect(t *testing.T) {
 	rowStart := strings.LastIndex(body[:idx], "<tr")
 	rowEnd := strings.Index(body[idx:], "</tr>")
 	row := body[rowStart : idx+rowEnd]
-	if strings.Contains(row, `<select class="cat-select"`) {
-		t.Errorf("alias row still renders an editable Category <select>; row was: %s", row)
+	if !strings.Contains(row, `<select class="cat-select"`) {
+		t.Errorf("alias row missing the editable Category <select>; row was: %s", row)
 	}
-	// The cell should still surface the alias's own category by name.
-	if !strings.Contains(row, `>general</span>`) {
-		t.Errorf("alias row missing the static Category span; row was: %s", row)
+	// The select must hx-patch the same route non-alias rows use.
+	if !strings.Contains(row, `hx-patch="/tags/`) {
+		t.Errorf("alias row's select missing hx-patch wiring; row was: %s", row)
 	}
 }
 

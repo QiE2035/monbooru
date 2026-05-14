@@ -10,18 +10,21 @@ import (
 	"sync/atomic"
 )
 
+// Level orders verbosity low-to-high (smaller = more verbose) to match
+// the slog / syslog convention; Enabled fires only when the message's
+// level is at or above the configured threshold.
 type Level int32
 
 const (
-	LevelWarn Level = iota
+	LevelDebug Level = iota
 	LevelInfo
-	LevelDebug
+	LevelWarn
 )
 
 var level atomic.Int32
 
 // Set parses a name ("warn", "info", "debug"; anything else becomes "warn")
-// and installs it as the current level.
+// and installs it as the current threshold.
 func Set(name string) {
 	var l Level
 	switch strings.ToLower(strings.TrimSpace(name)) {
@@ -35,8 +38,8 @@ func Set(name string) {
 	level.Store(int32(l))
 }
 
-// Enabled reports whether messages at l would be emitted.
-func Enabled(l Level) bool { return l <= Level(level.Load()) }
+// Enabled reports whether messages at l clear the configured threshold.
+func Enabled(l Level) bool { return l >= Level(level.Load()) }
 
 func Debugf(format string, a ...any) {
 	if Enabled(LevelDebug) {

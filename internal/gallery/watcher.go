@@ -109,13 +109,17 @@ func (w *Watcher) Run(ctx context.Context) error {
 				return nil
 			}
 
-			// Drop events while a manual sync or move job is running;
-			// each one already touches image_paths under its own
-			// transaction, so a concurrent watcher ingest would race on
-			// the UNIQUE constraint or trip markFileMissing on the source.
+			// Drop events while a manual sync, move, delete, or tag job
+			// is running; each one already touches image_paths /
+			// image_tags under its own transaction, so a concurrent
+			// watcher ingest would race on the UNIQUE constraint or
+			// trip markFileMissing on the source.
 			if w.jobs != nil {
-				if st := w.jobs.Get(); st != nil && st.Running && (st.JobType == "sync" || st.JobType == "move") {
-					continue
+				if st := w.jobs.Get(); st != nil && st.Running {
+					switch st.JobType {
+					case "sync", "move", "delete", "tag":
+						continue
+					}
 				}
 			}
 

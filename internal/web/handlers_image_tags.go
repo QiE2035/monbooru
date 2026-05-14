@@ -146,6 +146,14 @@ func (s *Server) addTagToImage(w http.ResponseWriter, r *http.Request) {
 	var promotedTokens []string
 	var displacedRatings []string
 	mutated := false
+
+	// Resolve every token up front so the inserts ride one writer
+	// round-trip; a 50-token paste pays one transaction instead of N.
+	type resolved struct {
+		name string
+		tag  *models.Tag
+	}
+	prepared := make([]resolved, 0, len(catTags))
 	for _, ct := range catTags {
 		tag, err := s.tagSvc().GetOrCreateTag(ct.name, ct.catID)
 		if err != nil {
@@ -153,28 +161,40 @@ func (s *Server) addTagToImage(w http.ResponseWriter, r *http.Request) {
 			rejected = append(rejected, ct.name+": "+err.Error())
 			continue
 		}
-		// Single write-pool transaction does the INSERT OR IGNORE and
-		// reports whether the row was actually new, so parallel adds
-		// can't both claim they were the first writer.
-		res, err := s.tagSvc().AddTagToImageReportingDup(id, tag.ID, false, nil, "")
+		prepared = append(prepared, resolved{name: ct.name, tag: tag})
+	}
+
+	if len(prepared) > 0 {
+		tagIDs := make([]int64, len(prepared))
+		for i, p := range prepared {
+			tagIDs[i] = p.tag.ID
+		}
+		results, err := s.tagSvc().AddTagsToOneImage(id, tagIDs)
 		if err != nil {
-			logx.Warnf("add tag %q to image %d: %v", ct.name, id, err)
-			rejected = append(rejected, ct.name+": "+err.Error())
-			continue
+			logx.Warnf("batch add tags to image %d: %v", id, err)
+			// On batch failure surface a single rejection covering every
+			// prepared token so the user knows none landed.
+			for _, p := range prepared {
+				rejected = append(rejected, p.name+": "+err.Error())
+			}
+		} else {
+			for i, res := range results {
+				name := prepared[i].name
+				if res.Added || res.Promoted {
+					mutated = true
+				}
+				if res.Added && !res.Promoted {
+					added = append(added, name)
+				}
+				if !res.Added && !res.Promoted {
+					dupes = append(dupes, name)
+				}
+				if res.Promoted {
+					promotedTokens = append(promotedTokens, name)
+				}
+				displacedRatings = append(displacedRatings, res.DisplacedRatings...)
+			}
 		}
-		if res.Added || res.Promoted {
-			mutated = true
-		}
-		if res.Added && !res.Promoted {
-			added = append(added, ct.name)
-		}
-		if !res.Added && !res.Promoted {
-			dupes = append(dupes, ct.name)
-		}
-		if res.Promoted {
-			promotedTokens = append(promotedTokens, ct.name)
-		}
-		displacedRatings = append(displacedRatings, res.DisplacedRatings...)
 	}
 
 	if mutated {

@@ -64,7 +64,9 @@ func (s *Server) readerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	pageCount := *img.PageCount
 	page := 1
+	rawPage := ""
 	if v := r.URL.Query().Get("page"); v != "" {
+		rawPage = v
 		if n, err := strconv.Atoi(v); err == nil {
 			page = n
 		}
@@ -74,6 +76,16 @@ func (s *Server) readerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if page > pageCount {
 		page = pageCount
+	}
+	// URL coherence with the gallery's pagination clamp: when the raw
+	// `?page=N` disagrees with the clamped page (out of range, leading
+	// zero, etc.), 303 to the clamped value so a bookmark of the bogus
+	// URL doesn't keep replaying it.
+	if rawPage != "" && rawPage != strconv.Itoa(page) {
+		q := r.URL.Query()
+		q.Set("page", strconv.Itoa(page))
+		http.Redirect(w, r, r.URL.Path+"?"+q.Encode(), http.StatusSeeOther)
+		return
 	}
 	next := 0
 	if page < pageCount {

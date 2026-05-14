@@ -427,6 +427,79 @@ func TestCreateImage_MissingPath(t *testing.T) {
 	}
 }
 
+// JSON-mode ingest must reject an absolute path that doesn't resolve
+// under the gallery root, otherwise a later DELETE on the row would
+// unlink a file the gallery never owned.
+func TestCreateImage_JSONPath_OutsideGalleryRejected(t *testing.T) {
+	env := newTestEnv(t)
+
+	tmpDir := t.TempDir()
+	imgPath := filepath.Join(tmpDir, "outside.png")
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	f, err := os.Create(imgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	body, _ := json.Marshal(map[string]any{"path": imgPath})
+	req := httptest.NewRequest("POST", "/api/v1/images", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("foreign path expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "inside the gallery") {
+		t.Errorf("error body should mention containment, got: %s", w.Body.String())
+	}
+}
+
+// A caller-supplied path that doesn't exist is a client error and
+// the response must not echo the operator's filesystem layout.
+func TestCreateImage_JSONPath_NonExistentReturns400(t *testing.T) {
+	env := newTestEnv(t)
+	ghost := filepath.Join(env.galleryDir, "does", "not", "exist.png")
+
+	body, _ := json.Marshal(map[string]any{"path": ghost})
+	req := httptest.NewRequest("POST", "/api/v1/images", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("missing file expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), ghost) {
+		t.Errorf("error body must not echo the raw path; got %s", w.Body.String())
+	}
+}
+
+// A text file renamed to .png must not produce a row with null
+// width and height; dimension filters would drop it silently.
+func TestCreateImage_RejectsNonImageContent(t *testing.T) {
+	env := newTestEnv(t)
+	fakePath := filepath.Join(env.galleryDir, "fake.png")
+	if err := os.WriteFile(fakePath, []byte("not an image\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{"path": fakePath})
+	req := httptest.NewRequest("POST", "/api/v1/images", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("non-image content expected 415, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestCreateImage_InvalidJSON(t *testing.T) {
 	env := newTestEnv(t)
 	req := httptest.NewRequest("POST", "/api/v1/images", strings.NewReader("not json"))
@@ -540,6 +613,118 @@ func TestCreateImage_JSONOriginRoundTrip(t *testing.T) {
 	json.NewDecoder(gw.Body).Decode(&got)
 	if got["origin"] != "https://danbooru/12345" {
 		t.Errorf("origin on GET = %v, want %q", got["origin"], "https://danbooru/12345")
+	}
+}
+
+// A caller-supplied `via` lands in the data-source HTML attribute that
+// the detail-page JS reads with `[data-source="<via>"]`. Whitespace,
+// quotes, and brackets must be refused at write time so the selector
+// never lands on a malformed string.
+func TestAddImageTags_RejectsViaWithSelectorBreakers(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "via_bad.png", 10, 10)
+
+	for _, bad := range []string{"foo bar", `with"quote`, "with]bracket"} {
+		body, _ := json.Marshal(map[string]any{"tags": []string{"one"}, "via": bad})
+		req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/tags", id), bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("via=%q expected 400, got %d: %s", bad, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestAddImageTags_AcceptsURLAndIdentifierVia(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "via_good.png", 10, 10)
+
+	for _, ok := range []string{"my_app_v1.2", "https://danbooru/12345", "app-name", "user@host"} {
+		body, _ := json.Marshal(map[string]any{"tags": []string{"tag_for_" + strings.ReplaceAll(ok, ":", "_")}, "via": ok})
+		req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/tags", id), bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("via=%q expected 200, got %d: %s", ok, w.Code, w.Body.String())
+		}
+	}
+}
+
+// The image-scoped tag listing is reachable so a caller doesn't have
+// to fetch the full image object just to read its tag array.
+func TestListImageTags(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "tag_get.png", 10, 10)
+	addBody, _ := json.Marshal(map[string]any{"tags": []string{"red", "blue"}})
+	addReq := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/tags", id), bytes.NewReader(addBody))
+	addReq.Header.Set("Content-Type", "application/json")
+	addW := httptest.NewRecorder()
+	env.mux.ServeHTTP(addW, addReq)
+	if addW.Code != http.StatusOK {
+		t.Fatalf("setup add tags: %d %s", addW.Code, addW.Body.String())
+	}
+
+	req := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/images/%d/tags", id), nil)
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var tags []any
+	if err := json.NewDecoder(w.Body).Decode(&tags); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(tags) < 2 {
+		t.Errorf("got %d tags, want >= 2", len(tags))
+	}
+}
+
+func TestListImageTags_NotFound(t *testing.T) {
+	env := newTestEnv(t)
+	req := httptest.NewRequest("GET", "/api/v1/images/99999/tags", nil)
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("missing id: got %d, want 404", w.Code)
+	}
+}
+
+// A body that omits `tags` (e.g. `{"add":["x"]}` from a caller that
+// guessed the field name wrong) must surface as 400 rather than a
+// silent 200 + current TagArray, so the caller learns about the
+// mismatch instead of dropping every write on the floor.
+func TestAddImageTags_RejectsMissingTagsField(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "tag_wrong_field.png", 10, 10)
+
+	// The classic wrong-field mistake.
+	body := []byte(`{"add":["would_be_added"]}`)
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/tags", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("wrong-shape body expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// The DELETE counterpart: an empty or missing `tags` field must
+// surface as 400 rather than loop zero times and 200.
+func TestRemoveImageTags_RejectsMissingTagsField(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "tag_wrong_delete.png", 10, 10)
+
+	body := []byte(`{"remove":["existing_tag"]}`)
+	req := httptest.NewRequest("DELETE", fmt.Sprintf("/api/v1/images/%d/tags", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("wrong-shape body expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -992,6 +1177,25 @@ func TestParsePage_LimitCapped(t *testing.T) {
 	}
 }
 
+func TestParsePage_PageSizeAlias(t *testing.T) {
+	req := httptest.NewRequest("GET", "/?page=2&page_size=50", nil)
+	offset, limit := parsePage(req, 40, 200)
+	if limit != 50 {
+		t.Errorf("page_size alias limit = %d, want 50", limit)
+	}
+	if offset != 50 {
+		t.Errorf("page_size offset = %d, want 50", offset)
+	}
+}
+
+func TestParsePage_LimitWinsOverPageSize(t *testing.T) {
+	req := httptest.NewRequest("GET", "/?limit=20&page_size=50", nil)
+	_, limit := parsePage(req, 40, 200)
+	if limit != 20 {
+		t.Errorf("limit wins over page_size: got %d, want 20", limit)
+	}
+}
+
 func TestParsePage_InvalidValues(t *testing.T) {
 	req := httptest.NewRequest("GET", "/?page=bad&limit=also_bad", nil)
 	offset, limit := parsePage(req, 40, 200)
@@ -1145,6 +1349,43 @@ func TestListTags_WithUnknownCategory(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200 for unknown category, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// The API delete sweeps an emptied parent folder by default, matching
+// single-image move and the web UI delete. The structured response
+// body stays opt-in via ?delete_empty_folder=true.
+func TestDeleteImage_EmptyFolderCleanedUpByDefault(t *testing.T) {
+	env := newTestEnv(t)
+
+	subDir := filepath.Join(env.galleryDir, "cleanup_default")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	imgPath := filepath.Join(subDir, "single.png")
+	f, err := os.Create(imgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+	record, _, err := gallery.Ingest(env.database, env.galleryDir, env.thumbDir, imgPath, "png", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("DELETE", fmt.Sprintf("/api/v1/images/%d", record.ID), nil)
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("default delete expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(subDir); !os.IsNotExist(err) {
+		t.Errorf("empty parent folder should be removed; stat err = %v", err)
 	}
 }
 

@@ -87,10 +87,15 @@ func (s *Server) addImplicationPost(w http.ResponseWriter, r *http.Request) {
 		// New implication targets may have been created via GetOrCreateTag,
 		// so the cached tag count is stale until next render.
 		s.Active().InvalidateCaches()
-		// The dialog's after-request hook listens for this trigger and
-		// re-fetches the body so newly-added rows render without a
-		// full-page refresh that would close the modal underneath it.
-		w.Header().Set("HX-Trigger", "implication-added")
+		// implication-added drives the dialog's after-request hook (re-fetch
+		// body without closing the modal); tagsFlash seeds sessionStorage so
+		// the next /tags reload surfaces the green message above the table.
+		noun := "implication"
+		if added != 1 {
+			noun = "implications"
+		}
+		w.Header().Set("HX-Trigger",
+			`{"implication-added":"","tagsFlash":`+strconv.Quote(strconv.Itoa(added)+" "+noun+" added.")+`}`)
 	}
 	switch {
 	case len(failures) == 0 && added > 0:
@@ -123,6 +128,9 @@ func (s *Server) removeImplicationDelete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.startImplicationPropagation(parentID, impliedID, "remove")
+	// Seed the cross-navigation flash slot; the dialog stays open and the
+	// /tags reload on close surfaces this above the table.
+	w.Header().Set("HX-Trigger", `{"tagsFlash":"Implication removed."}`)
 	w.WriteHeader(http.StatusNoContent)
 }
 

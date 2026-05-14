@@ -56,8 +56,8 @@ Each image carries four user-edited free-form fields next to the metadata panel 
 
 - **Source** - provenance label (a site name, scraper, anything you want to remember). Surfaces in the `source:my_label` search filter (exact match). Bare `source:` matches images with nothing set. Max 200 chars.
 - **URL** - the canonical web URL the image came from. Must start with `http://` or `https://`. Rendered as a clickable link (new tab) on the detail page. Max 2048 chars.
-- **Collection** - free-form grouping label shared by every image you want to keep together (a series name, a comic, a photoshoot). Surfaces in the `collection:"my label"` search filter (exact match) and as a Collections section in the gallery sidebar; the `Order` sort groups by collection first. Cbz / zip uploads pre-fill this from `ComicInfo.xml` `<Series>` when present; re-extract never overwrites a non-empty value. Max 200 chars.
-- **Order** - 1-based position of this image inside its collection (e.g. page or chapter number). Renders as `#N` next to the collection chip and drives the within-collection ordering of the `Order` sort. NULL by default; the batch dialog can fan a starting integer across a selection so a freshly-labelled batch lands ordered.
+- **Collection** - grouping label shared by every image you want to keep together (a series name, a comic, a photoshoot). Surfaces in the `collection:"my label"` search filter (exact match) and as a Collections section in the gallery sidebar; the `Order` sort groups by collection first. Cbz / zip uploads pre-fill this from `ComicInfo.xml` `<Series>` when present; re-extract never overwrites a non-empty value. Max 200 chars.
+- **Order** - position of this image inside its collection (e.g. page or chapter number). Renders as `#N` next to the collection chip and drives the within-collection ordering of the `Order` sort. NULL by default; the batch dialog can fan a starting integer across a selection so a freshly-labelled batch lands ordered.
 
 All four default to empty; leave them blank if you don't track this.
 
@@ -69,7 +69,7 @@ Nine built-in categories: `general`, `character`, `artist`, `copyright`, `meta`,
 
 The `rating` category is locked to its four canonical names (see below).
 
-**Reserved category names.** A handful of names are refused at create / rename time because they double as search-filter prefixes and would collide with `category:tag` parsing: `fav`, `inbox`, `ai`, `source`, `cat`, `width`, `height`, `date`, `missing`, `animated`, `tagged`, `autotagged`, `folder`, `folderonly`, `generated`, `rating`, plus `system` (the search-bar cheat-sheet trigger).
+**Reserved category names.** A handful of names are refused at create / rename time because they double as search-filter prefixes and would collide with `category:tag` parsing: `fav`, `inbox`, `ai`, `source`, `cat`, `width`, `height`, `date`, `missing`, `tagged`, `autotagged`, `folder`, `folderonly`, `generated`, `rating`, `type`, `collection`, `pages`, plus `system` (the search-bar cheat-sheet trigger).
 
 **Aliasing a tag** is on the `/tags` page: pick a non-alias row and click `Alias→`. The dialog asks for the canonical to point at. After submit:
 
@@ -105,41 +105,11 @@ The folder tree ignore the ceiling - it always shows the true gallery shape - so
 
 ## Search
 
-Tags separated by spaces means AND. Everything else stacks on top:
-
-| Syntax | Effect |
-|---|---|
-| `cat dog` | has both tags |
-| `cat OR dog` | either one |
-| `-blonde_hair` | exclude |
-| `blue*` / `*hair*` | wildcards |
-| `fav:true` | favorites only |
-| `inbox:true` / `inbox:false` | inbox triage state |
-| `ai:a1111` / `ai:comfyui` / `ai:none` | by AI generation tool |
-| `ai:any` | any image with a1111 and/or comfyui metadata |
-| `source:my_label` | exact-match against the per-image source label edited from the detail page; bare `source:` matches images with no source set |
-| `folder:2024/january` | images in this folder or any subfolder |
-| `folder:"my set 1"` | quote paths that contain spaces |
-| `folderonly:2024/january` | only images directly in this folder, no subfolders |
-| `width:>=1920` `height:<768` | dimensions |
-| `date:2024-03-15` `date:>2024-01-01` `date:2024-01..2024-06` | dates |
-| `cat:character` | any tag in that category |
-| `character:cat` | tag "cat" in the character category |
-| `missing:true` | files gone from disk |
-| `tagged:true` / `tagged:false` | images with or without tags |
-| `autotagged:true` / `autotagged:false` | images with or without auto-tags |
-| `generated:abcd1234abcd` | same generation recipe (hash shown on the image page) |
-| `rating:explicit` | effective rating one of `general` / `sensitive` / `questionable` / `explicit` |
-| `type:image` / `type:archive` / `type:animated` | narrow by file-type bucket. `image` = jpeg/png/webp/gif/mp4/webm, `archive` = cbz / zip (manga, comics, image-zips), `animated` = gif/mp4/webm. `type:archive,animated` matches archives + gif/video. Negate with `-type:animated` for static-only. |
-| `collection:"Touhou Suzunaan"` | exact-match against the operator-edited per-image collection label. |
-| `pages:>=100` | manga page count comparison (`>`, `<`, `>=`, `<=`, `=`). Non-manga rows count as 0 pages. |
-| `system:` (autocomplete only) | cheat-sheet trigger. Lists every filter prefix and tag category (`fav:`, `date:`, ..., `character:`, `artist:`, ...). |
-
-Autocomplete is combination-aware: the count next to each suggestion is for the full query, and suggestions that would return zero results are hidden.
+See the in-app help for search syntax.
 
 **Sort:** newest (default), file size, order, random shuffle. Order groups by collection alphabetically then by the per-image order field (NULLs last; images with no collection sit at the start). Random stays stable across page turns; click again to re-shuffle.
 
-**Saved searches:** click "Save search" in the gallery sidebar to store the current query under a name. Click the entry to run it again. Delete with the × button.
+**Saved searches:** open the gallery **Actions** chooser (button next to the search bar, or press `a`) and pick **Save search** to store the current query under a name. The entry appears in the sidebar's Saved searches section; click it to re-run, × to delete.
 
 **Favorites:** press `f` on the detail page or click the heart. Search with `fav:true`.
 
@@ -155,7 +125,7 @@ The gallery sidebar has:
 - Tags from the current page, grouped by category.
 - The list of collections in the gallery.
 - The folder tree - every folder with a count. Click the name to recurse into the folder; click the small `·` next to it to filter to images directly in that folder, no subfolders.
-- AI-Source buttons (a1111 / comfyui / none).
+- AI buttons (a1111 / comfyui / none).
 - Saved searches.
 
 The image detail page reuses the folder tree, AI-source buttons, and saved searches in its sidebar; the current image's tag list sits above them.
@@ -171,19 +141,6 @@ Drop a `.cbz` or `.zip` archive of page images into your gallery (or upload one 
 The detail page for a manga gains two extras:
 - **Read** - opens a reader at page 1.
 - **Pages** - opens a thumbnail grid of every page, click a cell to jump straight to that page in the reader.
-
-Reader controls (also reachable from the keyboard):
-
-| Key | Action |
-|---|---|
-| `→` / `l` / `Space` | Next page |
-| `←` / `h` | Previous page |
-| `Home` / `End` | First / last page |
-| `p` | Jump to a page by number |
-| `P` | See all pages (jumps to the page-thumbnail grid) |
-| `o` | Open the current page bytes in a new tab |
-| `Esc` / `Backspace` | Back |
-
 
 `ComicInfo.xml` at the archive root, when present, is parsed into a read-only metadata panel on the detail page (title, series, volume, writer, summary, ...).
 
@@ -280,14 +237,12 @@ Settings → Maintenance has the manual tools:
 - **Prune orphaned thumbnails** - delete thumbnail files whose image row is gone.
 - **Rebuild thumbnails** - regenerate every thumbnail. Useful after import or after a backup restore.
 - **Recalculate tag counts** - recompute `usage_count` on every tag (zero-usage rows persist; delete them individually on the Tags page when you want them gone). The watcher and bulk paths should keep counts correct in real time, so you only need this if you see discrepancies in usage count.
-- **Merge general tags** - for `.txt` taggers: merges general-category tags into a unique categorized counterpart of the same name (e.g. `general:hatsune_miku` into `character:hatsune_miku` when only one such counterpart exists).
+- **Merge general tags** - folds an auto-tagger-only general tag into its unique categorized counterpart of the same name (e.g. `general:hatsune_miku` → `character:hatsune_miku` when only one such counterpart exists). General tags carrying any manual `image_tags` row are skipped: an explicit user choice always wins over the merge. Useful after a `.txt` tagger run that emits everything as `general:`.
 - **Re-extract metadata** - re-runs SD/ComfyUI metadata extraction on every image.
 - **Vacuum database** - `VACUUM` plus WAL checkpoint to release space.
 - **Duplicates** - list and remove duplicate file paths.
 
 Each action reports how many rows it affected.
-
-**Sync edge case.** Sync skips re-hashing a file when its `(path, size)` already exists in the DB. A re-encoded JPEG that happens to keep the exact byte length will silently keep the previous SHA, so its tags and metadata stay attached even though the bytes changed. Recovery: delete the row from the Tags / image detail page and re-sync, or replace the file with one of a different size.
 
 ---
 
@@ -337,7 +292,7 @@ curl -H "Authorization: Bearer <token>" \
 - HTML reference: `/api/v1/docs` (also linked in the footer).
 - OpenAPI spec: `/api/v1/openapi.json`.
 
-Endpoints cover image search, single-image metadata, image add/delete, tag add/remove, and tag listing. All endpoints accept `?gallery=<name>` to target a specific gallery.
+Endpoints cover image search, single-image metadata, per-image tag listing, image add/delete, image tag add/remove, and global tag listing. All endpoints accept `?gallery=<name>` to target a specific gallery.
 
 ---
 
@@ -352,7 +307,7 @@ Endpoints cover image search, single-image metadata, image add/delete, tag add/r
 | `/config` | `monbooru.toml` |
 | `/models` | ONNX taggers (one subfolder per tagger) |
 
-**Custom CSS.** Drop a `custom.css` next to `monbooru.toml` and set `custom_css = "/config/custom.css"` in [server] (any absolute path) to load an extra stylesheet. The file is served at `/custom.css` and linked from the layout after the bundled `main.css`, so a `:root` block in there wins the cascade and you can retheme without rebuilding.
+**Custom CSS.** Drop a `custom.css` next to `monbooru.toml` and set `custom_css = "/config/custom.css"` in [server] to load an extra stylesheet. The path must sit under the config directory, `/config`, or `/data`; anything outside that allowlist is logged at startup and the link is suppressed (a guard against a typo like `/etc/passwd` leaking through `/custom.css`). Symlinks are resolved before the check. The file is served at `/custom.css` and linked from the layout after the bundled `main.css`, so a `:root` block in there wins the cascade and you can retheme without rebuilding.
 
 **Environment variables.** All override the TOML config. Pattern: `MONBOORU_{SECTION}_{KEY}`.
 
@@ -397,6 +352,8 @@ CLI flags:
 
 - `-config` - path to the TOML config file.
 - `-hash-password` - print a bcrypt hash and exit.
+
+For the `-tags tagger` build, `libonnxruntime.so` must be reachable - either on `LD_LIBRARY_PATH` / `/usr/lib`, or via the `ORT_LIB_PATH` env var (absolute path to the `.so`). The Docker image bundles ORT v1.21.0 and does not need this.
 
 ---
 

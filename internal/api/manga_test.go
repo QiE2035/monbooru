@@ -89,21 +89,23 @@ func TestAPI_PostImages_AcceptsCBZUpload(t *testing.T) {
 	}
 }
 
-func TestAPI_AddTags_RejectsMangaID(t *testing.T) {
+// The UI tag input accepts manga rows, so the API behaves the same:
+// POST /api/v1/images/{id}/tags on a cbz id returns 200.
+func TestAPI_AddTags_AcceptsMangaID(t *testing.T) {
 	env := newTestEnv(t)
 	id := env.createTestManga(t, "m.cbz")
-	body := strings.NewReader(`{"tags":["1girl"]}`)
+	body := strings.NewReader(`{"tags":["manga_demo"]}`)
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/images/"+strconv.FormatInt(id, 10)+"/tags", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	env.mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("POST tags on manga = %d, want 415; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Errorf("POST tags on manga = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestAPI_RemoveTags_RejectsMangaID(t *testing.T) {
+func TestAPI_RemoveTags_AcceptsMangaID(t *testing.T) {
 	env := newTestEnv(t)
 	id := env.createTestManga(t, "m.cbz")
 	body := strings.NewReader(`{"tags":["1girl"]}`)
@@ -112,8 +114,8 @@ func TestAPI_RemoveTags_RejectsMangaID(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	env.mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("DELETE tags on manga = %d, want 415; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Errorf("DELETE tags on manga = %d, want 200 (no-op for missing tag); body = %s", rec.Code, rec.Body.String())
 	}
 }
 

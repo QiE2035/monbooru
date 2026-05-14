@@ -287,6 +287,72 @@ func TestBootstrapMangaIdempotent(t *testing.T) {
 	}
 }
 
+// TestUntaggedVisibleCounts_CacheAndInvalidate covers the shape behind
+// the tagged:true / autotagged:true fast-count partition: the first
+// read populates the cache, subsequent reads return the same value
+// without re-walking image_tags, and InvalidateCachedCounts forces a
+// re-query after a membership change. The slow NOT-EXISTS path is
+// multi-second on a million-row library so a stale value is the
+// failure mode to guard against.
+func TestUntaggedVisibleCounts_CacheAndInvalidate(t *testing.T) {
+	db := openTestDB(t)
+	if err := Bootstrap(db); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	mkImage := func(sha, path string) int64 {
+		res, err := db.Write.Exec(
+			`INSERT INTO images (sha256, canonical_path, file_type, file_size) VALUES (?, ?, 'png', 1)`,
+			sha, path,
+		)
+		if err != nil {
+			t.Fatalf("insert image: %v", err)
+		}
+		id, _ := res.LastInsertId()
+		return id
+	}
+	tagged := mkImage("sha-tagged", "/a")
+	auto := mkImage("sha-auto", "/b")
+	mkImage("sha-untagged", "/c")
+	tagRes, err := db.Write.Exec(
+		`INSERT INTO tags (name, category_id) VALUES ('blue', (SELECT id FROM tag_categories WHERE name = 'general'))`,
+	)
+	if err != nil {
+		t.Fatalf("insert tag: %v", err)
+	}
+	tagID, _ := tagRes.LastInsertId()
+	if _, err := db.Write.Exec(`INSERT INTO image_tags (image_id, tag_id, is_auto) VALUES (?, ?, 0)`, tagged, tagID); err != nil {
+		t.Fatalf("attach manual tag: %v", err)
+	}
+	if _, err := db.Write.Exec(`INSERT INTO image_tags (image_id, tag_id, is_auto) VALUES (?, ?, 1)`, auto, tagID); err != nil {
+		t.Fatalf("attach auto tag: %v", err)
+	}
+
+	untagged, ok := db.UntaggedVisibleCount()
+	if !ok || untagged != 1 {
+		t.Fatalf("UntaggedVisibleCount = (%d, %v), want (1, true)", untagged, ok)
+	}
+	autoUntagged, ok := db.AutoUntaggedVisibleCount()
+	if !ok || autoUntagged != 2 {
+		t.Fatalf("AutoUntaggedVisibleCount = (%d, %v), want (2, true)", autoUntagged, ok)
+	}
+
+	// Mutate without invalidating: cache must still return the prior
+	// value. This is what makes the cache useful and what makes the
+	// invalidation hook below load-bearing.
+	mkImage("sha-new", "/d")
+	if got, _ := db.UntaggedVisibleCount(); got != 1 {
+		t.Errorf("post-insert pre-invalidate UntaggedVisibleCount = %d, want cached 1", got)
+	}
+
+	db.InvalidateCachedCounts()
+	if got, _ := db.UntaggedVisibleCount(); got != 2 {
+		t.Errorf("post-invalidate UntaggedVisibleCount = %d, want 2 (new row is untagged)", got)
+	}
+	if got, _ := db.AutoUntaggedVisibleCount(); got != 3 {
+		t.Errorf("post-invalidate AutoUntaggedVisibleCount = %d, want 3", got)
+	}
+}
+
 func TestShrinkMemory(t *testing.T) {
 	db := openTestDB(t)
 	if err := Bootstrap(db); err != nil {

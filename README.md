@@ -20,7 +20,7 @@ Designed for organizing your local media collection, including AI-generated imag
 
 - Tag-based gallery with folder tree, favorites, saved searches, related-image suggestions
 - Videos and animated GIFs alongside images, with animated hover previews on the grid
-- Manga / comic / archive support: browse `.cbz` / `.zip` archives as a single object with a built-in reader
+- Manga / comic / archive support: browse CBZ / ZIP archives as a single object with a built-in reader
 - Watcher that picks up new, moved, and deleted files within a few seconds; multi-file browser upload; SHA-256 dedup so the same file under two paths is recognised as one image
 - Inbox system: new ingests land in the inbox; flip to archived once curated.
 - Stable Diffusion metadata extraction from A1111/Forge and ComfyUI (prompts, models, seeds, full workflow)

@@ -843,6 +843,31 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 	}
 	rows.Close()
 
+	// Infer the source-root from the first canonical row: each row
+	// stores canonical_path = <sourceRoot>/<folder_path>/<basename>, so
+	// stripping the trailing folder+basename leaves the root the export
+	// came from. Used below to rebase alias paths from their stored
+	// folder rather than the canonical's folder - operator-maintained
+	// aliases in non-canonical folders survive the rebase intact.
+	sourceRoot := ""
+	for _, r := range imgs {
+		if r.canonical == "" {
+			continue
+		}
+		suffix := filepath.Join(r.folder, filepath.Base(r.canonical))
+		if r.folder == "" {
+			suffix = filepath.Base(r.canonical)
+		}
+		if strings.HasSuffix(r.canonical, "/"+suffix) {
+			sourceRoot = strings.TrimSuffix(r.canonical, "/"+suffix)
+			break
+		}
+		if r.canonical == suffix {
+			sourceRoot = ""
+			break
+		}
+	}
+
 	// image_paths has its own absolute column; rebuild it from the row's
 	// image_id by looking up the matching image's folder_path + basename.
 	// Image_paths include the canonical (is_canonical=1) and any aliases.
@@ -865,7 +890,7 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 	// that happen to share a name - rare but possible, so we dedupe by
 	// letting the INSERT conflict drop the collider.
 	pathRows, err := tx.Query(
-		`SELECT ip.id, ip.image_id, ip.path, i.folder_path
+		`SELECT ip.id, ip.image_id, ip.path, ip.is_canonical, i.folder_path
 		 FROM image_paths ip
 		 JOIN images i ON i.id = ip.image_id`,
 	)
@@ -875,21 +900,41 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 	type pathRow struct {
 		id, imageID int64
 		path        string
+		isCanonical bool
 		folder      string
 	}
 	var paths []pathRow
 	for pathRows.Next() {
 		var r pathRow
-		if err := pathRows.Scan(&r.id, &r.imageID, &r.path, &r.folder); err != nil {
+		var isCanon int
+		if err := pathRows.Scan(&r.id, &r.imageID, &r.path, &isCanon, &r.folder); err != nil {
 			pathRows.Close()
 			return err
 		}
+		r.isCanonical = isCanon == 1
 		paths = append(paths, r)
 	}
 	pathRows.Close()
 
 	for _, p := range paths {
-		newPath := filepath.Join(root, p.folder, filepath.Base(p.path))
+		// Canonical rows always rebase to the row's stored folder_path so
+		// the images.canonical_path computed above agrees. Alias rows
+		// preserve their original folder by stripping the source root
+		// from their stored path; this keeps an alias that lived at
+		// /old/photos/cat.jpg landing at /new/photos/cat.jpg instead of
+		// being collapsed into the canonical's folder (which would also
+		// risk a UNIQUE-on-path collision with the canonical row).
+		var newPath string
+		if p.isCanonical || sourceRoot == "" {
+			newPath = filepath.Join(root, p.folder, filepath.Base(p.path))
+		} else if rel := strings.TrimPrefix(p.path, sourceRoot+"/"); rel != p.path {
+			newPath = filepath.Join(root, rel)
+		} else {
+			// Alias path was outside the inferred source root (operator
+			// hand-edit). Fall back to the canonical-folder shape rather
+			// than leaving the alias dangling at the foreign absolute.
+			newPath = filepath.Join(root, p.folder, filepath.Base(p.path))
+		}
 		if newPath == p.path {
 			continue
 		}

@@ -43,28 +43,37 @@ func padAndResize(src image.Image, size int, profile Profile) *image.RGBA {
 	return padWhiteSquare(src, size)
 }
 
-// padWhiteSquare keeps the legacy WD14 / joytag preprocessing: pad to a
-// square with #FFFFFF, resize to size×size, then force fully-transparent
-// pixels (e.g. PNG corners) to opaque white so the tensor sees the same
-// background regardless of source alpha.
+// padWhiteSquare resizes src preserving aspect ratio so the long side is
+// `size`, centres it on a `size×size` white canvas, then forces fully-
+// transparent pixels (e.g. PNG corners) to opaque white so the tensor
+// sees the same background regardless of source alpha. Resize-first keeps
+// peak transient allocation bounded by `size²` so a parallel inference
+// burst on multi-megapixel sources stays inside small container caps.
 func padWhiteSquare(src image.Image, size int) *image.RGBA {
 	b := src.Bounds()
 	w, h := b.Max.X-b.Min.X, b.Max.Y-b.Min.Y
-	maxDim := w
-	if h > maxDim {
-		maxDim = h
+	scaleW, scaleH := size, size
+	if w >= h {
+		scaleH = h * size / w
+		if scaleH == 0 {
+			scaleH = 1
+		}
+	} else {
+		scaleW = w * size / h
+		if scaleW == 0 {
+			scaleW = 1
+		}
 	}
-
-	square := image.NewRGBA(image.Rect(0, 0, maxDim, maxDim))
-	for i := range square.Pix {
-		square.Pix[i] = 0xFF
-	}
-	offX := (maxDim - w) / 2
-	offY := (maxDim - h) / 2
-	draw.Draw(square, image.Rect(offX, offY, offX+w, offY+h), src, b.Min, draw.Src)
+	scaled := image.NewRGBA(image.Rect(0, 0, scaleW, scaleH))
+	draw.ApproxBiLinear.Scale(scaled, scaled.Bounds(), src, b, draw.Src, nil)
 
 	dst := image.NewRGBA(image.Rect(0, 0, size, size))
-	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), square, square.Bounds(), draw.Src, nil)
+	for i := range dst.Pix {
+		dst.Pix[i] = 0xFF
+	}
+	offX := (size - scaleW) / 2
+	offY := (size - scaleH) / 2
+	draw.Draw(dst, image.Rect(offX, offY, offX+scaleW, offY+scaleH), scaled, image.Point{}, draw.Src)
 	for i := 3; i < len(dst.Pix); i += 4 {
 		if dst.Pix[i] == 0 {
 			dst.Pix[i-3] = 0xFF

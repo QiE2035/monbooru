@@ -17,8 +17,11 @@ import (
 	"github.com/leqwin/monbooru/internal/models"
 )
 
+// pruneMissingImagesPost queues the missing-row sweep as a background
+// `delete` job so a concurrent submit lands on the shared "A job is
+// already running" path the other long maintenance handlers use, and
+// progress flows through the same status bar.
 func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) {
-	// Fetch all missing image IDs first so we can clean up tags and thumbnails.
 	rows, err := s.db().Read.Query(`SELECT id FROM images WHERE is_missing = 1`)
 	if err != nil {
 		w.Write([]byte(`<div class="flash flash-err">Error: ` + html.EscapeString(err.Error()) + `</div>`))
@@ -35,53 +38,71 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 		ids = append(ids, id)
 	}
 	rows.Close()
-	// Bail before running the deletes when the cursor itself errored
-	// part-way through the iteration; otherwise we'd report N removed
-	// against a silently-truncated id list.
 	if iterErr := rows.Err(); iterErr != nil {
 		w.Write([]byte(`<div class="flash flash-err">Error: ` + html.EscapeString(iterErr.Error()) + `</div>`))
 		return
 	}
-
-	// The schema cascades image_tags / image_paths / sd_metadata /
-	// comfyui_metadata on image delete, so a single DELETE FROM images
-	// per chunk clears the dependent rows. RowsAffected reports the
-	// per-chunk delete count so the final flash is exact rather than
-	// the input cardinality.
-	removed := 0
-	affectedTags, _, _, err := s.tagSvc().ChunkedDeleteWithTagRecalc(
-		context.Background(), ids, "", nil,
-		func(tx *sql.Tx, placeholders string, args []any) error {
-			res, err := tx.Exec(`DELETE FROM images WHERE id IN (`+placeholders+`)`, args...)
-			if err != nil {
-				return err
-			}
-			if n, _ := res.RowsAffected(); n > 0 {
-				removed += int(n)
-			}
-			return nil
-		},
-		func(chunk []int64) {
-			for _, id := range chunk {
-				os.Remove(gallery.ThumbnailPath(s.thumbnailsPath(), id))
-				os.Remove(gallery.HoverPath(s.thumbnailsPath(), id))
-				gallery.RemoveMangaCache(s.thumbnailsPath(), id)
-			}
-		},
-	)
-	if err != nil {
-		w.Write([]byte(`<div class="flash flash-err">Error: ` + html.EscapeString(err.Error()) + `</div>`))
+	if len(ids) == 0 {
+		w.Write([]byte(`<div class="flash flash-ok">Removed 0 missing image(s).</div>`))
 		return
 	}
-	if len(affectedTags) > 0 {
-		if err := s.tagSvc().RecalcIDs(affectedTags); err != nil {
-			logx.Warnf("prune-missing recalc IDs: %v", err)
+
+	if err := s.jobs.Start(models.JobTypeDelete); err != nil {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+		return
+	}
+	thumbnailsPath := s.thumbnailsPath()
+	tagSvc := s.tagSvc()
+	active := s.Active()
+	go func() {
+		ctx := s.jobs.Context()
+		total := len(ids)
+		s.jobs.Update(0, total, fmt.Sprintf("pruning 0/%d…", total))
+		done := 0
+		removed := 0
+		affectedTags, processed, cancelled, err := tagSvc.ChunkedDeleteWithTagRecalc(
+			ctx, ids, "", nil,
+			func(tx *sql.Tx, placeholders string, args []any) error {
+				res, err := tx.Exec(`DELETE FROM images WHERE id IN (`+placeholders+`)`, args...)
+				if err != nil {
+					return err
+				}
+				if n, _ := res.RowsAffected(); n > 0 {
+					removed += int(n)
+				}
+				return nil
+			},
+			func(chunk []int64) {
+				for _, id := range chunk {
+					os.Remove(gallery.ThumbnailPath(thumbnailsPath, id))
+					os.Remove(gallery.HoverPath(thumbnailsPath, id))
+					gallery.RemoveMangaCache(thumbnailsPath, id)
+				}
+				done += len(chunk)
+				s.jobs.Update(done, total, fmt.Sprintf("pruning %d/%d…", done, total))
+			},
+		)
+		if err != nil {
+			s.jobs.Fail(err.Error())
+			return
 		}
-	}
-	if removed > 0 {
-		s.Active().InvalidateCaches()
-	}
-	w.Write([]byte(fmt.Sprintf(`<div class="flash flash-ok">Removed %d missing image(s).</div>`, removed)))
+		if len(affectedTags) > 0 {
+			s.jobs.Update(processed, total, "reconciling tag counts…")
+			if err := tagSvc.RecalcIDs(affectedTags); err != nil {
+				logx.Warnf("prune-missing recalc IDs: %v", err)
+			}
+		}
+		if removed > 0 && active != nil {
+			active.InvalidateCaches()
+		}
+		if cancelled {
+			s.jobs.Complete(fmt.Sprintf("prune cancelled (%d/%d removed)", removed, total))
+			return
+		}
+		s.jobs.Complete(fmt.Sprintf("Removed %d missing image(s).", removed))
+	}()
+	w.Write([]byte(`<div class="flash flash-ok">Prune started.</div>`))
 }
 
 // pruneOrphanedThumbnailsPost queues the orphan sweep as a background

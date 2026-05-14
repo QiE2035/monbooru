@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -13,12 +14,27 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+// bootstrapSchemaVersion is the marker Bootstrap stores in
+// PRAGMA user_version once it has applied every migration in this file
+// and refreshed sqlite_stat1. Bump it when a migration adds a column or
+// index the planner needs stats for; Bootstrap then runs ANALYZE on the
+// next boot after the upgrade and skips it on every boot afterwards.
+const bootstrapSchemaVersion = 1
+
 // DB holds read and write connection pools for the SQLite database.
 // WAL mode allows concurrent readers but serialises writers, so the read
 // pool has many connections and the write pool has one.
 type DB struct {
 	Read  *sql.DB
 	Write *sql.DB
+
+	// untaggedVisible / autoUntaggedVisible cache the count subtrahends
+	// behind tagged:true / autotagged:true partition reads. The
+	// underlying NOT EXISTS walk over image_tags is multi-second on a
+	// million-row library; InvalidateCachedCounts drops both on every
+	// image_tags membership write.
+	untaggedVisible     atomic.Pointer[int]
+	autoUntaggedVisible atomic.Pointer[int]
 }
 
 // Open opens both connection pools pointing at the same SQLite file.
@@ -164,11 +180,35 @@ func Bootstrap(db *DB) error {
 	if err := ensureColumn(db, "image_paths", "mtime_unix", `ALTER TABLE image_paths ADD COLUMN mtime_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
-	// PRAGMA optimize refreshes sqlite_stat1 for any table whose stats
-	// are out of date - cheap on a steady-state DB, but load-bearing
-	// after a schema change (CREATE/DROP INDEX leave the planner with
-	// stale cardinality estimates and modernc picks markedly worse
-	// plans for some EXISTS shapes until ANALYZE catches up).
+	// ANALYZE only when the schema marker says this version's migrations
+	// haven't been analyzed yet. PRAGMA optimize then handles row-count
+	// drift on steady-state restarts. Without the gate, ANALYZE on the
+	// large image_tags indexes costs ~30 s on a cold OS page cache every
+	// boot and blows the coldstart budget; the new partial indexes that
+	// pragma optimize misses (idx_images_inbox_visible / idx_images_source
+	// / idx_images_series and the rebuilt idx_image_tags_tag_image)
+	// instead get their sqlite_stat1 entries once, on the upgrade boot.
+	// analysis_limit=400 is the SQLite-recommended sample cap; the
+	// resulting stats are accurate enough for plan choice and keep the
+	// one-time pass under a second when the DB is warm.
+	var userVersion int
+	if err := db.Write.QueryRow(`PRAGMA user_version`).Scan(&userVersion); err != nil {
+		return fmt.Errorf("read user_version: %w", err)
+	}
+	if userVersion < bootstrapSchemaVersion {
+		if _, err := db.Write.Exec(`PRAGMA analysis_limit = 400`); err != nil {
+			return fmt.Errorf("set analysis_limit: %w", err)
+		}
+		if _, err := db.Write.Exec(`ANALYZE images`); err != nil {
+			return fmt.Errorf("analyze images: %w", err)
+		}
+		if _, err := db.Write.Exec(`ANALYZE image_tags`); err != nil {
+			return fmt.Errorf("analyze image_tags: %w", err)
+		}
+		if _, err := db.Write.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, bootstrapSchemaVersion)); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	if _, err := db.Write.Exec(`PRAGMA optimize`); err != nil {
 		return fmt.Errorf("pragma optimize: %w", err)
 	}
@@ -192,6 +232,59 @@ func ensureColumn(db *DB, table, column, alterSQL string) error {
 		return fmt.Errorf("add column %s.%s: %w", table, column, err)
 	}
 	return nil
+}
+
+// UntaggedVisibleCount returns the cached count of visible images that
+// carry no image_tags row, or queries it on demand. fastCountTagged
+// subtracts this from the visible total to derive an exact tagged:true
+// partition without re-walking image_tags on every search.
+func (db *DB) UntaggedVisibleCount() (int, bool) {
+	if p := db.untaggedVisible.Load(); p != nil {
+		return *p, true
+	}
+	var n int
+	if err := db.Read.QueryRow(
+		`SELECT COUNT(*) FROM images i
+		 WHERE is_missing = 0
+		   AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = i.id)`,
+	).Scan(&n); err != nil {
+		return 0, false
+	}
+	db.untaggedVisible.Store(&n)
+	return n, true
+}
+
+// AutoUntaggedVisibleCount is UntaggedVisibleCount restricted to
+// image_tags rows carrying is_auto = 1 - the subtrahend behind
+// autotagged:true. There is no covering (image_id, is_auto) index, so
+// the NOT-EXISTS walk is heavier than the bare-untagged one above.
+func (db *DB) AutoUntaggedVisibleCount() (int, bool) {
+	if p := db.autoUntaggedVisible.Load(); p != nil {
+		return *p, true
+	}
+	var n int
+	if err := db.Read.QueryRow(
+		`SELECT COUNT(*) FROM images i
+		 WHERE is_missing = 0
+		   AND NOT EXISTS (
+		         SELECT 1 FROM image_tags it
+		         WHERE it.image_id = i.id AND it.is_auto = 1
+		       )`,
+	).Scan(&n); err != nil {
+		return 0, false
+	}
+	db.autoUntaggedVisible.Store(&n)
+	return n, true
+}
+
+// InvalidateCachedCounts drops every per-DB count cache. Call after a
+// write that changes image_tags membership (tag add/remove, batch tag,
+// implication propagation, autotag ingest, image delete) so the next
+// reader recomputes the slow subtrahends from current state. Cheap to
+// call - just two atomic stores - so over-invalidating costs nothing.
+func (db *DB) InvalidateCachedCounts() {
+	db.untaggedVisible.Store(nil)
+	db.autoUntaggedVisible.Store(nil)
 }
 
 // ShrinkMemory runs `PRAGMA shrink_memory` on every connection in

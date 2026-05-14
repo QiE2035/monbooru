@@ -3,6 +3,7 @@ package search
 import (
 	"archive/zip"
 	"context"
+	"fmt"
 	"image"
 	"image/png"
 	"os"
@@ -187,6 +188,17 @@ func TestParse_Wildcard_Substring(t *testing.T) {
 	tag, ok := e.(TagExpr)
 	if !ok || tag.Wildcard != "substring" || tag.Tag != "blue" {
 		t.Errorf("expected substring wildcard, got %+v", e)
+	}
+}
+
+func TestParse_Wildcard_Suffix(t *testing.T) {
+	// `*xyz` (leading star, no trailing star) is the suffix wildcard.
+	// Substring requires both anchors and prefix requires a trailing
+	// star, so the suffix-only form lives in its own branch.
+	e, _ := Parse("*eyes")
+	tag, ok := e.(TagExpr)
+	if !ok || tag.Wildcard != "suffix" || tag.Tag != "eyes" {
+		t.Errorf("expected suffix wildcard, got %+v", e)
 	}
 }
 
@@ -530,6 +542,23 @@ func TestExecute_TypeImage_ExcludesManga(t *testing.T) {
 	}
 	if len(res.Results) != 1 || res.Results[0].FileType == "cbz" {
 		t.Errorf("type:image returned %+v", res.Results)
+	}
+}
+
+func TestExecute_SystemFilter_NoMatch(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "a.png")
+	ingestTestImage(t, database, env, "b.png")
+
+	res, err := Execute(database, Query{
+		Expr:  FilterExpr{Key: "system", Val: ""},
+		Page:  1, Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 0 {
+		t.Errorf("system: total = %d, want 0 (autocomplete-only trigger)", res.Total)
 	}
 }
 
@@ -1600,6 +1629,30 @@ func TestFastTagTotal_WildcardSubstring(t *testing.T) {
 	}
 }
 
+func TestFastTagTotal_WildcardSuffix(t *testing.T) {
+	database, _ := setupSearchDB(t)
+	var generalID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+
+	if _, err := database.Write.Exec(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES
+		    ('blue_eyes',  ?, 40000),
+		    ('green_eyes', ?, 20000),
+		    ('blue_hair',  ?, 30)`,
+		generalID, generalID, generalID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	n, ok := fastTagTotal(database, TagExpr{Tag: "_eyes", Wildcard: "suffix"})
+	if !ok {
+		t.Fatal("wildcard suffix should hit fast path")
+	}
+	if n != 60000 {
+		t.Errorf("count = %d, want 60000 (sum over name LIKE '%%_eyes')", n)
+	}
+}
+
 func TestFastTagTotal_WildcardBelowThresholdFallsThrough(t *testing.T) {
 	// Multi-canonical wildcard with small usages: the slow path is fast
 	// and exact, so the fast path bails to keep displayed totals exact.
@@ -2532,9 +2585,36 @@ func TestBuildOrder_Unknown(t *testing.T) {
 }
 
 func TestBuildOrder_Random(t *testing.T) {
+	// The seed is mixed before interpolation so the multiplier the
+	// SQL sees is mixSeed(seed), not the raw input.
 	got := buildOrder("random", "", 12345)
-	if !strings.Contains(got, "12345") {
-		t.Errorf("random: expected seed in order clause, got %q", got)
+	mixed := mixSeed(12345)
+	if !strings.Contains(got, fmt.Sprintf("%d", mixed)) {
+		t.Errorf("random: expected mixed seed %d in order clause, got %q", mixed, got)
+	}
+}
+
+func TestMixSeed_StableForSameInput(t *testing.T) {
+	if mixSeed(1) != mixSeed(1) {
+		t.Error("mixSeed must be deterministic for the same input")
+	}
+}
+
+func TestMixSeed_OddAndHighBitForSmallSeeds(t *testing.T) {
+	// Every non-zero seed must produce an odd value with the 2^30 bit
+	// set so `(id * mixed) & 2^31-1` is a permutation that overflows
+	// uint32 for any plausible image id.
+	for _, in := range []int64{1, 7, 100, 1000, 12345, 9999999} {
+		out := mixSeed(in)
+		if out&1 == 0 {
+			t.Errorf("mixSeed(%d) = %d is even; the modular product is not a permutation", in, out)
+		}
+		if out < (1 << 30) {
+			t.Errorf("mixSeed(%d) = %d < 2^30; small seeds would still produce identity order", in, out)
+		}
+		if out >= (1 << 31) {
+			t.Errorf("mixSeed(%d) = %d >= 2^31; multiplication can overflow int64 at large image ids", in, out)
+		}
 	}
 }
 
@@ -3241,6 +3321,64 @@ func TestRankInQuery_RandomNoSeed(t *testing.T) {
 	rank, err := RankInQuery(context.Background(), database, q, 1)
 	if err != nil || rank != -1 {
 		t.Errorf("random sort with seed=0 must be (-1, nil), got (%d, %v)", rank, err)
+	}
+}
+
+// A small caller-supplied seed (e.g. `seed=1` on the API) must
+// produce a shuffled order, not strict id-ASC. The bare
+// `(id * seed) & 2^31-1` formula collapses to identity for small
+// seeds; mixSeed keeps the multiplier above 2^30 so the masking
+// actually permutes.
+func TestExecute_RandomSmallSeedShuffles(t *testing.T) {
+	database, env := setupSearchDB(t)
+	for i := 0; i < 8; i++ {
+		ingestTestImage(t, database, env, fmt.Sprintf("rnd_small_%d.png", i))
+	}
+
+	q := Query{Sort: "random", RandomSeed: 1, Page: 1, Limit: 40}
+	res, err := Execute(database, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Results) < 8 {
+		t.Fatalf("got %d rows, want 8", len(res.Results))
+	}
+	asc := true
+	for i := 1; i < len(res.Results); i++ {
+		if res.Results[i].ID <= res.Results[i-1].ID {
+			asc = false
+			break
+		}
+	}
+	if asc {
+		t.Errorf("seed=1 returned strict id-ASC; expected a shuffle: %+v", res.Results)
+	}
+}
+
+// The mix step is deterministic: the same seed produces the same
+// order on every Execute call.
+func TestExecute_RandomSeedStableAcrossCalls(t *testing.T) {
+	database, env := setupSearchDB(t)
+	for i := 0; i < 6; i++ {
+		ingestTestImage(t, database, env, fmt.Sprintf("rnd_stable_%d.png", i))
+	}
+
+	q := Query{Sort: "random", RandomSeed: 42, Page: 1, Limit: 40}
+	first, err := Execute(database, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Execute(database, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Results) != len(second.Results) {
+		t.Fatalf("call returned %d vs %d rows", len(first.Results), len(second.Results))
+	}
+	for i := range first.Results {
+		if first.Results[i].ID != second.Results[i].ID {
+			t.Errorf("position %d: first %d, second %d (order not stable)", i, first.Results[i].ID, second.Results[i].ID)
+		}
 	}
 }
 

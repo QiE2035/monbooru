@@ -240,11 +240,95 @@ func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
 	if isHTMXRequest(r) {
 		// Refresh the current URL so the user's active /tags filter
 		// - q, sort, origin, page - survives the merge / repoint.
+		canon, _ := s.tagSvc().GetTag(canonID)
+		canonName := canonInput
+		if canon != nil && canon.Name != "" {
+			canonName = canon.Name
+		}
+		setTagsFlash(w, "Aliased to "+canonName+".")
 		w.Header().Set("HX-Refresh", "true")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	http.Redirect(w, r, "/tags", http.StatusSeeOther)
+}
+
+// setTagsFlash queues msg to surface above the /tags table on the next
+// render. The header rides HX-Trigger with the `tagsFlash` event name;
+// the tags.html script handles it and seeds sessionStorage before the
+// HX-Redirect / HX-Refresh navigation fires. JSON-escaped via Go's
+// strconv.Quote so the message can carry quotes safely.
+func setTagsFlash(w http.ResponseWriter, msg string) {
+	w.Header().Set("HX-Trigger", `{"tagsFlash":`+strconv.Quote(msg)+`}`)
+}
+
+// resolveOrCreateCanonicalTag is the create-alias variant of
+// resolveCanonicalTag: when the canonical name doesn't yet name a
+// tag, the missing row is created via GetOrCreateTag instead of
+// surfacing a "Tag not found" error. Mirrors the implications dialog's
+// parseTagInput → GetOrCreateTag flow so users can declare an alias
+// to a still-pending name. A numeric input still requires the id to
+// exist (a typo'd id shouldn't silently mint a fresh tag).
+func (s *Server) resolveOrCreateCanonicalTag(input string) (int64, string) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return 0, "Tag name is required."
+	}
+	if id, err := strconv.ParseInt(input, 10, 64); err == nil {
+		var exists int
+		if err := s.db().Read.QueryRow(`SELECT COUNT(*) FROM tags WHERE id = ?`, id).Scan(&exists); err != nil || exists == 0 {
+			return 0, "Tag not found: " + input
+		}
+		return id, ""
+	}
+	if idx := strings.Index(input, ":"); idx > 0 && s.categoryExists(input[:idx]) {
+		catName := input[:idx]
+		tagName := strings.TrimSpace(input[idx+1:])
+		if tagName == "" {
+			return 0, "Tag name is required after the category prefix."
+		}
+		var catID int64
+		if err := s.db().Read.QueryRow(
+			`SELECT id FROM tag_categories WHERE name = ?`, catName,
+		).Scan(&catID); err != nil {
+			return 0, "Category not found: " + catName
+		}
+		tag, err := s.tagSvc().GetOrCreateTag(tagName, catID)
+		if err != nil {
+			return 0, err.Error()
+		}
+		return tag.ID, ""
+	}
+	rows, err := s.db().Read.Query(`SELECT id FROM tags WHERE name = ?`, input)
+	if err != nil {
+		return 0, "Tag lookup failed: " + err.Error()
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			logx.Warnf("resolveOrCreateCanonicalTag scan: %v", err)
+			continue
+		}
+		ids = append(ids, id)
+	}
+	switch len(ids) {
+	case 1:
+		return ids[0], ""
+	case 0:
+		cx := s.Active()
+		if cx == nil || cx.GeneralCategoryID == 0 {
+			return 0, "Could not resolve the general category."
+		}
+		tag, err := s.tagSvc().GetOrCreateTag(input, cx.GeneralCategoryID)
+		if err != nil {
+			return 0, err.Error()
+		}
+		return tag.ID, ""
+	default:
+		return 0, "Tag name " + input + " exists in multiple categories; use category:name or the tag ID"
+	}
 }
 
 // resolveCanonicalTag turns the merge-style canonical input (numeric id,
@@ -321,6 +405,7 @@ func (s *Server) createTagPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Active().InvalidateCaches()
 	if isHTMXRequest(r) {
+		setTagsFlash(w, "Tag "+name+" created.")
 		w.Header().Set("HX-Redirect", "/tags?q="+name)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -349,7 +434,7 @@ func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
 		flashErr("Invalid category.")
 		return
 	}
-	canonID, msg := s.resolveCanonicalTag(canonInput)
+	canonID, msg := s.resolveOrCreateCanonicalTag(canonInput)
 	if msg != "" {
 		flashErr(msg)
 		return
@@ -362,6 +447,7 @@ func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
 	s.Active().InvalidateCaches()
 
 	if isHTMXRequest(r) {
+		setTagsFlash(w, "Alias "+name+" created.")
 		w.Header().Set("HX-Redirect", "/tags?origin=alias&q="+name)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -487,6 +573,7 @@ func (s *Server) renameTagPost(w http.ResponseWriter, r *http.Request) {
 		// Refresh the current URL instead of redirecting to /tags so the
 		// user's active filter - q, sort, origin, page - survives the
 		// rename and the renamed row stays in scope.
+		setTagsFlash(w, "Renamed to "+newName+".")
 		w.Header().Set("HX-Refresh", "true")
 		w.WriteHeader(http.StatusNoContent)
 		return

@@ -19,11 +19,11 @@ type DeleteImageResult struct {
 // on disk. removeAllTags is injected (rather than called directly via the
 // tags package) to avoid an internal/gallery → internal/tags import cycle.
 func DeleteImage(database *db.DB, thumbnailsPath string, id int64, removeAllTags func(int64) error) (*DeleteImageResult, error) {
-	var canonPath, folderPath string
+	var canonPath, folderPath, fileType string
 	var isMissing int
 	if err := database.Read.QueryRow(
-		`SELECT canonical_path, folder_path, is_missing FROM images WHERE id = ?`, id,
-	).Scan(&canonPath, &folderPath, &isMissing); err != nil {
+		`SELECT canonical_path, folder_path, is_missing, file_type FROM images WHERE id = ?`, id,
+	).Scan(&canonPath, &folderPath, &isMissing, &fileType); err != nil {
 		return nil, fmt.Errorf("image not found: %w", err)
 	}
 
@@ -42,10 +42,12 @@ func DeleteImage(database *db.DB, thumbnailsPath string, id int64, removeAllTags
 
 	os.Remove(ThumbnailPath(thumbnailsPath, id))
 	os.Remove(HoverPath(thumbnailsPath, id))
-	// Manga cache directory is keyed on image id, so a deleted manga's
-	// extracted pages and per-page thumbnails disappear with the row
-	// rather than waiting on the per-page TTL.
-	RemoveMangaCache(thumbnailsPath, id)
+	// Manga cache directory only exists for cbz rows. Skipping the
+	// RemoveAll for static images cuts a per-image syscall in the bulk
+	// delete and prune-missing hot paths.
+	if fileType == "cbz" {
+		RemoveMangaCache(thumbnailsPath, id)
+	}
 
 	result := &DeleteImageResult{
 		CanonicalPath: canonPath,

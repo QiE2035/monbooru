@@ -535,7 +535,14 @@ document.addEventListener('keydown', function(e) {
   }
 
   // f / i toggles on the detail page (favorite / inbox archive).
+  // Selection branch opens the batch-favorite dialog before falling through
+  // so a selection-mode `f` doesn't also trip the detail-page handler.
   if (e.key === 'f') {
+    if (batchBarVisible()) {
+      if (typeof openFavoriteSelectedDialog === 'function') {
+        e.preventDefault(); openFavoriteSelectedDialog(); return;
+      }
+    }
     var favBtn = document.querySelector('.btn-fav');
     if (favBtn) { e.preventDefault(); favBtn.click(); return; }
   }
@@ -934,10 +941,14 @@ document.addEventListener('click', function(e) {
   btn.textContent = collapsed ? '▾' : '▸';
 });
 
-// Batch selection: show/hide batch bar and keep checkboxes visible
+// Batch selection: show/hide batch bar and keep checkboxes visible. The
+// blur drops focus off the checkbox after the toggle so the keydown
+// router's input-focused guard (`if (isInput) return`) doesn't swallow
+// the selection shortcuts (a, f, r, t, m, i, Delete) on the next press.
 document.addEventListener('change', function(e) {
   if (!e.target.classList.contains('thumb-checkbox')) return;
   updateBatchBar();
+  e.target.blur();
 });
 
 // While the batch bar is up, a plain left-click on a thumbnail toggles

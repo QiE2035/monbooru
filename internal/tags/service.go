@@ -48,6 +48,11 @@ var (
 	categoryNameRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 	ErrInvalidCategoryName = errors.New("invalid category name (use lowercase letters, digits, underscore, or hyphen)")
+
+	// ErrCategoryExists is surfaced when a create/rename collides with an
+	// existing row. Names are stored case-folded so "MOOD" and "mood"
+	// register as the same duplicate.
+	ErrCategoryExists = errors.New("a category with this name already exists")
 )
 
 // IsValidCategoryColor reports whether s matches the #rgb / #rrggbb
@@ -156,9 +161,16 @@ type Service struct {
 // New creates a new Service.
 func New(database *db.DB) *Service {
 	s := &Service{db: database}
-	_ = database.Read.QueryRow(
+	if err := database.Read.QueryRow(
 		`SELECT id FROM tag_categories WHERE name = 'rating'`,
-	).Scan(&s.ratingCatID)
+	).Scan(&s.ratingCatID); err != nil {
+		// db.Bootstrap seeds the rating category before this runs, so a
+		// miss here means the DB is in a partially-migrated state. Log
+		// it instead of silently dropping the error - the rating guards
+		// that read s.ratingCatID will short-circuit with the bare 0
+		// and the operator gets a hint as to why.
+		logx.Warnf("tags.New: rating category lookup failed: %v", err)
+	}
 	return s
 }
 
@@ -411,6 +423,9 @@ func (s *Service) CreateCategory(name, color string) (*models.TagCategory, error
 		name, color,
 	).Scan(&id)
 	if err != nil {
+		if isUniqueConstraintErr(err) {
+			return nil, ErrCategoryExists
+		}
 		return nil, fmt.Errorf("creating category: %w", err)
 	}
 	return &models.TagCategory{ID: id, Name: name, Color: color}, nil
@@ -450,7 +465,21 @@ func (s *Service) RenameCategory(id int64, newName string) error {
 	_, err := s.db.Write.Exec(
 		`UPDATE tag_categories SET name = ? WHERE id = ?`, newName, id,
 	)
+	if err != nil && isUniqueConstraintErr(err) {
+		return ErrCategoryExists
+	}
 	return err
+}
+
+// isUniqueConstraintErr reports whether err is the SQLite UNIQUE
+// constraint violation (raw error code 2067). Detecting it via the
+// stringified message lets the handlers map a clean "name already
+// exists" to the user without exposing the column or the error code.
+func isUniqueConstraintErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
 // GetCategoryTagCount returns the number of tags in a category.
@@ -762,10 +791,13 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 	}
 
 	// Aliases have no image_tags of their own; the origin badge for
-	// them is "alias", not "auto-only".
+	// them is "alias", not "auto-only". Zero-usage rows are also
+	// excluded - no live image_tag means no origin to report, and
+	// flagging them auto would mislabel manually-added tags whose rows
+	// have all been removed.
 	var ids []any
 	for _, t := range tagList {
-		if !t.IsAlias {
+		if !t.IsAlias && t.UsageCount > 0 {
 			ids = append(ids, t.ID)
 		}
 	}
@@ -790,7 +822,7 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 		}
 		userRows.Close()
 		for i := range tagList {
-			if tagList[i].IsAlias {
+			if tagList[i].IsAlias || tagList[i].UsageCount == 0 {
 				continue
 			}
 			if _, ok := hasUser[tagList[i].ID]; !ok {
@@ -1140,6 +1172,49 @@ func transitiveImpliedTx(tx *sql.Tx, parents []int64) ([]int64, error) {
 		frontier = next
 	}
 	return out, nil
+}
+
+// AddTagsToOneImage adds every tag in tagIDs to imageID inside a single
+// write-pool transaction. Mirrors the per-token behaviour of
+// AddTagToImageReportingDup (insert-or-promote, fan-out implied closure,
+// prune ratings on a manual rating add) and returns one AddResult per
+// input id so callers preserve the existing "added / promoted / dupes /
+// replaced rating" flash. Used by the detail-page paste path so a
+// 50-token paste pays one writer round-trip instead of N.
+func (s *Service) AddTagsToOneImage(imageID int64, tagIDs []int64) ([]AddResult, error) {
+	if len(tagIDs) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.Write.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	results := make([]AddResult, 0, len(tagIDs))
+	for _, tagID := range tagIDs {
+		added, promoted, err := addTagToImageTxReportingDup(tx, imageID, tagID, false, nil, "", s.ratingCatID)
+		if err != nil {
+			return nil, err
+		}
+		var displaced []string
+		if (added || promoted) && s.ratingCatID != 0 {
+			var catID int64
+			if scanErr := tx.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, tagID).Scan(&catID); scanErr == nil && catID == s.ratingCatID {
+				// Manual UI add: user-chosen rating always wins (mirrors
+				// AddTagToImageReportingDup's non-auto branch).
+				names, err := pruneOtherRatingsTx(tx, s.ratingCatID, imageID, tagID)
+				if err != nil {
+					return nil, err
+				}
+				displaced = names
+			}
+		}
+		results = append(results, AddResult{Added: added, Promoted: promoted, DisplacedRatings: displaced})
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // BatchAddTagsTx applies an add for every (imageID, tagID) pair inside

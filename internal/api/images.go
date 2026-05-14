@@ -3,6 +3,10 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"  // register gif decoder for canDecodeImage
+	_ "image/jpeg" // register jpeg decoder for canDecodeImage
+	_ "image/png"  // register png decoder for canDecodeImage
 	"io"
 	"net/http"
 	"os"
@@ -11,12 +15,54 @@ import (
 	"strings"
 	"time"
 
+	_ "golang.org/x/image/webp" // register webp decoder for canDecodeImage
+
 	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/search"
 	"github.com/leqwin/monbooru/internal/tagger"
 )
+
+// validateVia rejects caller-supplied `via` strings that carry
+// characters the downstream CSS attribute selectors and HTML attribute
+// renderers don't survive cleanly. The detail page's tag-source group
+// is JS-selected with `[data-source="<name>"]`; whitespace or a literal
+// quote / bracket in the stored value produces a malformed selector
+// and the tag-focus cursor loses its place. Empty `via` is fine and
+// means "no attribution".
+func validateVia(via string) error {
+	if via == "" {
+		return nil
+	}
+	if len(via) > 200 {
+		return fmt.Errorf("via must be 200 characters or less")
+	}
+	for _, r := range via {
+		switch r {
+		case ' ', '\t', '\n', '\r', '"', '\'', '<', '>', '[', ']', '\\':
+			return fmt.Errorf("via must not contain whitespace or any of: \" ' < > [ ] \\")
+		}
+	}
+	return nil
+}
+
+// canDecodeImage opens path and runs image.DecodeConfig on the first
+// few bytes. Used as a fast post-DetectFileType guard so a text file
+// with an image extension is rejected before the row reaches the DB
+// with a null width / height. Archive and video file types skip this
+// check; the cbz path does its own integrity verification inside
+// Ingest and video frames decode via ffmpeg later in the thumbnail
+// step.
+func canDecodeImage(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	_, _, err = image.DecodeConfig(f)
+	return err == nil
+}
 
 // imageResponse is the JSON representation of an image.
 type imageResponse struct {
@@ -206,6 +252,10 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		autotag = isTrue(r.FormValue("autotag"))
 		taggerName = strings.TrimSpace(r.FormValue("tagger_name"))
 		via = strings.TrimSpace(r.FormValue("via"))
+		if err := validateVia(via); err != nil {
+			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
 
 		destDir, destErr := gallery.ResolveSubdir(g.GalleryPath, folder)
 		if destErr != nil {
@@ -262,9 +312,13 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		autotag = body.Autotag
 		taggerName = strings.TrimSpace(body.TaggerName)
 		via = strings.TrimSpace(body.Via)
+		if err := validateVia(via); err != nil {
+			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
 
 		// Relative path + folder: resolve under <gallery>/<folder>/<path>.
-		// Absolute paths go through unchanged.
+		// Absolute paths go through the gate just below.
 		if folder != "" && !filepath.IsAbs(imgPath) {
 			destDir, destErr := gallery.ResolveSubdir(g.GalleryPath, folder)
 			if destErr != nil {
@@ -272,6 +326,37 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			imgPath = filepath.Join(destDir, imgPath)
+		}
+
+		// Constrain the caller-supplied path to the gallery root. The
+		// operator owns the gallery folder and the API is the operator-
+		// facing surface, so an ingest-by-path that quietly registers a
+		// row pointing outside the gallery would have a later
+		// DELETE /api/v1/images/{id} unlink files the operator never
+		// meant to manage. Mirror the upload form's containment.
+		absPath, absErr := filepath.Abs(imgPath)
+		if absErr != nil {
+			apiError(w, http.StatusBadRequest, "invalid_request", "invalid path")
+			return
+		}
+		galleryAbs, gErr := filepath.Abs(g.GalleryPath)
+		if gErr != nil {
+			apiError(w, http.StatusInternalServerError, "internal_error", "gallery path unresolvable")
+			return
+		}
+		if !gallery.PathInside(galleryAbs, absPath) {
+			apiError(w, http.StatusBadRequest, "invalid_request", "path must be inside the gallery root")
+			return
+		}
+		imgPath = absPath
+
+		// Translate the common client-side mistake (path doesn't exist)
+		// to a 400 with a sanitised message so the response body doesn't
+		// echo the operator's filesystem layout and the status class
+		// reflects the caller error rather than a server failure.
+		if _, statErr := os.Stat(imgPath); os.IsNotExist(statErr) {
+			apiError(w, http.StatusBadRequest, "not_found", "file not found")
+			return
 		}
 	}
 
@@ -298,6 +383,19 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		}
 		apiError(w, http.StatusBadRequest, "unsupported_type", "unsupported or unrecognised file type")
 		return
+	}
+	// DetectFileType only checks the extension, so a follow-up
+	// DecodeConfig confirms the bytes parse as an image before the row
+	// lands in the DB. cbz integrity is verified inside Ingest and
+	// video frames decode later via ffmpeg, so both buckets skip this.
+	if !gallery.IsVideoType(fileType) && fileType != models.FileTypeCBZ {
+		if !canDecodeImage(imgPath) {
+			if uploadedToDisk {
+				os.Remove(imgPath)
+			}
+			apiError(w, http.StatusUnsupportedMediaType, "unsupported_type", "file does not decode as an image")
+			return
+		}
 	}
 
 	// Caller-supplied `via` wins; otherwise multipart defaults to
@@ -461,21 +559,29 @@ func (h *Handler) deleteImage(w http.ResponseWriter, r *http.Request) {
 		g.InvalidateCaches()
 	}
 
-	if r.URL.Query().Get("delete_empty_folder") == "true" && !result.IsMissing && result.FolderPath != "" {
+	// Empty-source-folder cleanup mirrors the UI delete handler so the
+	// API doesn't leave the operator's tree with empty parent folders
+	// after a delete that emptied them. The structured 200 response
+	// (folder_deleted + folder) is opt-in via ?delete_empty_folder=true
+	// to keep the wire shape for callers that just want 204.
+	folderRemoved := false
+	if !result.IsMissing && result.FolderPath != "" {
 		fullFolderPath := filepath.Join(g.GalleryPath, result.FolderPath)
-		entries, readErr := os.ReadDir(fullFolderPath)
-		if readErr == nil && len(entries) == 0 {
-			if removeErr := os.Remove(fullFolderPath); removeErr != nil {
+		if entries, readErr := os.ReadDir(fullFolderPath); readErr == nil && len(entries) == 0 {
+			if removeErr := os.Remove(fullFolderPath); removeErr == nil {
+				folderRemoved = true
+			} else {
 				logx.Warnf("api deleteImage: failed to remove empty folder %q: %v", fullFolderPath, removeErr)
-				w.WriteHeader(http.StatusNoContent)
-				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{
-				"folder_deleted": true,
-				"folder":         result.FolderPath,
-			})
-			return
 		}
+	}
+
+	if folderRemoved && r.URL.Query().Get("delete_empty_folder") == "true" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"folder_deleted": true,
+			"folder":         result.FolderPath,
+		})
+		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -619,6 +725,34 @@ func loadTagsForImages(g Gallery, ids []int64) (map[int64][]imageTagJSON, error)
 	return out, rows.Err()
 }
 
+// listImageTags handles GET /api/v1/images/:id/tags. Mirrors the
+// post-mutation response shape from addImageTags / removeImageTags so
+// a caller has one tag-listing endpoint to pin against. The full image
+// object remains reachable via GET /api/v1/images/:id for callers who
+// need adjacent metadata.
+func (h *Handler) listImageTags(w http.ResponseWriter, r *http.Request) {
+	g, ok := h.resolveGallery(w, r)
+	if !ok {
+		return
+	}
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "invalid image id")
+		return
+	}
+	if !imageExists(g, id) {
+		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return
+	}
+	resp, err := h.buildImageResponse(g, id)
+	if err != nil {
+		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp.Tags)
+}
+
 // addImageTags handles POST /api/v1/images/:id/tags. Each entry can
 // be a plain name (general category) or "category:name", matching the
 // web UI's tag input.
@@ -637,11 +771,6 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "not_found", "image not found")
 		return
 	}
-	if imageIsManga(g, id) {
-		apiError(w, http.StatusUnsupportedMediaType, "unsupported_type",
-			"comic / manga tag mutation via API not supported in this version")
-		return
-	}
 
 	var body struct {
 		Tags []string `json:"tags"`
@@ -651,7 +780,20 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
 	}
+	if len(body.Tags) == 0 {
+		// A missing or empty `tags` field would loop zero times and
+		// return 200 + the existing tag list - a silent success the
+		// caller can't tell apart from a real no-op. The OpenAPI
+		// declares `tags` required; reject the request shape.
+		apiError(w, http.StatusBadRequest, "invalid_request",
+			"`tags` is required and must contain at least one name")
+		return
+	}
 	via := strings.TrimSpace(body.Via)
+	if err := validateVia(via); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 
 	var tagWarnings []string
 	for _, tagName := range body.Tags {
@@ -699,17 +841,6 @@ func imageExists(g Gallery, id int64) bool {
 	return g.DB.Read.QueryRow(`SELECT 1 FROM images WHERE id = ?`, id).Scan(&n) == nil
 }
 
-// imageIsManga reports whether the row is a cbz. Used by the tag
-// mutation guards to refuse manga ids in v1; an unknown id returns
-// (false, false) and the caller's imageExists guard surfaces 404.
-func imageIsManga(g Gallery, id int64) bool {
-	var ft string
-	if err := g.DB.Read.QueryRow(`SELECT file_type FROM images WHERE id = ?`, id).Scan(&ft); err != nil {
-		return false
-	}
-	return ft == "cbz"
-}
-
 // resolveCategoryTag splits "artist:foo" into (artist_id, "foo") when
 // "artist" names a real category, otherwise returns (general_id, input)
 // so colon-bearing tag names like "nier:automata" or ":3" round-trip
@@ -754,17 +885,19 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "not_found", "image not found")
 		return
 	}
-	if imageIsManga(g, id) {
-		apiError(w, http.StatusUnsupportedMediaType, "unsupported_type",
-			"comic / manga tag mutation via API not supported in this version")
-		return
-	}
 
 	var body struct {
 		Tags []string `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if len(body.Tags) == 0 {
+		// Match the POST path: a wrong-shape body must be rejected
+		// rather than 200ing with the current tag list and no diagnostic.
+		apiError(w, http.StatusBadRequest, "invalid_request",
+			"`tags` is required and must contain at least one name")
 		return
 	}
 

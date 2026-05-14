@@ -861,8 +861,12 @@ details summary:hover { color: var(--fg); }
 .cat-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 10px; }
 .cat-table th, .cat-table td { padding: 4px 8px; border: 1px solid var(--border); text-align: left; }
 .cat-table th { color: var(--fg-dim); }
-.add-cat-form { display: flex; gap: 6px; align-items: center; }
+.add-cat-form { display: flex; gap: 6px; align-items: stretch; }
 .add-cat-form input[type="text"] { flex: 1; max-width: 200px; }
+/* The native color-picker pulls a chunky default padding; flatten so it
+   matches the text input + Add button row height once align-items is
+   set to stretch. */
+.add-cat-form input[type="color"] { padding: 0; width: 40px; }
 .saved-search-list { list-style: none; margin: 0; padding: 0; }
 .saved-search-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
 .saved-search-item a { color: var(--fg); text-decoration: none; flex: 1; }

@@ -80,6 +80,9 @@ func (cx *galleryCtx) InvalidateCaches() {
 	cx.inboxCount.Store(nil)
 	cx.tagCount.Store(nil)
 	cx.savedCount.Store(nil)
+	if cx.DB != nil {
+		cx.DB.InvalidateCachedCounts()
+	}
 	// The adjacency cache holds sorted match-id snapshots that pre-date
 	// any membership-changing write (delete, move, inbox/favourite
 	// toggle, batch tag). Without dropping them here, a re-render of
@@ -132,19 +135,26 @@ func (cx *galleryCtx) SeriesCounts() ([]gallery.SeriesCount, error) {
 	return sc, nil
 }
 
+// cachedCount lazy-loads and caches a scalar COUNT query. The atomic
+// pointer doubles as the cache slot and the "loaded?" flag; nil means
+// re-query.
+func (cx *galleryCtx) cachedCount(slot *atomic.Pointer[int], query string) (int, error) {
+	if p := slot.Load(); p != nil {
+		return *p, nil
+	}
+	var n int
+	if err := cx.DB.Read.QueryRow(query).Scan(&n); err != nil {
+		return 0, err
+	}
+	slot.Store(&n)
+	return n, nil
+}
+
 // VisibleCount returns the cached count of non-missing images or queries it
 // on demand. Only used for the unfiltered gallery page - filtered searches
 // bypass the cache.
 func (cx *galleryCtx) VisibleCount() (int, error) {
-	if p := cx.visibleCount.Load(); p != nil {
-		return *p, nil
-	}
-	var n int
-	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images WHERE is_missing = 0`).Scan(&n); err != nil {
-		return 0, err
-	}
-	cx.visibleCount.Store(&n)
-	return n, nil
+	return cx.cachedCount(&cx.visibleCount, `SELECT COUNT(*) FROM images WHERE is_missing = 0`)
 }
 
 // InboxCount returns the cached count of visible images sitting in the
@@ -152,44 +162,20 @@ func (cx *galleryCtx) VisibleCount() (int, error) {
 // inbox toggle so the user sees the triage backlog at a glance. Reads
 // off idx_images_inbox_visible.
 func (cx *galleryCtx) InboxCount() (int, error) {
-	if p := cx.inboxCount.Load(); p != nil {
-		return *p, nil
-	}
-	var n int
-	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images WHERE is_missing = 0 AND is_inbox = 1`).Scan(&n); err != nil {
-		return 0, err
-	}
-	cx.inboxCount.Store(&n)
-	return n, nil
+	return cx.cachedCount(&cx.inboxCount, `SELECT COUNT(*) FROM images WHERE is_missing = 0 AND is_inbox = 1`)
 }
 
 // TagCount returns the cached count of non-alias tags or queries it on demand.
 // Surfaced in the Settings galleries table and the layout footer; uncached the
 // query runs once per render per gallery, which adds up on multi-gallery boxes.
 func (cx *galleryCtx) TagCount() (int, error) {
-	if p := cx.tagCount.Load(); p != nil {
-		return *p, nil
-	}
-	var n int
-	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM tags WHERE is_alias = 0`).Scan(&n); err != nil {
-		return 0, err
-	}
-	cx.tagCount.Store(&n)
-	return n, nil
+	return cx.cachedCount(&cx.tagCount, `SELECT COUNT(*) FROM tags WHERE is_alias = 0`)
 }
 
 // SavedCount returns the cached count of saved searches or queries it on
 // demand. Same role as TagCount on the Settings page and footer.
 func (cx *galleryCtx) SavedCount() (int, error) {
-	if p := cx.savedCount.Load(); p != nil {
-		return *p, nil
-	}
-	var n int
-	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM saved_searches`).Scan(&n); err != nil {
-		return 0, err
-	}
-	cx.savedCount.Store(&n)
-	return n, nil
+	return cx.cachedCount(&cx.savedCount, `SELECT COUNT(*) FROM saved_searches`)
 }
 
 // warmCaches primes the per-gallery aggregations so the first user-facing

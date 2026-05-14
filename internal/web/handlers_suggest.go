@@ -75,6 +75,20 @@ func (s *Server) foldersSuggest(w http.ResponseWriter, r *http.Request) {
 // stability); only the user-facing vocabulary moved.
 func (s *Server) collectionSuggest(w http.ResponseWriter, r *http.Request) {
 	prefix := strings.TrimSpace(r.URL.Query().Get("prefix"))
+	collections := s.queryCollectionLabels(prefix, 10)
+	if len(collections) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	s.renderTemplate(w, "partials/series_suggest.html", map[string]any{
+		"Series": collections,
+	})
+}
+
+// queryCollectionLabels lifts the SQL out of collectionSuggest so the
+// search-bar `collection:` autocomplete can reuse it from
+// systemSuggestLevel2 without duplicating the indexed-range query.
+func (s *Server) queryCollectionLabels(prefix string, limit int) []string {
 	var (
 		rows *sql.Rows
 		err  error
@@ -83,37 +97,31 @@ func (s *Server) collectionSuggest(w http.ResponseWriter, r *http.Request) {
 		rows, err = s.db().Read.Query(
 			`SELECT DISTINCT series FROM images INDEXED BY idx_images_series
 			 WHERE series != ''
-			 ORDER BY series LIMIT 10`,
+			 ORDER BY series LIMIT ?`,
+			limit,
 		)
 	} else {
 		rows, err = s.db().Read.Query(
 			`SELECT DISTINCT series FROM images INDEXED BY idx_images_series
 			 WHERE series != '' AND series >= ? AND series < ?
-			 ORDER BY series LIMIT 10`,
-			prefix, nextPrefix(prefix),
+			 ORDER BY series LIMIT ?`,
+			prefix, nextPrefix(prefix), limit,
 		)
 	}
 	if err != nil {
 		logx.Warnf("collection suggest: %v", err)
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return nil
 	}
 	defer rows.Close()
-	var collections []string
+	var out []string
 	for rows.Next() {
 		var sv string
 		if err := rows.Scan(&sv); err != nil {
 			continue
 		}
-		collections = append(collections, sv)
+		out = append(out, sv)
 	}
-	if len(collections) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	s.renderTemplate(w, "partials/series_suggest.html", map[string]any{
-		"Series": collections,
-	})
+	return out
 }
 
 func (s *Server) tagSuggest(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +229,16 @@ func (s *Server) searchSuggest(w http.ResponseWriter, r *http.Request) {
 			// would. Avoids forcing the user to remember the cheat-sheet
 			// trigger after they've already committed to the filter.
 			if searchkw.IsKeyword(key) {
-				rows := s.systemSuggestLevel2(key, strings.ToLower(val))
+				// Most filter keys carry closed-vocabulary values that are
+				// case-insensitive matches against a static enum (fav:true,
+				// ai:comfyui, ...). collection: is the exception: labels
+				// are operator-entered free text whose case must survive
+				// the prefix-range SQL, so pass it through unchanged.
+				vp := strings.ToLower(val)
+				if key == "collection" {
+					vp = val
+				}
+				rows := s.systemSuggestLevel2(key, vp)
 				if len(rows) == 0 {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -363,6 +380,19 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
 			if len(rows) >= 10 {
 				break
 			}
+		}
+		return rows
+	}
+	// collection labels may contain spaces; wrap each suggestion in
+	// double quotes so the parser still treats it as a single token.
+	if key == "collection" {
+		labels := s.queryCollectionLabels(valPrefix, 10)
+		rows := make([]searchSuggestRow, 0, len(labels))
+		for _, lbl := range labels {
+			rows = append(rows, searchSuggestRow{
+				Name:     `collection:"` + lbl + `"`,
+				Category: "system",
+			})
 		}
 		return rows
 	}

@@ -376,6 +376,36 @@ func TestCreateCategory_RejectsInvalidNames(t *testing.T) {
 	}
 }
 
+func TestCreateCategory_DuplicateNameFriendlyError(t *testing.T) {
+	_, svc := setupTestDB(t)
+
+	if _, err := svc.CreateCategory("mood", "#aabbcc"); err != nil {
+		t.Fatalf("first CreateCategory(mood): %v", err)
+	}
+	if _, err := svc.CreateCategory("mood", "#aabbcc"); err != ErrCategoryExists {
+		t.Errorf("duplicate CreateCategory(mood) err = %v, want ErrCategoryExists", err)
+	}
+	// Built-in "general" must also surface the friendly error.
+	if _, err := svc.CreateCategory("general", "#aabbcc"); err != ErrCategoryExists {
+		t.Errorf("CreateCategory(general) err = %v, want ErrCategoryExists", err)
+	}
+}
+
+func TestRenameCategory_DuplicateNameFriendlyError(t *testing.T) {
+	_, svc := setupTestDB(t)
+
+	a, err := svc.CreateCategory("alpha", "#aabbcc")
+	if err != nil {
+		t.Fatalf("CreateCategory(alpha): %v", err)
+	}
+	if _, err := svc.CreateCategory("bravo", "#aabbcc"); err != nil {
+		t.Fatalf("CreateCategory(bravo): %v", err)
+	}
+	if err := svc.RenameCategory(a.ID, "bravo"); err != ErrCategoryExists {
+		t.Errorf("RenameCategory(alpha→bravo) err = %v, want ErrCategoryExists", err)
+	}
+}
+
 func TestMergeTags(t *testing.T) {
 	database, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
@@ -882,6 +912,29 @@ func TestListTags_IsAutoOnly(t *testing.T) {
 		t.Errorf("auto_only tag should be IsAutoOnly")
 	}
 	_ = database
+}
+
+func TestListTags_IsAutoOnly_ZeroUsageNotFlagged(t *testing.T) {
+	_, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	// A tag declared but never applied (usage=0) has no image_tag rows
+	// at all; the origin "auto" badge would mislabel it. The flag must
+	// stay false so the /tags row renders the no-origin sentinel.
+	if _, err := svc.GetOrCreateTag("declared_only", catID); err != nil {
+		t.Fatal(err)
+	}
+
+	tags, _, err := svc.ListTags(TagFilter{Prefix: "declared_only", Limit: 100, ShowZero: true})
+	if err != nil || len(tags) != 1 {
+		t.Fatalf("declared_only lookup failed: %v %+v", err, tags)
+	}
+	if tags[0].UsageCount != 0 {
+		t.Fatalf("declared_only UsageCount = %d, want 0", tags[0].UsageCount)
+	}
+	if tags[0].IsAutoOnly {
+		t.Errorf("zero-usage tag should not be flagged IsAutoOnly")
+	}
 }
 
 func TestUpdateCategoryColor(t *testing.T) {

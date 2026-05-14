@@ -372,15 +372,12 @@ func fetchSortedMatchIDs(database *db.DB, indexHint, where string, args []any, o
 	return ids
 }
 
-// isPureTagExpr reports whether expr is composed only of tag-style
-// predicates - TagExpr leaves and the cat:/rating:/tagged:/autotagged:/
-// category-qualified FilterExpr leaves. Mixed expressions (fav, source,
-// folder, ...) have their own selective column indexes that the
-// planner picks. tagged:/autotagged: emit an image_tags EXISTS shape
-// the planner short-circuits per row, so pinning idx_images_ingested_
-// visible drops the TEMP B-TREE the planner otherwise builds for ORDER
-// BY ingested_at on libraries where is_missing=0 has near-zero
-// selectivity.
+// isPureTagExpr reports whether expr's data SELECT should pin
+// idx_images_ingested_visible (or _filesize_visible) instead of
+// letting the planner pick. Tag leaves and the
+// cat:/rating:/tagged:/autotagged:/inbox: filter keywords qualify;
+// fav / source / folder / width and friends have their own selective
+// column index so the planner picks fine on its own.
 func isPureTagExpr(expr Expr) bool {
 	switch e := expr.(type) {
 	case AndExpr:
@@ -393,12 +390,9 @@ func isPureTagExpr(expr Expr) bool {
 		return true
 	case FilterExpr:
 		switch e.Key {
-		case "cat", "rating", "tagged", "autotagged":
+		case "cat", "rating", "tagged", "autotagged", "inbox":
 			return true
 		}
-		// Category-qualified leaves and the colon-tag fallback emit
-		// image_tags EXISTS too; everything else (fav, source, folder,
-		// width, ...) has its own column index.
 		return !searchkw.IsKeyword(e.Key)
 	}
 	return false
@@ -861,6 +855,9 @@ func resolveDriverCanonicals(database *db.DB, leaf TagExpr) ([]int64, int64, boo
 	case "prefix":
 		pred = `t.name LIKE ? ESCAPE '\'`
 		arg = escapeLike(leaf.Tag) + "%"
+	case "suffix":
+		pred = `t.name LIKE ? ESCAPE '\'`
+		arg = "%" + escapeLike(leaf.Tag)
 	case "substring":
 		pred = `t.name LIKE ? ESCAPE '\'`
 		arg = "%" + escapeLike(leaf.Tag) + "%"
@@ -982,6 +979,9 @@ func fastCountTag(database *db.DB, t TagExpr) (int, bool) {
 	case "prefix":
 		pred = `name LIKE ? ESCAPE '\'`
 		arg = escapeLike(t.Tag) + "%"
+	case "suffix":
+		pred = `name LIKE ? ESCAPE '\'`
+		arg = "%" + escapeLike(t.Tag)
 	case "substring":
 		pred = `name LIKE ? ESCAPE '\'`
 		arg = "%" + escapeLike(t.Tag) + "%"
@@ -1357,11 +1357,12 @@ func fastCountAI(database *db.DB, e FilterExpr) (int, bool) {
 }
 
 // fastCountTagged returns the exact fast-path count for tagged:true and
-// autotagged:true. Computes visible_total - untagged_visible: untagged
-// is the exact slow path's :false count (inexpensive at typical scale -
-// the EXISTS subquery rides the partial inbox-visible index), and the
-// difference is the partition-correct tagged-visible count. Falls back
-// to (0, false) on any DB error so the slow path takes over.
+// autotagged:true. Computes visible_total - untagged_visible: the
+// untagged subtrahend is a NOT-EXISTS walk over image_tags that hits
+// multi-second p95 on a million-row library, so it rides the DB-level
+// count cache that InvalidateCachedCounts drops on every membership
+// write. Falls back to (0, false) on any DB error so the slow path
+// takes over.
 func fastCountTagged(database *db.DB, e FilterExpr) (int, bool) {
 	if e.Key != "tagged" && e.Key != "autotagged" {
 		return 0, false
@@ -1374,14 +1375,19 @@ func fastCountTagged(database *db.DB, e FilterExpr) (int, bool) {
 		return 0, false
 	}
 	var untagged int
-	q := `SELECT COUNT(*) FROM images i WHERE is_missing = 0 AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = i.id)`
 	if e.Key == "autotagged" {
-		q = `SELECT COUNT(*) FROM images i WHERE is_missing = 0 AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = i.id AND it.is_auto = 1)`
+		untagged, ok = database.AutoUntaggedVisibleCount()
+	} else {
+		untagged, ok = database.UntaggedVisibleCount()
 	}
-	if err := database.Read.QueryRow(q).Scan(&untagged); err != nil {
+	if !ok {
 		return 0, false
 	}
-	return visible - untagged, true
+	n := visible - untagged
+	if n < 0 {
+		n = 0
+	}
+	return n, true
 }
 
 // fastCountInbox returns the visible count for inbox:true / inbox:false
@@ -1555,11 +1561,12 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		if q.RandomSeed == 0 {
 			return nil, nil, nil
 		}
-		// SAFETY: q.RandomSeed is generated server-side via crypto/rand
-		// and never sourced from user input. %d only produces digits, so
-		// the literal interpolation is safe from SQL injection.
-		keyCol = fmt.Sprintf("((i.id * %d) & 2147483647)", q.RandomSeed)
-		keyVal = (currentID * q.RandomSeed) & 2147483647
+		// SAFETY: the mixed seed is derived from q.RandomSeed via a
+		// deterministic numeric mix; %d only produces digits, so the
+		// literal interpolation is safe from SQL injection.
+		mixed := mixSeed(q.RandomSeed)
+		keyCol = fmt.Sprintf("((i.id * %d) & 2147483647)", mixed)
+		keyVal = (currentID * mixed) & 2147483647
 	case "filesize":
 		keyCol = "i.file_size"
 		keyVal = fileSize
@@ -1675,11 +1682,12 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 		if q.RandomSeed == 0 {
 			return -1, nil
 		}
-		// SAFETY: q.RandomSeed is generated server-side via crypto/rand
-		// and never sourced from user input. %d only produces digits, so
-		// the literal interpolation is safe from SQL injection.
-		keyCol = fmt.Sprintf("((i.id * %d) & 2147483647)", q.RandomSeed)
-		keyVal = (currentID * q.RandomSeed) & 2147483647
+		// SAFETY: the mixed seed is derived from q.RandomSeed via a
+		// deterministic numeric mix; %d only produces digits, so the
+		// literal interpolation is safe from SQL injection.
+		mixed := mixSeed(q.RandomSeed)
+		keyCol = fmt.Sprintf("((i.id * %d) & 2147483647)", mixed)
+		keyVal = (currentID * mixed) & 2147483647
 	case "filesize":
 		keyCol = "i.file_size"
 		keyVal = fileSize
@@ -1973,6 +1981,30 @@ func SuggestTagsWithFilter(database *db.DB, expr Expr, prefix, categoryName stri
 	return out, nil
 }
 
+// mixSeed scrambles a caller-supplied random seed so a small value
+// (e.g. `seed=1` from a hand-edited URL or an API client) still produces
+// a high-entropy 31-bit odd multiplier. Without this the executor's
+// `(i.id * seed) & 2147483647` ordering collapses to identity for every
+// seed below ~5x10^7 because the product stays under 2^31. The galleryHandler
+// auto-seeds with a 32-bit value so the obvious paths are unaffected;
+// this guards the manually-passed-seed path. Stable across calls so
+// pagination still rides the same permutation.
+func mixSeed(seed int64) int64 {
+	if seed == 0 {
+		return 0
+	}
+	// splitmix64-style mix produces near-uniform bits across the
+	// uint64 word from any non-zero input. Force the top bit and the
+	// low bit so the result is always a 31-bit odd value the caller
+	// can multiply against any image id without dropping back into a
+	// monotonic-in-id regime.
+	x := uint64(seed) * 0x9E3779B97F4A7C15
+	x ^= x >> 32
+	x *= 0xBF58476D1CE4E5B9
+	x ^= x >> 32
+	return int64((x & 0x3FFFFFFE) | 0x40000001)
+}
+
 func buildOrder(sort, order string, randomSeed int64) string {
 	switch sort {
 	case "filesize":
@@ -1998,10 +2030,12 @@ func buildOrder(sort, order string, randomSeed int64) string {
 			// Deterministic pseudo-random order, stable across page
 			// loads. The 31-bit masked product can collide, so i.id is
 			// the tiebreaker for a total order (otherwise pagination
-			// can repeat or skip images).
-			// SAFETY: randomSeed comes from crypto/rand in galleryHandler,
-			// never user input; %d only produces digits.
-			return fmt.Sprintf("ORDER BY ((i.id * %d) & 2147483647), i.id", randomSeed)
+			// can repeat or skip images). mixSeed scrambles the
+			// caller-supplied seed so a hand-passed small value (e.g.
+			// `seed=1`) still produces a high-entropy multiplier.
+			// SAFETY: the mixed value is a 31-bit odd integer; %d only
+			// produces digits, so the literal interpolation is safe.
+			return fmt.Sprintf("ORDER BY ((i.id * %d) & 2147483647), i.id", mixSeed(randomSeed))
 		}
 		return "ORDER BY RANDOM(), i.id"
 	default: // "newest"
@@ -2213,6 +2247,9 @@ func (b *whereBuilder) buildTagExpr(e TagExpr) string {
 	case "prefix":
 		b.args = append(b.args, escapeLike(e.Tag)+"%")
 		return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(canonical_tag_id, id) FROM tags WHERE name LIKE ? ESCAPE '\')`, false)
+	case "suffix":
+		b.args = append(b.args, "%"+escapeLike(e.Tag))
+		return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(canonical_tag_id, id) FROM tags WHERE name LIKE ? ESCAPE '\')`, false)
 	case "substring":
 		b.args = append(b.args, "%"+escapeLike(e.Tag)+"%")
 		return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(canonical_tag_id, id) FROM tags WHERE name LIKE ? ESCAPE '\')`, false)
@@ -2246,6 +2283,11 @@ func ratingRank(name string) int {
 
 func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
 	switch e.Key {
+	case "system":
+		// Autocomplete-only cheat-sheet trigger; a bare `system:` query
+		// must not collapse into the empty-value match-all branch below.
+		return "1=0"
+
 	case "fav":
 		if e.Val == "true" {
 			return "i.is_favorited = 1"

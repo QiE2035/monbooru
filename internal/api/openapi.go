@@ -236,6 +236,15 @@ func buildSpec(baseURL string) map[string]any {
 				},
 			},
 			"/images/{id}/tags": map[string]any{
+				"get": map[string]any{
+					"summary":     "List image tags",
+					"operationId": "listImageTags",
+					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Image tag list", "content": jsonContent("#/components/schemas/TagArray")},
+						"404": map[string]any{"description": "Not found", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
 				"post": map[string]any{
 					"summary":     "Add tags to image",
 					"operationId": "addImageTags",

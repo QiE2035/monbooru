@@ -2,10 +2,10 @@
 {{template "layout_head" .}}
 <div id="sidebar-inner">
   <nav class="help-nav">
+    <a href="#search-syntax">Search Syntax</a>
     <a href="#upload">Uploading Images</a>
     <a href="#tag-input">Adding Tags</a>
     <a href="#tag-management">Managing Tags</a>
-    <a href="#search-syntax">Search Syntax</a>
     <a href="#inbox">Inbox</a>
     <a href="#rating">Rating &amp; SFW Ceiling</a>
     <a href="#manga">Manga, Comics &amp; Archives</a>
@@ -17,6 +17,62 @@
 
 <div id="help-page">
   <h2>Help</h2>
+
+  <hr class="help-sep">
+
+  <section id="search-syntax">
+    <h3>Search Syntax</h3>
+    <table class="help-table">
+      <thead><tr><th>Syntax</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>tagname</code></td><td>Images with this tag</td></tr>
+        <tr><td><code>-tagname</code></td><td>Exclude images with this tag</td></tr>
+        <tr><td><code>tagA tagB</code></td><td>Images with both tags (AND)</td></tr>
+        <tr><td><code>tagA OR tagB</code></td><td>Images with either tag</td></tr>
+        <tr><td><code>red*</code></td><td>Wildcard: tags starting with "red" (e.g. red_hair, red_eyes)</td></tr>
+        <tr><td><code>*hair*</code></td><td>Wildcard: tags containing "hair"</td></tr>
+        <tr><td><code>fav:true</code> / <code>fav:false</code></td><td>Favorited / non-favorited images</td></tr>
+        <tr><td><code>inbox:true</code> / <code>inbox:false</code></td><td>Inbox state: untriaged (default for added images) vs archived/curated</td></tr>
+        <tr><td><code>ai:any</code></td><td>Any AI-generated image (a1111 and/or comfyui metadata present)</td></tr>
+        <tr><td><code>ai:a1111</code></td><td>Images generated with A1111/Forge</td></tr>
+        <tr><td><code>ai:comfyui</code></td><td>Images generated with ComfyUI</td></tr>
+        <tr><td><code>ai:none</code></td><td>Images with no detected generation metadata</td></tr>
+        <tr><td><code>source:"source name"</code></td><td>Exact-match against the <code>images.source</code> field (set per image from the detail page)</td></tr>
+        <tr><td><code>folder:path/to</code></td><td>Images in that folder or any subfolder beneath it</td></tr>
+        <tr><td><code>folderonly:path/to</code></td><td>Only images directly in that folder (no subfolders); use <code>folderonly:</code> for the gallery root alone</td></tr>
+        <tr><td><code>folder:"path with spaces"</code></td><td>Folder path with spaces (use quotes)</td></tr>
+        <tr><td><code>character:tagname</code></td><td>Tag "tagname" in the "character" category specifically</td></tr>
+        <tr><td><code>cat:character</code></td><td>Images with any tag in the given category</td></tr>
+        <tr><td><code>width:&gt;=1920</code></td><td>Filter by image width (supports <code>&gt;=</code> <code>&lt;=</code> <code>&gt;</code> <code>&lt;</code> <code>=</code>)</td></tr>
+        <tr><td><code>height:&lt;768</code></td><td>Filter by image height</td></tr>
+        <tr><td><code>date:&gt;2024-01-01</code></td><td>Images ingested after a date</td></tr>
+        <tr><td><code>date:2024-01..2024-06</code></td><td>Images ingested within a date range</td></tr>
+        <tr><td><code>date:2024-03-15</code></td><td>Images ingested on an exact date</td></tr>
+        <tr><td><code>missing:true</code></td><td>Show images whose files are missing from disk</td></tr>
+        <tr><td><code>tagged:true</code></td><td>Only images with at least one tag. <code>tagged:false</code> restricts to images with no tags.</td></tr>
+        <tr><td><code>autotagged:true</code></td><td>Only images with at least one auto-tag. <code>autotagged:false</code> restricts to images with no auto-tags.</td></tr>
+        <tr><td><code>generated:abcd1234abcd</code></td><td>Other images sharing the same generation recipe (prompt + model + sampler + steps + cfg, seed ignored). The hash is shown at the top of the Generation data block on the detail page.</td></tr>
+        <tr><td><code>rating:explicit</code></td><td>Filter by effective rating - one of <code>general</code> / <code>sensitive</code> / <code>questionable</code> / <code>explicit</code>. When an image carries more than one rating tag the highest wins. The footer's <code>sfw</code> level corresponds to <code>rating:general</code>.</td></tr>
+        <tr><td><code>type:image</code> / <code>type:archive</code> / <code>type:animated</code></td><td>Narrow by file-type bucket. <code>image</code> = jpeg/png/webp/gif/mp4/webm, <code>archive</code> = cbz / zip (comics, manga, and any image-zip), <code>animated</code> = gif/mp4/webm. Comma-separates as a union. Negate with <code>-type:animated</code> for static files only.</td></tr>
+        <tr><td><code>collection:"collection name"</code></td><td>Exact-match against the user-edited per-image collection label.</td></tr>
+        <tr><td><code>pages:&gt;=100</code></td><td>Comparison filter on a manga's page count. Non-manga rows count as 0 pages.</td></tr>
+        <tr><td><code>system:</code></td><td>Commands cheat sheet. </td></tr>
+      </tbody>
+    </table>
+    <p class="field-hint">All searches are case-insensitive. Missing images are hidden by default.</p>
+    <h4>Sort options</h4>
+    <table class="help-table">
+      <thead><tr><th>Sort</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>Newest</td><td>Sort by ingest date (default). Use the order toggle (↓/↑) next to the sort select to flip direction.</td></tr>
+        <tr><td>File size</td><td>Sort by file size, largest first.</td></tr>
+        <tr><td>Order</td><td>Group by collection alphabetically, then by the per-image order field. Images without a collection sit at the start; images with a collection but no order sit after the numbered ones.</td></tr>
+        <tr><td>Random (⇄)</td><td>Shuffle images randomly. Stable across page turns; click ⇄ again to re-shuffle.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <hr class="help-sep">
 
   <section id="upload">
     <h3>Uploading Images</h3>
@@ -62,68 +118,13 @@
 
   <hr class="help-sep">
 
-  <section id="search-syntax">
-    <h3>Search Syntax</h3>
-    <table class="help-table">
-      <thead><tr><th>Syntax</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>tagname</code></td><td>Images with this tag</td></tr>
-        <tr><td><code>-tagname</code></td><td>Exclude images with this tag</td></tr>
-        <tr><td><code>tagA tagB</code></td><td>Images with both tags (AND)</td></tr>
-        <tr><td><code>tagA OR tagB</code></td><td>Images with either tag</td></tr>
-        <tr><td><code>red*</code></td><td>Wildcard: tags starting with "red" (e.g. red_hair, red_eyes)</td></tr>
-        <tr><td><code>*hair*</code></td><td>Wildcard: tags containing "hair"</td></tr>
-        <tr><td><code>fav:true</code></td><td>Favorited images only</td></tr>
-        <tr><td><code>inbox:true</code> / <code>inbox:false</code></td><td>Inbox state: untriaged (default for added images) vs archived/curated</td></tr>
-        <tr><td><code>ai:any</code></td><td>Any AI-generated image (a1111 and/or comfyui metadata present)</td></tr>
-        <tr><td><code>ai:a1111</code></td><td>Images generated with A1111/Forge</td></tr>
-        <tr><td><code>ai:comfyui</code></td><td>Images generated with ComfyUI</td></tr>
-        <tr><td><code>ai:none</code></td><td>Images with no detected generation metadata</td></tr>
-        <tr><td><code>source:my_label</code></td><td>Exact-match against the operator-edited <code>images.source</code> field (set per image from the detail page)</td></tr>
-        <tr><td><code>folder:path/to</code></td><td>Images in that folder or any subfolder beneath it</td></tr>
-        <tr><td><code>folderonly:path/to</code></td><td>Only images directly in that folder (no subfolders); use <code>folderonly:</code> for the gallery root alone</td></tr>
-        <tr><td><code>folder:"path with spaces"</code></td><td>Folder path with spaces (use quotes)</td></tr>
-        <tr><td><code>character:tagname</code></td><td>Tag "tagname" in the "character" category specifically</td></tr>
-        <tr><td><code>cat:character</code></td><td>Images with any tag in the given category</td></tr>
-        <tr><td><code>width:&gt;=1920</code></td><td>Filter by image width (supports <code>&gt;=</code> <code>&lt;=</code> <code>&gt;</code> <code>&lt;</code> <code>=</code>)</td></tr>
-        <tr><td><code>height:&lt;768</code></td><td>Filter by image height</td></tr>
-        <tr><td><code>date:&gt;2024-01-01</code></td><td>Images ingested after a date</td></tr>
-        <tr><td><code>date:2024-01..2024-06</code></td><td>Images ingested within a date range</td></tr>
-        <tr><td><code>date:2024-03-15</code></td><td>Images ingested on an exact date</td></tr>
-        <tr><td><code>missing:true</code></td><td>Show images whose files are missing from disk</td></tr>
-        <tr><td><code>tagged:true</code></td><td>Only images with at least one tag. <code>tagged:false</code> restricts to images with no tags.</td></tr>
-        <tr><td><code>autotagged:true</code></td><td>Only images with at least one auto-tag. <code>autotagged:false</code> restricts to images with no auto-tags.</td></tr>
-        <tr><td><code>generated:abcd1234abcd</code></td><td>Other images sharing the same generation recipe (prompt + model + sampler + steps + cfg, seed ignored). The hash is shown at the top of the Generation data block on the detail page.</td></tr>
-        <tr><td><code>rating:explicit</code></td><td>Filter by effective rating - one of <code>general</code> / <code>sensitive</code> / <code>questionable</code> / <code>explicit</code>. When an image carries more than one rating tag the highest wins. The footer's <code>sfw</code> level corresponds to <code>rating:general</code>.</td></tr>
-        <tr><td><code>type:image</code> / <code>type:archive</code> / <code>type:animated</code></td><td>Narrow by file-type bucket. <code>image</code> = jpeg/png/webp/gif/mp4/webm, <code>archive</code> = cbz / zip (comics, manga, and any image-zip), <code>animated</code> = gif/mp4/webm. Comma-separates as a union. Negate with <code>-type:animated</code> for static files only.</td></tr>
-        <tr><td><code>collection:"Touhou Suzunaan"</code></td><td>Exact-match against the user-edited per-image collection label.</td></tr>
-        <tr><td><code>pages:&gt;=100</code></td><td>Comparison filter on a manga's page count. Non-manga rows count as 0 pages.</td></tr>
-        <tr><td><code>system:</code></td><td>Commands cheat sheet. </td></tr>
-      </tbody>
-    </table>
-    <p class="field-hint">All searches are case-insensitive. Missing images are hidden by default.</p>
-    <h4>Sort options</h4>
-    <table class="help-table">
-      <thead><tr><th>Sort</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td>Newest</td><td>Sort by ingest date (default). Use the order toggle (↓/↑) next to the sort select to flip direction.</td></tr>
-        <tr><td>File size</td><td>Sort by file size, largest first.</td></tr>
-        <tr><td>Order</td><td>Group by collection alphabetically, then by the per-image order field (1, 2, 3...). Images without a collection sit at the start; images with a collection but no order sit after the numbered ones.</td></tr>
-        <tr><td>Random (⇄)</td><td>Shuffle images randomly. Stable across page turns; click again to re-shuffle.</td></tr>
-      </tbody>
-    </table>
-  </section>
-
-  <hr class="help-sep">
-
   <section id="inbox">
     <h3>Inbox</h3>
     <p>Every newly ingested or uploaded image lands in the <strong>inbox</strong>. Flip it to <strong>archived</strong> (curated) once you've reviewed the tags.</p>
     <ul>
       <li>Gallery toolbar: the <kbd>✱</kbd> button left of the favorites toggle filters to the inbox.</li>
       <li>Image detail: the <kbd>✱</kbd> button left of the favorite toggles the current image between inbox and archived.</li>
-      <li>Batch surface: the gallery's Actions chooser and the selection batch bar each carry a single <strong>Send / Remove from inbox</strong> entry that flips every targeted row (inbox rows become archived; archived become inbox).</li>
-      <li>Search: <code>inbox:true</code> for the triage view, <code>inbox:false</code> for the archived rows.</li>
+      <li>Batch surface: the gallery's Actions chooser and the selection batch bar each carry a single <strong>Toggle inbox</strong> entry that flips every targeted row (inbox rows become archived; archived become inbox).</li>
     </ul>
   </section>
 
@@ -139,7 +140,7 @@
 
   <section id="manga">
     <h3>Manga, Comics &amp; Archives</h3>
-    <p>Drop a <code>.cbz</code> or <code>.zip</code> archive of pages into the gallery (or upload via the Upload page) and it ingests as one library row, like an image. The cover thumbnail is page 1 (natural-sorted across the archive).</p>
+    <p>CBZ and ZIP files containing images ingests as one library row, like an image. The cover thumbnail is page 1 (natural-sorted across the archive).</p>
     <p>The detail page for an archive gains:</p>
     <ul>
       <li><strong>Read</strong> - opens the reader at page 1.</li>
@@ -163,12 +164,12 @@
     <p>The <a href="/settings">Settings</a> page provides:</p>
     <ul>
       <li><strong>General</strong> - toggle the gallery file watcher, set the max file size, and change the number of images per page.</li>
-      <li><strong>Galleries</strong> - add, rename, switch between, set default, or delete configured galleries. The Add form takes an optional import file (.db / .json / .zip) so a populated gallery can be created in one step. </li>
-      <li><strong>Auto-Tagger</strong> - enable one or more taggers, set global and per-category confidence thresholds plus a per-category Max tags cap, scope a tagger to a subset of galleries, toggle GPU (CUDA), pick a worker count, and disable or delete a tagger row.</li>
+      <li><strong>Galleries</strong> - add, rename, switch between, set default, or delete configured galleries. </li>
+      <li><strong>Auto-Tagger</strong> - enable one or more taggers, set global and per-category confidence thresholds, scope a tagger to a subset of galleries, toggle GPU (CUDA), pick a worker count, and disable or delete a tagger row.</li>
       <li><strong>Authentication</strong> - set or remove a password, regenerate the API token.</li>
       <li><strong>Maintenance</strong> - prune missing images, clean up orphaned thumbnails, rebuild thumbnails, recalculate tag counts, merge auto-tagged-only general tags into their unique categorized counterparts, re-extract metadata, vacuum the database, and list or remove duplicate file paths.</li>
-      <li><strong>Schedule</strong> - opt-in daily automation. Pick a time-of-day (default 01:00) and tick any of: Sync gallery, Remove orphaned thumbnails, Run enabled auto-taggers, Merge general tags. The scheduler iterates every configured gallery in turn at the chosen time and skips silently when another job is already running.</li>
-      <li><strong>Stats</strong> - read-only diagnostic block: process memory (PSS broken into Go heap, native, file-backed), per-gallery DB size, and filesystem free space.</li>
+      <li><strong>Schedule</strong> - opt-in daily automation. Pick a time-of-day and tick any of: Sync gallery, Remove orphaned thumbnails, Run enabled auto-taggers, Merge general tags. The scheduler iterates every configured gallery in turn at the chosen time.</li>
+      <li><strong>Stats</strong> - read-only diagnostic block: process memory, per-gallery database size, and filesystem free space.</li>
     </ul>
   </section>
 
