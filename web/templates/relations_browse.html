@@ -1,0 +1,112 @@
+{{define "relations_browse.html"}}
+{{template "layout_head" .}}
+<div id="sidebar-inner">
+  <nav class="settings-nav">
+    <a href="/relations#find">Find relations</a>
+    <a href="/relations#browse">Browse relations</a>
+    <a href="/relations#duplicates">Duplicates</a>
+  </nav>
+</div>
+{{template "layout_mid" .}}
+
+<div id="relations-browse-page">
+  <div class="detail-topbar">
+    <div class="detail-nav-group">
+      <a href="/relations" class="back-link">← Back to Relations</a>
+      <span class="detail-nav-sep">·</span>
+      <strong class="walker-page-title">Browse pair relations</strong>
+    </div>
+  </div>
+
+  <div id="flash-relations"></div>
+
+  <nav class="browse-tabs">
+    <a href="/relations/browse?type=duplicate"   class="browse-tab{{if eq .Type "duplicate"}}   browse-tab-active{{end}}">Duplicates</a>
+    <a href="/relations/browse?type=alternate"   class="browse-tab{{if eq .Type "alternate"}}   browse-tab-active{{end}}">Alternates</a>
+    <a href="/relations/browse?type=version"     class="browse-tab{{if eq .Type "version"}}     browse-tab-active{{end}}">Versions</a>
+    <a href="/relations/browse?type=derivative"  class="browse-tab{{if eq .Type "derivative"}}  browse-tab-active{{end}}">Derivatives</a>
+    <a href="/relations/browse?type=not_related" class="browse-tab{{if eq .Type "not_related"}} browse-tab-active{{end}}">Not related</a>
+  </nav>
+
+  {{if not .Rows}}
+  <p class="field-hint">No {{.Type}} relations declared yet.</p>
+  {{else}}
+  <table class="browse-table">
+    <thead>
+      <tr>
+        <th>Left ID</th>
+        <th>Left</th>
+        <th>Right</th>
+        <th>Right ID</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Rows}}
+      <tr>
+        <td><a href="/images/{{.ParentID}}">#{{.ParentID}}</a></td>
+        <td>
+          <a href="/images/{{.ParentID}}" class="browse-thumb">
+            <img src="/thumbnails/{{$.ActiveGallery}}/{{.ParentID}}.jpg" alt="image {{.ParentID}}" loading="lazy">
+          </a>
+        </td>
+        <td>
+          <a href="/images/{{.ChildID}}" class="browse-thumb">
+            <img src="/thumbnails/{{$.ActiveGallery}}/{{.ChildID}}.jpg" alt="image {{.ChildID}}" loading="lazy">
+          </a>
+        </td>
+        <td><a href="/images/{{.ChildID}}">#{{.ChildID}}</a></td>
+        <td>
+          <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
+                hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
+                hx-confirm="Unlink this relation?"
+                data-confirm-ok="Unlink"
+                style="display:inline">
+            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+            {{if eq $.Type "duplicate"}}
+              <input type="hidden" name="type" value="duplicate">
+              <input type="hidden" name="image_id" value="{{.ChildID}}">
+            {{else if eq $.Type "alternate"}}
+              <input type="hidden" name="type" value="alternate">
+              <input type="hidden" name="image_id" value="{{.ChildID}}">
+            {{else if eq $.Type "version"}}
+              <input type="hidden" name="type" value="version">
+              <input type="hidden" name="a" value="{{.ParentID}}">
+              <input type="hidden" name="b" value="{{.ChildID}}">
+            {{else if eq $.Type "derivative"}}
+              <input type="hidden" name="type" value="derivative">
+              <input type="hidden" name="a" value="{{.ParentID}}">
+              <input type="hidden" name="b" value="{{.ChildID}}">
+            {{else if eq $.Type "not_related"}}
+              <input type="hidden" name="type" value="not_related">
+              <input type="hidden" name="a" value="{{.ParentID}}">
+              <input type="hidden" name="b" value="{{.ChildID}}">
+            {{end}}
+            <button type="submit" class="btn-link-accent">[unlink]</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+
+<script>
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Escape') return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.defaultPrevented) return;
+  // hx-confirm and the layout dialogs (gallery switch, shortcuts help)
+  // expect Esc to dismiss them, not jump back to /relations. The native
+  // close runs after the keydown bubble, so the dialog is still [open]
+  // at this point.
+  if (document.querySelector('dialog[open]')) return;
+  var tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  window.location.href = '/relations';
+});
+</script>
+
+{{template "layout_end" .}}
+{{end}}

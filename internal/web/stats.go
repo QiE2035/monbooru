@@ -80,16 +80,16 @@ type mountStats struct {
 // tagger-worker subprocess's residency so the operator can see where
 // the 1 GB+ of inference state is parked.
 type taggerCacheStats struct {
-	Loaded            bool
-	UseCUDA           bool
-	InUse             bool
-	Sessions          []string
-	IdleFor           time.Duration // zero when in use
-	IdleReleaseAfter  time.Duration // 0 == caching disabled
-	WorkerPID         int
-	WorkerRSS         int64 // bytes; 0 when no worker is alive
-	WorkerAnon        int64
-	WorkerFile        int64
+	Loaded           bool
+	UseCUDA          bool
+	InUse            bool
+	Sessions         []string
+	IdleFor          time.Duration // zero when in use
+	IdleReleaseAfter time.Duration // 0 == caching disabled
+	WorkerPID        int
+	WorkerPSS        int64 // bytes; 0 when no worker is alive
+	WorkerAnon       int64
+	WorkerFile       int64
 }
 
 // statsData is the bundle threaded into the settings template.
@@ -229,7 +229,7 @@ func gatherTaggerStats(s *Server) taggerCacheStats {
 	if pid, ok := tagger.WorkerPID(); ok {
 		out.WorkerPID = pid
 		if r, rok := procRSSAt(pid); rok {
-			out.WorkerRSS = int64(r.total)
+			out.WorkerPSS = int64(r.total)
 			out.WorkerAnon = int64(r.anon)
 			out.WorkerFile = int64(r.file)
 		}

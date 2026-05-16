@@ -5,6 +5,7 @@
     <a href="#general">General</a>
     <a href="#galleries">Galleries</a>
     <a href="#tagger">Tagger</a>
+    <a href="#relations">Relations</a>
     <a href="#auth">Auth</a>
     <a href="#maintenance">Maintenance</a>
     <a href="#schedule">Schedule</a>
@@ -29,9 +30,20 @@
       <div class="settings-cols">
         <div class="settings-sub">
           <h4>Files</h4>
-          <div class="field">
-            <label>Max file size (MB)</label>
-            <input type="number" name="max_file_size_mb" value="{{$cfg.Gallery.MaxFileSizeMB}}" min="1">
+          <div class="field range-row">
+            <label for="max_file_size_mb">Max file size (MB)</label>
+            <output id="max_file_size_mb_out">{{$cfg.Gallery.MaxFileSizeMB}}</output>
+            <div class="range-slider-row">
+              <span class="range-bound range-bound-min">1</span>
+              <input type="range" name="max_file_size_mb" id="max_file_size_mb"
+                     min="1" max="1024" step="1" value="{{$cfg.Gallery.MaxFileSizeMB}}" list="max_file_size_mb_ticks"
+                     oninput="document.getElementById('max_file_size_mb_out').value=this.value">
+              <span class="range-bound range-bound-max">1024</span>
+            </div>
+            <datalist id="max_file_size_mb_ticks">
+              <option value="1"></option><option value="128"></option><option value="256"></option>
+              <option value="512"></option><option value="768"></option><option value="1024"></option>
+            </datalist>
             <span class="field-hint">Files larger than this are skipped during sync.</span>
           </div>
           <div class="field">
@@ -43,9 +55,20 @@
         </div>
         <div class="settings-sub">
           <h4>UI</h4>
-          <div class="field">
-            <label>Page size</label>
-            <input type="number" name="page_size" value="{{$cfg.UI.PageSize}}" min="1" max="500">
+          <div class="field range-row">
+            <label for="page_size">Page size</label>
+            <output id="page_size_out">{{$cfg.UI.PageSize}}</output>
+            <div class="range-slider-row">
+              <span class="range-bound range-bound-min">20</span>
+              <input type="range" name="page_size" id="page_size"
+                     min="20" max="100" step="1" value="{{$cfg.UI.PageSize}}" list="page_size_ticks"
+                     oninput="document.getElementById('page_size_out').value=this.value">
+              <span class="range-bound range-bound-max">100</span>
+            </div>
+            <datalist id="page_size_ticks">
+              <option value="20"></option><option value="40"></option><option value="60"></option>
+              <option value="80"></option><option value="100"></option>
+            </datalist>
           </div>
         </div>
       </div>
@@ -443,12 +466,36 @@
             <label><input type="checkbox" name="use_cuda"{{if $cfg.Tagger.UseCUDA}} checked{{end}}> Use GPU (CUDA)</label>
             <p class="field-hint">Requires a CUDA-capable image and a GPU passed into the container.</p>
           </div>
-          <div class="field">
-            <label>Parallel workers <input type="number" name="parallel" value="{{$cfg.Tagger.Parallel}}" min="1" style="width:6em"></label>
+          <div class="field range-row">
+            <label for="parallel">Parallel workers</label>
+            <output id="parallel_out">{{$cfg.Tagger.Parallel}}</output>
+            <div class="range-slider-row">
+              <span class="range-bound range-bound-min">1</span>
+              <input type="range" name="parallel" id="parallel"
+                     min="1" max="16" step="1" value="{{$cfg.Tagger.Parallel}}" list="parallel_ticks"
+                     oninput="document.getElementById('parallel_out').value=this.value">
+              <span class="range-bound range-bound-max">16</span>
+            </div>
+            <datalist id="parallel_ticks">
+              <option value="1"></option><option value="2"></option><option value="4"></option>
+              <option value="8"></option><option value="12"></option><option value="16"></option>
+            </datalist>
             <p class="field-hint">Images tagged in parallel.</p>
           </div>
-          <div class="field">
-            <label>Tagger RAM/VRAM idle release (minutes) <input type="number" name="idle_release_after_minutes" value="{{$cfg.Tagger.IdleReleaseAfterMinutes}}" min="0" style="width:6em"></label>
+          <div class="field range-row">
+            <label for="idle_release_after_minutes">Tagger RAM/VRAM idle release (minutes)</label>
+            <output id="idle_release_after_minutes_out">{{$cfg.Tagger.IdleReleaseAfterMinutes}}</output>
+            <div class="range-slider-row">
+              <span class="range-bound range-bound-min">0</span>
+              <input type="range" name="idle_release_after_minutes" id="idle_release_after_minutes"
+                     min="0" max="60" step="1" value="{{$cfg.Tagger.IdleReleaseAfterMinutes}}" list="idle_release_ticks"
+                     oninput="document.getElementById('idle_release_after_minutes_out').value=this.value">
+              <span class="range-bound range-bound-max">60</span>
+            </div>
+            <datalist id="idle_release_ticks">
+              <option value="0"></option><option value="15"></option><option value="30"></option>
+              <option value="45"></option><option value="60"></option>
+            </datalist>
             <p class="field-hint">Use 0 to free it just after inference.</p>
           </div>
         </div>
@@ -456,7 +503,7 @@
       </div>
     </form>
     <div class="settings-sub">
-      <h4>Taggers</h4>
+      <h4>Taggers list</h4>
       {{if $rows}}
       <div class="table-scroll">
       <table class="tagger-table">
@@ -565,6 +612,44 @@
     {{end}}{{end}}
   </section>
 
+  <section id="relations" class="settings-section">
+    <h3>Relations</h3>
+    <div id="flash-relations-settings"></div>
+    <form hx-post="/settings/relations" hx-target="#flash-relations-settings" hx-swap="innerHTML">
+      <input type="hidden" name="_csrf" value="{{$csrf}}">
+      <div class="settings-cols">
+        <div class="settings-sub">
+          <h4>Find-pairs default distance</h4>
+          <div class="field range-row">
+            <label for="default_distance">Hamming distance</label>
+            <output id="default_distance_out">{{$cfg.Relations.DefaultDistance}}</output>
+            <div class="range-slider-row">
+              <span class="range-bound range-bound-min">0</span>
+              <input type="range" name="default_distance" id="default_distance"
+                     min="0" max="12" step="1" value="{{$cfg.Relations.DefaultDistance}}" list="default_distance_ticks"
+                     oninput="document.getElementById('default_distance_out').value=this.value">
+              <span class="range-bound range-bound-max">12</span>
+            </div>
+            <datalist id="default_distance_ticks">
+              <option value="0"></option><option value="2"></option><option value="4"></option>
+              <option value="6"></option><option value="8"></option><option value="10"></option>
+              <option value="12"></option>
+            </datalist>
+          </div>
+        </div>
+        <div class="settings-sub">
+          <h4>Default session order</h4>
+          <div class="field">
+            <label><input type="radio" name="default_session_order" value="smallest_distance_first" {{if eq $cfg.Relations.DefaultSessionOrder "smallest_distance_first"}}checked{{end}}> Smallest distance first</label>
+            <label><input type="radio" name="default_session_order" value="largest_file_first" {{if eq $cfg.Relations.DefaultSessionOrder "largest_file_first"}}checked{{end}}> Largest file first</label>
+            <label><input type="radio" name="default_session_order" value="random" {{if eq $cfg.Relations.DefaultSessionOrder "random"}}checked{{end}}> Random</label>
+          </div>
+        </div>
+      </div>
+      <div class="settings-actions"><button type="submit">Save</button></div>
+    </form>
+  </section>
+
   <section id="auth" class="settings-section">
     <h3>Authentication</h3>
     <div id="flash-auth"></div>
@@ -624,6 +709,34 @@
           </td>
         </tr>
         <tr>
+          <td><strong>Compute perceptual hashes</strong> <span class="field-hint">- backfill phash for every image that doesn't have one yet</span></td>
+          <td>
+            <form hx-post="/settings/maintenance/compute-phashes" hx-target="#flash-maintenance" hx-swap="innerHTML"
+                  hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}"
+                  hx-confirm="Compute perceptual hashes for every image still missing one?"
+                  data-confirm-ok="Compute"
+                  style="display:inline">
+              <input type="hidden" name="_csrf" value="{{$csrf}}">
+              <button type="submit" class="btn-sm">Compute</button>
+            </form>
+          </td>
+        </tr>
+        <tr>
+          <td><strong>Rebuild pair queue</strong> <span class="field-hint">- wipe potential relation pairs and rescan from scratch</span></td>
+          <td>
+            <form hx-post="/relations/find-pairs" hx-target="#flash-maintenance" hx-swap="innerHTML"
+                  hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}"
+                  hx-confirm="Wipe the existing pair queue and rescan from scratch?"
+                  data-confirm-danger="Skipped pairs and any queue work in progress are dropped."
+                  data-confirm-ok="Rebuild"
+                  style="display:inline">
+              <input type="hidden" name="_csrf" value="{{$csrf}}">
+              <input type="hidden" name="replace" value="true">
+              <button type="submit" class="btn-sm btn-danger">Rebuild</button>
+            </form>
+          </td>
+        </tr>
+        <tr>
           <td><strong>Tag counts</strong> <span class="field-hint">- recompute usage counts</span></td>
           <td>
             <form hx-post="/settings/maintenance/recalc-tags" hx-target="#flash-maintenance" hx-swap="innerHTML" style="display:inline">
@@ -633,22 +746,10 @@
           </td>
         </tr>
         <tr>
-          <td><strong>Merge general tags</strong> <span class="field-hint">- merge each auto-tagged-only general tag into its unique categorized counterpart, e.g. <code>general:hakurei_reimu</code> into <code>character:hakurei_reimu</code>. General tags you applied yourself are preserved.</span></td>
-          <td>
-            <form hx-post="/settings/maintenance/merge-general-tags" hx-target="#flash-maintenance" hx-swap="innerHTML"
-                  hx-confirm="Merge auto-tagged-only general tags into their unique categorized counterparts? The original general tags become aliases. User-tagged general tags are skipped."
-                  data-confirm-ok="Merge"
-                  style="display:inline">
-              <input type="hidden" name="_csrf" value="{{$csrf}}">
-              <button type="submit" class="btn-sm">Merge</button>
-            </form>
-          </td>
-        </tr>
-        <tr>
-          <td><strong>Re-extract metadata</strong> <span class="field-hint">- re-parse SD/ComfyUI metadata for every image</span></td>
+          <td><strong>Re-extract metadata</strong> <span class="field-hint">- re-parse metadata for every image</span></td>
           <td>
             <form hx-post="/settings/maintenance/re-extract-metadata" hx-target="#flash-maintenance" hx-swap="innerHTML"
-                  hx-confirm="Re-parse SD/ComfyUI metadata for every image in this gallery?"
+                  hx-confirm="Re-parse metadata for every image in this gallery?"
                   data-confirm-danger="Long-running job; blocks other jobs until it finishes."
                   data-confirm-ok="Re-extract"
                   style="display:inline">
@@ -683,25 +784,6 @@
     </table>
     </div>
 
-    <div class="settings-sub">
-      <h4>Duplicate images</h4>
-      <p class="field-hint">Images stored at multiple paths (same content, different locations). Each row is one image with its canonical path and the duplicate path sharing its content.</p>
-      <form hx-post="/settings/maintenance/remove-duplicates"
-            hx-target="#flash-maintenance" hx-swap="innerHTML"
-            hx-on::after-request="if(event.detail.successful){document.getElementById('duplicates-list').innerHTML=''}"
-            hx-confirm="Remove all duplicate paths and their files from disk?"
-            data-confirm-ok="Remove">
-        <input type="hidden" name="_csrf" value="{{$csrf}}">
-        <input type="hidden" name="all" value="true">
-        <button type="submit" class="btn-danger">Remove all duplicate paths</button>
-      </form>
-      <div id="duplicates-list" style="margin-top:8px"></div>
-      <button type="button"
-              hx-get="/settings/maintenance/duplicates-list"
-              hx-target="#duplicates-list"
-              hx-swap="innerHTML"
-              class="btn-sm" style="margin-top:4px">List duplicate paths</button>
-    </div>
   </section>
 
   {{$sched := $cfg.Schedule}}
@@ -717,7 +799,9 @@
     <form hx-post="/settings/schedule" hx-target="#flash-schedule" hx-swap="innerHTML">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
       <div class="field">
-        <label>Time of day <input type="time" name="time" value="{{$sched.Time}}" lang="en-GB" required></label>
+        <label>Time of day (24h, HH:MM) <input type="text" name="time" value="{{$sched.Time}}"
+               pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="HH:MM" maxlength="5"
+               class="schedule-time-input" required></label>
       </div>
       <div class="schedule-grid">
         <div class="field">
@@ -730,7 +814,7 @@
           <label><input type="checkbox" name="run_auto_taggers"{{if $sched.RunAutoTaggers}} checked{{end}}> Run enabled auto-taggers</label>
         </div>
         <div class="field">
-          <label><input type="checkbox" name="merge_general_tags"{{if $sched.MergeGeneralTags}} checked{{end}}> Merge general tags</label>
+          <label><input type="checkbox" name="find_relation_pairs"{{if $sched.FindRelationPairs}} checked{{end}}> Find relation pairs (phash near-duplicates)</label>
         </div>
       </div>
       <div class="settings-actions"><button type="submit">Save</button></div>
@@ -740,29 +824,30 @@
   {{$stats := index . "Stats"}}
   <section id="stats" class="settings-section">
     <h3>Stats</h3>
+    <div class="stats-cols">
     <div class="settings-sub">
       <h4>Process memory</h4>
       <table class="stats-table">
         <tbody>
           {{if $stats.Mem.Available}}
-          <tr><th>Proportional set size (PSS)</th><td>{{humanBytes $stats.Mem.Total}}</td></tr>
+          <tr><th>Memory used (PSS)</th><td>{{humanBytes $stats.Mem.Total}}</td></tr>
           {{if or $stats.Mem.Anon $stats.Mem.File}}
-          <tr><th class="stats-d1">Anonymous</th><td>{{humanBytes $stats.Mem.Anon}}</td></tr>
-          <tr><th class="stats-d2">Go reserved (from OS)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
-          <tr><th class="stats-d3">Go heap (in use)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
-          <tr><th class="stats-d2">Native (SQLite cache, CGO)</th><td>{{humanBytes $stats.Mem.Native}}</td></tr>
-          <tr><th class="stats-d1">File-backed</th><td>{{humanBytes $stats.Mem.File}}</td></tr>
+          <tr><th class="stats-d1">Private (anonymous)</th><td>{{humanBytes $stats.Mem.Anon}}</td></tr>
+          <tr><th class="stats-d2">Go runtime (reserved)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
+          <tr><th class="stats-d3">Go heap (live objects)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
+          <tr><th class="stats-d2">Native heap (SQLite, CGO)</th><td>{{humanBytes $stats.Mem.Native}}</td></tr>
+          <tr><th class="stats-d1">Shared (file-backed)</th><td>{{humanBytes $stats.Mem.File}}</td></tr>
           {{if $stats.Mem.DB}}
-          <tr><th class="stats-d2">DB pages (mmap'd)</th><td>{{humanBytes $stats.Mem.DB}}</td></tr>
-          <tr><th class="stats-d2">Binary &amp; shared libs</th><td>{{humanBytes $stats.Mem.OtherFile}}</td></tr>
+          <tr><th class="stats-d2">DB pages (memory-mapped)</th><td>{{humanBytes $stats.Mem.DB}}</td></tr>
+          <tr><th class="stats-d2">Code &amp; shared libs</th><td>{{humanBytes $stats.Mem.OtherFile}}</td></tr>
           {{end}}
           {{else}}
-          <tr><th class="stats-d1">Go reserved (from OS)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
-          <tr><th class="stats-d2">Go heap (in use)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
+          <tr><th class="stats-d1">Go runtime (reserved)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
+          <tr><th class="stats-d2">Go heap (live objects)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
           {{end}}
           {{else}}
-          <tr><th>Go reserved (from OS)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
-          <tr><th class="stats-d1">Go heap (in use)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
+          <tr><th>Go runtime (reserved)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
+          <tr><th class="stats-d1">Go heap (live objects)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
           {{end}}
           <tr><th>Goroutines</th><td>{{$stats.Mem.Goroutines}}</td></tr>
         </tbody>
@@ -785,11 +870,11 @@
             {{end}}
           </td></tr>
           <tr><th>Models</th><td>{{range $i, $n := $tg.Sessions}}{{if $i}}, {{end}}{{$n}}{{end}}</td></tr>
-          {{if $tg.WorkerRSS}}
+          {{if $tg.WorkerPSS}}
           <tr><th>Worker PID</th><td>{{$tg.WorkerPID}}</td></tr>
-          <tr><th class="stats-d1">Worker RSS</th><td>{{humanBytes $tg.WorkerRSS}}</td></tr>
-          <tr><th class="stats-d2">Worker anon (CGO + ORT)</th><td>{{humanBytes $tg.WorkerAnon}}</td></tr>
-          <tr><th class="stats-d2">Worker file-backed</th><td>{{humanBytes $tg.WorkerFile}}</td></tr>
+          <tr><th class="stats-d1">Worker memory (PSS)</th><td>{{humanBytes $tg.WorkerPSS}}</td></tr>
+          <tr><th class="stats-d2">Worker native (ONNX + CGO)</th><td>{{humanBytes $tg.WorkerAnon}}</td></tr>
+          <tr><th class="stats-d2">Worker code &amp; libs</th><td>{{humanBytes $tg.WorkerFile}}</td></tr>
           {{end}}
           {{else}}
           <tr><th>Status</th><td>not loaded</td></tr>
@@ -835,6 +920,7 @@
       </div>
       {{end}}
       {{range $stats.FSWarnings}}<p class="field-hint">{{.}}</p>{{end}}
+    </div>
     </div>
   </section>
 </div>

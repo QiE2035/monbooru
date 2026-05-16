@@ -1,11 +1,13 @@
 package gallery
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/gif"
 	"image/jpeg"
 	_ "image/png"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -17,6 +19,35 @@ import (
 
 const thumbMaxDim = 300
 const thumbQuality = 85
+
+// maxImagePixels caps the number of pixels in any image the decode
+// path is willing to allocate the destination bitmap for. A 256-MPx
+// PNG with random IHDR (e.g. 50000x50000) would otherwise demand
+// ~1 GiB just for the RGBA buffer, OOM-killing the process at ingest
+// or thumbnail regen. The cap is generous enough that no realistic
+// camera or scanner output trips it; pathological synthetic headers
+// are the only blocked input.
+const maxImagePixels = 256 * 1000 * 1000
+
+// DecodeImageWithCap is image.Decode gated on a megapixel ceiling.
+// Runs image.DecodeConfig first to read just the header, refuses any
+// image whose width*height exceeds maxImagePixels, then replays the
+// header bytes alongside the rest of the stream so the full Decode
+// works on non-seekable readers (zip page streams). Mirrors the
+// stdlib signature minus the format-name return.
+func DecodeImageWithCap(r io.Reader) (image.Image, error) {
+	var buf bytes.Buffer
+	tee := io.TeeReader(r, &buf)
+	cfg, _, err := image.DecodeConfig(tee)
+	if err != nil {
+		return nil, fmt.Errorf("decode config: %w", err)
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > int64(maxImagePixels) {
+		return nil, fmt.Errorf("image %dx%d exceeds %d-megapixel cap", cfg.Width, cfg.Height, maxImagePixels/1_000_000)
+	}
+	img, _, err := image.Decode(io.MultiReader(&buf, r))
+	return img, err
+}
 
 func ThumbnailPath(dir string, imageID int64) string {
 	return filepath.Join(dir, fmt.Sprintf("%d.jpg", imageID))
@@ -105,7 +136,7 @@ func generateOneMangaPageThumb(archive *Manga, idx int, dstPath string) error {
 		return err
 	}
 	defer rc.Close()
-	src, _, err := image.Decode(rc)
+	src, err := DecodeImageWithCap(rc)
 	if err != nil {
 		return fmt.Errorf("decode page %d: %w", idx+1, err)
 	}
@@ -128,7 +159,7 @@ func generateImageThumb(srcPath, dstPath, fileType string) error {
 		}
 		src = g
 	} else {
-		img, _, err := image.Decode(f)
+		img, err := DecodeImageWithCap(f)
 		if err != nil {
 			return fmt.Errorf("decoding image: %w", err)
 		}

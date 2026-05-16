@@ -1,5 +1,36 @@
 # Changelog
 
+## [v1.8.0] - 2026-05-16
+### Added
+- Relations system. New `/relations` top-level page (between Tags and Settings) with Find / Duplicates / Browse sections. A 64-bit perceptual hash (pHash) computed at ingest, with a backfill job for existing libraries, feeds a background find-pairs job that fills a queue of near-duplicate candidates. Sessions step through the queue in a swipe-style UI: decide Duplicates / Alternates / Version / Derivative / Not related / Skip with keyboard shortcuts; Compare opens a draggable before/after slider; Swap-sides flips parent/child for directional types. Browse-pair (with a Not-related tab and unlink) and Browse-groups pages round out the surface. Settings -> Maintenance grows `Compute perceptual hashes` and `Rebuild pair queue` buttons; a daily scheduler phase runs find-pairs on its own.
+- Detail-page Related entries panel above Similar entries (with collection siblings and a see-all) and a full `/images/{id}/relations` grid sectioned by relation type. The detail page grows a pHash row (copyable, with a `~4` link that runs the matching Hamming-distance search) and an Add-relation dialog with parent/child swap, autocomplete, an Overwrite button for conflicts, and an adaptive sentence.
+- Search keywords. Twelve metadata filters: `name`, `size`, `mime`, `ratio`, `tagcount`, `duration`, `hash`, `prompt`, `model`, `sampler`, `seed`, `via`. `id:N` exact match. `phash:` bare, `phash:<hex>` exact, and `phash:<hex>~<d>` Hamming-distance lookup. `relation:<type>` closed vocabulary covering `duplicate`, `original`, `alternate`, `version`, `derivative`, `source`, `collection`, `any`, `none`.
+- Search autocomplete: level-2 suggestions for `name`, `model`, `sampler`, `prompt`; values containing spaces are quoted automatically; the `system:` cheat-sheet color-codes category rows and caps the dropdown at 60vh so the 40+ rows no longer hide behind a tiny scrollbar.
+- Sidebar Inbox, Favorites, and Sources panels matching the existing Tags / Folders / Collections layout; clicking a section name toggles it.
+- Settings rework. Numeric inputs become sliders with bounds, ticks, and updated ranges; scheduler time-of-day moves to a 24h HH:MM text input; schedule checkboxes lay out in three columns; Stats is a 2-column block with stabilised size cells. New Relations subsection collects the find-pairs schedule and default session order. Default `max_file_size_mb` raised to 512; default auto-tagger `idle_release_after_minutes` raised to 15.
+- Detail page (non-relations): copyable Image ID row above Path; click SHA-256 to copy; autocomplete in the source edit dialog; Source value rendered as a search link; flash confirmations after source / url / collection / order edits; editable metadata rows moved below a separator.
+- API: `GET /api/v1/images/{id}/relations`, `POST /api/v1/relations`, `DELETE /api/v1/relations`. `GET /api/v1/images/{id}` grows a `phash` field.
+- In-app help: search-syntax table subcategorised.
+
+### Changed
+- Footer shows the gallery's collection count instead of the saved-search count.
+
+### Removed
+- Settings -> Maintenance: `Merge general tags` (superseded by the v1.7 category dispatchers).
+
+### Fixed
+- Search: `date:>=YYYY-MM-DD` and `date:<=YYYY-MM-DD` extend to end-of-day; bare `<category>:` routes to `cat:<category>` instead of match-all; leading `OR` with no left operand is dropped; `name`, `folder`, `source`, `collection`, and `category:` filters are case-insensitive.
+- API: aliases populated in the search response; batch tag add / remove route through the same single-image helpers as the UI (fan-out, alias resolution, implication propagation).
+- Upload: View-inbox count is ceiling-aware on the OOB swap.
+- Maintenance: `removeDuplicates` takes a job slot and batches its DELETE in chunks.
+- Gallery: `DeleteImage` unlink gated on `PathInside` so an alias outside the gallery root can't be removed via a delete request; image decode bounded by a megapixel cap so a giant source can't OOM-kill the thumbnailer or tagger; `batchDelete` fetches its targets in a single `IN` query instead of N+1.
+- Detail page: SHA-256 digest aligned with its label; external-edit dialogs close only on form responses.
+- Source autocomplete quotes values with spaces.
+
+### Internal
+- Search latency: NOCASE-collated partial visible indexes for `source` / `folder` / `series`; AND-driver materialisation bounded to the bucket window; category-qualified tag pre-resolved to skip a per-row 2-table join; partial seed indexes on `sd_metadata` and `comfyui_metadata`; sort-index hint trimmed to filters without a covering column index; `basename_lower` indexed column added; sidebar fan-out reduced to `image_tags` and `saved_searches`; re-`ANALYZE` on boot after v1.7.2 schema additions.
+- Schema additions auto-applied on upgrade: `images.phash`, `images.duration_seconds`, `images.basename_lower`, the relations tables (`dup_groups`, `dup_group_members`, `alt_groups`, `alt_group_members`, `version_edges`, `derivative_edges`, `not_related_pairs`, `potential_relation_pairs`, `relation_session`). Per-gallery BK-tree built at startup and kept in lockstep with row writes via the `gallery.PhashHooks.OnStored` hook. New SQL scalars `basename()` and `hammingdist()` registered at bootstrap.
+
 ## [v1.7.2] - 2026-05-14
 ### Added
 - Auto-tagger runs in a `tagger-worker` subprocess by default. ORT runtime and CUDA libraries live in the child; releasing idle (or the new `Free memory` button) SIGTERMs the worker so its ~1 GB RSS returns to the kernel rather than staying mapped to the parent. Settings → Stats grows an Auto-tagger row with worker PID, mode, cache state, and per-job RSS; cache transitions log on load / reuse / release. CUDA JIT cache persists under `<data_path>/.nv-cache` to speed up next starts.

@@ -50,13 +50,19 @@ func readVmHWM() uint64 {
 	return 0
 }
 
-// procRSSAt is the per-pid version of procRSS: reads /proc/<pid>/
-// status (and smaps for the file-vs-db split) so the stats panel can
-// sample the tagger-worker child's residency next to the parent's.
-// Returns ok=false when the pid is gone or unreadable.
+// procRSSAt is the per-pid version of procRSS: walks /proc/<pid>/smaps
+// so the worker row in the stats panel reports the same Pss-based total
+// the parent does. Pss attributes each shared page at 1/N across its
+// mappings, so a 1 GB inference checkpoint paged into both the worker
+// and the parent through a common file shows up at its real cost in
+// each row rather than double-counted under Rss. Falls back to
+// /proc/<pid>/status's VmRSS / RssAnon / RssFile triplet only when the
+// smaps walk itself fails; ok=false when the pid is gone or unreadable.
 func procRSSAt(pid int) (rssBreakdown, bool) {
-	statusPath := fmt.Sprintf("/proc/%d/status", pid)
-	f, err := os.Open(statusPath)
+	if total, anon, file, db, ok := sumSmapsPssAt(fmt.Sprintf("/proc/%d", pid)); ok {
+		return rssBreakdown{total: total, anon: anon, file: file, db: db}, true
+	}
+	f, err := os.Open(fmt.Sprintf("/proc/%d/status", pid))
 	if err != nil {
 		return rssBreakdown{}, false
 	}
@@ -112,7 +118,7 @@ func procRSS() (rssBreakdown, bool) {
 	if out.total == 0 {
 		return rssBreakdown{}, false
 	}
-	if total, file, db, ok := sumSmapsPss(); ok {
+	if total, _, file, db, ok := sumSmapsPssAt("/proc/self"); ok {
 		out.total = total
 		out.file = file
 		out.db = db
@@ -120,17 +126,17 @@ func procRSS() (rssBreakdown, bool) {
 	return out, true
 }
 
-// sumSmapsPss walks /proc/self/smaps once and accumulates Pss into
-// three buckets: every mapping (totalPss), file-backed mappings
-// (filePss), and the SQLite triplet *.db / .db-wal / .db-shm
-// (dbPss). File-backed means the mapping's path field is a real
-// filesystem path; pseudo-paths like [heap], [stack], [vdso] are
-// classified as anonymous. ok=false only when smaps itself is
-// unreadable - the caller falls back to /proc/self/status values.
-func sumSmapsPss() (totalPss, filePss, dbPss uint64, ok bool) {
-	f, err := os.Open("/proc/self/smaps")
+// sumSmapsPssAt walks <procDir>/smaps once and accumulates Pss into
+// four buckets: every mapping (totalPss), anonymous (no path; named
+// [heap]/[stack]/etc.; anonPss), file-backed mappings whose path is a
+// real filesystem path (filePss), and the SQLite triplet *.db /
+// .db-wal / .db-shm subset of filePss (dbPss). procDir is "/proc/self"
+// for the main process or "/proc/<pid>" for the tagger-worker child.
+// ok=false only when smaps itself is unreadable.
+func sumSmapsPssAt(procDir string) (totalPss, anonPss, filePss, dbPss uint64, ok bool) {
+	f, err := os.Open(procDir + "/smaps")
 	if err != nil {
-		return 0, 0, 0, false
+		return 0, 0, 0, 0, false
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
@@ -149,13 +155,15 @@ func sumSmapsPss() (totalPss, filePss, dbPss uint64, ok bool) {
 			totalPss += v
 			if inFile {
 				filePss += v
-			}
-			if inDB {
-				dbPss += v
+				if inDB {
+					dbPss += v
+				}
+			} else {
+				anonPss += v
 			}
 		}
 	}
-	return totalPss, filePss, dbPss, true
+	return totalPss, anonPss, filePss, dbPss, true
 }
 
 // isSmapsHeader distinguishes the per-mapping header lines (which

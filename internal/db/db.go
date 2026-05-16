@@ -3,13 +3,65 @@ package db
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	_ "embed"
 	"fmt"
+	"math/bits"
+	"strings"
 	"sync/atomic"
 	"time"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 )
+
+// basenameSQL is the body of the SQLite `basename(path)` scalar
+// function. Returns the substring of `path` after the last `/`; if
+// `path` has no `/`, returns it unchanged. NULL passes through as
+// NULL. Used by the search executor's `name:` filter so the match
+// can target the filename segment without bleeding into folder
+// names; pure SQLite has no built-in for this since `reverse()`
+// isn't part of the modernc build, so registering the function is
+// the cleanest path that avoids a denormalised `basename` column.
+func basenameSQL(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 || args[0] == nil {
+		return nil, nil
+	}
+	s, ok := args[0].(string)
+	if !ok {
+		return nil, nil
+	}
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+		return s[i+1:], nil
+	}
+	return s, nil
+}
+
+// hammingDistSQL is the body of the SQLite `hammingdist(int64, int64)`
+// scalar function: Hamming distance between the two 64-bit values
+// interpreted as unsigned bit patterns. SQLite has no XOR operator on
+// integers (^ is unsupported in the modernc dialect), so the search
+// executor calls this when the per-gallery BK-tree isn't wired and
+// it needs to compute distance in pure SQL for the `phash:<hex>~d`
+// filter. NULL on either side passes through as NULL so a phashless
+// row drops out of the comparison.
+func hammingDistSQL(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 || args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	a, aOk := args[0].(int64)
+	b, bOk := args[1].(int64)
+	if !aOk || !bOk {
+		return nil, nil
+	}
+	return int64(bits.OnesCount64(uint64(a) ^ uint64(b))), nil
+}
+
+func init() {
+	// Registered once for the driver; available on every connection
+	// opened afterwards.
+	sqlite.MustRegisterDeterministicScalarFunction("basename", 1, basenameSQL)
+	sqlite.MustRegisterDeterministicScalarFunction("hammingdist", 2, hammingDistSQL)
+}
 
 //go:embed schema.sql
 var schemaSQL string
@@ -19,7 +71,7 @@ var schemaSQL string
 // and refreshed sqlite_stat1. Bump it when a migration adds a column or
 // index the planner needs stats for; Bootstrap then runs ANALYZE on the
 // next boot after the upgrade and skips it on every boot afterwards.
-const bootstrapSchemaVersion = 1
+const bootstrapSchemaVersion = 3
 
 // DB holds read and write connection pools for the SQLite database.
 // WAL mode allows concurrent readers but serialises writers, so the read
@@ -148,8 +200,46 @@ func Bootstrap(db *DB) error {
 	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_source ON images(source)`); err != nil {
 		return fmt.Errorf("create idx_images_source: %w", err)
 	}
+	// Partial visible source index for the source: filter. The NOCASE-
+	// collated variant is what the source: filter equality
+	// (`source = ? COLLATE NOCASE`) seeks against; the BINARY-collated
+	// index stays for the source autocomplete's prefix-range query that
+	// needs binary ordering. Both partials are gated only on
+	// `is_missing = 0` so SQLite's planner can match the partial WHERE
+	// against any source: filter query (a `source != ''` clause in the
+	// partial would force the query to also include it, which the
+	// executor doesn't emit).
+	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_source_visible ON images(source) WHERE is_missing = 0`); err != nil {
+		return fmt.Errorf("create idx_images_source_visible: %w", err)
+	}
+	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_source_nocase_visible ON images(source COLLATE NOCASE) WHERE is_missing = 0`); err != nil {
+		return fmt.Errorf("create idx_images_source_nocase_visible: %w", err)
+	}
 	if err := ensureColumn(db, "images", "page_count", `ALTER TABLE images ADD COLUMN page_count INTEGER`); err != nil {
 		return err
+	}
+	if err := ensureColumn(db, "images", "duration_seconds", `ALTER TABLE images ADD COLUMN duration_seconds REAL`); err != nil {
+		return err
+	}
+	// Partial visible duration index for the duration: filter. Excludes
+	// NULL so non-video rows don't carry an entry.
+	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_duration_visible ON images(duration_seconds) WHERE is_missing = 0 AND duration_seconds IS NOT NULL`); err != nil {
+		return fmt.Errorf("create idx_images_duration_visible: %w", err)
+	}
+	// VIRTUAL generated column over the lowercased filename basename so
+	// the name: filter and the system:name autocomplete seek a single
+	// indexed string instead of running lower(basename(canonical_path))
+	// per row of a full canonical_path scan. STORED isn't reachable via
+	// ALTER TABLE; VIRTUAL keeps the value computed on read but lets the
+	// matching index materialise it once per row at index-write time, so
+	// the seek is the same cost as a real column.
+	if err := ensureColumn(db, "images", "basename_lower",
+		`ALTER TABLE images ADD COLUMN basename_lower TEXT GENERATED ALWAYS AS (lower(basename(canonical_path))) VIRTUAL`,
+	); err != nil {
+		return err
+	}
+	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_basename_lower_visible ON images(basename_lower) WHERE is_missing = 0 AND basename_lower != ''`); err != nil {
+		return fmt.Errorf("create idx_images_basename_lower_visible: %w", err)
 	}
 	if err := ensureColumn(db, "images", "series", `ALTER TABLE images ADD COLUMN series TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
@@ -162,6 +252,24 @@ func Bootstrap(db *DB) error {
 	}
 	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_series ON images(series) WHERE series != ''`); err != nil {
 		return fmt.Errorf("create idx_images_series: %w", err)
+	}
+	// NOCASE-collated companion for the collection: filter equality
+	// (`series = ? COLLATE NOCASE`); the BINARY index above stays for
+	// the collection-autocomplete prefix-range query that needs binary
+	// ordering. The NOCASE partial is gated only on the visibility
+	// filter the executor emits (no `series != ''` clause), so SQLite
+	// can match the partial WHERE against any collection: query.
+	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_series_nocase ON images(series COLLATE NOCASE)`); err != nil {
+		return fmt.Errorf("create idx_images_series_nocase: %w", err)
+	}
+	// NOCASE-collated companion for folder: equality - same shape as
+	// idx_images_folder_visible (already partial WHERE is_missing = 0)
+	// but with the COLLATE NOCASE that the folder: filter uses, so the
+	// equality leg of the (path = ? COLLATE NOCASE OR path LIKE ...)
+	// composite predicate can ride an indexed seek instead of falling
+	// back to idx_images_missing + TEMP B-TREE FOR ORDER BY.
+	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_folder_nocase_visible ON images(folder_path COLLATE NOCASE) WHERE is_missing = 0`); err != nil {
+		return fmt.Errorf("create idx_images_folder_nocase_visible: %w", err)
 	}
 	// Saved-search reproduces the URL the operator was looking at; the
 	// seed bit lets a `random` save reopen at the same shuffle. `sort_order`
@@ -179,6 +287,17 @@ func Bootstrap(db *DB) error {
 	}
 	if err := ensureColumn(db, "image_paths", "mtime_unix", `ALTER TABLE image_paths ADD COLUMN mtime_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
+	}
+	if err := ensureColumn(db, "images", "phash", `ALTER TABLE images ADD COLUMN phash INTEGER`); err != nil {
+		return err
+	}
+	// Partial phash index: drives `phash:<hex>` exact-match seeks and
+	// the cold-path SELECT that loads the BK-tree at first relations
+	// query. Skips NULL rows (the BK-tree only carries computed phashes)
+	// so a half-backfilled library doesn't pay the storage for unhashed
+	// entries.
+	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_phash ON images(phash) WHERE phash IS NOT NULL`); err != nil {
+		return fmt.Errorf("create idx_images_phash: %w", err)
 	}
 	// ANALYZE only when the schema marker says this version's migrations
 	// haven't been analyzed yet. PRAGMA optimize then handles row-count
@@ -217,11 +336,13 @@ func Bootstrap(db *DB) error {
 
 // ensureColumn adds a column on the named table when it is absent. The
 // caller supplies the full ALTER TABLE so the default and type stay
-// adjacent to the original schema definition.
+// adjacent to the original schema definition. table_xinfo (vs table_info)
+// reports VIRTUAL / STORED generated columns too, so the idempotency
+// check survives those.
 func ensureColumn(db *DB, table, column, alterSQL string) error {
 	var count int
 	if err := db.Write.QueryRow(
-		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column,
+		`SELECT COUNT(*) FROM pragma_table_xinfo(?) WHERE name = ?`, table, column,
 	).Scan(&count); err != nil {
 		return fmt.Errorf("inspect %s.%s: %w", table, column, err)
 	}

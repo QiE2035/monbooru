@@ -65,23 +65,53 @@ func (s *Server) batchDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	idStrs := r.Form["ids"]
 
-	var targets []search.DeleteTarget
+	ids := make([]int64, 0, len(idStrs))
 	for _, idStr := range idStrs {
 		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
 			continue
 		}
-		t := search.DeleteTarget{ID: id}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		s.startBulkDelete(w, nil)
+		return
+	}
+	// Single IN query feeds every target through one round-trip; a
+	// 1000-checkbox selection used to pay 1000 reads here. The order
+	// returned by the SELECT is undefined under SQLite without an
+	// ORDER BY, so re-emit in the caller's input order via a map.
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := s.db().Read.Query(
+		`SELECT id, canonical_path, folder_path, is_missing FROM images WHERE id IN (`+placeholders+`)`,
+		args...,
+	)
+	if err != nil {
+		s.startBulkDelete(w, nil)
+		return
+	}
+	defer rows.Close()
+	byID := make(map[int64]search.DeleteTarget, len(ids))
+	for rows.Next() {
+		var t search.DeleteTarget
 		var isMissing int
-		if err := s.db().Read.QueryRow(
-			`SELECT canonical_path, folder_path, is_missing FROM images WHERE id = ?`, id,
-		).Scan(&t.CanonicalPath, &t.FolderPath, &isMissing); err != nil {
+		if err := rows.Scan(&t.ID, &t.CanonicalPath, &t.FolderPath, &isMissing); err != nil {
 			continue
 		}
 		t.IsMissing = isMissing == 1
-		targets = append(targets, t)
+		byID[t.ID] = t
 	}
-
+	targets := make([]search.DeleteTarget, 0, len(ids))
+	for _, id := range ids {
+		if t, ok := byID[id]; ok {
+			targets = append(targets, t)
+		}
+	}
 	s.startBulkDelete(w, targets)
 }
 

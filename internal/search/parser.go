@@ -170,6 +170,16 @@ func (p *parser) parseAll() []Expr {
 			continue
 		}
 
+		// A bare leading `OR` (or a chain of them) has no left operand.
+		// Drop the token and keep parsing so the right-hand expression
+		// stands on its own; otherwise parseTerm returns nil at the OR
+		// and parseAll falls out of the loop with an empty expression
+		// slice, which the executor treats as match-all.
+		if t.kind == tokOR {
+			p.next()
+			continue
+		}
+
 		left := p.parseTerm()
 		if left == nil {
 			break

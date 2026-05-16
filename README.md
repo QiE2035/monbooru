@@ -26,7 +26,8 @@ Designed for organizing your local media collection, including AI-generated imag
 - Stable Diffusion metadata extraction from A1111/Forge and ComfyUI (prompts, models, seeds, full workflow)
 - Optional auto-tagging with local ONNX models (WD14 SwinV2, JoyTag, Camie v2, or any compatible model), CPU or GPU (CUDA)
 - Search with wildcards, OR, exclusions, plus filters on folder, date, size, dimensions, category, generation recipe...
-- Image relationships: collections with an optional within-collection order
+- Image relations: declared duplicates, alternates, version chains, and derivative edges. Near-duplicates are computed using perceptual hashes.
+- Collections with an optional within-collection order
 - Built-in rating tags (general / sensitive / questionable / explicit) with a SFW ceiling toggle in the footer that hides anything above the chosen level
 - Tag management: merge duplicates, create aliases, implications and custom categories
 - Batch operations on a selection or on a whole search: delete, move, add/remove tags, auto-tag
@@ -42,7 +43,7 @@ Designed for organizing your local media collection, including AI-generated imag
 
 Edit the volume paths in [`docker/docker-compose.yml`](docker/docker-compose.yml), then `docker compose up -d`. The app is available at `http://localhost:8080`.
 
-See [docs/HELP.md](docs/HELP.md) for search syntax, auto-tagger setup, environment variables, keyboard shortcuts, REST API, building from source, and other operational notes.
+See [docs/README.md](docs/README.md) for installing, configuration, auto-tagger setup, environment variables, REST API, building from source, and other operational notes. Check the in-app help to see how to use the application (search syntax, tag input, keyboard shortcuts, ...).
 
 ---
 

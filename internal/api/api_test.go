@@ -18,6 +18,7 @@ import (
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/jobs"
+	"github.com/leqwin/monbooru/internal/relations"
 	"github.com/leqwin/monbooru/internal/tags"
 )
 
@@ -75,6 +76,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		ThumbnailsPath: thumbDir,
 		DB:             database,
 		TagSvc:         tags.New(database),
+		RelationsSvc:   relations.New(database),
 	}
 	h := New(cfg, jobs.NewManager(), fixedResolver(g))
 	raw := http.NewServeMux()

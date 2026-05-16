@@ -79,6 +79,13 @@ func writeFrame(w io.Writer, payload any) error {
 	return err
 }
 
+// maxFrameBytes caps the body length readFrame is willing to allocate
+// in one go. The largest realistic payload is a batch response carrying
+// merged tag maps, well under a megabyte; 64 MiB leaves headroom for
+// future protocol additions while bounding the blast of a corrupted
+// header that decodes as a multi-GB length.
+const maxFrameBytes uint32 = 64 << 20
+
 // readFrame reads a uint32 length followed by that many bytes of gob,
 // decoding into dst. Returns io.EOF when the peer closed cleanly
 // before sending another frame.
@@ -88,6 +95,9 @@ func readFrame(r io.Reader, dst any) error {
 		return err
 	}
 	n := binary.BigEndian.Uint32(hdr[:])
+	if n > maxFrameBytes {
+		return fmt.Errorf("frame body %d bytes exceeds cap %d", n, maxFrameBytes)
+	}
 	body := make([]byte, n)
 	if _, err := io.ReadFull(r, body); err != nil {
 		return fmt.Errorf("read frame body: %w", err)

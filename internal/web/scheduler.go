@@ -12,6 +12,7 @@ import (
 	"github.com/leqwin/monbooru/internal/config"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
+	"github.com/leqwin/monbooru/internal/relations"
 	"github.com/leqwin/monbooru/internal/tagger"
 )
 
@@ -93,16 +94,15 @@ func parseScheduleTime(v string) (schedTime, error) {
 }
 
 func schedHasAnyEnabled(sc config.ScheduleConfig) bool {
-	return sc.SyncGallery || sc.RemoveOrphans || sc.RunAutoTaggers ||
-		sc.MergeGeneralTags
+	return sc.SyncGallery || sc.RemoveOrphans || sc.RunAutoTaggers || sc.FindRelationPairs
 }
 
 // runScheduledActions iterates every configured gallery and runs the enabled
-// maintenance actions in a fixed order: sync → remove orphans → autotag →
-// merge general tags. Skips the whole run when a user-triggered job is
-// already holding the job manager. The reservation blocks user-triggered
-// Start() calls for the duration so the lock-less phases below
-// (RemoveOrphans, MergeGeneral) can't be raced by external handlers.
+// maintenance actions in a fixed order: sync → remove orphans → autotag.
+// Skips the whole run when a user-triggered job is already holding the
+// job manager. The reservation blocks user-triggered Start() calls for
+// the duration so the lock-less phases (RemoveOrphans) can't be raced
+// by external handlers.
 func (s *Server) runScheduledActions() {
 	if err := s.jobs.BeginSchedule(); err != nil {
 		logx.Warnf("scheduler: skipping run (a job is already running)")
@@ -179,12 +179,36 @@ func (s *Server) runScheduledActions() {
 				return
 			}
 		}
-		if sched.MergeGeneralTags {
-			if err := s.scheduledMergeGeneral(cx); err != nil {
-				failures = append(failures, "merge-general "+name+": "+err.Error())
+		if sched.FindRelationPairs {
+			if err := s.scheduledFindRelationPairs(cx); err != nil {
+				failures = append(failures, "find-pairs "+name+": "+err.Error())
 			}
 		}
 	}
+}
+
+func (s *Server) scheduledFindRelationPairs(cx *galleryCtx) error {
+	if err := s.jobs.StartScheduled(models.JobTypeRelations); err != nil {
+		logx.Warnf("scheduler find-pairs %q: %v", cx.Name, err)
+		return err
+	}
+	ctx := s.jobs.Context()
+	opts := relations.FindPairsOptions{
+		Distance:       int(relations.IncrementalProbeDistance.Load()),
+		Replace:        false,
+		ThumbnailsPath: cx.ThumbnailsPath,
+	}
+	added, err := relations.FindPairs(ctx, cx.DB, cx.bkTree, opts, s.jobs.Update)
+	if err == context.Canceled || ctx.Err() != nil {
+		s.jobs.Complete(fmt.Sprintf("[%s] find-pairs cancelled (%d added)", cx.Name, added))
+		return nil
+	}
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		return err
+	}
+	s.jobs.Complete(fmt.Sprintf("[%s] find-pairs added %d candidate(s).", cx.Name, added))
+	return nil
 }
 
 func (s *Server) scheduledSync(cx *galleryCtx) error {
@@ -351,24 +375,6 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) error {
 		return nil
 	}
 	s.jobs.Complete(fmt.Sprintf("[%s] auto-tagged %d image(s)", cx.Name, len(ids)))
-	return nil
-}
-
-func (s *Server) scheduledMergeGeneral(cx *galleryCtx) error {
-	merged, err := cx.TagSvc.MergeGeneralIntoCategorized()
-	if err != nil {
-		logx.Warnf("scheduler merge-general %q: %v", cx.Name, err)
-		return err
-	}
-	if merged > 0 {
-		// MergeGeneralIntoCategorized rewires image_tags rows and the
-		// tag catalog itself, so the per-cx tag/folder/source caches
-		// observe the wrong totals until the next mutation through
-		// this same context. Drop them here so a Settings or sidebar
-		// hit in the same gallery sees the merged state.
-		cx.InvalidateCaches()
-	}
-	logx.Infof("scheduler: [%s] merged %d general tag(s)", cx.Name, merged)
 	return nil
 }
 

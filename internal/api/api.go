@@ -11,6 +11,7 @@ import (
 	"github.com/leqwin/monbooru/internal/config"
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/jobs"
+	"github.com/leqwin/monbooru/internal/relations"
 	"github.com/leqwin/monbooru/internal/tags"
 )
 
@@ -22,7 +23,18 @@ type Gallery struct {
 	ThumbnailsPath   string
 	DB               *db.DB
 	TagSvc           *tags.Service
+	RelationsSvc     *relations.Service
 	InvalidateCaches func()
+}
+
+// relationsOnDelete returns the OnImageDelete callback for the given
+// service, or nil when the gallery has no relations service wired (the
+// test harness). gallery.DeleteImage treats a nil callback as a no-op.
+func relationsOnDelete(svc *relations.Service) func(int64) error {
+	if svc == nil {
+		return nil
+	}
+	return svc.OnImageDelete
 }
 
 // ResolverFunc resolves a gallery by name. Empty name = active gallery.
@@ -70,6 +82,9 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/images/{id}/tags", h.auth(h.removeImageTags))
 
 	mux.HandleFunc("GET /api/v1/tags", h.auth(h.listTags))
+	mux.HandleFunc("GET /api/v1/images/{id}/relations", h.auth(h.relationsForImage))
+	mux.HandleFunc("POST /api/v1/relations", h.auth(h.addRelation))
+	mux.HandleFunc("DELETE /api/v1/relations", h.auth(h.removeRelation))
 
 	mux.HandleFunc("GET /api/v1/openapi.json", h.openAPIJSON)
 	mux.HandleFunc("GET /api/v1/docs", h.openAPIDocs)

@@ -16,9 +16,21 @@ type DeleteImageResult struct {
 }
 
 // DeleteImage removes one image from the database, then cleans up files
-// on disk. removeAllTags is injected (rather than called directly via the
-// tags package) to avoid an internal/gallery → internal/tags import cycle.
-func DeleteImage(database *db.DB, thumbnailsPath string, id int64, removeAllTags func(int64) error) (*DeleteImageResult, error) {
+// on disk. Two callbacks are injected (rather than direct package imports)
+// to avoid internal/gallery → internal/tags / internal/relations cycles:
+//   - removeAllTags clears the image_tags rows for id and prunes any
+//     zero-usage tag that the image alone was carrying.
+//   - onImageDelete (may be nil) fixes up relations-graph state that the
+//     FK CASCADE can't reach - specifically dup_groups.original_image_id,
+//     which is NOT NULL with no CASCADE so the parent DELETE would fail
+//     while the image is still wearing the original badge.
+//
+// galleryPath gates the canonical-path unlink behind PathInside so a
+// row whose canonical_path drifted outside the gallery root (a hand-
+// edited DB, a renamed mount) can't trick the handler into removing
+// arbitrary filesystem paths; sibling unlink paths in handlers_image_
+// actions.go and handlers_maintenance.go already carry the same gate.
+func DeleteImage(database *db.DB, galleryPath, thumbnailsPath string, id int64, removeAllTags func(int64) error, onImageDelete func(int64) error) (*DeleteImageResult, error) {
 	var canonPath, folderPath, fileType string
 	var isMissing int
 	if err := database.Read.QueryRow(
@@ -34,6 +46,12 @@ func DeleteImage(database *db.DB, thumbnailsPath string, id int64, removeAllTags
 	// leaving tags.usage_count drifting until the next RecalcCount.
 	if err := removeAllTags(id); err != nil {
 		return nil, fmt.Errorf("remove tags for image %d: %w", id, err)
+	}
+
+	if onImageDelete != nil {
+		if err := onImageDelete(id); err != nil {
+			return nil, fmt.Errorf("relations cleanup for image %d: %w", id, err)
+		}
 	}
 
 	if _, err := database.Write.Exec(`DELETE FROM images WHERE id = ?`, id); err != nil {
@@ -56,7 +74,9 @@ func DeleteImage(database *db.DB, thumbnailsPath string, id int64, removeAllTags
 	}
 
 	if !result.IsMissing && canonPath != "" {
-		if err := os.Remove(canonPath); err != nil && !os.IsNotExist(err) {
+		if galleryPath != "" && !PathInside(galleryPath, canonPath) {
+			logx.Warnf("delete image %d: refusing to unlink %q outside gallery root %q", id, canonPath, galleryPath)
+		} else if err := os.Remove(canonPath); err != nil && !os.IsNotExist(err) {
 			logx.Warnf("delete image file %q: %v", canonPath, err)
 		}
 	}

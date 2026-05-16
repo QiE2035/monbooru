@@ -41,16 +41,7 @@ func (s *Server) uploadPage(w http.ResponseWriter, r *http.Request) {
 	// mis-promise the post-click match count whenever a rating ceiling
 	// hides higher-rated rows. Recompute against the active ceiling so
 	// the parenthesised number matches what a click would surface.
-	inboxCount := base.InboxCount
-	if base.ActiveRating != "" && base.ActiveRating != "explicit" {
-		expr, _ := search.Parse("inbox:true")
-		expr = applyRatingCeiling(expr, base.ActiveRating)
-		if result, err := search.Execute(s.db(), search.Query{
-			Expr: expr, Sort: "newest", Order: "desc", Page: 1, Limit: 1,
-		}); err == nil {
-			inboxCount = result.Total
-		}
-	}
+	inboxCount := s.ceilingAwareCount(base.ActiveRating, "inbox:true", base.InboxCount)
 	s.renderTemplate(w, "upload.html", map[string]any{
 		"Title":           base.Title,
 		"ActiveNav":       base.ActiveNav,
@@ -63,10 +54,10 @@ func (s *Server) uploadPage(w http.ResponseWriter, r *http.Request) {
 		"CustomCSS":       base.CustomCSS,
 		"ActiveGallery":   base.ActiveGallery,
 		"Galleries":       s.galleryList(),
-		"VisibleCount":    base.VisibleCount,
-		"InboxCount":      inboxCount,
-		"TagCount":        base.TagCount,
-		"SavedCount":      base.SavedCount,
+		"VisibleCount":     base.VisibleCount,
+		"InboxCount":       inboxCount,
+		"TagCount":         base.TagCount,
+		"CollectionsCount": base.CollectionsCount,
 		"RatingLevels":    base.RatingLevels,
 		"ActiveRating":    base.ActiveRating,
 		"RequestStart":    base.RequestStart,
@@ -250,12 +241,16 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	// The form's hx-target only swaps #upload-result; the View-inbox
 	// anchor sits outside it and would keep the pre-upload count.
 	// OOB-swap the anchor with the freshly cached count whenever the
-	// upload actually moved rows into the inbox.
+	// upload actually moved rows into the inbox. The cached InboxCount
+	// is ceiling-blind; recompute against the active ceiling so the
+	// parenthesised number matches what a click would surface (mirrors
+	// uploadPage's initial render).
 	if added > 0 {
-		inbox := 0
+		cached := 0
 		if cx := s.Active(); cx != nil {
-			inbox, _ = cx.InboxCount()
+			cached, _ = cx.InboxCount()
 		}
+		inbox := s.ceilingAwareCount(ratingCeilingFromRequest(r), "inbox:true", cached)
 		count := ""
 		if inbox > 0 {
 			count = fmt.Sprintf(" (%d)", inbox)

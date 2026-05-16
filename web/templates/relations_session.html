@@ -1,0 +1,279 @@
+{{define "relations_session.html"}}
+{{template "layout_head" .}}
+<div id="sidebar-inner">
+  <nav class="settings-nav">
+    <a href="/relations#find">Find relations</a>
+    <a href="/relations#browse">Browse relations</a>
+    <a href="/relations#duplicates">Duplicates</a>
+  </nav>
+</div>
+{{template "layout_mid" .}}
+
+<div id="relations-session-page" class="relations-session">
+  <div class="detail-topbar">
+    <div class="detail-nav-group">
+      <a class="back-link" href="/relations">← Back to Relations</a>
+      <span class="detail-nav-sep">·</span>
+      <strong class="walker-page-title">Relations session</strong>
+    </div>
+    <form method="get" action="/relations/session" class="session-order-form">
+      <span class="field-hint">Order</span>
+      <label><input type="radio" name="order" value="smallest_distance_first" onchange="this.form.submit()" {{if eq .Order "smallest_distance_first"}}checked{{end}}> Smallest distance</label>
+      <label><input type="radio" name="order" value="largest_file_first" onchange="this.form.submit()" {{if eq .Order "largest_file_first"}}checked{{end}}> Largest file</label>
+      <label><input type="radio" name="order" value="random" onchange="this.form.submit()" {{if eq .Order "random"}}checked{{end}}> Random</label>
+    </form>
+  </div>
+
+  {{if not .Pair}}
+  <section class="session-empty">
+    <h3>No pairs to review.</h3>
+    <p class="field-hint">The queue is empty. Run <a href="/relations">Find new pairs</a> to surface more candidates.</p>
+  </section>
+  {{else}}
+  {{- $first := .Pair.A -}}
+  {{- $second := .Pair.B -}}
+  {{- $firstSide := "A" -}}
+  {{- $secondSide := "B" -}}
+  {{- if eq .Pair.LeftID .Pair.B.ID -}}
+    {{- $first = .Pair.B -}}
+    {{- $second = .Pair.A -}}
+    {{- $firstSide = "B" -}}
+    {{- $secondSide = "A" -}}
+  {{- end -}}
+  <section class="session-pair" data-a="{{.Pair.A.ID}}" data-b="{{.Pair.B.ID}}">
+    <div class="session-headers">
+      <h4 class="session-role" data-role="left">Left</h4>
+      <h4 class="session-role" data-role="right">Right</h4>
+    </div>
+    <div class="session-cells">
+      <div class="session-cell" data-side="{{$firstSide}}">
+        <a href="/images/{{$first.ID}}" target="_blank">
+          <img src="/thumbnails/{{$.ActiveGallery}}/{{$first.ID}}.jpg" alt="image {{$first.ID}}" class="session-cell-img">
+        </a>
+        <div class="session-cell-meta">
+          <strong class="session-cell-filename">{{$first.Filename}}</strong>
+          <div class="session-facts mono-small">
+            #{{$first.ID}} · {{$first.Width.Int64}}×{{$first.Height.Int64}} · {{humanBytes $first.FileSize}} · {{$first.TagCount}} tag(s)
+          </div>
+        </div>
+      </div>
+      <div class="session-distance" aria-hidden="true">
+        <span class="session-distance-line"></span>
+        <span class="session-distance-label">distance <strong>{{.Pair.Distance}}</strong></span>
+        <span class="session-distance-line"></span>
+      </div>
+      <div class="session-cell" data-side="{{$secondSide}}">
+        <a href="/images/{{$second.ID}}" target="_blank">
+          <img src="/thumbnails/{{$.ActiveGallery}}/{{$second.ID}}.jpg" alt="image {{$second.ID}}" class="session-cell-img">
+        </a>
+        <div class="session-cell-meta">
+          <strong class="session-cell-filename">{{$second.Filename}}</strong>
+          <div class="session-facts mono-small">
+            #{{$second.ID}} · {{$second.Width.Int64}}×{{$second.Height.Int64}} · {{humanBytes $second.FileSize}} · {{$second.TagCount}} tag(s)
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p class="session-prompt">The <strong>right</strong> image is <em id="session-role-noun" data-default="a duplicate / an alternate version / a newer version / a derivative">a duplicate / an alternate version / a newer version / a derivative</em> of the <strong>left</strong> image.</p>
+
+    <dl class="session-legend">
+      <dt>1 Duplicate</dt>
+      <dd>same image, different files. e.g. the same scan saved twice at different qualities.</dd>
+      <dt>2 Alternate version</dt>
+      <dd>same subject, different rendering. e.g. two recolours of one composition.</dd>
+      <dt>3 Newer version</dt>
+      <dd>right is a revised iteration of left. e.g. fixed lineart, an upscaled redo.</dd>
+      <dt>4 Derivative</dt>
+      <dd>right is built on top of left. e.g. an edit, recolour, or fanart of the original.</dd>
+      <dt>5 Not related</dt>
+      <dd>surface-level mismatch; the pair will not resurface in any session.</dd>
+      <dt>6 Skip</dt>
+      <dd>defer the decision; the pair returns at the back of the queue.</dd>
+    </dl>
+
+    <form id="session-decision-form" hx-post="/relations/session/decide" hx-swap="none"
+          hx-on::after-request="if(event.detail.successful&&event.detail.xhr.status===204){window.location.reload()}">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <input type="hidden" name="a" value="{{.Pair.A.ID}}">
+      <input type="hidden" name="b" value="{{.Pair.B.ID}}">
+      <input type="hidden" name="left" id="session-left" value="{{.Pair.LeftID}}">
+      <input type="hidden" name="order" value="{{.Order}}">
+
+      <p class="session-hint">Use the buttons below to commit the decision, or swap sides first.</p>
+      <div class="session-buttons">
+        <button type="submit" name="type" value="duplicate"  data-role-noun="a duplicate"          title="Right is a duplicate of left (1)">1 Duplicate</button>
+        <button type="submit" name="type" value="alternate"  data-role-noun="an alternate version" title="Right is an alternate version of left (2)">2 Alternate version</button>
+        <button type="submit" name="type" value="version"    data-role-noun="a newer version"      title="Right is the newer version of left (3)">3 Newer version</button>
+        <button type="submit" name="type" value="derivative" data-role-noun="a derivative"         title="Right is a derivative of left (4)">4 Derivative</button>
+      </div>
+      <div class="session-buttons session-buttons-secondary">
+        <button type="submit" name="type" value="not_related" title="Not related (5)">5 Not related</button>
+        <button type="submit" name="type" value="skip"        title="Skip (6 / Space)">6 Skip</button>
+      </div>
+      <div class="session-controls">
+        <button type="button" id="session-swap" title="Swap which side is left (W)">Swap sides (W)</button>
+        <button type="button" id="session-compare" title="Compare the two images (C)">Compare (C)</button>
+        <button type="button" id="session-pause" title="Pause and return to Relations (Esc)">Pause (Esc)</button>
+      </div>
+    </form>
+
+    <dialog id="session-compare-dialog" class="compare-dialog">
+      <div class="compare-stage" id="compare-stage">
+        <img id="compare-img-left"  alt="left">
+        <img id="compare-img-right" alt="right">
+        <div class="compare-divider" id="compare-divider" aria-hidden="true"></div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="compare-close">Close</button>
+      </div>
+    </dialog>
+
+    <p class="session-remaining field-hint"><strong>{{.Remaining}}</strong> pair(s) remaining · distance <strong>{{.Pair.Distance}}</strong></p>
+  </section>
+  {{end}}
+</div>
+
+<script>
+(function() {
+  var form = document.getElementById('session-decision-form');
+  if (!form) {
+    // Empty-queue render: the decision form and its keydown shortcuts
+    // are not on the page, but Esc should still bounce back to the
+    // Relations page so the navigation parity holds across queue
+    // states.
+    document.addEventListener('keydown', function(e) {
+      if (e.key !== 'Escape') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.defaultPrevented) return;
+      if (document.querySelector('dialog[open]')) return;
+      var tag = e.target.tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+      window.location.href = '/relations';
+    });
+    return;
+  }
+  var pair = document.querySelector('.session-pair');
+  var leftInput = document.getElementById('session-left');
+
+  function flipSides() {
+    var cells = pair.querySelector('.session-cells');
+    if (!cells) return;
+    // Children are [leftThumb, distance, rightThumb]. Move the right
+    // thumb in front of the left, then slide the distance segment
+    // between them, so the final order reads [right, distance, left].
+    // The per-cell metadata lives inside each thumb cell so it travels
+    // with the swap.
+    var left = cells.children[0];
+    var distance = cells.children[1];
+    var right = cells.children[2];
+    if (!left || !distance || !right) return;
+    cells.insertBefore(right, left);
+    cells.insertBefore(distance, left);
+    var newLeftSide = cells.children[0].dataset.side;
+    var aID = pair.dataset.a, bID = pair.dataset.b;
+    leftInput.value = (newLeftSide === 'A') ? aID : bID;
+  }
+
+  var swap = document.getElementById('session-swap');
+  if (swap) swap.addEventListener('click', flipSides);
+
+  var pause = document.getElementById('session-pause');
+  if (pause) pause.addEventListener('click', function() { window.location.href = '/relations'; });
+
+  // Adapt the prompt's role-noun span when the operator hovers or
+  // tabs onto one of the four decision buttons, so the sentence
+  // matches the button about to fire. Leave / blur restores the
+  // listing default so a keyboard user without focus still sees the
+  // full menu.
+  var noun = document.getElementById('session-role-noun');
+  if (noun) {
+    var defaultNoun = noun.getAttribute('data-default') || noun.textContent;
+    var roleButtons = form.querySelectorAll('button[data-role-noun]');
+    roleButtons.forEach(function(btn) {
+      var word = btn.getAttribute('data-role-noun');
+      btn.addEventListener('mouseenter', function() { noun.textContent = word; });
+      btn.addEventListener('focus',      function() { noun.textContent = word; });
+      btn.addEventListener('mouseleave', function() { noun.textContent = defaultNoun; });
+      btn.addEventListener('blur',       function() { noun.textContent = defaultNoun; });
+    });
+  }
+
+  // Compare dialog: a before/after slider over the full-size images.
+  // The left image is the base layer; the right image sits on top
+  // clipped to a width set by the cursor's X within the stage. Dragging
+  // (or moving without click on desktop) updates the split.
+  var compareBtn = document.getElementById('session-compare');
+  var compareDlg = document.getElementById('session-compare-dialog');
+  var compareStage = document.getElementById('compare-stage');
+  var imgLeftEl = document.getElementById('compare-img-left');
+  var imgRightEl = document.getElementById('compare-img-right');
+  var divider = document.getElementById('compare-divider');
+  function setSplit(pct) {
+    if (pct < 0) pct = 0; else if (pct > 100) pct = 100;
+    if (imgRightEl) imgRightEl.style.clipPath = 'inset(0 0 0 ' + pct + '%)';
+    if (divider) divider.style.left = pct + '%';
+  }
+  function openCompare() {
+    if (!compareDlg || !compareStage) return;
+    var aID = pair.dataset.a, bID = pair.dataset.b;
+    // session-left tracks the operator's current "left" so the slider
+    // mirrors what's on screen even after a swap.
+    var leftID = leftInput ? leftInput.value : aID;
+    var rightID = (leftID === aID) ? bID : aID;
+    if (imgLeftEl)  imgLeftEl.src  = '/images/' + leftID + '/file';
+    if (imgRightEl) imgRightEl.src = '/images/' + rightID + '/file';
+    setSplit(50);
+    compareDlg.showModal();
+  }
+  if (compareBtn) compareBtn.addEventListener('click', openCompare);
+  var compareClose = document.getElementById('compare-close');
+  if (compareClose) compareClose.addEventListener('click', function() {
+    if (compareDlg) compareDlg.close();
+  });
+  function trackSplit(evt) {
+    if (!compareStage) return;
+    var rect = compareStage.getBoundingClientRect();
+    var x = (evt.touches ? evt.touches[0].clientX : evt.clientX) - rect.left;
+    setSplit((x / rect.width) * 100);
+  }
+  if (compareStage) {
+    var dragging = false;
+    compareStage.addEventListener('mousedown', function(e) { dragging = true; trackSplit(e); });
+    compareStage.addEventListener('mousemove', function(e) { if (dragging) trackSplit(e); });
+    document.addEventListener('mouseup', function() { dragging = false; });
+    compareStage.addEventListener('touchstart', function(e) { trackSplit(e); }, {passive: true});
+    compareStage.addEventListener('touchmove',  function(e) { trackSplit(e); }, {passive: true});
+  }
+
+  // Keyboard shortcuts. 1-6 trigger the corresponding decision button;
+  // W flips sides; C opens Compare; Space behaves like Skip.
+  document.addEventListener('keydown', function(e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.defaultPrevented) return;
+    // While the compare dialog is open, Esc closes it and the rest of
+    // the shortcuts pass through to dialog default behaviour.
+    if (compareDlg && compareDlg.open) {
+      if (e.key === 'Escape') { e.preventDefault(); compareDlg.close(); }
+      return;
+    }
+    // Any other open dialog (gallery switch, shortcuts help) owns Esc
+    // so the operator doesn't lose unsaved input by jumping back to
+    // Relations.
+    if (document.querySelector('dialog[open]')) return;
+    var btnIndex = -1;
+    if (e.key >= '1' && e.key <= '6') btnIndex = parseInt(e.key, 10) - 1;
+    else if (e.key === ' ') { btnIndex = 5; e.preventDefault(); }
+    else if (e.key === 'w' || e.key === 'W') { flipSides(); return; }
+    else if (e.key === 'c' || e.key === 'C') { openCompare(); return; }
+    else if (e.key === 'Escape') { window.location.href = '/relations'; return; }
+    if (btnIndex < 0) return;
+    var btn = form.querySelectorAll('button[type="submit"]')[btnIndex];
+    if (btn) btn.click();
+  });
+})();
+</script>
+
+{{template "layout_end" .}}
+{{end}}

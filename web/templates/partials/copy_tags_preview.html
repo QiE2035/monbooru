@@ -1,0 +1,34 @@
+{{define "partials/copy_tags_preview.html"}}
+<p>
+  {{if .Groups}}
+  These <strong>{{.Total}}</strong> tag(s) will be copied onto the original (image #{{.OriginalID}}):
+  {{else}}
+  No new tags to copy: the original already carries every non-rating tag from the duplicates.
+  {{end}}
+</p>
+{{if .Groups}}
+<div class="copy-tags-preview-groups">
+  {{range .Groups}}
+  {{$color := .Color}}
+  <div class="copy-tags-preview-group">
+    <h5 style="color:{{$color}}">{{.Category}}</h5>
+    <ul class="copy-tags-preview-list">
+      {{range .Tags}}<li class="mono-small" style="color:{{$color}}">{{.}}</li>{{end}}
+    </ul>
+  </div>
+  {{end}}
+</div>
+{{end}}
+<div class="dialog-actions">
+  {{if .Groups}}
+  <form hx-post="/relations/dup-group/{{.GroupID}}/copy-tags"
+        hx-target="#flash-walker-marked" hx-swap="innerHTML"
+        hx-on::after-request="if(event.detail.successful){document.getElementById('copy-tags-preview-dialog').close()}"
+        style="display:inline">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <button type="submit">Copy {{.Total}} tag(s)</button>
+  </form>
+  {{end}}
+  <button type="button" onclick="document.getElementById('copy-tags-preview-dialog').close()">Cancel</button>
+</div>
+{{end}}

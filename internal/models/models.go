@@ -46,13 +46,15 @@ type Image struct {
 	IsFavorited   bool
 	IsInbox       bool // 1 = needs triage; 0 = archived/curated
 	AutoTaggedAt  *time.Time
-	SourceType    string // "a1111" | "comfyui" | "none" | "a1111,comfyui"
-	Origin        string // "ingest" | "upload" | caller-supplied string (app name, URL...)
-	Source        string // free-form provenance label (site name, scraper, ...); operator-edited
-	URL           string // canonical web URL the image came from; http(s) only
-	PageCount     *int   // page entry count for cbz manga rows; NULL otherwise
-	Series        string // operator-edited free-form series label (max 200 chars); '' when unset
-	SeriesOrder   *int   // operator-edited position within Series; NULL = unspecified
+	SourceType    string   // "a1111" | "comfyui" | "none" | "a1111,comfyui"
+	Origin        string   // "ingest" | "upload" | caller-supplied string (app name, URL...)
+	Source        string   // free-form provenance label (site name, scraper, ...); operator-edited
+	URL           string   // canonical web URL the image came from; http(s) only
+	PageCount     *int     // page entry count for cbz manga rows; NULL otherwise
+	DurationSec   *float64 // video duration in seconds; NULL for non-video rows and for videos that pre-date the column or whose probe failed
+	Series        string   // operator-edited free-form series label (max 200 chars); '' when unset
+	SeriesOrder   *int     // operator-edited position within Series; NULL = unspecified
+	Phash         *int64   // 64-bit perceptual hash; NULL until backfilled or for rows without a decodable thumbnail
 	IngestedAt    time.Time
 }
 
@@ -230,16 +232,19 @@ func (s SavedSearch) HRef() string {
 // surfaces at compile time and SPECIFICATIONS.md §1.3 stays in sync
 // with the code via the canonical JobTypes() list below.
 const (
-	JobTypeSync           = "sync"
-	JobTypeAutotag        = "autotag"
-	JobTypeReExtract      = "re-extract"
-	JobTypeDelete         = "delete"
-	JobTypeRebuildThumbs  = "rebuild-thumbs"
-	JobTypeMove           = "move"
-	JobTypeTag            = "tag"
-	JobTypeWatcher        = "watcher"
-	JobTypePruneThumbs    = "prune-thumbs"
-	JobTypeVacuum         = "vacuum"
+	JobTypeSync          = "sync"
+	JobTypeAutotag       = "autotag"
+	JobTypeReExtract     = "re-extract"
+	JobTypeDelete        = "delete"
+	JobTypeRebuildThumbs = "rebuild-thumbs"
+	JobTypeMove          = "move"
+	JobTypeTag           = "tag"
+	JobTypeWatcher       = "watcher"
+	JobTypePruneThumbs   = "prune-thumbs"
+	JobTypeVacuum        = "vacuum"
+	JobTypeFreeMemory    = "free-memory"
+	JobTypePhash         = "phash"
+	JobTypeRelations     = "relations"
 )
 
 // JobTypes is the authoritative ordered list of every JobType the
@@ -249,7 +254,7 @@ func JobTypes() []string {
 	return []string{
 		JobTypeSync, JobTypeAutotag, JobTypeReExtract, JobTypeDelete,
 		JobTypeRebuildThumbs, JobTypeMove, JobTypeTag, JobTypeWatcher,
-		JobTypePruneThumbs, JobTypeVacuum,
+		JobTypePruneThumbs, JobTypeVacuum, JobTypeFreeMemory, JobTypePhash, JobTypeRelations,
 	}
 }
 

@@ -1,0 +1,92 @@
+{{define "relations_duplicates_sha256.html"}}
+{{template "layout_head" .}}
+<div id="sidebar-inner">
+  <nav class="settings-nav">
+    <a href="/relations#find">Find relations</a>
+    <a href="/relations#browse">Browse relations</a>
+    <a href="/relations#duplicates">Duplicates</a>
+  </nav>
+</div>
+{{template "layout_mid" .}}
+
+<div id="relations-walker-page">
+  <div class="detail-topbar">
+    <div class="detail-nav-group">
+      <a href="/relations#duplicates" class="back-link">← Back to Relations</a>
+      <span class="detail-nav-sep">·</span>
+      <strong class="walker-page-title">SHA-256 duplicates</strong>
+    </div>
+    {{if .Sha256Rows}}
+    <div class="detail-topbar-right">
+      <form hx-post="/relations/file-duplicates/remove"
+            hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
+            hx-confirm="Remove every non-canonical duplicate and its file from disk? The canonical path stays."
+            data-confirm-ok="Remove all"
+            style="display:inline">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <input type="hidden" name="all" value="true">
+        <button type="submit" class="btn-danger btn-sm">Delete all duplicates</button>
+      </form>
+    </div>
+    {{end}}
+  </div>
+
+  <div id="flash-walker-sha256"></div>
+
+  {{if not .Sha256Rows}}
+  <section class="session-empty">
+    <h3>No SHA-256 duplicates left.</h3>
+    <p class="field-hint">Every image has a single path on disk. Drop in another sync or upload to surface more candidates.</p>
+  </section>
+  {{else}}
+  <table class="browse-table">
+    <thead>
+      <tr>
+        <th>Image ID</th>
+        <th>Thumb</th>
+        <th>Canonical path</th>
+        <th>Duplicate path</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Sha256Rows}}
+      <tr>
+        <td><a href="/images/{{.ImageID}}">#{{.ImageID}}</a></td>
+        <td>
+          <a href="/images/{{.ImageID}}" class="browse-thumb">
+            <img src="/thumbnails/{{$.ActiveGallery}}/{{.ImageID}}.jpg" alt="image {{.ImageID}}" loading="lazy">
+          </a>
+        </td>
+        <td><code class="mono-small">{{.CanonicalPath}}</code></td>
+        <td><code class="mono-small">{{.AliasPath}}</code></td>
+        <td>
+          <form hx-post="/relations/duplicates/sha256/remove-one" hx-swap="none"
+                hx-confirm="Delete this duplicate file from disk? The canonical path stays."
+                data-confirm-ok="Delete" style="display:inline">
+            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+            <input type="hidden" name="path_id" value="{{.PathID}}">
+            <button type="submit" class="btn-sm btn-danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+
+<script>
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Escape') return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.defaultPrevented) return;
+  if (document.querySelector('dialog[open]')) return;
+  var tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  window.location.href = '/relations#duplicates';
+});
+</script>
+
+{{template "layout_end" .}}
+{{end}}

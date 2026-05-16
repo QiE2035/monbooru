@@ -66,6 +66,17 @@ CREATE TABLE IF NOT EXISTS images (
     origin         TEXT    NOT NULL DEFAULT 'ingest',
     source         TEXT    NOT NULL DEFAULT '',
     url            TEXT    NOT NULL DEFAULT '',
+    -- Video duration in seconds (REAL so short clips and sub-second
+    -- precision survive). NULL for non-video rows and for video rows
+    -- that pre-date the column or whose ffprobe call failed; the
+    -- search and detail surfaces treat NULL as "unknown" rather than
+    -- "zero". Backfilled on re-extract metadata.
+    duration_seconds REAL,
+    -- 64-bit canonical perceptual hash (DCT-based pHash, mirror-
+    -- canonicalised). NULL until backfilled or when the file has no
+    -- visual surface. Added by ensureColumn on existing libraries;
+    -- the matching idx_images_phash is created in db.Bootstrap.
+    phash          INTEGER,
     ingested_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
@@ -157,6 +168,88 @@ CREATE TABLE IF NOT EXISTS manga_metadata (
     raw_xml          TEXT
 );
 
+-- Duplicate group: a set of images representing the same source content
+-- in different quality / format. One member is the "original" (the best
+-- representative). original_image_id is NOT NULL and has no ON DELETE
+-- cascade so the parent image_delete path is forced to fix the original
+-- (or dissolve the group) before the image row goes away - prevents the
+-- group from outliving its anchor as a dangling reference.
+CREATE TABLE IF NOT EXISTS dup_groups (
+    id                INTEGER PRIMARY KEY,
+    original_image_id INTEGER NOT NULL REFERENCES images(id),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS dup_group_members (
+    image_id   INTEGER PRIMARY KEY REFERENCES images(id)     ON DELETE CASCADE,
+    group_id   INTEGER NOT NULL    REFERENCES dup_groups(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS alt_groups (
+    id         INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS alt_group_members (
+    image_id   INTEGER PRIMARY KEY REFERENCES images(id)     ON DELETE CASCADE,
+    group_id   INTEGER NOT NULL    REFERENCES alt_groups(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- Directed version edge. child_image_id is PK (each image has at most
+-- one parent); parent_image_id is UNIQUE (each parent has at most one
+-- child). Together this enforces a strict chain - branching is a
+-- derivative relationship.
+CREATE TABLE IF NOT EXISTS version_edges (
+    child_image_id  INTEGER PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
+    parent_image_id INTEGER NOT NULL UNIQUE REFERENCES images(id) ON DELETE CASCADE,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- Directed derivative edge. derivative_image_id is PK (a derivative has
+-- exactly one source); source_image_id is unconstrained so a source can
+-- carry many derivatives (tree).
+CREATE TABLE IF NOT EXISTS derivative_edges (
+    derivative_image_id INTEGER PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
+    source_image_id     INTEGER NOT NULL    REFERENCES images(id) ON DELETE CASCADE,
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- Canonicalised "not related" pair (a < b). Recorded so a rejected pair
+-- never resurfaces in the find-pairs queue at any distance.
+CREATE TABLE IF NOT EXISTS not_related_pairs (
+    a_image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+    b_image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (a_image_id, b_image_id)
+);
+
+-- Singleton holding the active session's order mode plus the
+-- started-at timestamp. id is constrained to 1 so there is at most
+-- one row regardless of how the upserts go.
+CREATE TABLE IF NOT EXISTS relation_session (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    order_mode TEXT NOT NULL DEFAULT 'smallest_distance_first',
+    started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    paused_at  TEXT
+);
+
+-- Candidate pairs surfaced by the find-pairs background job; the
+-- session UI iterates these and either commits a relation (deletes
+-- the row), rejects the pair (deletes the row + writes
+-- not_related_pairs), or skips (sets skipped_at so the row sorts to
+-- the back of the queue). Canonicalised a < b matches the rest of the
+-- symmetric tables.
+CREATE TABLE IF NOT EXISTS potential_relation_pairs (
+    a_image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+    b_image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+    distance   INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    skipped_at TEXT,
+    PRIMARY KEY (a_image_id, b_image_id)
+);
+
 CREATE TABLE IF NOT EXISTS saved_searches (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL UNIQUE,
@@ -199,6 +292,30 @@ CREATE INDEX IF NOT EXISTS idx_images_folder     ON images(folder_path);
 CREATE INDEX IF NOT EXISTS idx_images_folder_visible ON images(folder_path) WHERE is_missing = 0;
 CREATE INDEX IF NOT EXISTS idx_images_filesize_visible ON images(file_size DESC, id DESC) WHERE is_missing = 0;
 CREATE INDEX IF NOT EXISTS idx_images_ingested_visible ON images(ingested_at DESC, id DESC) WHERE is_missing = 0;
+-- Partial visible indexes over columns the original schema already
+-- carries (file_type, source_type) so mime: / type: / ai: filters
+-- seek the visibility-bounded set instead of falling back on
+-- idx_images_missing. idx_images_source_visible and
+-- idx_images_duration_visible reference columns added by ensureColumn
+-- migrations (source, duration_seconds) and live in db.Bootstrap
+-- below the matching ensureColumn call - adding them here would
+-- error on libraries that predate the columns.
+CREATE INDEX IF NOT EXISTS idx_images_file_type_visible   ON images(file_type)   WHERE is_missing = 0;
+CREATE INDEX IF NOT EXISTS idx_images_source_type_visible ON images(source_type) WHERE is_missing = 0;
 CREATE INDEX IF NOT EXISTS idx_image_paths_image ON image_paths(image_id);
 CREATE INDEX IF NOT EXISTS idx_sd_metadata_genhash      ON sd_metadata(generation_hash)      WHERE generation_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_comfyui_metadata_genhash ON comfyui_metadata(generation_hash) WHERE generation_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sd_metadata_seed         ON sd_metadata(seed)                 WHERE seed IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_comfyui_metadata_seed    ON comfyui_metadata(seed)            WHERE seed IS NOT NULL;
+-- Relations covering indexes. The PRIMARY KEY on dup_group_members.image_id
+-- and alt_group_members.image_id already covers the per-image group lookup;
+-- the (group_id, image_id) shape below covers the inverse - listing a
+-- group's members ordered. version_edges and derivative_edges get inverse
+-- indexes from the parent / source side. not_related_pairs picks up an
+-- index on (b, a) so pair-existence checks ride a covering seek regardless
+-- of which side the caller passed first.
+CREATE INDEX IF NOT EXISTS idx_dup_group_members_group ON dup_group_members(group_id, image_id);
+CREATE INDEX IF NOT EXISTS idx_alt_group_members_group ON alt_group_members(group_id, image_id);
+CREATE INDEX IF NOT EXISTS idx_derivative_edges_source ON derivative_edges(source_image_id);
+CREATE INDEX IF NOT EXISTS idx_not_related_b           ON not_related_pairs(b_image_id, a_image_id);
+CREATE INDEX IF NOT EXISTS idx_potential_pairs_distance ON potential_relation_pairs(skipped_at, distance, a_image_id);

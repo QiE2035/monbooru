@@ -313,6 +313,15 @@ func fanOutImpliedTxImpl(tx *sql.Tx, imageID, parentID, ratingCatID int64, isAut
 	if err != nil {
 		return err
 	}
+	return applyImpliedClosureTx(tx, imageID, implied, ratingCatID, isAutoInt)
+}
+
+// applyImpliedClosureTx is fanOutImpliedTxImpl with the closure walk
+// hoisted to the caller. MergeTags uses it to avoid recomputing the
+// canonical's invariant implied closure once per newly-carrying image
+// in the post-move loop; pure addTagToImage* callers go through
+// fanOutImpliedTxImpl which resolves the closure for them.
+func applyImpliedClosureTx(tx *sql.Tx, imageID int64, implied []int64, ratingCatID int64, isAutoInt int) error {
 	insertedRating := false
 	for _, id := range implied {
 		res, err := tx.Exec(

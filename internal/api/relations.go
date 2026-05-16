@@ -1,0 +1,217 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/leqwin/monbooru/internal/relations"
+)
+
+// relationsResponse mirrors relations.ImageRelations in JSON shape.
+// Pointer fields are nil-friendly so the client can tell the
+// difference between "no parent version" and "parent id 0".
+type relationsResponse struct {
+	DuplicateGroup   *dupGroupJSON `json:"duplicate_group"`
+	AlternateGroup   *altGroupJSON `json:"alternate_group"`
+	VersionParent    *int64        `json:"version_parent"`
+	VersionChild     *int64        `json:"version_child"`
+	DerivativeSource *int64        `json:"derivative_source"`
+	Derivatives      []int64       `json:"derivatives"`
+}
+
+type dupGroupJSON struct {
+	ID       int64   `json:"id"`
+	Original int64   `json:"original_image_id"`
+	Members  []int64 `json:"member_ids"`
+}
+
+type altGroupJSON struct {
+	ID      int64   `json:"id"`
+	Members []int64 `json:"member_ids"`
+}
+
+// relationsForImage serves GET /api/v1/images/{id}/relations.
+func (h *Handler) relationsForImage(w http.ResponseWriter, r *http.Request) {
+	g, ok := h.resolveGallery(w, r)
+	if !ok {
+		return
+	}
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "invalid image id")
+		return
+	}
+	rels, err := relations.LoadImageRelations(g.DB, id)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	resp := relationsResponse{
+		VersionParent:    rels.VersionParent,
+		VersionChild:     rels.VersionChild,
+		DerivativeSource: rels.DerivativeSource,
+		Derivatives:      rels.Derivatives,
+	}
+	if rels.DupGroup != nil {
+		resp.DuplicateGroup = &dupGroupJSON{
+			ID:       rels.DupGroup.ID,
+			Original: rels.DupGroup.Original,
+			Members:  rels.DupGroup.Members,
+		}
+	}
+	if rels.AltGroupID != nil {
+		resp.AlternateGroup = &altGroupJSON{
+			ID:      *rels.AltGroupID,
+			Members: rels.AltGroupMembers,
+		}
+	}
+	if resp.Derivatives == nil {
+		resp.Derivatives = []int64{}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// relationsAddBody is the JSON shape POST /api/v1/relations expects.
+// Type is required. A and B are required for everything except the
+// optional `original` swap on duplicates. Direction defaults to
+// "ab" - A is the left side (original / source / newer / parent).
+type relationsAddBody struct {
+	Type      string `json:"type"`
+	A         int64  `json:"a"`
+	B         int64  `json:"b"`
+	Direction string `json:"direction"`
+}
+
+// addRelation serves POST /api/v1/relations.
+func (h *Handler) addRelation(w http.ResponseWriter, r *http.Request) {
+	g, ok := h.resolveGallery(w, r)
+	if !ok {
+		return
+	}
+	var body relationsAddBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON")
+		return
+	}
+	if body.A == 0 || body.B == 0 {
+		apiError(w, http.StatusBadRequest, "invalid_request", "missing a or b")
+		return
+	}
+	left, right := body.A, body.B
+	if body.Direction == "ba" {
+		left, right = right, left
+	}
+	if g.RelationsSvc == nil {
+		apiError(w, http.StatusInternalServerError, "internal_error", "relations not wired")
+		return
+	}
+	var err error
+	switch body.Type {
+	case "duplicate":
+		err = g.RelationsSvc.AddDuplicate(left, right)
+	case "alternate":
+		err = g.RelationsSvc.AddAlternate(body.A, body.B)
+	case "version":
+		err = g.RelationsSvc.AddVersionEdge(right, left)
+	case "derivative":
+		err = g.RelationsSvc.AddDerivativeEdge(left, right)
+	case "not_related":
+		err = g.RelationsSvc.AddNotRelated(body.A, body.B)
+	default:
+		apiError(w, http.StatusBadRequest, "invalid_request", "unknown type")
+		return
+	}
+	if err != nil {
+		writeRelationError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+}
+
+// relationsRemoveBody is the JSON for DELETE /api/v1/relations.
+type relationsRemoveBody struct {
+	Type    string `json:"type"`
+	A       int64  `json:"a"`
+	B       int64  `json:"b"`
+	ImageID int64  `json:"image_id"`
+	GroupID int64  `json:"group_id"`
+}
+
+// removeRelation serves DELETE /api/v1/relations.
+func (h *Handler) removeRelation(w http.ResponseWriter, r *http.Request) {
+	g, ok := h.resolveGallery(w, r)
+	if !ok {
+		return
+	}
+	var body relationsRemoveBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON")
+		return
+	}
+	if g.RelationsSvc == nil {
+		apiError(w, http.StatusInternalServerError, "internal_error", "relations not wired")
+		return
+	}
+	var err error
+	switch body.Type {
+	case "duplicate":
+		if body.ImageID == 0 {
+			apiError(w, http.StatusBadRequest, "invalid_request", "image_id required")
+			return
+		}
+		err = g.RelationsSvc.RemoveDupMember(body.ImageID)
+	case "alternate":
+		if body.ImageID == 0 {
+			apiError(w, http.StatusBadRequest, "invalid_request", "image_id required")
+			return
+		}
+		err = g.RelationsSvc.RemoveAltMember(body.ImageID)
+	case "version":
+		err = g.RelationsSvc.RemoveVersionEdge(body.A, body.B)
+	case "derivative":
+		err = g.RelationsSvc.RemoveDerivativeEdge(body.A, body.B)
+	case "not_related":
+		err = g.RelationsSvc.RemoveNotRelated(body.A, body.B)
+	case "dissolve_dup":
+		if body.GroupID == 0 {
+			apiError(w, http.StatusBadRequest, "invalid_request", "group_id required")
+			return
+		}
+		err = g.RelationsSvc.DissolveDupGroup(body.GroupID)
+	case "dissolve_alt":
+		if body.GroupID == 0 {
+			apiError(w, http.StatusBadRequest, "invalid_request", "group_id required")
+			return
+		}
+		err = g.RelationsSvc.DissolveAltGroup(body.GroupID)
+	default:
+		apiError(w, http.StatusBadRequest, "invalid_request", "unknown type")
+		return
+	}
+	if err != nil {
+		writeRelationError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeRelationError surfaces relations.Service errors as API errors.
+func writeRelationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, relations.ErrSelfRelation):
+		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	case errors.Is(err, relations.ErrRelationConflict):
+		apiError(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, relations.ErrVersionExists):
+		apiError(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, relations.ErrDerivativeExists):
+		apiError(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, relations.ErrNotInGroup):
+		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	default:
+		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+}

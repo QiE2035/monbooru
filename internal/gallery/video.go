@@ -202,3 +202,19 @@ func probeDuration(srcPath string) (float64, error) {
 	s := strings.TrimSpace(string(out))
 	return strconv.ParseFloat(s, 64)
 }
+
+// ProbeDurationSeconds is the public-package wrapper around the
+// internal duration probe. Callers in the ingest and re-extract paths
+// use it to populate images.duration_seconds for video rows. Returns
+// (0, false) when ffmpeg is unavailable or probing fails; callers
+// leave the column NULL in that case.
+func ProbeDurationSeconds(srcPath string) (float64, bool) {
+	if !ffmpegAvailable() {
+		return 0, false
+	}
+	d, err := probeDuration(srcPath)
+	if err != nil || d <= 0 {
+		return 0, false
+	}
+	return d, true
+}

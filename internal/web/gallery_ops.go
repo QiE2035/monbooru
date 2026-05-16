@@ -281,7 +281,7 @@ type galleryRow struct {
 // warm until InvalidateCaches drops them. Errors degrade to zero so a
 // transient failure on one gallery never blanks the whole table.
 func (s *Server) galleryRows() []galleryRow {
-	return s.galleryRowsWithSnapshot("", 0, 0, 0)
+	return s.galleryRowsWithSnapshot("", 0, 0)
 }
 
 // galleryRowsWithSnapshot is galleryRows with the active gallery's row
@@ -290,7 +290,7 @@ func (s *Server) galleryRows() []galleryRow {
 // per-row read here can land the two surfaces on different counts for
 // the same gallery; the operator sees a footer "47 img" next to a
 // table cell "46 img" and can't tell which is right.
-func (s *Server) galleryRowsWithSnapshot(activeName string, activeImages, activeTags, _ int) []galleryRow {
+func (s *Server) galleryRowsWithSnapshot(activeName string, activeImages, activeTags int) []galleryRow {
 	galleries := s.galleryList()
 	out := make([]galleryRow, len(galleries))
 	for i, g := range galleries {

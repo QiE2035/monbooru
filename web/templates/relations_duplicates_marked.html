@@ -1,0 +1,124 @@
+{{define "relations_duplicates_marked.html"}}
+{{template "layout_head" .}}
+<div id="sidebar-inner">
+  <nav class="settings-nav">
+    <a href="/relations#find">Find relations</a>
+    <a href="/relations#browse">Browse relations</a>
+    <a href="/relations#duplicates">Duplicates</a>
+  </nav>
+</div>
+{{template "layout_mid" .}}
+
+<div id="relations-walker-page">
+  <div class="detail-topbar">
+    <div class="detail-nav-group">
+      <a href="/relations#duplicates" class="back-link">← Back to Relations</a>
+      <span class="detail-nav-sep">·</span>
+      <strong class="walker-page-title">Marked duplicates</strong>
+    </div>
+    {{if .MarkedRows}}
+    <div class="detail-topbar-right">
+      <form hx-post="/relations/duplicates/marked/delete-all"
+            hx-target="#flash-walker-marked" hx-swap="innerHTML"
+            hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
+            hx-confirm="Delete every non-original member of every marked duplicate group? Files are removed from disk."
+            data-confirm-ok="Delete all"
+            style="display:inline">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <button type="submit" class="btn-danger btn-sm">Delete all duplicates</button>
+      </form>
+    </div>
+    {{end}}
+  </div>
+
+  {{if not .MarkedRows}}
+  <section class="session-empty">
+    <h3>No marked duplicate groups.</h3>
+    <p class="field-hint">Start a Relations session or use the detail-page Relations panel to declare a duplicate.</p>
+  </section>
+  {{else}}
+  <table class="browse-table">
+    <thead>
+      <tr>
+        <th>Original ID</th>
+        <th>Original</th>
+        <th>Duplicate</th>
+        <th>Duplicate ID</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .MarkedRows}}
+      <tr>
+        <td><a href="/images/{{.OriginalID}}">#{{.OriginalID}}</a></td>
+        <td>
+          <a href="/images/{{.OriginalID}}" class="browse-thumb">
+            <img src="/thumbnails/{{$.ActiveGallery}}/{{.OriginalID}}.jpg" alt="image {{.OriginalID}}" loading="lazy">
+          </a>
+        </td>
+        <td>
+          <a href="/images/{{.DuplicateID}}" class="browse-thumb">
+            <img src="/thumbnails/{{$.ActiveGallery}}/{{.DuplicateID}}.jpg" alt="image {{.DuplicateID}}" loading="lazy">
+          </a>
+        </td>
+        <td><a href="/images/{{.DuplicateID}}">#{{.DuplicateID}}</a></td>
+        <td>
+          {{if .HasTagsToCopy}}
+          <button type="button" class="btn-link-accent btn-copy-tags-preview"
+                  data-group-id="{{.GroupID}}">[copy tags]</button>
+          {{end}}
+          <form hx-post="/relations/duplicates/marked/delete-one" hx-swap="none"
+                hx-confirm="Delete image {{.DuplicateID}} from the gallery? The file is removed from disk."
+                data-confirm-ok="Delete" style="display:inline">
+            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+            <input type="hidden" name="image_id" value="{{.DuplicateID}}">
+            <button type="submit" class="btn-sm btn-danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <div id="flash-walker-marked"></div>
+  {{end}}
+</div>
+
+<dialog id="copy-tags-preview-dialog">
+  <h4>Copy tags to original</h4>
+  <div id="copy-tags-preview-body" class="copy-tags-preview-body">Loading...</div>
+</dialog>
+
+<script>
+document.querySelectorAll('.btn-copy-tags-preview').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var gid = this.dataset.groupId;
+    var dlg = document.getElementById('copy-tags-preview-dialog');
+    var body = document.getElementById('copy-tags-preview-body');
+    if (!dlg || !body) return;
+    body.innerHTML = 'Loading...';
+    if (window.htmx) {
+      window.htmx.ajax('GET', '/relations/dup-group/' + gid + '/copy-tags/preview', {
+        target: '#copy-tags-preview-body', swap: 'innerHTML',
+      });
+    }
+    dlg.showModal();
+  });
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Escape') return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.defaultPrevented) return;
+  // Native <dialog> handles its own Esc-to-close while open (cancel
+  // event then default-close); skip the back navigation so the
+  // operator's first Esc dismisses the preview or any hx-confirm
+  // prompt instead of jumping to /relations.
+  if (document.querySelector('dialog[open]')) return;
+  var tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  window.location.href = '/relations#duplicates';
+});
+</script>
+
+{{template "layout_end" .}}
+{{end}}

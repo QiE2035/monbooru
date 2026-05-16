@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,34 @@ func TestParse_ORChain(t *testing.T) {
 	}
 	if got := or.Right.(TagExpr).Tag; got != "c" {
 		t.Errorf("or.Right = %q, want c", got)
+	}
+}
+
+// A bare leading `OR` has no left operand; the parser drops it and
+// keeps parsing so the right-hand term stands on its own instead of
+// collapsing to an empty expression (which the executor would treat
+// as match-all).
+func TestParse_LeadingOR_DropsOperator(t *testing.T) {
+	e, _ := Parse("OR 1girl")
+	tag, ok := e.(TagExpr)
+	if !ok {
+		t.Fatalf("expected TagExpr after a bare leading OR, got %T (%+v)", e, e)
+	}
+	if tag.Tag != "1girl" {
+		t.Errorf("tag = %q, want 1girl", tag.Tag)
+	}
+}
+
+// A run of leading ORs collapses the same way - none of them carries
+// a left operand, none survives.
+func TestParse_LeadingORChain_DropsOperators(t *testing.T) {
+	e, _ := Parse("OR OR 1girl")
+	tag, ok := e.(TagExpr)
+	if !ok {
+		t.Fatalf("expected TagExpr, got %T (%+v)", e, e)
+	}
+	if tag.Tag != "1girl" {
+		t.Errorf("tag = %q, want 1girl", tag.Tag)
 	}
 }
 
@@ -1488,6 +1517,17 @@ func TestIsPureTagExpr(t *testing.T) {
 		{"ai filter", FilterExpr{Key: "ai", Val: "any"}, false},
 		{"source exact filter", FilterExpr{Key: "source", Val: "Pixiv"}, false},
 		{"folder filter", FilterExpr{Key: "folder", Val: "anime"}, false},
+		{"file_size filter", FilterExpr{Key: "size", Val: ">=10MB"}, false},
+		{"mime filter", FilterExpr{Key: "mime", Val: "png"}, false},
+		{"width filter", FilterExpr{Key: "width", Val: ">=1024"}, true},
+		{"height filter", FilterExpr{Key: "height", Val: ">=1024"}, true},
+		{"date filter", FilterExpr{Key: "date", Val: "2024"}, true},
+		{"ratio filter", FilterExpr{Key: "ratio", Val: ">=1.5"}, true},
+		{"duration filter", FilterExpr{Key: "duration", Val: ">=30"}, false},
+		{"name filter", FilterExpr{Key: "name", Val: "img"}, false},
+		{"prompt filter", FilterExpr{Key: "prompt", Val: "masterpiece"}, false},
+		{"seed filter", FilterExpr{Key: "seed", Val: "42"}, false},
+		{"tagcount filter", FilterExpr{Key: "tagcount", Val: ">=5"}, true},
 		{"tag and fav", AndExpr{Left: TagExpr{Tag: "a"}, Right: FilterExpr{Key: "fav", Val: "true"}}, false},
 	}
 	for _, tt := range tests {
@@ -2160,7 +2200,11 @@ func TestPickAndDriverTag_SingleLiteralStillSkips(t *testing.T) {
 	var generalID int64
 	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
 	if _, err := database.Write.Exec(
-		`INSERT INTO tags (name, category_id, usage_count) VALUES ('alpha', ?, 5)`, generalID,
+		`INSERT INTO tags (name, category_id, usage_count) VALUES
+		    ('alpha',   ?, 5),
+		    ('popular', ?, ?)`,
+		generalID,
+		generalID, andDriverThreshold+10,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -2168,9 +2212,16 @@ func TestPickAndDriverTag_SingleLiteralStillSkips(t *testing.T) {
 		t.Error("single literal at root should not engage the driver under indexed sort")
 	}
 	// Random sort is the override: single literal does engage so the
-	// materialised set bounds the temp-sort input.
+	// materialised set bounds the temp-sort input. Both the cheap
+	// (alpha) and the popular leaf (above andDriverThreshold) have to
+	// engage; under random sort the slow path TEMP-B-TREEs every
+	// visible carrier and any candidate-set bound is profitable
+	// regardless of usage.
 	if _, ok := pickAndDriverTag(database, TagExpr{Tag: "alpha"}, true); !ok {
 		t.Error("single literal at root should engage the driver under random sort")
+	}
+	if _, ok := pickAndDriverTag(database, TagExpr{Tag: "popular"}, true); !ok {
+		t.Error("popular single literal under random sort should still engage the driver")
 	}
 }
 
@@ -2716,6 +2767,24 @@ func TestBuildWhere_AIAny(t *testing.T) {
 	}
 }
 
+func TestBuildWhere_AINone(t *testing.T) {
+	// "none" collapses to a single source_type equality so the partial
+	// idx_images_source_type_visible can answer the seek directly,
+	// rather than the four-LIKE shape that drove the planner past
+	// idx_images_source_type onto idx_images_missing.
+	expr := FilterExpr{Key: "ai", Val: "none"}
+	where, args, _ := buildWhere(expr)
+	if len(args) != 0 {
+		t.Errorf("expected no args for ai:none, got %v", args)
+	}
+	if !strings.Contains(where, "i.source_type = 'none'") {
+		t.Errorf("where = %q, want a bare source_type='none' equality", where)
+	}
+	if strings.Contains(where, "LIKE") {
+		t.Errorf("where = %q, want no LIKE - none is never combined", where)
+	}
+}
+
 func TestBuildWhere_SourceExact(t *testing.T) {
 	// `source:` is a separate exact-match filter against images.source.
 	expr := FilterExpr{Key: "source", Val: "Pixiv"}
@@ -2807,8 +2876,211 @@ func TestBuildWhere_NegatedMissingFalse(t *testing.T) {
 	}
 }
 
+func TestBuildWhere_Name(t *testing.T) {
+	// name: rides the indexed basename_lower VIRTUAL column so the
+	// match is scoped to the filename segment without paying the
+	// per-row basename() function call. The value is lowercased on
+	// both sides to keep the search case-insensitive end-to-end, and
+	// the same pattern is bound twice: once for the canonical row's
+	// basename_lower and once for the alias-path EXISTS so SHA-256
+	// duplicates show up under either filename.
+	expr := FilterExpr{Key: "name", Val: "Vacation"}
+	where, args, _ := buildWhere(expr)
+	if !strings.Contains(where, "i.basename_lower LIKE") {
+		t.Errorf("where = %q, want basename_lower LIKE", where)
+	}
+	if !strings.Contains(where, "FROM image_paths ip") {
+		t.Errorf("where = %q, want an alias-path EXISTS", where)
+	}
+	if len(args) != 2 {
+		t.Fatalf("args = %v, want canonical+alias pattern args", args)
+	}
+	for _, a := range args {
+		got, _ := a.(string)
+		if got != "%vacation%" {
+			t.Errorf("pattern = %q, want %%vacation%% (lowercase, no leading /)", got)
+		}
+	}
+}
+
+func TestBuildWhere_NameEmptyRejected(t *testing.T) {
+	expr := FilterExpr{Key: "name", Val: ""}
+	where, _, _ := buildWhere(expr)
+	if !strings.Contains(where, "1=0") {
+		t.Errorf("where = %q, want 1=0", where)
+	}
+}
+
+func TestBuildWhere_Size(t *testing.T) {
+	cases := []struct {
+		in     string
+		wantOp string
+		wantN  int64
+	}{
+		{">=10MB", ">=", 10 * 1024 * 1024},
+		{"<2gb", "<", 2 * 1024 * 1024 * 1024},
+		{"512", "=", 512},
+		{">100kb", ">", 100 * 1024},
+	}
+	for _, tc := range cases {
+		expr := FilterExpr{Key: "size", Val: tc.in}
+		where, args, _ := buildWhere(expr)
+		if !strings.Contains(where, "i.file_size") {
+			t.Errorf("size %q: where = %q", tc.in, where)
+		}
+		if !strings.Contains(where, tc.wantOp) {
+			t.Errorf("size %q: op missing in %q", tc.in, where)
+		}
+		if len(args) != 1 || args[0] != tc.wantN {
+			t.Errorf("size %q: args = %v, want [%d]", tc.in, args, tc.wantN)
+		}
+	}
+}
+
+func TestBuildWhere_SizeUnitless(t *testing.T) {
+	// Bare numbers are bytes.
+	expr := FilterExpr{Key: "size", Val: ">=1024"}
+	_, args, _ := buildWhere(expr)
+	if args[0] != int64(1024) {
+		t.Errorf("args[0] = %v, want 1024 bytes", args[0])
+	}
+}
+
+func TestBuildWhere_SizeBadSuffixRejected(t *testing.T) {
+	expr := FilterExpr{Key: "size", Val: ">=10ZB"}
+	where, _, _ := buildWhere(expr)
+	if !strings.Contains(where, "1=0") {
+		t.Errorf("where = %q, want 1=0 for invalid suffix", where)
+	}
+}
+
+func TestBuildWhere_Mime(t *testing.T) {
+	cases := []struct {
+		in    string
+		wants []string
+	}{
+		{"png", []string{"'png'"}},
+		{"image/jpeg", []string{"'jpeg'"}},
+		{"png,jpeg", []string{"'jpeg'", "'png'"}},
+		{"bogus", []string{"1=0"}},
+	}
+	for _, tc := range cases {
+		expr := FilterExpr{Key: "mime", Val: tc.in}
+		where, _, _ := buildWhere(expr)
+		for _, want := range tc.wants {
+			if !strings.Contains(where, want) {
+				t.Errorf("mime %q: where missing %q (got %q)", tc.in, want, where)
+			}
+		}
+	}
+}
+
+func TestBuildWhere_Ratio(t *testing.T) {
+	expr := FilterExpr{Key: "ratio", Val: ">=1.5"}
+	where, args, _ := buildWhere(expr)
+	if !strings.Contains(where, "CAST(i.width AS REAL)") {
+		t.Errorf("where = %q, want a width/height float ratio", where)
+	}
+	if len(args) != 1 || args[0] != 1.5 {
+		t.Errorf("args = %v, want [1.5]", args)
+	}
+}
+
+func TestBuildWhere_RatioBadValueRejected(t *testing.T) {
+	expr := FilterExpr{Key: "ratio", Val: ">=abc"}
+	where, _, _ := buildWhere(expr)
+	if !strings.Contains(where, "1=0") {
+		t.Errorf("where = %q, want 1=0", where)
+	}
+}
+
+func TestBuildWhere_TagCount(t *testing.T) {
+	expr := FilterExpr{Key: "tagcount", Val: ">=5"}
+	where, args, _ := buildWhere(expr)
+	if !strings.Contains(where, "FROM image_tags") {
+		t.Errorf("where = %q, want a tag-count subquery", where)
+	}
+	if len(args) != 1 || args[0] != int64(5) {
+		t.Errorf("args = %v, want [5]", args)
+	}
+}
+
+func TestBuildWhere_Duration(t *testing.T) {
+	// Comparison rides duration_seconds with an IS NOT NULL guard so
+	// non-videos drop out.
+	expr := FilterExpr{Key: "duration", Val: ">=30"}
+	where, args, _ := buildWhere(expr)
+	if !strings.Contains(where, "i.duration_seconds IS NOT NULL") {
+		t.Errorf("where = %q, want NULL guard", where)
+	}
+	if !strings.Contains(where, "i.duration_seconds >=") {
+		t.Errorf("where = %q, want the comparison", where)
+	}
+	if len(args) != 1 || args[0] != 30.0 {
+		t.Errorf("args = %v, want [30.0]", args)
+	}
+}
+
+func TestBuildWhere_Hash(t *testing.T) {
+	expr := FilterExpr{Key: "hash", Val: "ABCDEF01"}
+	where, args, _ := buildWhere(expr)
+	if !strings.Contains(where, "i.sha256 = ?") {
+		t.Errorf("where = %q", where)
+	}
+	if len(args) != 1 || args[0] != "abcdef01" {
+		t.Errorf("args = %v, want the lowercase digest", args)
+	}
+}
+
+func TestBuildWhere_Prompt(t *testing.T) {
+	expr := FilterExpr{Key: "prompt", Val: "1girl"}
+	where, args, _ := buildWhere(expr)
+	if !strings.Contains(where, "sd_metadata sm") || !strings.Contains(where, "comfyui_metadata cm") {
+		t.Errorf("where = %q, want both metadata tables", where)
+	}
+	if len(args) != 2 {
+		t.Errorf("args len = %d, want 2 (one per table)", len(args))
+	}
+}
+
+func TestBuildWhere_Seed(t *testing.T) {
+	expr := FilterExpr{Key: "seed", Val: "12345"}
+	where, args, _ := buildWhere(expr)
+	if !strings.Contains(where, "FROM sd_metadata WHERE seed = ?") {
+		t.Errorf("where = %q, want IN-subquery shape that pins idx_sd_metadata_seed", where)
+	}
+	if !strings.Contains(where, "FROM comfyui_metadata WHERE seed = ?") {
+		t.Errorf("where = %q, want comfyui IN-subquery", where)
+	}
+	if len(args) != 2 || args[0] != int64(12345) {
+		t.Errorf("args = %v, want both seed slots set to 12345", args)
+	}
+}
+
+func TestBuildWhere_SeedBadValueRejected(t *testing.T) {
+	expr := FilterExpr{Key: "seed", Val: "notanumber"}
+	where, _, _ := buildWhere(expr)
+	if !strings.Contains(where, "1=0") {
+		t.Errorf("where = %q, want 1=0", where)
+	}
+}
+
+func TestBuildWhere_Via(t *testing.T) {
+	expr := FilterExpr{Key: "via", Val: "upload"}
+	where, args, _ := buildWhere(expr)
+	if !strings.Contains(where, "i.origin = ?") {
+		t.Errorf("where = %q", where)
+	}
+	if len(args) != 1 || args[0] != "upload" {
+		t.Errorf("args = %v, want [upload]", args)
+	}
+}
+
 func TestBuildWhere_UnknownFilter(t *testing.T) {
-	// Unknown keys with a non-empty value are treated as category-qualified tag searches.
+	// Unknown keys with a non-empty value are treated as category-qualified
+	// tag searches. The nil-db builder treats every prefix as a real
+	// category, so the bare-prefix form routes through the cat:<key>
+	// EXISTS clause instead of collapsing to match-all.
 	expr := FilterExpr{Key: "bogus", Val: "val"}
 	where, args, _ := buildWhere(expr)
 	if !strings.Contains(where, "EXISTS") {
@@ -2818,11 +3090,18 @@ func TestBuildWhere_UnknownFilter(t *testing.T) {
 		t.Errorf("expected 2 args (tag name + category name), got %d: %v", len(args), args)
 	}
 
-	// Unknown key with empty value → 1=1
+	// Unknown key with empty value: the nil-db builder treats every
+	// prefix as a real category, so the bare form routes to the
+	// cat:<key> EXISTS clause (1 arg). The DB-aware builder uses
+	// categoryExists to refuse the rewrite when the prefix isn't a
+	// real category, falling back to literal tag matching.
 	expr2 := FilterExpr{Key: "bogus", Val: ""}
-	where2, _, _ := buildWhere(expr2)
-	if where2 != "1=1" {
-		t.Errorf("unknown filter with empty val should yield 1=1, got %q", where2)
+	where2, args2, _ := buildWhere(expr2)
+	if !strings.Contains(where2, "tc.name = ?") {
+		t.Errorf("bare-prefix should route to category EXISTS, got %q", where2)
+	}
+	if len(args2) != 1 || args2[0] != "bogus" {
+		t.Errorf("expected single-arg category-name, got %v", args2)
 	}
 }
 
@@ -2844,25 +3123,37 @@ func TestBuildWhereDB_ColonFallsBackToLiteral(t *testing.T) {
 }
 
 func TestBuildWhereDB_ColonUsesCategoryWhenPrefixExists(t *testing.T) {
-	// When the prefix IS a real category name, the DB-aware builder must
-	// keep the old "category-qualified" behaviour so `artist:foo` still
-	// searches for the tag `foo` in the `artist` category.
+	// When the prefix IS a real category name, the DB-aware builder
+	// must take the category-qualified branch. The pre-resolve helper
+	// looks up the canonical tag IDs for `artist:foo` and inlines them
+	// as an EXISTS over image_tags; for an unknown tag the resolved
+	// set is empty and the predicate is the no-match short-circuit.
 	database, _ := setupSearchDB(t)
-
-	expr := FilterExpr{Key: "artist", Val: "foo"}
-	where, args, _ := buildWhereDB(expr, database)
-	if !strings.Contains(where, "tc.name = ?") {
-		t.Errorf("category-qualified branch should reference tc.name, got: %q", where)
+	var artistID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'artist'`).Scan(&artistID)
+	if _, err := database.Write.Exec(
+		`INSERT INTO tags (name, category_id) VALUES ('foo', ?)`, artistID,
+	); err != nil {
+		t.Fatal(err)
 	}
-	if len(args) != 2 || args[0] != "foo" || args[1] != "artist" {
-		t.Errorf("args = %v, want [foo artist]", args)
+	expr := FilterExpr{Key: "artist", Val: "foo"}
+	where, _, _ := buildWhereDB(expr, database)
+	if !strings.Contains(where, "EXISTS (SELECT 1 FROM image_tags it") {
+		t.Errorf("category-qualified branch should emit an inlined image_tags EXISTS, got: %q", where)
+	}
+	if !strings.Contains(where, "it.tag_id IN (") {
+		t.Errorf("category-qualified branch should inline the tag id list, got: %q", where)
 	}
 }
 
 func TestBuildDateFilter_After(t *testing.T) {
+	// `>YYYY-MM-DD` means strictly after day X, so the bound becomes
+	// the end-of-day timestamp; without the extension a row ingested
+	// at e.g. 2024-01-01T10:00:00Z would still satisfy `> 2024-01-01`
+	// (lexicographic compare), which contradicts the intent.
 	b := &whereBuilder{}
 	clause := b.buildDateFilter(">2024-01-01")
-	if !strings.Contains(clause, "> ?") || b.args[0] != "2024-01-01" {
+	if !strings.Contains(clause, "> ?") || b.args[0] != "2024-01-01T23:59:59Z" {
 		t.Errorf("clause = %q, args = %v", clause, b.args)
 	}
 }
@@ -2884,9 +3175,13 @@ func TestBuildDateFilter_AfterOrEqual(t *testing.T) {
 }
 
 func TestBuildDateFilter_BeforeOrEqual(t *testing.T) {
+	// `<=YYYY-MM-DD` extends the payload to T23:59:59Z so a row whose
+	// ISO timestamp lives later in the day still matches the bound.
+	// Without the end-of-day extension the bare-day form sorts before
+	// every real timestamp and excludes every row from day X.
 	b := &whereBuilder{}
 	clause := b.buildDateFilter("<=2024-12-31")
-	if !strings.Contains(clause, "<= ?") || b.args[0] != "2024-12-31" {
+	if !strings.Contains(clause, "<= ?") || b.args[0] != "2024-12-31T23:59:59Z" {
 		t.Errorf("clause = %q, args = %v", clause, b.args)
 	}
 }
@@ -2989,15 +3284,16 @@ func TestBuildWhere_AND(t *testing.T) {
 }
 
 func TestBuildWhere_AND_LeftUnknown(t *testing.T) {
-	// Unknown filter produces "1=1" - AND should still work
+	// Bare-prefix filter on the nil-db builder routes to a cat:<key>
+	// EXISTS clause (1 arg for the category name); the AND adds one
+	// more arg for the right-hand tag search.
 	expr := AndExpr{
 		Left:  FilterExpr{Key: "bogus", Val: ""},
 		Right: TagExpr{Tag: "cute"},
 	}
 	_, args, _ := buildWhere(expr)
-	// Should have 1 arg for the tag search
-	if len(args) != 1 {
-		t.Errorf("expected 1 arg, got %d: %v", len(args), args)
+	if len(args) != 2 {
+		t.Errorf("expected 2 args (category + tag), got %d: %v", len(args), args)
 	}
 }
 
@@ -4370,6 +4666,197 @@ func TestExecute_CacheSlicesByPage(t *testing.T) {
 	}
 	if pastEnd.Total != 5 || len(pastEnd.Results) != 0 {
 		t.Errorf("past-end result: total=%d len=%d, want 5/0", pastEnd.Total, len(pastEnd.Results))
+	}
+}
+
+func TestExecute_PhashExact(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "a.png")
+	ingestTestImage(t, database, env, "b.png")
+	// Manually pin one row's phash so we can match it deterministically.
+	const want = int64(0x123456789ABCDEF0)
+	if _, err := database.Write.Exec(`UPDATE images SET phash = ? WHERE id = 1`, want); err != nil {
+		t.Fatal(err)
+	}
+	q, err := Parse("phash:123456789abcdef0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Execute(database, Query{Expr: q, Sort: "newest", Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 || res.Results[0].ID != 1 {
+		t.Fatalf("phash exact: total=%d ids=%v, want 1/[1]", res.Total, res.Results)
+	}
+}
+
+func TestExecute_PhashBareIsNotNull(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "a.png") // gets a phash from the thumbnail
+	ingestTestImage(t, database, env, "b.png")
+	// Manually clear one row's phash.
+	if _, err := database.Write.Exec(`UPDATE images SET phash = NULL WHERE id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	q, err := Parse("phash:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Execute(database, Query{Expr: q, Sort: "newest", Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 {
+		t.Fatalf("phash:bare: total=%d, want 1 (one row has NULL phash)", res.Total)
+	}
+}
+
+func TestExecute_PhashDistanceMatchesViaPopcountFallback(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "a.png")
+	ingestTestImage(t, database, env, "b.png")
+	ingestTestImage(t, database, env, "c.png")
+	// Hashes 1 differ from each other by varying Hamming distances.
+	// Pin them so the test owns the math.
+	if _, err := database.Write.Exec(`UPDATE images SET phash = ? WHERE id = 1`, int64(0xFF00)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`UPDATE images SET phash = ? WHERE id = 2`, int64(0xFF01)); err != nil { // 1 bit away from id=1
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`UPDATE images SET phash = ? WHERE id = 3`, int64(0x0000)); err != nil { // 8 bits away from id=1
+		t.Fatal(err)
+	}
+	// Query within distance 1 of FF00: expect ids 1 and 2.
+	q, err := Parse("phash:000000000000ff00~1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Execute(database, Query{Expr: q, Sort: "newest", Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 2 {
+		t.Fatalf("phash:~1 total=%d, want 2", res.Total)
+	}
+}
+
+func TestExecute_RelationVocabulary(t *testing.T) {
+	database, env := setupSearchDB(t)
+	a := ingestTestImageWithID(t, database, env, "a.png")
+	b := ingestTestImageWithID(t, database, env, "b.png")
+	c := ingestTestImageWithID(t, database, env, "c.png")
+	d := ingestTestImageWithID(t, database, env, "d.png")
+	_ = d
+
+	// Manually wire a small relations graph so we don't need the service.
+	if _, err := database.Write.Exec(`INSERT INTO dup_groups (id, original_image_id) VALUES (1, ?)`, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`INSERT INTO dup_group_members (image_id, group_id) VALUES (?, 1), (?, 1)`, a, b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`INSERT INTO derivative_edges (derivative_image_id, source_image_id) VALUES (?, ?)`, c, a); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(query string, wantIDs []int64) {
+		t.Helper()
+		expr, err := Parse(query)
+		if err != nil {
+			t.Fatalf("parse %q: %v", query, err)
+		}
+		res, err := Execute(database, Query{Expr: expr, Sort: "newest", Order: "asc", Page: 1, Limit: 40})
+		if err != nil {
+			t.Fatalf("execute %q: %v", query, err)
+		}
+		gotIDs := make([]int64, len(res.Results))
+		for i, im := range res.Results {
+			gotIDs[i] = im.ID
+		}
+		if len(gotIDs) != len(wantIDs) {
+			t.Fatalf("%q: got ids %v, want %v", query, gotIDs, wantIDs)
+		}
+		for i := range gotIDs {
+			if gotIDs[i] != wantIDs[i] {
+				t.Fatalf("%q at %d: got %d, want %d", query, i, gotIDs[i], wantIDs[i])
+			}
+		}
+	}
+	check("relation:duplicate", []int64{a, b})
+	check("relation:original", []int64{a})
+	check("relation:derivative", []int64{c})
+	check("relation:source", []int64{a})
+	check("relation:any", []int64{a, b, c})
+	check("relation:none", []int64{d})
+
+	if _, err := database.Write.Exec(`UPDATE images SET series = 'My Set' WHERE id = ?`, d); err != nil {
+		t.Fatal(err)
+	}
+	check("relation:collection", []int64{d})
+	check("relation:any", []int64{a, b, c, d})
+	check("relation:none", []int64{})
+}
+
+func TestExecute_IDFilter(t *testing.T) {
+	database, env := setupSearchDB(t)
+	a := ingestTestImageWithID(t, database, env, "a.png")
+	b := ingestTestImageWithID(t, database, env, "b.png")
+	_ = b
+
+	expr, err := Parse("id:" + strconv.FormatInt(a, 10))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	res, err := Execute(database, Query{Expr: expr, Sort: "newest", Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(res.Results) != 1 || res.Results[0].ID != a {
+		t.Fatalf("id:%d got %v, want [%d]", a, res.Results, a)
+	}
+
+	bad, err := Parse("id:nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bres, err := Execute(database, Query{Expr: bad, Sort: "newest", Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bres.Total != 0 {
+		t.Fatalf("id:nope total=%d, want 0", bres.Total)
+	}
+}
+
+// ingestTestImageWithID is a convenience around ingestTestImage that
+// returns the ingested image's primary key.
+func ingestTestImageWithID(t *testing.T, database *db.DB, env *searchEnv, name string) int64 {
+	t.Helper()
+	ingestTestImage(t, database, env, name)
+	var id int64
+	if err := database.Read.QueryRow(`SELECT id FROM images ORDER BY id DESC LIMIT 1`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestExecute_PhashMalformed(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "a.png")
+	for _, q := range []string{"phash:nothex", "phash:abc~99", "phash:abcd"} {
+		expr, err := Parse(q)
+		if err != nil {
+			t.Fatalf("parse %q: %v", q, err)
+		}
+		res, err := Execute(database, Query{Expr: expr, Sort: "newest", Page: 1, Limit: 40})
+		if err != nil {
+			t.Fatalf("execute %q: %v", q, err)
+		}
+		if res.Total != 0 {
+			t.Fatalf("%q matched %d rows, want 0", q, res.Total)
+		}
 	}
 }
 

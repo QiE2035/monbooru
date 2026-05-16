@@ -25,9 +25,9 @@ func (s *Server) helpHandler(w http.ResponseWriter, r *http.Request) {
 		"CustomCSS":     base.CustomCSS,
 		"ActiveGallery": base.ActiveGallery,
 		"Galleries":     base.Galleries,
-		"VisibleCount":  base.VisibleCount,
-		"TagCount":      base.TagCount,
-		"SavedCount":    base.SavedCount,
+		"VisibleCount":     base.VisibleCount,
+		"TagCount":         base.TagCount,
+		"CollectionsCount": base.CollectionsCount,
 		"RatingLevels":  base.RatingLevels,
 		"ActiveRating":  base.ActiveRating,
 		"RequestStart":  base.RequestStart,
@@ -48,18 +48,20 @@ func loadImage(ctx context.Context, database *db.DB, id int64) (*models.Image, e
 	var img models.Image
 	var isMissing, isFav, isInbox int
 	var width, height, pageCount, seriesOrder *int
+	var durationSec *float64
+	var phash *int64
 	var autoTaggedAt *string
 	var ingestedAt string
 
 	err := database.Read.QueryRowContext(ctx,
 		`SELECT id, sha256, canonical_path, folder_path, file_type,
 		        width, height, file_size, is_missing, is_favorited,
-		        is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, series, series_order, ingested_at
+		        is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, phash, ingested_at
 		 FROM images WHERE id = ?`, id,
 	).Scan(
 		&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
 		&width, &height, &img.FileSize, &isMissing, &isFav,
-		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &img.Series, &seriesOrder, &ingestedAt,
+		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -70,7 +72,9 @@ func loadImage(ctx context.Context, database *db.DB, id int64) (*models.Image, e
 	img.Width = width
 	img.Height = height
 	img.PageCount = pageCount
+	img.DurationSec = durationSec
 	img.SeriesOrder = seriesOrder
+	img.Phash = phash
 	if autoTaggedAt != nil {
 		t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
 		img.AutoTaggedAt = &t

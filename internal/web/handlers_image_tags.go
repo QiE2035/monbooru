@@ -44,6 +44,22 @@ func (s *Server) parseTagInput(tagInput string) ([]catTag, string) {
 		generalID = cx.GeneralCategoryID
 	}
 
+	// Preload every category in one read so a multi-token paste with
+	// category prefixes doesn't pay N read-pool round-trips. The
+	// tag_categories row count is tiny (single-digit builtins + a
+	// handful of user rows) so the map fits in a single small alloc.
+	categories := map[string]int64{}
+	if rows, err := s.db().Read.Query(`SELECT id, name FROM tag_categories`); err == nil {
+		for rows.Next() {
+			var id int64
+			var n string
+			if err := rows.Scan(&id, &n); err == nil {
+				categories[n] = id
+			}
+		}
+		rows.Close()
+	}
+
 	var catTags []catTag
 	var rejected []string
 	for _, tok := range tokens {
@@ -51,10 +67,7 @@ func (s *Server) parseTagInput(tagInput string) ([]catTag, string) {
 		if idx := strings.Index(name, ":"); idx > 0 {
 			catName := name[:idx]
 			tagName := name[idx+1:]
-			var catID int64
-			if err := s.db().Read.QueryRow(
-				`SELECT id FROM tag_categories WHERE name=?`, catName,
-			).Scan(&catID); err == nil {
+			if catID, ok := categories[catName]; ok {
 				if tagName == "" {
 					// `general:` (known category, empty name) was a silent
 					// drop; surface it like the other malformed-token cases
@@ -169,7 +182,7 @@ func (s *Server) addTagToImage(w http.ResponseWriter, r *http.Request) {
 		for i, p := range prepared {
 			tagIDs[i] = p.tag.ID
 		}
-		results, err := s.tagSvc().AddTagsToOneImage(id, tagIDs)
+		results, err := s.tagSvc().AddTagsToOneImage(id, tagIDs, "")
 		if err != nil {
 			logx.Warnf("batch add tags to image %d: %v", id, err)
 			// On batch failure surface a single rejection covering every

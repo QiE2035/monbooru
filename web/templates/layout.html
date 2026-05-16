@@ -24,6 +24,7 @@
       <a href="/upload"  {{if eq .ActiveNav "upload"}}  class="active"{{end}}>Upload</a>
       <a href="/categories" {{if eq .ActiveNav "categories"}} class="active"{{end}}>Categories</a>
       <a href="/tags"    {{if eq .ActiveNav "tags"}}    class="active"{{end}}>Tags</a>
+      <a href="/relations" {{if eq .ActiveNav "relations"}} class="active"{{end}}>Relations</a>
       <a href="/settings"{{if eq .ActiveNav "settings"}}class="active"{{end}}>Settings</a>
       <a href="/help"    {{if eq .ActiveNav "help"}}    class="active"{{end}}>Help</a>
     </nav>
@@ -84,7 +85,7 @@
       <span class="footer-sep">·</span>
       <span>{{.TagCount}} tags</span>
       <span class="footer-sep">·</span>
-      <span>{{.SavedCount}} saved</span>
+      <span>{{.CollectionsCount}} collections</span>
       {{if .Degraded}}<span class="footer-sep">·</span><span class="footer-degraded">degraded</span>{{end}}
       <span class="footer-sep-strong">::</span>
       <span class="footer-rating-label">rating:</span>
@@ -130,8 +131,8 @@
           <tbody>
             <tr><td><kbd>↑ ↓ ← →</kbd> / <kbd>h j k l</kbd></td><td>Move grid cursor</td></tr>
             <tr><td><kbd>Enter</kbd> / <kbd>o</kbd></td><td>Open focused image</td></tr>
-            <tr><td><kbd>Space</kbd></td><td>Toggle thumbnail selection</td></tr>
-            <tr><td><kbd>Home</kbd> / <kbd>End</kbd></td><td>First / last visible thumbnail</td></tr>
+            <tr><td><kbd>Space</kbd></td><td>Toggle selection</td></tr>
+            <tr><td><kbd>Home</kbd> / <kbd>End</kbd></td><td>First / last visible</td></tr>
             <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>Previous / next page</td></tr>
             <tr><td><kbd>g g</kbd> / <kbd>G</kbd></td><td>First / last page</td></tr>
             <tr><td><kbd>p</kbd></td><td>Page-jump dialog</td></tr>
@@ -153,7 +154,7 @@
             <tr><td><kbd>t</kbd></td><td>Auto-tag</td></tr>
             <tr><td><kbd>m</kbd></td><td>Move</td></tr>
             <tr><td><kbd>i</kbd></td><td>Toggle inbox / archive</td></tr>
-            <tr><td><kbd>Delete</kbd></td><td>Delete (with confirm)</td></tr>
+            <tr><td><kbd>Delete</kbd></td><td>Delete</td></tr>
             <tr><td><kbd>Esc</kbd></td><td>Clear selection</td></tr>
           </tbody>
         </table>
@@ -162,19 +163,22 @@
         <h4>Image detail</h4>
         <table>
           <tbody>
-            <tr><td><kbd>← →</kbd> / <kbd>h l</kbd> / <kbd>j k</kbd></td><td>Previous / next image</td></tr>
+            <tr><td><kbd>← →</kbd> / <kbd>h l</kbd> / <kbd>j k</kbd></td><td>Previous / next</td></tr>
             <tr><td><kbd>Esc</kbd> / <kbd>Backspace</kbd></td><td>Back to gallery</td></tr>
-            <tr><td><kbd>o</kbd></td><td>Open original (new tab)</td></tr>
+            <tr><td><kbd>o</kbd></td><td>Open in tab</td></tr>
             <tr><td><kbd>a</kbd></td><td>Focus tag input</td></tr>
             <tr><td><kbd>r</kbd></td><td>Tag-focus mode</td></tr>
             <tr><td><kbd>t</kbd></td><td>Auto-tag dialog</td></tr>
-            <tr><td><kbd>f</kbd> / <kbd>i</kbd></td><td>Toggle favorite / inbox</td></tr>
+            <tr><td><kbd>f</kbd> / <kbd>i</kbd></td><td>Toggle fav/inbox</td></tr>
             <tr><td><kbd>m</kbd></td><td>Move dialog</td></tr>
             <tr><td><kbd>Delete</kbd></td><td>Delete image</td></tr>
-            <tr><td><kbd>Space</kbd></td><td>Play / pause video</td></tr>
-            <tr><td><kbd>e o</kbd> / <kbd>e s</kbd> / <kbd>e c</kbd> / <kbd>e u</kbd></td><td>Edit Order / Source / Collection / URL</td></tr>
-            <tr><td><kbd>R</kbd></td><td>Open in reader (manga only)</td></tr>
-            <tr><td><kbd>P</kbd></td><td>See all pages (manga only)</td></tr>
+            <tr><td><kbd>Space</kbd></td><td>Play / pause</td></tr>
+            <tr><td><kbd>e o</kbd></td><td>Edit Order</td></tr>
+            <tr><td><kbd>e s</kbd></td><td>Edit Source</td></tr>
+            <tr><td><kbd>e c</kbd></td><td>Edit Collection</td></tr>
+            <tr><td><kbd>e u</kbd></td><td>Edit URL</td></tr>
+            <tr><td><kbd>R</kbd></td><td>Open in reader</td></tr>
+            <tr><td><kbd>P</kbd></td><td>See all pages</td></tr>
           </tbody>
         </table>
       </section>
@@ -182,9 +186,9 @@
         <h4>Tags page</h4>
         <table>
           <tbody>
-            <tr><td><kbd>s</kbd></td><td>Focus tag filter</td></tr>
-            <tr><td><kbd>n</kbd> / <kbd>N</kbd></td><td>New tag / new alias</td></tr>
-            <tr><td><kbd>[</kbd> / <kbd>]</kbd> · <kbd>g g</kbd> / <kbd>G</kbd> · <kbd>p</kbd></td><td>Page navigation</td></tr>
+            <tr><td><kbd>s</kbd></td><td>Focus filter</td></tr>
+            <tr><td><kbd>n</kbd> / <kbd>N</kbd></td><td>New tag / alias</td></tr>
+            <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>Page navigation</td></tr>
           </tbody>
         </table>
       </section>
@@ -214,6 +218,22 @@
             <tr><td><kbd>P</kbd></td><td>See all pages</td></tr>
             <tr><td><kbd>o</kbd></td><td>Open page in new tab</td></tr>
             <tr><td><kbd>Esc</kbd> / <kbd>Backspace</kbd></td><td>Back</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section>
+        <h4>Relations session</h4>
+        <table>
+          <tbody>
+            <tr><td><kbd>1</kbd></td><td>Right is duplicate of left</td></tr>
+            <tr><td><kbd>2</kbd></td><td>Right is alternate of left</td></tr>
+            <tr><td><kbd>3</kbd></td><td>Right is newer version of left</td></tr>
+            <tr><td><kbd>4</kbd></td><td>Right is derivative of left</td></tr>
+            <tr><td><kbd>5</kbd></td><td>Not related</td></tr>
+            <tr><td><kbd>6</kbd> / <kbd>Space</kbd></td><td>Skip</td></tr>
+            <tr><td><kbd>W</kbd></td><td>Swap sides</td></tr>
+            <tr><td><kbd>C</kbd></td><td>Open compare slider</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>Pause session</td></tr>
           </tbody>
         </table>
       </section>

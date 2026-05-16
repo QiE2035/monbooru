@@ -242,10 +242,18 @@ func (s *Service) MergeTags(aliasID, canonicalID int64) error {
 	// only carried the alias. Without this an image previously tagged
 	// only with the alias ends up with the canonical but none of its
 	// declared implied children, and a later removeTagFromImageTx walk
-	// on that parent has no is_implied=1 rows to sweep.
-	for _, imageID := range newCarrierIDs {
-		if err := fanOutImpliedTxImpl(tx, imageID, canonicalID, s.ratingCatID, 0); err != nil {
-			return fmt.Errorf("merge fan out implications onto image %d: %w", imageID, err)
+	// on that parent has no is_implied=1 rows to sweep. The closure is
+	// invariant inside the merge tx, so resolve it once instead of
+	// rewalking transitiveImpliedTx per image.
+	if len(newCarrierIDs) > 0 {
+		impliedClosure, err := transitiveImpliedTx(tx, []int64{canonicalID})
+		if err != nil {
+			return fmt.Errorf("merge resolve canonical closure: %w", err)
+		}
+		for _, imageID := range newCarrierIDs {
+			if err := applyImpliedClosureTx(tx, imageID, impliedClosure, s.ratingCatID, 0); err != nil {
+				return fmt.Errorf("merge fan out implications onto image %d: %w", imageID, err)
+			}
 		}
 	}
 

@@ -5,9 +5,6 @@ package tagger
 import (
 	"context"
 	"fmt"
-	"image"
-	_ "image/jpeg"
-	_ "image/png"
 	"math"
 	"os"
 	"path/filepath"
@@ -18,6 +15,7 @@ import (
 	"time"
 
 	"github.com/leqwin/monbooru/internal/config"
+	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/logx"
 	ort "github.com/yalue/onnxruntime_go"
 )
@@ -581,7 +579,7 @@ func inferImage(lt loadedTagger, path string) ([]float32, error) {
 	}
 	defer f.Close()
 
-	img, _, err := image.Decode(f)
+	img, err := gallery.DecodeImageWithCap(f)
 	if err != nil {
 		return nil, err
 	}

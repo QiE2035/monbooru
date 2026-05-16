@@ -1,0 +1,190 @@
+{{define "relations_image.html"}}
+{{template "layout_head" .}}
+{{template "layout_mid" .}}
+
+<div id="relations-image-page" data-image-id="{{.Image.ID}}">
+  <div class="detail-topbar">
+    <div class="detail-nav-group">
+      <a href="/images/{{.Image.ID}}?back_q={{.BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}" class="back-link">← Back to detail</a>
+      <span class="detail-nav-sep">·</span>
+      <span class="detail-filename mono-small">Relations for image {{.Image.ID}}</span>
+    </div>
+  </div>
+
+  {{if and (not .Relations.HasAny) (not .Collection)}}
+  <p class="field-hint">This image has no declared relations. <a href="/?q=phash:{{phashHex .Image.Phash}}~4">Find similar images via phash.</a></p>
+  {{end}}
+
+  {{if .Relations.DupGroup}}
+  <section class="relations-section">
+    <h3>Duplicates of {{if eq .Relations.DupGroup.Original .Self}}this image{{else}}image {{.Relations.DupGroup.Original}}{{end}}</h3>
+    <ul class="manga-pages-grid">
+      {{range $id := .Relations.DupGroup.Members}}
+      {{if ne $id $.Self}}
+      <li class="manga-page-cell{{if eq $id $.Relations.DupGroup.Original}} relations-cell-original{{end}}">
+        <a href="/images/{{$id}}" class="manga-page-link">
+          <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy" class="manga-page-thumb">
+          {{if eq $id $.Relations.DupGroup.Original}}<span class="relations-card-tag">original</span>{{end}}
+          <span class="manga-page-num">#{{$id}}</span>
+        </a>
+        <div class="relations-actions-row">
+          <form hx-post="/relations/remove" hx-swap="none"
+                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline"
+                {{if and (eq $id $.Relations.DupGroup.Original) $.NextOriginalIfOriginalUnlinked}}hx-confirm="Unlink image #{{$id}} (the current original)? Image #{{$.NextOriginalIfOriginalUnlinked}} will be promoted to the new original."{{end}}>
+            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+            <input type="hidden" name="type" value="duplicate">
+            <input type="hidden" name="image_id" value="{{$id}}">
+            <button type="submit" class="btn-link-accent" title="Unlink this duplicate">[unlink]</button>
+          </form>
+          {{if ne $id $.Relations.DupGroup.Original}}
+          <form hx-post="/relations/remove" hx-swap="none"
+                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+            <input type="hidden" name="type" value="promote-original">
+            <input type="hidden" name="group_id" value="{{$.Relations.DupGroup.ID}}">
+            <input type="hidden" name="image_id" value="{{$id}}">
+            <button type="submit" class="btn-link-accent" title="Make this the original">[original]</button>
+          </form>
+          {{end}}
+        </div>
+      </li>
+      {{end}}
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  {{if .Relations.AltGroupMembers}}
+  <section class="relations-section">
+    <h3>Alternates</h3>
+    <ul class="manga-pages-grid">
+      {{range $id := .Relations.AltGroupMembers}}
+      {{if ne $id $.Self}}
+      <li class="manga-page-cell">
+        <a href="/images/{{$id}}" class="manga-page-link">
+          <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy" class="manga-page-thumb">
+          <span class="manga-page-num">A · {{$id}}</span>
+        </a>
+        <div class="relations-actions-row">
+          <form hx-post="/relations/remove" hx-swap="none"
+                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+            <input type="hidden" name="type" value="alternate">
+            <input type="hidden" name="image_id" value="{{$id}}">
+            <button type="submit" class="btn-link-accent">[unlink]</button>
+          </form>
+        </div>
+      </li>
+      {{end}}
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  {{if or .Relations.VersionParent .Relations.VersionChild}}
+  <section class="relations-section">
+    <h3>Version history</h3>
+    <ul class="manga-pages-grid">
+      {{if .Relations.VersionParent}}
+      <li class="manga-page-cell">
+        <a href="/images/{{deref64 .Relations.VersionParent}}" class="manga-page-link">
+          <img src="/thumbnails/{{.ActiveGallery}}/{{deref64 .Relations.VersionParent}}.jpg" alt="image {{deref64 .Relations.VersionParent}}" loading="lazy" class="manga-page-thumb">
+          <span class="manga-page-num">V← previous · {{deref64 .Relations.VersionParent}}</span>
+        </a>
+        <div class="relations-actions-row">
+          <form hx-post="/relations/remove" hx-swap="none"
+                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+            <input type="hidden" name="type" value="version">
+            <input type="hidden" name="a" value="{{deref64 .Relations.VersionParent}}">
+            <input type="hidden" name="b" value="{{.Image.ID}}">
+            <button type="submit" class="btn-link-accent">[unlink]</button>
+          </form>
+        </div>
+      </li>
+      {{end}}
+      {{if .Relations.VersionChild}}
+      <li class="manga-page-cell">
+        <a href="/images/{{deref64 .Relations.VersionChild}}" class="manga-page-link">
+          <img src="/thumbnails/{{.ActiveGallery}}/{{deref64 .Relations.VersionChild}}.jpg" alt="image {{deref64 .Relations.VersionChild}}" loading="lazy" class="manga-page-thumb">
+          <span class="manga-page-num">V→ next · {{deref64 .Relations.VersionChild}}</span>
+        </a>
+        <div class="relations-actions-row">
+          <form hx-post="/relations/remove" hx-swap="none"
+                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+            <input type="hidden" name="type" value="version">
+            <input type="hidden" name="a" value="{{.Image.ID}}">
+            <input type="hidden" name="b" value="{{deref64 .Relations.VersionChild}}">
+            <button type="submit" class="btn-link-accent">[unlink]</button>
+          </form>
+        </div>
+      </li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  {{if .Collection}}
+  <section class="relations-section">
+    <h3>Same collection</h3>
+    <ul class="manga-pages-grid">
+      {{range .Collection}}
+      <li class="manga-page-cell">
+        <a href="/images/{{.ID}}" class="manga-page-link">
+          <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy" class="manga-page-thumb">
+          <span class="manga-page-num">{{.Series}}{{if .Order}} #{{deref64 .Order}}{{end}}</span>
+        </a>
+      </li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  {{if or .Relations.DerivativeSource .Relations.Derivatives}}
+  <section class="relations-section">
+    <h3>Derivatives</h3>
+    <ul class="manga-pages-grid">
+      {{if .Relations.DerivativeSource}}
+      <li class="manga-page-cell">
+        <a href="/images/{{deref64 .Relations.DerivativeSource}}" class="manga-page-link">
+          <img src="/thumbnails/{{.ActiveGallery}}/{{deref64 .Relations.DerivativeSource}}.jpg" alt="image {{deref64 .Relations.DerivativeSource}}" loading="lazy" class="manga-page-thumb">
+          <span class="manga-page-num">S source · {{deref64 .Relations.DerivativeSource}}</span>
+        </a>
+        <div class="relations-actions-row">
+          <form hx-post="/relations/remove" hx-swap="none"
+                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+            <input type="hidden" name="type" value="derivative">
+            <input type="hidden" name="a" value="{{deref64 .Relations.DerivativeSource}}">
+            <input type="hidden" name="b" value="{{.Image.ID}}">
+            <button type="submit" class="btn-link-accent">[unlink]</button>
+          </form>
+        </div>
+      </li>
+      {{end}}
+      {{range $id := .Relations.Derivatives}}
+      <li class="manga-page-cell">
+        <a href="/images/{{$id}}" class="manga-page-link">
+          <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy" class="manga-page-thumb">
+          <span class="manga-page-num">→ derivative · {{$id}}</span>
+        </a>
+        <div class="relations-actions-row">
+          <form hx-post="/relations/remove" hx-swap="none"
+                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+            <input type="hidden" name="type" value="derivative">
+            <input type="hidden" name="a" value="{{$.Image.ID}}">
+            <input type="hidden" name="b" value="{{$id}}">
+            <button type="submit" class="btn-link-accent">[unlink]</button>
+          </form>
+        </div>
+      </li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+</div>
+
+{{template "layout_end" .}}
+{{end}}

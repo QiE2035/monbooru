@@ -1140,6 +1140,134 @@ document.addEventListener('click', function(e) {
   setTimeout(function() { input.focus(); input.select(); }, 0);
 });
 
+// "Add a relation..." chip in the detail-page Relations panel opens
+// the manual relation-add dialog with the current image pre-filled.
+// Each open resets the form so a chain of adds doesn't keep the prior
+// child id or relation-type radio in place after the dialog closes.
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('[data-relations-add]');
+  if (!btn) return;
+  e.preventDefault();
+  var dlg = document.getElementById('relation-edit-dialog');
+  if (!dlg) return;
+  var parentInput = document.getElementById('relation-parent-id');
+  var otherInput = document.getElementById('relation-other-id');
+  var self = btn.getAttribute('data-relations-add');
+  if (parentInput) { parentInput.value = self; parentInput.readOnly = true; }
+  if (otherInput) { otherInput.value = ''; otherInput.readOnly = false; }
+  var dupRadio = dlg.querySelector('input[name="type"][value="duplicate"]');
+  if (dupRadio) dupRadio.checked = true;
+  var err = document.getElementById('relation-edit-error');
+  if (err) err.innerHTML = '';
+  var overwrite = document.getElementById('relation-edit-overwrite-btn');
+  if (overwrite) {
+    overwrite.hidden = true;
+    overwrite.textContent = 'Overwrite existing relation';
+  }
+  dlg.showModal();
+});
+
+// Handles the response of the detail-page external-field dialogs
+// (Source / URL / Collection / Order). On 204 the server sends back
+// HX-Refresh so the page reloads with the new value; the field label is
+// stashed in sessionStorage so the post-reload handler below can drop a
+// top-of-page flash. Validation errors land 200 OK with a flash-err
+// body the dialog already targets, so the dialog stays open and the
+// operator can correct the input.
+//
+// HTMX events bubble: the input inside the form fires hx-get against
+// the collection / source suggest endpoints, and those return 204 when
+// no matches exist. Without the FORM gate below, every empty suggest
+// response would slip past the status check and close the dialog
+// mid-typing.
+function onExternalEditResponse(event, dialogID, label) {
+  if (!event || !event.detail || !event.detail.xhr) return;
+  if (!event.detail.elt || event.detail.elt.tagName !== 'FORM') return;
+  if (event.detail.xhr.status !== 204) return;
+  try { sessionStorage.setItem('monbooru_external_flash', label); } catch (e) {}
+  var dlg = document.getElementById(dialogID);
+  if (dlg) dlg.close();
+}
+
+// Picks up the stashed external-edit flash after a save-triggered reload
+// and surfaces it in #external-edit-flash. Cleared after 5 s so the
+// notice doesn't hang around forever.
+document.addEventListener('DOMContentLoaded', function() {
+  var slot = document.getElementById('external-edit-flash');
+  if (!slot) return;
+  var label;
+  try { label = sessionStorage.getItem('monbooru_external_flash'); } catch (e) { return; }
+  if (!label) return;
+  try { sessionStorage.removeItem('monbooru_external_flash'); } catch (e) {}
+  var div = document.createElement('div');
+  div.className = 'flash flash-ok';
+  div.textContent = label + ' updated.';
+  slot.appendChild(div);
+  setTimeout(function() {
+    if (slot.contains(div)) slot.removeChild(div);
+  }, 5000);
+});
+
+// Handles the dialog response for /relations/add. On a 2xx that drops a
+// `.flash-ok` body into the in-dialog target, lifts the flash to the
+// detail page's top-of-page slot, closes the dialog, and pings the
+// related-entries panel to reload. Error responses leave the dialog
+// open with the inline flash so the operator can correct the input.
+function onRelationEditResponse(event) {
+  var src = document.getElementById('relation-edit-error');
+  if (!src) return;
+  var overwrite = document.getElementById('relation-edit-overwrite-btn');
+  var success = src.querySelector('.flash-ok');
+  if (!success) {
+    // Conflict: surface the Overwrite affordance so the operator can
+    // replace the existing relation in one click. The button label
+    // tracks which conflict the server reported so the operator reads
+    // exactly what they're about to drop:
+    //   - "already has a different relation" -> Overwrite existing relation
+    //     (pair-shaped conflict between THIS pair)
+    //   - "already has a version edge" -> Replace existing version edge
+    //     (one side is already on a version chain with a third image)
+    //   - "already has a source" -> Replace existing source
+    //     (the chosen derivative already points at a different source)
+    var err = src.querySelector('.flash-err');
+    if (overwrite) {
+      var msg = err ? (err.textContent || '') : '';
+      if (/already has a different relation/i.test(msg)) {
+        overwrite.textContent = 'Overwrite existing relation';
+        overwrite.hidden = false;
+      } else if (/already has a version edge/i.test(msg)) {
+        overwrite.textContent = 'Replace existing version edge';
+        overwrite.hidden = false;
+      } else if (/already has a source/i.test(msg)) {
+        overwrite.textContent = 'Replace existing source';
+        overwrite.hidden = false;
+      } else {
+        overwrite.hidden = true;
+      }
+    }
+    return;
+  }
+  if (overwrite) {
+    overwrite.hidden = true;
+    overwrite.textContent = 'Overwrite existing relation';
+  }
+  var dst = document.getElementById('relation-flash');
+  if (dst) {
+    dst.innerHTML = src.innerHTML;
+    setTimeout(function() {
+      var d = document.getElementById('relation-flash');
+      if (d) d.innerHTML = '';
+    }, 5000);
+  }
+  src.innerHTML = '';
+  var dlg = document.getElementById('relation-edit-dialog');
+  if (dlg) dlg.close();
+  if (window.htmx) {
+    var panel = document.getElementById('related-entries-panel');
+    if (panel) window.htmx.trigger(panel, 'relations-changed');
+  }
+}
+
 function submitPageJump() {
   var input = document.getElementById('page-jump-input');
   if (!input) return;
@@ -1192,7 +1320,7 @@ function initSectionToggle(toggleId, listId, cookieKey, forceOpen) {
     list.style.display = '';
     toggle.textContent = '▼';
   }
-  toggle.onclick = function() {
+  var clickToggle = function() {
     var state = getFolderCookie();
     var isCollapsed = list.style.display === 'none';
     list.style.display = isCollapsed ? '' : 'none';
@@ -1201,15 +1329,39 @@ function initSectionToggle(toggleId, listId, cookieKey, forceOpen) {
     else state.delete(cookieKey);
     setFolderCookie(state);
   };
+  toggle.onclick = clickToggle;
+  var header = toggle.closest('.sidebar-section-header');
+  var title = header && header.querySelector('.sidebar-section-title');
+  if (title) title.onclick = clickToggle;
 }
 
+// _lastInitedQuery latches the URL the sidebar's auto-expand logic
+// last responded to. HTMX OOB swaps replace #sidebar-inner verbatim on
+// every gallery refresh - including the watcher-driven refreshes the
+// job-status poll fires without a URL change - so any `firstInit` marker
+// stored on a DOM element gets wiped between renders. Comparing the
+// captured query against window.location.search is the only signal
+// that distinguishes a real navigation from a same-view re-render, and
+// without it the URL-driven force-open undoes the user's explicit
+// section collapse a few seconds after they click it.
+var _lastInitedQuery = null;
+
 function initFolderTree() {
+  // The sidebar is lazy-loaded on every page that owns one; DOMContentLoaded
+  // fires before the placeholder's hx-get settles. Bail when no toggle
+  // buttons are present so the empty pass doesn't latch the URL and
+  // suppress the next real settle's navigation-driven force-open.
+  if (!document.querySelector('.folder-toggle-btn')) return;
+
   var expanded = getFolderCookie();
+  var currentQuery = window.location.search;
+  var urlChanged = currentQuery !== _lastInitedQuery;
+  _lastInitedQuery = currentQuery;
 
   // Determine current folder from URL query. Both folder:PATH (recursive)
   // and folderonly:PATH (exact) drive the same sidebar auto-expand path.
   var currentFolder = '';
-  var urlParams = new URLSearchParams(window.location.search);
+  var urlParams = new URLSearchParams(currentQuery);
   var q = urlParams.get('q') || '';
   var folderMatch = q.match(/(?:^|\s)folder(?:only)?:(?:"([^"]+)"|([^\s]*))/);
   if (folderMatch) {
@@ -1221,8 +1373,8 @@ function initFolderTree() {
   // / any variant.
   var sourceMatch = q.match(/(?:^|\s)ai:([a-z0-9_,-]+)/i);
   var sourceVal = sourceMatch ? sourceMatch[1].toLowerCase() : '';
-  var sourceOpen = sourceVal !== '';
-  var sourceAIOpen = sourceVal === 'any' || sourceVal === 'a1111' || sourceVal === 'comfyui';
+  var sourceOpen = urlChanged && sourceVal !== '';
+  var sourceAIOpen = urlChanged && (sourceVal === 'any' || sourceVal === 'a1111' || sourceVal === 'comfyui');
 
   // Folder tree main toggle (show/hide whole tree).
   // Use onclick assignment (not addEventListener) to prevent duplicate handlers
@@ -1232,8 +1384,20 @@ function initFolderTree() {
   // Force the Collections section open when the query targets one so
   // the user lands with the matching entry already visible.
   var collectionMatch = q.match(/(?:^|\s)collection:(?:"([^"]+)"|([^\s]+))/);
-  var collectionOpen = !!collectionMatch;
+  var collectionOpen = urlChanged && !!collectionMatch;
   initSectionToggle('series-tree-toggle', 'series-tree-list', '__series__', collectionOpen);
+  // Sources panel: same auto-open behaviour when the current query targets
+  // a specific source label, so the matching row is visible on landing.
+  var sourceLabelMatch = q.match(/(?:^|\s)source:(?:"([^"]+)"|([^\s]+))/);
+  var sourceLabelOpen = urlChanged && !!sourceLabelMatch;
+  initSectionToggle('source-labels-toggle', 'source-labels-list', '__sources__', sourceLabelOpen);
+  // Inbox / Favorites quick-filter panels: collapse by default; auto-open
+  // when the active query already targets the predicate so the matching
+  // row renders visible without an extra click.
+  var inboxQueryActive = urlChanged && /(?:^|\s)inbox:(?:true|false)\b/.test(q);
+  initSectionToggle('inbox-filter-toggle', 'inbox-filter-list', '__inbox__', inboxQueryActive);
+  var favQueryActive = urlChanged && /(?:^|\s)fav:(?:true|false)\b/.test(q);
+  initSectionToggle('favorites-filter-toggle', 'favorites-filter-list', '__favorites__', favQueryActive);
   var treeToggle = document.getElementById('folder-tree-toggle');
   var treeList = document.getElementById('folder-tree-list');
 
@@ -1245,14 +1409,12 @@ function initFolderTree() {
     if (!list) return;
 
     // urlDriven: this expansion comes from navigation context (current folder
-    // or active source filter). Gated by firstInit so a user collapse isn't
-    // undone on the next htmx settle - once the button has been seen, its
-    // open/close state is the cookie's to decide.
-    var firstInit = !btn.dataset.folderInit;
-    btn.dataset.folderInit = '1';
+    // or active source filter). Gated by urlChanged so a same-view sidebar
+    // rebuild (watcher refresh, job progress) leaves the user's collapse
+    // alone - only a real URL change re-asserts the navigation-driven open.
     var urlDriven = (currentFolder && (currentFolder === path || currentFolder.startsWith(path + '/'))) ||
       (path === '__ai_source__' && sourceAIOpen);
-    var shouldExpand = expanded.has(path) || (firstInit && urlDriven);
+    var shouldExpand = expanded.has(path) || (urlChanged && urlDriven);
 
     if (shouldExpand) {
       list.style.display = '';
@@ -1260,7 +1422,7 @@ function initFolderTree() {
       // Force the parent tree open only when navigation drives this
       // expansion. The parent's open/close otherwise stays under the
       // user's control via initSectionToggle's own cookie key.
-      if (firstInit && urlDriven && treeList && path !== '__ai_source__') {
+      if (urlChanged && urlDriven && treeList && path !== '__ai_source__') {
         treeList.style.display = '';
         if (treeToggle) treeToggle.textContent = '▼';
       }
@@ -1380,6 +1542,47 @@ function applySearchSuggest(tagName) {
     si.dispatchEvent(new Event('input', { bubbles: true }));
   }
 }
+
+// Copy `text` to the clipboard with a clipboard-API path and a
+// document.execCommand fallback so the helper still works under the
+// LAN-HTTP deployments where the secure-context API is unavailable.
+// `flashEl`, when provided, is briefly unhidden as a "copied" badge so
+// the click has visible feedback instead of failing silently.
+function copyToClipboard(text, flashEl) {
+  var done = function () {
+    if (!flashEl) return;
+    flashEl.hidden = false;
+    setTimeout(function () { flashEl.hidden = true; }, 1500);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, function () {
+      copyToClipboardLegacy(text, done);
+    });
+    return;
+  }
+  copyToClipboardLegacy(text, done);
+}
+
+function copyToClipboardLegacy(text, done) {
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch (e) { /* fall through */ }
+  document.body.removeChild(ta);
+  done();
+}
+
+document.addEventListener('click', function (e) {
+  var btn = e.target.closest('[data-copy]');
+  if (!btn) return;
+  e.preventDefault();
+  var flash = btn.parentElement && btn.parentElement.querySelector('.copy-flash');
+  copyToClipboard(btn.dataset.copy, flash);
+});
 
 // Auto-reload gallery/tags after job completes; auto-clear status after 30s
 var _jobAutoClearTimer = null;

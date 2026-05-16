@@ -51,6 +51,11 @@ type detailData struct {
 	ImageTaggers   []string              // distinct tagger names currently on this image's auto-tags
 	HasUserTags    bool                  // true when at least one manual (non-auto) tag is on this image
 	Aliases        []models.Tag          // alias rows pointing at any non-implied tag on this image, flattened for display
+	// PhashDistance is the configured Find-pairs Hamming distance used by
+	// the phash row's [search near-duplicates] link. Pulled live from
+	// Config.Relations.DefaultDistance so a settings tweak is honoured
+	// without a restart.
+	PhashDistance int
 }
 
 func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
@@ -249,6 +254,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		ImageTaggers:   imageTaggers,
 		HasUserTags:    hasUserTags,
 		Aliases:        s.aliasesForImageTags(imageTags),
+		PhashDistance:  s.relationsPhashDistance(),
 	}
 	s.renderTemplate(w, "detail.html", data)
 }
@@ -263,7 +269,7 @@ func (s *Server) relatedImagesHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	related, _ := s.tagSvc().RelatedImages(id, 9, ratingCeilingFromRequest(r))
+	related, _ := s.tagSvc().RelatedImages(id, 6, ratingCeilingFromRequest(r))
 	q := r.URL.Query()
 	s.renderTemplate(w, "partials/related_images.html", map[string]any{
 		"Images":        related,

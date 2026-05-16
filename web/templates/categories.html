@@ -14,41 +14,22 @@
     <tbody id="cat-list">
       {{range index . "Categories"}}
       <tr id="cat-row-{{.ID}}">
+        <td><span style="color:{{.Color}}">{{.Name}}</span></td>
+        <td><span style="color:{{.Color}}" class="mono-small">{{.Color}}</span></td>
         <td>
-          {{if not .IsBuiltin}}
-          <form hx-post="/tags/categories/{{.ID}}/rename"
-                hx-target="#cat-flash" hx-swap="innerHTML"
-                style="display:inline">
-            <input type="hidden" name="_csrf" value="{{$csrf}}">
-            <input type="text" name="name" value="{{.Name}}" class="rename-input-sm" required style="color:{{.Color}}">
-            <button type="submit" class="btn-sm" title="Rename">✎</button>
-          </form>
-          {{else}}
-          <span style="color:{{.Color}}">{{.Name}}</span>
-          {{end}}
-        </td>
-        <td>
-          {{if not .IsBuiltin}}
-          <form hx-patch="/settings/categories/{{.ID}}"
-                hx-target="#cat-flash" hx-swap="innerHTML"
-                hx-on::after-request="if(event.detail.successful){setTimeout(function(){location.reload()},1500)}"
-                style="display:inline">
-            <input type="hidden" name="_csrf" value="{{$csrf}}">
-            <span style="color:{{.Color}}">{{.Color}}</span>
-            <input type="color" name="color" value="{{.Color}}" onchange="this.form.requestSubmit()">
-          </form>
-          {{else}}
-          <span style="color:{{.Color}}">{{.Color}}</span>
-          {{end}}
-        </td>
-        <td>
-          {{if not .IsBuiltin}}
-          <button class="btn-danger btn-sm btn-delete-category"
-                  data-id="{{.ID}}" data-name="{{.Name}}"
-                  data-csrf="{{$csrf}}">Delete</button>
-          {{else}}
-          <span class="field-hint">(built-in)</span>
-          {{end}}
+          <div class="cat-actions">
+            {{if not .IsBuiltin}}
+            <button class="btn-sm btn-cat-rename-trigger"
+                    data-id="{{.ID}}" data-name="{{.Name}}">Rename</button>
+            <button class="btn-sm btn-cat-recolor-trigger"
+                    data-id="{{.ID}}" data-name="{{.Name}}" data-color="{{.Color}}">Recolor</button>
+            <button class="btn-sm btn-danger btn-delete-category"
+                    data-id="{{.ID}}" data-name="{{.Name}}"
+                    data-csrf="{{$csrf}}">Delete</button>
+            {{else}}
+            <span class="field-hint">(built-in)</span>
+            {{end}}
+          </div>
         </td>
       </tr>
       {{end}}
@@ -63,6 +44,40 @@
     <button type="submit">Add</button>
   </form>
 </div>
+
+<!-- Rename category dialog -->
+<dialog id="cat-rename-dialog">
+  <form id="cat-rename-form" hx-post="" hx-target="#cat-rename-error" hx-swap="innerHTML">
+    <input type="hidden" name="_csrf" value="{{$csrf}}">
+    <p>Rename category <strong id="cat-rename-src"></strong></p>
+    <div class="field">
+      <label>New name</label>
+      <input type="text" name="name" id="cat-rename-input" required autocomplete="off">
+    </div>
+    <div id="cat-rename-error"></div>
+    <div class="dialog-actions">
+      <button type="submit">Rename</button>
+      <button type="button" onclick="document.getElementById('cat-rename-dialog').close()">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Recolor category dialog -->
+<dialog id="cat-recolor-dialog">
+  <form id="cat-recolor-form" hx-patch="" hx-target="#cat-recolor-error" hx-swap="innerHTML">
+    <input type="hidden" name="_csrf" value="{{$csrf}}">
+    <p>Recolor category <strong id="cat-recolor-src"></strong></p>
+    <div class="field">
+      <label>New color</label>
+      <input type="color" name="color" id="cat-recolor-input" required>
+    </div>
+    <div id="cat-recolor-error"></div>
+    <div class="dialog-actions">
+      <button type="submit">Save</button>
+      <button type="button" onclick="document.getElementById('cat-recolor-dialog').close()">Cancel</button>
+    </div>
+  </form>
+</dialog>
 
 <!-- Delete category dialog -->
 <dialog id="delete-cat-dialog">
@@ -87,6 +102,60 @@
 </dialog>
 
 <script>
+// Cross-navigation flash slot: category mutations that reload or redirect
+// set sessionStorage.categoriesFlash via the HX-Trigger `categoriesFlash`
+// event; the next /categories load drains the value into #cat-flash.
+(function () {
+  var slot = document.getElementById('cat-flash');
+  if (!slot) return;
+  var msg = sessionStorage.getItem('categoriesFlash');
+  if (!msg) return;
+  sessionStorage.removeItem('categoriesFlash');
+  var div = document.createElement('div');
+  div.className = 'flash flash-ok';
+  div.textContent = msg;
+  slot.appendChild(div);
+  setTimeout(function () { if (slot.contains(div)) slot.removeChild(div); }, 5000);
+})();
+document.body.addEventListener('categoriesFlash', function (e) {
+  var val = e.detail && typeof e.detail === 'object' ? e.detail.value : e.detail;
+  if (typeof val === 'string' && val !== '') {
+    sessionStorage.setItem('categoriesFlash', val);
+  }
+});
+
+document.querySelectorAll('.btn-cat-rename-trigger').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var id = this.dataset.id;
+    var name = this.dataset.name;
+    var form = document.getElementById('cat-rename-form');
+    form.setAttribute('hx-post', '/tags/categories/' + id + '/rename');
+    if (window.htmx) window.htmx.process(form);
+    document.getElementById('cat-rename-src').textContent = name;
+    document.getElementById('cat-rename-error').innerHTML = '';
+    var input = document.getElementById('cat-rename-input');
+    input.value = name;
+    document.getElementById('cat-rename-dialog').showModal();
+    input.focus();
+    input.select();
+  });
+});
+
+document.querySelectorAll('.btn-cat-recolor-trigger').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var id = this.dataset.id;
+    var name = this.dataset.name;
+    var color = this.dataset.color;
+    var form = document.getElementById('cat-recolor-form');
+    form.setAttribute('hx-patch', '/settings/categories/' + id);
+    if (window.htmx) window.htmx.process(form);
+    document.getElementById('cat-recolor-src').textContent = name;
+    document.getElementById('cat-recolor-error').innerHTML = '';
+    document.getElementById('cat-recolor-input').value = color || '#888888';
+    document.getElementById('cat-recolor-dialog').showModal();
+  });
+});
+
 // Delete category with prompt
 document.querySelectorAll('.btn-delete-category').forEach(function(btn) {
   btn.addEventListener('click', function() {
@@ -153,6 +222,10 @@ function doDeleteCategory(catId, csrf, action, targetCatId) {
     body: '_csrf=' + encodeURIComponent(csrf)
   }).then(function(r) {
     if (r.ok) {
+      // The handler also writes HX-Trigger for the htmx path, but raw
+      // fetch doesn't process it; seed sessionStorage directly so the
+      // /categories reload picks up the flash.
+      sessionStorage.setItem('categoriesFlash', 'Category deleted.');
       document.getElementById('delete-cat-dialog').close();
       window.location.href = window.location.pathname + window.location.search;
     } else {

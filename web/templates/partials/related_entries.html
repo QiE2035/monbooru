@@ -1,0 +1,65 @@
+{{define "partials/related_entries.html"}}
+{{/* File-level duplicates that share this image's SHA-256 (same bytes
+     living at multiple paths on disk). Rendered above Related entries
+     and styled as a peer panel so the two headers read at the same
+     weight on the detail page. */}}
+{{if gt (len .ImagePaths) 1}}
+<div class="related-images duplicates-section">
+  <h3>Duplicates</h3>
+  <ul class="duplicates-list">
+    {{range .ImagePaths}}
+    <li class="duplicates-entry">
+      <div class="duplicates-path mono-small">{{.Path}}</div>
+      <div class="duplicates-actions">
+        {{if .IsCanonical}}
+        <span class="btn-sm btn-canonical" aria-disabled="true">Canonical</span>
+        {{else}}
+        <form method="POST" action="/images/{{$.ImageID}}/canonical-path" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <input type="hidden" name="path" value="{{.Path}}">
+          <button type="submit" class="btn-sm">Set canonical</button>
+        </form>
+        <button class="btn-sm btn-danger"
+                hx-delete="/images/{{$.ImageID}}/aliases/{{.ID}}"
+                hx-target="closest .duplicates-entry"
+                hx-swap="outerHTML"
+                hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'>Remove</button>
+        {{end}}
+      </div>
+    </li>
+    {{end}}
+  </ul>
+</div>
+{{end}}
+
+<div class="related-images related-entries">
+  <div class="related-entries-header">
+    <h3>Related entries</h3>
+    <div class="related-entries-actions">
+      {{if .Tiles}}<a class="btn-link-accent" href="/images/{{.ImageID}}/relations?back_q={{.BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}">[See all]</a>{{end}}
+      <button type="button" class="btn-link-accent" data-relations-add="{{.ImageID}}">[Add a relation]</button>
+    </div>
+  </div>
+  {{if .Tiles}}
+  <div class="related-mini-grid">
+    {{range .Tiles}}
+    <a href="/images/{{.ID}}?ref={{$.ImageID}}&back_q={{$.BackQ}}&back_sort={{$.BackSort}}&back_order={{$.BackOrder}}{{if $.BackPage}}&back_page={{$.BackPage}}{{end}}{{if $.BackSeed}}&back_seed={{$.BackSeed}}{{end}}"
+       class="related-mini-card related-entry-card" title="{{.Label}}: image {{.ID}}">
+      <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy"
+           onerror="this.parentElement.innerHTML='<span class=thumb-fail title=&quot;preview unavailable&quot;>?</span>'">
+      {{if .Series}}
+        <span class="series-pill" title="Collection: {{.Series}}{{if .SeriesOrder}} #{{deref64 .SeriesOrder}}{{end}}">
+          {{if .SeriesOrder}}<span class="series-pill-order">#{{deref64 .SeriesOrder}}</span>{{end}}
+          <span class="series-pill-name">{{.Series}}</span>
+        </span>
+      {{else}}
+        <span class="relation-marker" title="{{.Label}}">{{.Marker}}</span>
+      {{end}}
+    </a>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="field-hint">No declared relations yet.</p>
+  {{end}}
+</div>
+{{end}}

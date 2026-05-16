@@ -62,6 +62,27 @@ func applyRatingCeiling(userExpr search.Expr, ceiling string) search.Expr {
 	return search.AndExpr{Left: userExpr, Right: ce}
 }
 
+// ceilingAwareCount runs queryStr against the active gallery with the
+// rating ceiling applied and returns the match total. Returns cached
+// when no ceiling is in effect or on any query error - the cached
+// value is the ceiling-blind shortcut from the per-gallery atomic
+// counters, which the toolbar / sidebar copy of "inbox (N)" /
+// "archived (N)" pulls from on the no-ceiling steady state.
+func (s *Server) ceilingAwareCount(ceiling, queryStr string, cached int) int {
+	if ceiling == "" || ceiling == "explicit" {
+		return cached
+	}
+	expr, _ := search.Parse(queryStr)
+	expr = applyRatingCeiling(expr, ceiling)
+	res, err := search.Execute(s.db(), search.Query{
+		Expr: expr, Sort: "newest", Order: "desc", Page: 1, Limit: 1,
+	})
+	if err != nil {
+		return cached
+	}
+	return res.Total
+}
+
 // ratingCeilingPost sets or clears the monbooru_rating_ceiling cookie.
 // Posting level=explicit (or any out-of-enum value) clears the cookie so
 // the empty-storage steady state means "no ceiling".
@@ -187,7 +208,7 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 		prevID, nextID = s.findAdjacentImages(id, backQ, sortStr, orderStr, backSeed, ratingCeilingFromRequest(r))
 	}
 
-	result, err := gallery.DeleteImage(s.db(), s.thumbnailsPath(), id, s.tagSvc().RemoveAllTagsFromImage)
+	result, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), id, s.tagSvc().RemoveAllTagsFromImage, s.onImageDeleteCallback())
 	if err != nil {
 		http.NotFound(w, r)
 		return

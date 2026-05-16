@@ -85,6 +85,7 @@ type imageResponse struct {
 	PageCount     *int           `json:"page_count"`
 	Series        string         `json:"collection"`
 	SeriesOrder   *int           `json:"collection_order"`
+	Phash         *string        `json:"phash"`
 	IngestedAt    time.Time      `json:"ingested_at"`
 	ThumbnailURL  string         `json:"thumbnail_url"`
 	Tags          []imageTagJSON `json:"tags"`
@@ -107,16 +108,20 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 	var ingestedAt string
 
 	var pageCount, seriesOrder *int
+	var durationSec *float64
+	var phash *int64
 	err := g.DB.Read.QueryRow(`
 		SELECT id, sha256, canonical_path, file_type, width, height, file_size,
-		       is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, series, series_order, ingested_at
+		       is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, phash, ingested_at
 		FROM images WHERE id = ?`, imageID,
 	).Scan(&img.ID, &img.SHA256, &img.CanonicalPath, &img.FileType, &img.Width, &img.Height,
-		&img.FileSize, &isMissing, &isFavorited, &isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &img.Series, &seriesOrder, &ingestedAt)
+		&img.FileSize, &isMissing, &isFavorited, &isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt)
 	if err != nil {
 		return nil, err
 	}
+	img.DurationSec = durationSec
 	img.SeriesOrder = seriesOrder
+	img.Phash = phash
 	img.IsMissing = isMissing == 1
 	img.IsFavorited = isFavorited == 1
 	img.IsInbox = isInbox == 1
@@ -184,11 +189,22 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 		PageCount:     pageCount,
 		Series:        img.Series,
 		SeriesOrder:   img.SeriesOrder,
+		Phash:         phashHexPtr(img.Phash),
 		IngestedAt:    img.IngestedAt,
 		ThumbnailURL:  "/thumbnails/" + g.Name + "/" + strconv.FormatInt(imageID, 10) + ".jpg",
 		Tags:          tags,
 	}
 	return resp, nil
+}
+
+// phashHexPtr renders the optional perceptual hash as a 16-char
+// lowercase hex string, or nil when the column is NULL.
+func phashHexPtr(p *int64) *string {
+	if p == nil {
+		return nil
+	}
+	s := fmt.Sprintf("%016x", uint64(*p))
+	return &s
 }
 
 func (h *Handler) getImage(w http.ResponseWriter, r *http.Request) {
@@ -439,9 +455,12 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Each initial tag is either a plain name (general category) or
-	// "category:name". Failures are collected as warnings rather than
-	// aborting the whole request.
+	// "category:name". Resolve every token's tag id first; failures land
+	// in tagWarnings rather than aborting the request. The remaining ids
+	// flow through AddTagsToOneImage so the whole batch shares one
+	// writer transaction instead of N.
 	var tagWarnings []string
+	tagIDs := make([]int64, 0, len(initialTags))
 	for _, tagName := range initialTags {
 		catID, bareName, err := h.resolveCategoryTag(g, tagName)
 		if err != nil {
@@ -453,8 +472,11 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
 			continue
 		}
-		if err := g.TagSvc.AddTagToImageFromTagger(img.ID, tag.ID, false, nil, via); err != nil {
-			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
+		tagIDs = append(tagIDs, tag.ID)
+	}
+	if len(tagIDs) > 0 {
+		if _, err := g.TagSvc.AddTagsToOneImage(img.ID, tagIDs, via); err != nil {
+			tagWarnings = append(tagWarnings, "apply tags: "+err.Error())
 		}
 	}
 
@@ -550,7 +572,7 @@ func (h *Handler) deleteImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := gallery.DeleteImage(g.DB, g.ThumbnailsPath, id, g.TagSvc.RemoveAllTagsFromImage)
+	result, err := gallery.DeleteImage(g.DB, g.GalleryPath, g.ThumbnailsPath, id, g.TagSvc.RemoveAllTagsFromImage, relationsOnDelete(g.RelationsSvc))
 	if err != nil {
 		apiError(w, http.StatusNotFound, "not_found", "image not found")
 		return
@@ -646,6 +668,11 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 		logx.Warnf("api searchImages tag load: %v", tagsErr)
 		tagsByID = nil
 	}
+	aliasesByID, aliasErr := loadAliasesForImages(g, ids)
+	if aliasErr != nil {
+		logx.Warnf("api searchImages alias load: %v", aliasErr)
+		aliasesByID = nil
+	}
 
 	images := make([]imageResponse, 0, len(result.Results))
 	for _, img := range result.Results {
@@ -653,11 +680,15 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 		if tags == nil {
 			tags = []imageTagJSON{}
 		}
+		aliases := aliasesByID[img.ID]
+		if aliases == nil {
+			aliases = []string{}
+		}
 		images = append(images, imageResponse{
 			ID:            img.ID,
 			SHA256:        img.SHA256,
 			CanonicalPath: img.CanonicalPath,
-			Aliases:       []string{},
+			Aliases:       aliases,
 			FileType:      img.FileType,
 			Width:         img.Width,
 			Height:        img.Height,
@@ -685,6 +716,42 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 		"total":   result.Total,
 		"results": images,
 	})
+}
+
+// loadAliasesForImages batch-loads non-canonical image_paths rows for
+// every id in the slice in one round-trip, mirroring the per-row read
+// in buildImageResponse. Used by the search projection so a multi-id
+// response carries the same alias array shape as the single-image GET.
+func loadAliasesForImages(g Gallery, ids []int64) (map[int64][]string, error) {
+	out := make(map[int64][]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := g.DB.Read.Query(
+		`SELECT image_id, path FROM image_paths
+		 WHERE is_canonical = 0 AND image_id IN (`+placeholders+`)
+		 ORDER BY image_id, id`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var imageID int64
+		var path string
+		if err := rows.Scan(&imageID, &path); err != nil {
+			return nil, err
+		}
+		out[imageID] = append(out[imageID], path)
+	}
+	return out, rows.Err()
 }
 
 // loadTagsForImages batch-loads image_tags ⋈ tags ⋈ tag_categories for
@@ -796,6 +863,7 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var tagWarnings []string
+	tagIDs := make([]int64, 0, len(body.Tags))
 	for _, tagName := range body.Tags {
 		catID, bareName, err := h.resolveCategoryTag(g, tagName)
 		if err != nil {
@@ -807,8 +875,11 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
 			continue
 		}
-		if err := g.TagSvc.AddTagToImageFromTagger(id, tag.ID, false, nil, via); err != nil {
-			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
+		tagIDs = append(tagIDs, tag.ID)
+	}
+	if len(tagIDs) > 0 {
+		if _, err := g.TagSvc.AddTagsToOneImage(id, tagIDs, via); err != nil {
+			tagWarnings = append(tagWarnings, "apply tags: "+err.Error())
 		}
 	}
 	if g.InvalidateCaches != nil {
@@ -902,6 +973,7 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var tagWarnings []string
+	tagIDs := make([]int64, 0, len(body.Tags))
 	for _, tagName := range body.Tags {
 		tagID, err := h.resolveImageTagID(g, id, tagName)
 		if err != nil {
@@ -912,12 +984,11 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 			// Tag not on this image; silently ignored per the docs.
 			continue
 		}
-		// Mirror addImageTags: capture per-tag failures into tagWarnings
-		// rather than swallowing them. The response envelope below carries
-		// the warnings alongside the post-delete tag list so the client
-		// can distinguish a clean remove from a partial one.
-		if err := g.TagSvc.RemoveTagFromImage(id, tagID); err != nil {
-			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
+		tagIDs = append(tagIDs, tagID)
+	}
+	if len(tagIDs) > 0 {
+		if err := g.TagSvc.RemoveTagsFromOneImage(id, tagIDs); err != nil {
+			tagWarnings = append(tagWarnings, "remove tags: "+err.Error())
 		}
 	}
 	if g.InvalidateCaches != nil {

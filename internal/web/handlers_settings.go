@@ -94,10 +94,10 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		"Variant":          base.Variant,
 		"CustomCSS":        base.CustomCSS,
 		"ActiveGallery":    base.ActiveGallery,
-		"Galleries":        s.galleryRowsWithSnapshot(s.activeName, base.VisibleCount, base.TagCount, base.SavedCount),
+		"Galleries":        s.galleryRowsWithSnapshot(s.activeName, base.VisibleCount, base.TagCount),
 		"VisibleCount":     base.VisibleCount,
 		"TagCount":         base.TagCount,
-		"SavedCount":       base.SavedCount,
+		"CollectionsCount": base.CollectionsCount,
 		"RatingLevels":     base.RatingLevels,
 		"ActiveRating":     base.ActiveRating,
 		"RequestStart":     base.RequestStart,
@@ -129,7 +129,7 @@ func (s *Server) settingsSchedulePost(w http.ResponseWriter, r *http.Request) {
 	s.cfg.Schedule.SyncGallery = r.FormValue("sync_gallery") == "on"
 	s.cfg.Schedule.RemoveOrphans = r.FormValue("remove_orphans") == "on"
 	s.cfg.Schedule.RunAutoTaggers = r.FormValue("run_auto_taggers") == "on"
-	s.cfg.Schedule.MergeGeneralTags = r.FormValue("merge_general_tags") == "on"
+	s.cfg.Schedule.FindRelationPairs = r.FormValue("find_relation_pairs") == "on"
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
 		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
@@ -152,7 +152,7 @@ func (s *Server) settingsGeneralPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfgMu.Lock()
 	s.cfg.Gallery.WatchEnabled = r.FormValue("watch_enabled") == "on"
-	if n, err := strconv.Atoi(r.FormValue("max_file_size_mb")); err == nil {
+	if n, err := strconv.Atoi(r.FormValue("max_file_size_mb")); err == nil && n >= 0 {
 		s.cfg.Gallery.MaxFileSizeMB = n
 	}
 	if n, err := strconv.Atoi(r.FormValue("page_size")); err == nil && n > 0 {

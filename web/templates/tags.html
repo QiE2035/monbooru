@@ -394,6 +394,10 @@ document.querySelectorAll('.btn-delete-tag').forEach(function(btn) {
         headers: {'X-CSRF-Token': csrf}
       }).then(function(r) {
         if (r.ok) {
+          // The DELETE returns 204; raw fetch doesn't process HX-Trigger,
+          // so seed the tagsFlash slot directly before the reload.
+          sessionStorage.setItem('tagsFlash',
+            isRating ? 'Stripped "' + name + '" from every image.' : 'Tag "' + name + '" deleted.');
           window.location.reload();
         } else {
           r.text().then(function(t) {

@@ -92,26 +92,27 @@ type tagRow struct {
 }
 
 type imageRow struct {
-	ID            int64          `json:"id"`
-	SHA256        string         `json:"sha256"`
-	CanonicalPath string         `json:"canonical_path"`
-	FolderPath    string         `json:"folder_path"`
-	FileType      string         `json:"file_type"`
-	Width         sql.NullInt64  `json:"width"`
-	Height        sql.NullInt64  `json:"height"`
-	FileSize      int64          `json:"file_size"`
-	IsMissing     int            `json:"is_missing"`
-	IsFavorited   int            `json:"is_favorited"`
-	IsInbox       int            `json:"is_inbox"`
-	AutoTaggedAt  sql.NullString `json:"auto_tagged_at"`
-	SourceType    string         `json:"source_type"`
-	Origin        string         `json:"origin"`
-	Source        string         `json:"source"`
-	URL           string         `json:"url"`
-	PageCount     sql.NullInt64  `json:"page_count,omitempty"`
-	Series        string         `json:"collection,omitempty"`
-	SeriesOrder   sql.NullInt64  `json:"collection_order,omitempty"`
-	IngestedAt    string         `json:"ingested_at"`
+	ID              int64           `json:"id"`
+	SHA256          string          `json:"sha256"`
+	CanonicalPath   string          `json:"canonical_path"`
+	FolderPath      string          `json:"folder_path"`
+	FileType        string          `json:"file_type"`
+	Width           sql.NullInt64   `json:"width"`
+	Height          sql.NullInt64   `json:"height"`
+	FileSize        int64           `json:"file_size"`
+	IsMissing       int             `json:"is_missing"`
+	IsFavorited     int             `json:"is_favorited"`
+	IsInbox         int             `json:"is_inbox"`
+	AutoTaggedAt    sql.NullString  `json:"auto_tagged_at"`
+	SourceType      string          `json:"source_type"`
+	Origin          string          `json:"origin"`
+	Source          string          `json:"source"`
+	URL             string          `json:"url"`
+	PageCount       sql.NullInt64   `json:"page_count,omitempty"`
+	DurationSeconds sql.NullFloat64 `json:"duration_seconds,omitempty"`
+	Series          string          `json:"collection,omitempty"`
+	SeriesOrder     sql.NullInt64   `json:"collection_order,omitempty"`
+	IngestedAt      string          `json:"ingested_at"`
 }
 
 type imagePathRow struct {
@@ -276,13 +277,13 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 	}
 	if err := streamRows(bw, "images", cx.DB,
 		`SELECT id, sha256, canonical_path, folder_path, file_type, width, height,
-		        file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, series, series_order, ingested_at
+		        file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, ingested_at
 		 FROM images ORDER BY id`,
 		func(rows *sql.Rows) (any, error) {
 			var r imageRow
 			err := rows.Scan(&r.ID, &r.SHA256, &r.CanonicalPath, &r.FolderPath, &r.FileType,
 				&r.Width, &r.Height, &r.FileSize, &r.IsMissing, &r.IsFavorited, &r.IsInbox,
-				&r.AutoTaggedAt, &r.SourceType, &r.Origin, &r.Source, &r.URL, &r.PageCount, &r.Series, &r.SeriesOrder, &r.IngestedAt)
+				&r.AutoTaggedAt, &r.SourceType, &r.Origin, &r.Source, &r.URL, &r.PageCount, &r.DurationSeconds, &r.Series, &r.SeriesOrder, &r.IngestedAt)
 			return r, err
 		}); err != nil {
 		return err
@@ -1080,7 +1081,7 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		}
 	}
 	for _, r := range exp.Images {
-		var width, height, auto, pageCount, seriesOrder any
+		var width, height, auto, pageCount, durationSec, seriesOrder any
 		if r.Width.Valid {
 			width = r.Width.Int64
 		}
@@ -1093,15 +1094,18 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		if r.PageCount.Valid {
 			pageCount = r.PageCount.Int64
 		}
+		if r.DurationSeconds.Valid {
+			durationSec = r.DurationSeconds.Float64
+		}
 		if r.SeriesOrder.Valid {
 			seriesOrder = r.SeriesOrder.Int64
 		}
 		if _, err := tx.Exec(
 			`INSERT INTO images (id, sha256, canonical_path, folder_path, file_type, width, height,
-			                    file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, series, series_order, ingested_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                    file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, ingested_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.SHA256, r.CanonicalPath, r.FolderPath, r.FileType, width, height,
-			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, auto, r.SourceType, r.Origin, r.Source, r.URL, pageCount, r.Series, seriesOrder, r.IngestedAt,
+			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, auto, r.SourceType, r.Origin, r.Source, r.URL, pageCount, durationSec, r.Series, seriesOrder, r.IngestedAt,
 		); err != nil {
 			return fmt.Errorf("insert image %d: %w", r.ID, err)
 		}

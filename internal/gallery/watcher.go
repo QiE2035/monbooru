@@ -322,6 +322,11 @@ func (w *Watcher) markFileMissing(path string) {
 		}
 		tagIDs = append(tagIDs, tid)
 	}
+	if iterErr := rows.Err(); iterErr != nil {
+		rows.Close()
+		logx.Warnf("watcher mark missing %q: iterate tags: %v", path, iterErr)
+		return
+	}
 	rows.Close()
 
 	for _, tid := range tagIDs {

@@ -13,16 +13,28 @@ import (
 
 // Config holds all application configuration.
 type Config struct {
-	DefaultGallery string         `toml:"default_gallery"`
-	Galleries      []Gallery      `toml:"galleries"`
-	Server         ServerConfig   `toml:"server"`
-	Paths          PathsConfig    `toml:"paths"`
-	Gallery        GalleryConfig  `toml:"gallery"`
-	Tagger         TaggerConfig   `toml:"tagger"`
-	Auth           AuthConfig     `toml:"auth"`
-	UI             UIConfig       `toml:"ui"`
-	Log            LogConfig      `toml:"log"`
-	Schedule       ScheduleConfig `toml:"schedule"`
+	DefaultGallery string          `toml:"default_gallery"`
+	Galleries      []Gallery       `toml:"galleries"`
+	Server         ServerConfig    `toml:"server"`
+	Paths          PathsConfig     `toml:"paths"`
+	Gallery        GalleryConfig   `toml:"gallery"`
+	Tagger         TaggerConfig    `toml:"tagger"`
+	Auth           AuthConfig      `toml:"auth"`
+	UI             UIConfig        `toml:"ui"`
+	Log            LogConfig       `toml:"log"`
+	Schedule       ScheduleConfig  `toml:"schedule"`
+	Relations      RelationsConfig `toml:"relations"`
+}
+
+// RelationsConfig drives the relations feature's runtime knobs.
+// default_distance is the Hamming-distance default for find-pairs and
+// the bare phash:<hex>~ form; default_session_order picks which mode
+// the Start-session CTA preselects; incremental_on_ingest toggles the
+// on-ingest BK-tree probe that fans new pairs into the queue.
+type RelationsConfig struct {
+	DefaultDistance     int    `toml:"default_distance"`
+	DefaultSessionOrder string `toml:"default_session_order"`
+	IncrementalOnIngest bool   `toml:"incremental_on_ingest"`
 }
 
 type ServerConfig struct {
@@ -145,11 +157,11 @@ type LogConfig struct {
 // ScheduleConfig drives the once-per-day maintenance run at HH:MM on
 // every configured gallery.
 type ScheduleConfig struct {
-	Time             string `toml:"time"` // "HH:MM" 24h, default "01:00"
-	SyncGallery      bool   `toml:"sync_gallery"`
-	RemoveOrphans    bool   `toml:"remove_orphans"`
-	RunAutoTaggers   bool   `toml:"run_auto_taggers"`
-	MergeGeneralTags bool   `toml:"merge_general_tags"`
+	Time              string `toml:"time"` // "HH:MM" 24h, default "01:00"
+	SyncGallery       bool   `toml:"sync_gallery"`
+	RemoveOrphans     bool   `toml:"remove_orphans"`
+	RunAutoTaggers    bool   `toml:"run_auto_taggers"`
+	FindRelationPairs bool   `toml:"find_relation_pairs"`
 }
 
 // Default returns a fully populated config with all spec defaults.
@@ -170,11 +182,11 @@ func Default() *Config {
 		},
 		Gallery: GalleryConfig{
 			WatchEnabled:  true,
-			MaxFileSizeMB: 500,
+			MaxFileSizeMB: 512,
 		},
 		Tagger: TaggerConfig{
 			Parallel:                4,
-			IdleReleaseAfterMinutes: 10,
+			IdleReleaseAfterMinutes: 15,
 			Aggregation:             TaggerAggregationCfg{MinHitFraction: 0.05},
 		},
 		Auth: AuthConfig{
@@ -187,11 +199,16 @@ func Default() *Config {
 			Level: "warn",
 		},
 		Schedule: ScheduleConfig{
-			Time:             "01:00",
-			SyncGallery:      true,
-			RemoveOrphans:    true,
-			RunAutoTaggers:   false,
-			MergeGeneralTags: true,
+			Time:              "01:00",
+			SyncGallery:       true,
+			RemoveOrphans:     true,
+			RunAutoTaggers:    false,
+			FindRelationPairs: false,
+		},
+		Relations: RelationsConfig{
+			DefaultDistance:     4,
+			DefaultSessionOrder: "smallest_distance_first",
+			IncrementalOnIngest: true,
 		},
 	}
 }

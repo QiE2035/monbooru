@@ -268,7 +268,6 @@ func TestSearchSuggest_System_TopLevel(t *testing.T) {
 		`data-tag-name="source:"`,
 		`data-tag-name="date:"`,
 		`data-tag-name="rating:"`,
-		`class="suggest-category">system<`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("system: top-level dropdown missing %q\nbody: %s", want, body)
@@ -367,35 +366,33 @@ func TestSearchSuggest_System_Level2_Categories(t *testing.T) {
 	}
 }
 
-// A small dot separator sits between the description and the dim
-// "system" column so the cheat-sheet reads as `name  description · system`.
-// Rows without a description (rating values, fav:true, etc.) and tag
-// rows skip the separator.
-func TestSearchSuggest_System_DescriptionSeparator(t *testing.T) {
+// The description span carries the cheat-sheet label; rows without a
+// description (rating values, fav:true, etc.) omit the span entirely.
+func TestSearchSuggest_System_DescriptionPresence(t *testing.T) {
 	srv := newTestServer(t)
 
-	// System row with a description: separator must be present.
+	// System row with a description: span must be present.
 	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 	withDesc := w.Body.String()
-	if !strings.Contains(withDesc, `<span class="suggest-description">favorite images</span><span class="suggest-sep">·</span>`) {
-		t.Errorf("expected description+separator pair on system row, got: %s", withDesc)
+	if !strings.Contains(withDesc, `<span class="suggest-description">favorite images</span>`) {
+		t.Errorf("expected description span on system row, got: %s", withDesc)
 	}
 
 	// Level-2 row without a description (rating values are bare): no
-	// separator and no description span.
+	// description span on those rows.
 	req2 := httptest.NewRequest("GET", "/internal/search/suggest?q=system:rating:", nil)
 	w2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w2, req2)
 	bare := w2.Body.String()
-	if strings.Contains(bare, `class="suggest-sep"`) {
-		t.Errorf("rows without a description must not render the separator, got: %s", bare)
+	if strings.Contains(bare, `class="suggest-description"`) {
+		t.Errorf("rows without a description must not render the description span, got: %s", bare)
 	}
 }
 
-// Cheat-sheet rows carry a short English label between the name and the
-// dim "system" column so the dropdown reads as a discoverable reference.
+// Cheat-sheet rows carry a short English label right of the name so the
+// dropdown reads as a discoverable reference.
 func TestSearchSuggest_System_TopLevel_DescriptionColumn(t *testing.T) {
 	srv := newTestServer(t)
 	req := httptest.NewRequest("GET", "/internal/search/suggest?q=system:", nil)
@@ -2030,11 +2027,13 @@ func TestDetailPage_DuplicateFilePathsHeaderReadsDuplicates(t *testing.T) {
 		t.Fatalf("insert duplicate path: %v", err)
 	}
 
-	req := httptest.NewRequest("GET", fmt.Sprintf("/images/%d", id), nil)
+	// Duplicates moved into the Related entries panel; it ships in the
+	// lazy partial rather than the initial detail render.
+	req := httptest.NewRequest("GET", fmt.Sprintf("/internal/images/%d/related-entries", id), nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("detail GET: %d", w.Code)
+		t.Fatalf("related-entries GET: %d", w.Code)
 	}
 	body := w.Body.String()
 	if !strings.Contains(body, `<h3>Duplicates</h3>`) {
@@ -2043,7 +2042,58 @@ func TestDetailPage_DuplicateFilePathsHeaderReadsDuplicates(t *testing.T) {
 	if strings.Contains(body, `<h3>Aliases</h3>`) {
 		t.Errorf("legacy <h3>Aliases</h3> still present in detail body")
 	}
-	if !strings.Contains(body, `class="duplicates-section"`) {
+	if !strings.Contains(body, `duplicates-section`) {
 		t.Errorf("duplicates-section CSS class missing")
+	}
+}
+
+// TestResetSkippedPost pins the new "Reset skipped" button: skipped_at
+// gets cleared so previously-skipped pairs return to the head of the
+// queue, while open (skipped_at IS NULL) rows are untouched.
+func TestResetSkippedPost(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	ids := make([]int64, 8)
+	for i := range ids {
+		// Unique dimensions per image so each gets a distinct sha256 and
+		// the ingest dedup doesn't collapse them onto one row.
+		ids[i] = seedImage(t, srv, fmt.Sprintf("rs%d.png", i+1), 8+i, 8)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := cx.DB.Write.Exec(
+		`INSERT INTO potential_relation_pairs (a_image_id, b_image_id, distance, created_at) VALUES (?,?,3,?), (?,?,4,?)`,
+		ids[0], ids[1], now, ids[2], ids[3], now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cx.DB.Write.Exec(
+		`INSERT INTO potential_relation_pairs (a_image_id, b_image_id, distance, created_at, skipped_at) VALUES (?,?,5,?,?), (?,?,6,?,?)`,
+		ids[4], ids[5], now, now, ids[6], ids[7], now, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{"_csrf": {srv.csrfToken("anon")}}
+	req := httptest.NewRequest("POST", "/relations/reset-skipped", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Reset 2 skipped pair(s)") {
+		t.Errorf("flash should report the count; got: %s", body)
+	}
+
+	var skipped, open int
+	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs WHERE skipped_at IS NOT NULL`).Scan(&skipped)
+	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs WHERE skipped_at IS NULL`).Scan(&open)
+	if skipped != 0 {
+		t.Errorf("after reset, skipped count = %d, want 0", skipped)
+	}
+	if open != 4 {
+		t.Errorf("after reset, open count = %d, want 4 (2 original + 2 reset)", open)
 	}
 }

@@ -19,20 +19,24 @@ import (
 
 type galleryData struct {
 	baseData
-	Query          string
-	Sort           string
-	Order          string
-	RandomSeed     int64
-	Page           int
-	TotalPages     int
-	Result         *models.SearchResult
-	SidebarTags    []models.Tag
-	FolderTree     []gallery.FolderNode
-	SourceCounts   gallery.SourceCounts
-	SeriesCounts   []gallery.SeriesCount
-	SavedSearches  []models.SavedSearch
-	SidebarURL     string                // populated on full-page renders so the placeholder can lazy-load the sidebar
-	EnabledTaggers []tagger.TaggerStatus // gates the gallery's Auto-tag controls; mirrors detailData.EnabledTaggers
+	Query             string
+	Sort              string
+	Order             string
+	RandomSeed        int64
+	Page              int
+	TotalPages        int
+	Result            *models.SearchResult
+	SidebarTags       []models.Tag
+	FolderTree        []gallery.FolderNode
+	SourceCounts      gallery.SourceCounts
+	SeriesCounts      []gallery.SeriesCount
+	SourceLabelCounts []gallery.SourceLabelCount
+	FavoritedCount    int
+	NonFavoritedCount int
+	NonInboxCount     int
+	SavedSearches     []models.SavedSearch
+	SidebarURL        string                // populated on full-page renders so the placeholder can lazy-load the sidebar
+	EnabledTaggers    []tagger.TaggerStatus // gates the gallery's Auto-tag controls; mirrors detailData.EnabledTaggers
 }
 
 func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
@@ -181,47 +185,37 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		ids = append(ids, img.ID)
 	}
 
-	var (
-		sidebarTags   []models.Tag
-		folderTree    []gallery.FolderNode
-		sourceCounts  gallery.SourceCounts
-		seriesCounts  []gallery.SeriesCount
-		savedSearches []models.SavedSearch
-	)
+	var sb sidebarBundle
 	if htmxGridTarget {
-		sidebarTags, folderTree, sourceCounts, seriesCounts, savedSearches = s.sidebarLoad(ids)
+		sb = s.sidebarLoad(ids)
 	}
 
 	data := galleryData{
-		baseData:       s.base(r, "gallery", "Images - Monbooru"),
-		Query:          queryStr,
-		Sort:           sortStr,
-		Order:          orderStr,
-		RandomSeed:     randomSeed,
-		Page:           page,
-		TotalPages:     totalPages,
-		Result:         result,
-		SidebarTags:    sidebarTags,
-		FolderTree:     folderTree,
-		SourceCounts:   sourceCounts,
-		SeriesCounts:   seriesCounts,
-		SavedSearches:  savedSearches,
-		EnabledTaggers: tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
+		baseData:          s.base(r, "gallery", "Images - Monbooru"),
+		Query:             queryStr,
+		Sort:              sortStr,
+		Order:             orderStr,
+		RandomSeed:        randomSeed,
+		Page:              page,
+		TotalPages:        totalPages,
+		Result:            result,
+		SidebarTags:       sb.Tags,
+		FolderTree:        sb.Folders,
+		SourceCounts:      sb.Sources,
+		SeriesCounts:      sb.Series,
+		SourceLabelCounts: sb.SourceLabels,
+		FavoritedCount:    sb.Favorited,
+		NonFavoritedCount: sb.NonFavorited,
+		NonInboxCount:     sb.NonInbox,
+		SavedSearches:     sb.Saved,
+		EnabledTaggers:    tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
 	}
 	// The cached InboxCount is ceiling-blind; the inbox-filter button's
 	// tooltip would mis-promise the post-click match count whenever a
 	// rating ceiling hides higher-rated rows. Recompute against the
 	// active ceiling so the parenthesised number matches what clicking
 	// the button would surface. Mirrors the same fix on /upload.
-	if data.ActiveRating != "" && data.ActiveRating != "explicit" {
-		inboxExpr, _ := search.Parse("inbox:true")
-		inboxExpr = applyRatingCeiling(inboxExpr, data.ActiveRating)
-		if res, err := search.Execute(s.db(), search.Query{
-			Expr: inboxExpr, Sort: "newest", Order: "desc", Page: 1, Limit: 1,
-		}); err == nil {
-			data.InboxCount = res.Total
-		}
-	}
+	data.InboxCount = s.ceilingAwareCount(data.ActiveRating, "inbox:true", data.InboxCount)
 
 	if htmxGridTarget {
 		s.renderTemplate(w, "partials/gallery_htmx.html", data)
@@ -231,41 +225,41 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "gallery.html", data)
 }
 
-// sidebarLoad runs the reads that populate the gallery sidebar - current-page
-// tags, folder tree, source counts, series counts, saved searches - in parallel
-// across the read pool. Called from galleryHandler on HTMX grid swaps (to keep
-// the OOB sidebar update) and from gallerySidebar (lazy-load on full-page render).
-func (s *Server) sidebarLoad(pageImageIDs []int64) ([]models.Tag, []gallery.FolderNode, gallery.SourceCounts, []gallery.SeriesCount, []models.SavedSearch) {
-	var (
-		tags    []models.Tag
-		folders []gallery.FolderNode
-		sources gallery.SourceCounts
-		series  []gallery.SeriesCount
-		saved   []models.SavedSearch
-	)
+// sidebarBundle is the parallel-fetched payload that populates the
+// gallery sidebar - tags from the current page, folder tree, AI source
+// breakdown, top series + source labels, inbox / favourite tallies,
+// saved searches. Bundling them in one struct keeps the goroutine fan
+// at sidebarLoad readable as the count grows.
+type sidebarBundle struct {
+	Tags         []models.Tag
+	Folders      []gallery.FolderNode
+	Sources      gallery.SourceCounts
+	Series       []gallery.SeriesCount
+	SourceLabels []gallery.SourceLabelCount
+	Favorited    int
+	NonFavorited int
+	NonInbox     int
+	Saved        []models.SavedSearch
+}
+
+// sidebarLoad runs the reads that populate the gallery sidebar.
+// Two background goroutines cover the work that always touches the
+// DB - the per-page tag aggregation against image_tags and the
+// saved_searches scan. Everything else reads the per-cx atomic
+// caches that warmCaches primes at gallery open, so it runs inline
+// instead of fanning out a goroutine per sub-query (each grabbing a
+// slot against the read pool under c>1, which doubles the cheap-
+// shape sidebar latency). On cold cache the inline reads pay the
+// query cost sequentially - rare enough (sidebar warmup runs at
+// gallery open and after every cache invalidation) that the warm-
+// path simplification is the right tradeoff.
+func (s *Server) sidebarLoad(pageImageIDs []int64) sidebarBundle {
+	var sb sidebarBundle
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		tags, _ = search.SidebarTagsWithGlobalCount(s.db(), pageImageIDs)
-	}()
-	go func() {
-		defer wg.Done()
-		if cx := s.Active(); cx != nil {
-			folders, _ = cx.FolderTree()
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		if cx := s.Active(); cx != nil {
-			sources, _ = cx.SourceCounts()
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		if cx := s.Active(); cx != nil {
-			series, _ = cx.SeriesCounts()
-		}
+		sb.Tags, _ = search.SidebarTagsWithGlobalCount(s.db(), pageImageIDs)
 	}()
 	go func() {
 		defer wg.Done()
@@ -280,11 +274,29 @@ func (s *Server) sidebarLoad(pageImageIDs []int64) ([]models.Tag, []gallery.Fold
 				logx.Warnf("sidebar saved searches scan: %v", err)
 				continue
 			}
-			saved = append(saved, ss)
+			sb.Saved = append(sb.Saved, ss)
 		}
 	}()
+	if cx := s.Active(); cx != nil {
+		sb.Folders, _ = cx.FolderTree()
+		sb.Sources, _ = cx.SourceCounts()
+		sb.Series, _ = cx.SeriesCounts()
+		sb.SourceLabels, _ = cx.SourceLabelCounts()
+		visible, _ := cx.VisibleCount()
+		inbox, _ := cx.InboxCount()
+		fav, _ := cx.FavoritedCount()
+		sb.Favorited = fav
+		sb.NonFavorited = visible - fav
+		if sb.NonFavorited < 0 {
+			sb.NonFavorited = 0
+		}
+		sb.NonInbox = visible - inbox
+		if sb.NonInbox < 0 {
+			sb.NonInbox = 0
+		}
+	}
 	wg.Wait()
-	return tags, folders, sources, series, saved
+	return sb
 }
 
 // gallerySidebar renders the gallery sidebar partial on demand. Initial
@@ -351,16 +363,25 @@ func (s *Server) gallerySidebar(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sidebarTags, folderTree, sourceCounts, seriesCounts, savedSearches := s.sidebarLoad(ids)
+	sb := s.sidebarLoad(ids)
+	inboxCount := 0
+	if cx := s.Active(); cx != nil {
+		inboxCount, _ = cx.InboxCount()
+	}
 
 	s.renderTemplate(w, "partials/sidebar_content.html", map[string]any{
-		"Query":         queryStr,
-		"CSRFToken":     s.csrfToken(sessionFromContext(r.Context())),
-		"SidebarTags":   sidebarTags,
-		"FolderTree":    folderTree,
-		"SourceCounts":  sourceCounts,
-		"SeriesCounts":  seriesCounts,
-		"SavedSearches": savedSearches,
+		"Query":             queryStr,
+		"CSRFToken":         s.csrfToken(sessionFromContext(r.Context())),
+		"SidebarTags":       sb.Tags,
+		"FolderTree":        sb.Folders,
+		"SourceCounts":      sb.Sources,
+		"SeriesCounts":      sb.Series,
+		"SourceLabelCounts": sb.SourceLabels,
+		"FavoritedCount":    sb.Favorited,
+		"NonFavoritedCount": sb.NonFavorited,
+		"InboxCount":        inboxCount,
+		"NonInboxCount":     sb.NonInbox,
+		"SavedSearches":     sb.Saved,
 	})
 }
 
@@ -372,13 +393,16 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 	queryStr := r.URL.Query().Get("q")
 
 	var (
-		folders []gallery.FolderNode
-		sources gallery.SourceCounts
-		series  []gallery.SeriesCount
-		saved   []models.SavedSearch
+		folders        []gallery.FolderNode
+		sources        gallery.SourceCounts
+		series         []gallery.SeriesCount
+		sourceLabels   []gallery.SourceLabelCount
+		visible, inbox int
+		fav            int
+		saved          []models.SavedSearch
 	)
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(6)
 	go func() {
 		defer wg.Done()
 		if cx := s.Active(); cx != nil {
@@ -399,6 +423,20 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 	}()
 	go func() {
 		defer wg.Done()
+		if cx := s.Active(); cx != nil {
+			sourceLabels, _ = cx.SourceLabelCounts()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if cx := s.Active(); cx != nil {
+			visible, _ = cx.VisibleCount()
+			inbox, _ = cx.InboxCount()
+			fav, _ = cx.FavoritedCount()
+		}
+	}()
+	go func() {
+		defer wg.Done()
 		rows, err := s.db().Read.Query(`SELECT id, name, query, sort, sort_order, seed FROM saved_searches ORDER BY name`)
 		if err != nil {
 			return
@@ -414,14 +452,27 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	wg.Wait()
+	nonFav := visible - fav
+	if nonFav < 0 {
+		nonFav = 0
+	}
+	nonInbox := visible - inbox
+	if nonInbox < 0 {
+		nonInbox = 0
+	}
 
 	s.renderTemplate(w, "partials/sidebar_browse.html", map[string]any{
-		"Query":         queryStr,
-		"CSRFToken":     s.csrfToken(sessionFromContext(r.Context())),
-		"FolderTree":    folders,
-		"SourceCounts":  sources,
-		"SeriesCounts":  series,
-		"SavedSearches": saved,
+		"Query":             queryStr,
+		"CSRFToken":         s.csrfToken(sessionFromContext(r.Context())),
+		"FolderTree":        folders,
+		"SourceCounts":      sources,
+		"SeriesCounts":      series,
+		"SourceLabelCounts": sourceLabels,
+		"InboxCount":        inbox,
+		"NonInboxCount":     nonInbox,
+		"FavoritedCount":    fav,
+		"NonFavoritedCount": nonFav,
+		"SavedSearches":     saved,
 	})
 }
 

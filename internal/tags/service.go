@@ -1180,8 +1180,12 @@ func transitiveImpliedTx(tx *sql.Tx, parents []int64) ([]int64, error) {
 // prune ratings on a manual rating add) and returns one AddResult per
 // input id so callers preserve the existing "added / promoted / dupes /
 // replaced rating" flash. Used by the detail-page paste path so a
-// 50-token paste pays one writer round-trip instead of N.
-func (s *Service) AddTagsToOneImage(imageID int64, tagIDs []int64) ([]AddResult, error) {
+// 50-token paste pays one writer round-trip instead of N. The optional
+// via string is recorded as the tagger_name (origin label) on each new
+// image_tags row; the UI passes "" so manual adds stay anonymous, the
+// REST API passes the caller-supplied source so a scraper can label
+// its writes.
+func (s *Service) AddTagsToOneImage(imageID int64, tagIDs []int64, via string) ([]AddResult, error) {
 	if len(tagIDs) == 0 {
 		return nil, nil
 	}
@@ -1192,7 +1196,7 @@ func (s *Service) AddTagsToOneImage(imageID int64, tagIDs []int64) ([]AddResult,
 	defer tx.Rollback()
 	results := make([]AddResult, 0, len(tagIDs))
 	for _, tagID := range tagIDs {
-		added, promoted, err := addTagToImageTxReportingDup(tx, imageID, tagID, false, nil, "", s.ratingCatID)
+		added, promoted, err := addTagToImageTxReportingDup(tx, imageID, tagID, false, nil, via, s.ratingCatID)
 		if err != nil {
 			return nil, err
 		}
@@ -1280,6 +1284,27 @@ func (s *Service) RemoveTagFromImage(imageID, tagID int64) error {
 
 	if err := removeTagFromImageTx(tx, imageID, tagID); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+// RemoveTagsFromOneImage drops every tag in tagIDs from imageID inside
+// a single write-pool transaction, mirroring AddTagsToOneImage's batch
+// shape. Per-id implied-closure cleanup is preserved; the txn rollback
+// covers partial failures so the row's tag state stays consistent.
+func (s *Service) RemoveTagsFromOneImage(imageID int64, tagIDs []int64) error {
+	if len(tagIDs) == 0 {
+		return nil
+	}
+	tx, err := s.db.Write.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, tagID := range tagIDs {
+		if err := removeTagFromImageTx(tx, imageID, tagID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -1789,18 +1814,28 @@ func SuggestUsageRanked(database *db.DB, prefix, categoryName string, requireUsa
 	return suggestUsageRanked(database, prefix, categoryName, requireUsage, limit)
 }
 
+// escapeLikeMeta escapes `_`, `%`, and `\` so an operator-typed value
+// can safely sit inside a LIKE pattern; the SQL must pair it with
+// `ESCAPE '\'`. Without this a stray `%` in the prefix turns the
+// autocomplete into match-all and a `_` matches any single character.
+func escapeLikeMeta(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `_`, `\_`, `%`, `\%`)
+	return r.Replace(s)
+}
+
 // suggestUsageRanked is the shared two-pass prefix→substring helper:
 // prefix matches first (sorted by usage_count DESC), then substring
 // matches that aren't already in the prefix set, until limit is hit.
 // categoryName, when non-empty, scopes both passes to that category;
 // requireUsage adds `usage_count > 0`.
 func suggestUsageRanked(database *db.DB, prefix, categoryName string, requireUsage bool, limit int) ([]models.Tag, error) {
+	prefix = escapeLikeMeta(prefix)
 	baseSQL := `SELECT t.id, t.name, tc.name, tc.color, t.usage_count
 	            FROM tags t
 	            JOIN tag_categories tc ON tc.id = t.category_id
 	            WHERE t.is_alias = 0
 	              %s
-	              AND t.name LIKE ?
+	              AND t.name LIKE ? ESCAPE '\'
 	              %s
 	            ORDER BY t.usage_count DESC, t.name ASC
 	            LIMIT ?`
@@ -1821,7 +1856,7 @@ func suggestUsageRanked(database *db.DB, prefix, categoryName string, requireUsa
 		qargs = append(qargs, pat)
 		qargs = append(qargs, catArgs...)
 		if nameNotLike != "" {
-			extra = extra + " AND t.name NOT LIKE ?"
+			extra = extra + ` AND t.name NOT LIKE ? ESCAPE '\'`
 			qargs = append(qargs, nameNotLike)
 		}
 		qargs = append(qargs, remaining)
@@ -1868,10 +1903,10 @@ func (s *Service) SuggestTagsInCategory(prefix, categoryName string, limit int) 
 		`SELECT t.id, t.name, tc.name, tc.color, t.usage_count
 		 FROM tags t
 		 JOIN tag_categories tc ON tc.id = t.category_id
-		 WHERE tc.name = ? AND t.name LIKE ? AND t.is_alias = 0
+		 WHERE tc.name = ? AND t.name LIKE ? ESCAPE '\' AND t.is_alias = 0
 		 ORDER BY t.usage_count DESC
 		 LIMIT ?`,
-		categoryName, prefix+"%", limit,
+		categoryName, escapeLikeMeta(prefix)+"%", limit,
 	)
 	if err != nil {
 		return nil, err
@@ -2028,56 +2063,6 @@ func (s *Service) RenameTag(id int64, newName string) error {
 	}
 	_, err = s.db.Write.Exec(`UPDATE tags SET name = ? WHERE id = ?`, normalized, id)
 	return err
-}
-
-// MergeGeneralIntoCategorized scans general-category tags whose name has
-// exactly one non-general non-meta counterpart and merges the general
-// tag into that counterpart via MergeTags. General tags carrying any
-// manual image_tags row are skipped (explicit user intent). Returns the
-// number of tags merged.
-func (s *Service) MergeGeneralIntoCategorized() (int, error) {
-	rows, err := s.db.Read.Query(`
-		SELECT g.id, c.id
-		FROM tags g
-		JOIN tag_categories gc ON gc.id = g.category_id
-		JOIN tags c ON c.name = g.name AND c.is_alias = 0 AND c.id != g.id
-		JOIN tag_categories cc ON cc.id = c.category_id
-		WHERE g.is_alias = 0
-		  AND gc.name = 'general'
-		  AND cc.name NOT IN ('general', 'meta')
-		  AND NOT EXISTS (
-		      SELECT 1 FROM image_tags it
-		      WHERE it.tag_id = g.id AND it.is_auto = 0
-		  )
-		  AND (
-		      SELECT COUNT(*) FROM tags t2
-		      JOIN tag_categories tc2 ON tc2.id = t2.category_id
-		      WHERE t2.name = g.name AND t2.is_alias = 0
-		        AND tc2.name NOT IN ('general', 'meta')
-		  ) = 1`)
-	if err != nil {
-		return 0, err
-	}
-	type pair struct{ aliasID, canonID int64 }
-	var pairs []pair
-	for rows.Next() {
-		var p pair
-		if err := rows.Scan(&p.aliasID, &p.canonID); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		pairs = append(pairs, p)
-	}
-	rows.Close()
-
-	merged := 0
-	for _, p := range pairs {
-		if err := s.MergeTags(p.aliasID, p.canonID); err != nil {
-			return merged, err
-		}
-		merged++
-	}
-	return merged, nil
 }
 
 // ChangeTagCategory moves a tag to a different category. Returns

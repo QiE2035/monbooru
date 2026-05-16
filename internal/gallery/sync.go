@@ -55,6 +55,15 @@ type SeriesCount struct {
 	Count  int
 }
 
+// SourceLabelCount is one row of the sidebar's Sources section: a
+// per-image source label and the count of non-missing image rows
+// carrying it. Mirrors SeriesCount; the column is partial-indexed on
+// `source != ''` so the read hits it directly.
+type SourceLabelCount struct {
+	Source string
+	Count  int
+}
+
 // SeriesCountsQuery returns the top series labels (by row count desc)
 // across non-missing rows of any file type. Empty series strings are
 // excluded - the index is partial on `series != ''` so the read hits
@@ -76,6 +85,34 @@ func SeriesCountsQuery(database *db.DB, limit int) ([]SeriesCount, error) {
 	for rows.Next() {
 		var sc SeriesCount
 		if err := rows.Scan(&sc.Series, &sc.Count); err != nil {
+			return out, err
+		}
+		out = append(out, sc)
+	}
+	return out, rows.Err()
+}
+
+// SourceLabelCountsQuery returns the top source labels (by row count
+// desc) across non-missing rows. Empty source strings are excluded;
+// idx_images_source is partial on `source != ''` so the seek skips
+// untouched rows. Sorted Count desc, then alphabetical for a
+// deterministic sidebar.
+func SourceLabelCountsQuery(database *db.DB, limit int) ([]SourceLabelCount, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := database.Read.Query(
+		`SELECT source, COUNT(*) c FROM images
+		 WHERE is_missing = 0 AND source != ''
+		 GROUP BY source ORDER BY c DESC, source ASC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SourceLabelCount
+	for rows.Next() {
+		var sc SourceLabelCount
+		if err := rows.Scan(&sc.Source, &sc.Count); err != nil {
 			return out, err
 		}
 		out = append(out, sc)
@@ -525,13 +562,17 @@ func selectImagesToMarkMissing(database *db.DB, foundPaths map[string]struct{}) 
 // markImagesMissingChunked flips is_missing=1 for the supplied ids in
 // 500-row chunks. Per-id UPDATEs through the single-writer pool used
 // to dominate Phase 3 on libraries where many files had gone away.
-// Returns the number of ids actually marked; ctx cancellation truncates
-// the count to the last processed chunk boundary.
+// Returns the number of rows the database actually flipped: sums
+// RowsAffected per chunk so a writer-contention error on a single
+// chunk doesn't drift the user-visible "N missing" count out from
+// under the operator. The first chunk-level error short-circuits the
+// loop and surfaces alongside the partial total.
 func markImagesMissingChunked(ctx context.Context, database *db.DB, ids []int64) (int, error) {
 	const chunkSize = 500
+	marked := 0
 	for start := 0; start < len(ids); start += chunkSize {
 		if ctx.Err() != nil {
-			return start, ctx.Err()
+			return marked, ctx.Err()
 		}
 		end := start + chunkSize
 		if end > len(ids) {
@@ -544,13 +585,18 @@ func markImagesMissingChunked(ctx context.Context, database *db.DB, ids []int64)
 		for i, id := range chunk {
 			args[i] = id
 		}
-		if _, wErr := database.Write.Exec(
+		res, wErr := database.Write.Exec(
 			`UPDATE images SET is_missing = 1 WHERE id IN (`+placeholders+`)`, args...,
-		); wErr != nil {
+		)
+		if wErr != nil {
 			logx.Warnf("sync: mark missing chunk: %v", wErr)
+			return marked, fmt.Errorf("mark missing chunk: %w", wErr)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			marked += int(n)
 		}
 	}
-	return len(ids), nil
+	return marked, nil
 }
 
 // applyInPlaceEdit handles the case where sync re-hashed a known path
@@ -623,6 +669,8 @@ func applyInPlaceEdit(database *db.DB, galleryPath, thumbnailsPath, path, fileTy
 
 	if err := Generate(path, thumbnailsPath, imageID, fileType); err != nil {
 		logx.Warnf("in-place edit: thumbnail regen for %q: %v", path, err)
+	} else if err := RecomputeAndStorePhash(context.Background(), database, imageID, thumbnailsPath); err != nil {
+		logx.Warnf("in-place edit: phash recompute for %q: %v", path, err)
 	}
 	logx.Infof("sync: applied in-place edit to image id=%d at %q (sha %s)", imageID, path, newSHA)
 	return nil

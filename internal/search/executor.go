@@ -12,6 +12,7 @@ import (
 
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/models"
+	"github.com/leqwin/monbooru/internal/relations"
 	"github.com/leqwin/monbooru/internal/searchkw"
 	"github.com/leqwin/monbooru/internal/tags"
 )
@@ -159,11 +160,14 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 			indexHint = " INDEXED BY idx_images_ingested_visible"
 		}
 	}
+	if h := columnFilterIndexHint(q.Expr); h != "" {
+		indexHint = h
+	}
 
 	dataSQL := fmt.Sprintf(
 		`SELECT i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
 		        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
-		        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.page_count, i.series, i.series_order, i.ingested_at
+		        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.page_count, i.duration_seconds, i.series, i.series_order, i.ingested_at
 		 FROM images i%s
 		 WHERE %s
 		 %s
@@ -185,13 +189,14 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 		var img models.Image
 		var isMissing, isFav, isInbox int
 		var width, height, pageCount, seriesOrder *int
+		var durationSec *float64
 		var autoTaggedAt *string
 		var ingestedAt string
 
 		if err := rows.Scan(
 			&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
 			&width, &height, &img.FileSize, &isMissing, &isFav,
-			&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &img.Series, &seriesOrder, &ingestedAt,
+			&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &durationSec, &img.Series, &seriesOrder, &ingestedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -201,6 +206,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 		img.Width = width
 		img.Height = height
 		img.PageCount = pageCount
+		img.DurationSec = durationSec
 		img.SeriesOrder = seriesOrder
 		if autoTaggedAt != nil {
 			t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
@@ -281,7 +287,7 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 	sql := fmt.Sprintf(
 		`SELECT i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
 		        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
-		        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.page_count, i.series, i.series_order, i.ingested_at
+		        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.page_count, i.duration_seconds, i.series, i.series_order, i.ingested_at
 		 FROM images i WHERE i.id IN (%s)`, placeholders,
 	)
 	rows, err := database.Read.Query(sql, args...)
@@ -295,12 +301,13 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 		var img models.Image
 		var isMissing, isFav, isInbox int
 		var width, height, pageCount, seriesOrder *int
+		var durationSec *float64
 		var autoTaggedAt *string
 		var ingestedAt string
 		if err := rows.Scan(
 			&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
 			&width, &height, &img.FileSize, &isMissing, &isFav,
-			&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &img.Series, &seriesOrder, &ingestedAt,
+			&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &durationSec, &img.Series, &seriesOrder, &ingestedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -310,6 +317,7 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 		img.Width = width
 		img.Height = height
 		img.PageCount = pageCount
+		img.DurationSec = durationSec
 		img.SeriesOrder = seriesOrder
 		if autoTaggedAt != nil {
 			t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
@@ -374,10 +382,21 @@ func fetchSortedMatchIDs(database *db.DB, indexHint, where string, args []any, o
 
 // isPureTagExpr reports whether expr's data SELECT should pin
 // idx_images_ingested_visible (or _filesize_visible) instead of
-// letting the planner pick. Tag leaves and the
-// cat:/rating:/tagged:/autotagged:/inbox: filter keywords qualify;
-// fav / source / folder / width and friends have their own selective
-// column index so the planner picks fine on its own.
+// letting the planner pick. Tag leaves and the cat:/rating:/tagged:/
+// autotagged:/inbox: filter keywords qualify because their per-row
+// EXISTS rides idx_image_tags_image cleanly. The v1.7.2 metadata
+// keywords without a covering column index (width, height, date,
+// ratio, pages, tagcount) also qualify: each evaluates to a per-row
+// column read or a small predicate, so walking the partial sort
+// index in (ingested_at, id) order with the predicate as a filter
+// beats the fall-back to idx_images_missing + USE TEMP B-TREE FOR
+// ORDER BY. fav / source / source_type (ai) / folder / file_type
+// (mime/type) / file_size / collection / hash / duration /
+// origin (via) / sd-metadata-backed (name / prompt / model /
+// sampler / seed) all have their own selective column or partial
+// index so the planner picks fine on its own; pinning the sort
+// index there forces a 1 M-row scan that the seek would otherwise
+// short-circuit.
 func isPureTagExpr(expr Expr) bool {
 	switch e := expr.(type) {
 	case AndExpr:
@@ -390,7 +409,8 @@ func isPureTagExpr(expr Expr) bool {
 		return true
 	case FilterExpr:
 		switch e.Key {
-		case "cat", "rating", "tagged", "autotagged", "inbox":
+		case "cat", "rating", "tagged", "autotagged", "inbox",
+			"width", "height", "date", "ratio", "pages", "tagcount":
 			return true
 		}
 		return !searchkw.IsKeyword(e.Key)
@@ -413,6 +433,43 @@ func containsMissingFilter(expr Expr) bool {
 		return e.Key == "missing"
 	}
 	return false
+}
+
+// columnFilterIndexHint returns the INDEXED BY clause for a single
+// column-filter at the root of expr where a partial visible index
+// would be more selective than the planner's default fallback to
+// idx_images_missing + TEMP B-TREE FOR ORDER BY. Returns "" when
+// the expression isn't a single root-filter that needs the hint.
+//
+// The COLLATE NOCASE equality predicates (`source = ? COLLATE
+// NOCASE`, `series = ? COLLATE NOCASE`, `folder_path = ? COLLATE
+// NOCASE`) cannot ride a BINARY-collated index, so without the hint
+// the planner skips the wider partial idx_images_source / series /
+// folder_visible indexes and walks the visibility-only set. The
+// matching NOCASE-collated partials let the seek run directly;
+// pinning them avoids the planner's selectivity-based fall-back when
+// stats predict a large match set.
+func columnFilterIndexHint(expr Expr) string {
+	f, ok := expr.(FilterExpr)
+	if !ok || f.Val == "" {
+		return ""
+	}
+	switch f.Key {
+	case "source":
+		return " INDEXED BY idx_images_source_nocase_visible"
+	case "collection":
+		return " INDEXED BY idx_images_series_nocase"
+	case "ai":
+		// ai:none matches the schema default and runs against most
+		// rows on a typical library. Pin the sort index so the data
+		// SELECT walks (ingested_at, id) order and stops at LIMIT
+		// instead of seeking idx_images_source_type_visible and
+		// temp-sorting every visible row by ingested_at.
+		if strings.ToLower(f.Val) == "none" {
+			return " INDEXED BY idx_images_ingested_visible"
+		}
+	}
+	return ""
 }
 
 // containsTagPredicate reports whether expr carries a node whose
@@ -708,9 +765,10 @@ func collectAndedTags(expr Expr) []TagExpr {
 // `AND image_id >= ?` so the materialisation is capped to the recent
 // id range covering the requested page.
 type andDriverLeg struct {
-	leaf    TagExpr
-	ids     []int64
-	idBound int64
+	leaf      TagExpr
+	ids       []int64
+	idBound   int64
+	idBoundHi int64
 }
 
 // pickAndDriverTag chooses one or more ANDed TagExpr leaves to feed the
@@ -811,6 +869,18 @@ func pickAndDriverTag(database *db.DB, expr Expr, allowSingleLiteral bool) ([]an
 		return []andDriverLeg{{leaf: legs[smallestIdx].leaf, ids: legs[smallestIdx].ids}}, true
 	}
 
+	// Random sort with a single popular leaf: the data SELECT's
+	// ORDER BY ((id * mixed) & ...) has no covering index, so the slow
+	// path TEMP-B-TREEs every visible row carrying the predicate. The
+	// IN-driver materialisation walks the same row count via
+	// idx_image_tags_tag_image and feeds the temp sort a bounded id
+	// stream instead of EXISTS-probing every visible image - the gate
+	// stays scoped to random sort so indexed-sort callers keep their
+	// existing planner choice on a single popular literal.
+	if allowSingleLiteral && len(legs) == 1 {
+		return []andDriverLeg{{leaf: legs[0].leaf, ids: legs[0].ids}}, true
+	}
+
 	// Multi-leg INTERSECT path: every leaf is above the threshold, so
 	// the slow EXISTS scan walks visible images for every candidate
 	// the outer cursor visits. INTERSECTing each leaf's image_id stream
@@ -906,12 +976,13 @@ func resolveDriverCanonicals(database *db.DB, leaf TagExpr) ([]int64, int64, boo
 // so the bound is the matching intersection of every materialised
 // leaf - the popular-AND shape's path off the slow per-row EXISTS scan.
 //
-// idBound, when set per-leg, appends `AND image_id >= ?` to that leg's
-// subquery so the materialisation is capped to the recent id range. The
-// caller computes the bound from the partial idx_images_ingested_visible
-// for newest-sort pages where id is monotonic with ingested_at; the
-// bounded INTERSECT keeps just the recent slice that the LIMIT page is
-// drawn from.
+// idBound / idBoundHi, when set per-leg, append `AND image_id >= ?`
+// (and optionally `AND image_id <= ?`) to that leg's subquery so the
+// materialisation is capped to the caller-supplied id range. The
+// newest-sort callers use the lower bound to keep just the recent
+// slice; ExecuteAdjacent's bucket gate uses both bounds to keep the
+// materialised set inside the bucket window so the per-row EXISTS
+// it would otherwise pay collapses to a small IN check.
 func applyAndDriver(where string, args []any, legs []andDriverLeg) (string, []any) {
 	if len(legs) == 0 {
 		return where, args
@@ -928,6 +999,10 @@ func applyAndDriver(where string, args []any, legs []andDriverLeg) (string, []an
 		if leg.idBound > 0 {
 			parts[i] += " AND image_id >= ?"
 			driverArgs = append(driverArgs, leg.idBound)
+		}
+		if leg.idBoundHi > 0 {
+			parts[i] += " AND image_id <= ?"
+			driverArgs = append(driverArgs, leg.idBoundHi)
 		}
 	}
 	var driverWhere string
@@ -1522,6 +1597,21 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 	var driverLegs []andDriverLeg
 	if !bucketed {
 		driverLegs, _ = pickAndDriverTag(database, q.Expr, q.Sort == "random")
+	} else {
+		// Bucket gate fired. Pre-resolve any wildcard tag predicate
+		// to its canonical id list and bound the materialisation to
+		// the bucket window so the per-row EXISTS the slow path would
+		// pay (one image_tags seek per matching tag_id, per bucket
+		// row) collapses to a small IN check on the cursor's outer
+		// walk. A popular substring or prefix wildcard at root would
+		// otherwise pay ~30 tag_id seeks per each of 2 000 bucket
+		// rows; with the bucket bound the materialised set drops to
+		// whatever lives inside that 2 000-id window.
+		driverLegs, _ = pickAndDriverTag(database, q.Expr, q.Sort == "random")
+		for i := range driverLegs {
+			driverLegs[i].idBound = bucketLo
+			driverLegs[i].idBoundHi = bucketHi
+		}
 	}
 	where, args, hasMissingFilter := buildWhereDBDriver(q.Expr, database, driverLegs)
 	where, args = applyAndDriver(where, args, driverLegs)
@@ -1605,6 +1695,17 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		case "", "newest":
 			indexHint = " INDEXED BY idx_images_ingested_visible"
 		}
+	}
+	// Folder back_q: pin the folder-partial index so the planner seeks
+	// the folder range instead of falling back on idx_images_missing
+	// and scanning every visible row. The cursor's ORDER BY runs as a
+	// TEMP B-TREE sort over the folder's rows, which is bounded - the
+	// alternative pays the sort over the whole library.
+	if f, ok := q.Expr.(FilterExpr); ok && f.Key == "folder" && f.Val != "" {
+		indexHint = " INDEXED BY idx_images_folder_visible"
+	}
+	if h := columnFilterIndexHint(q.Expr); h != "" {
+		indexHint = h
 	}
 
 	lookup := func(cursorCmp, sort string) *int64 {
@@ -1715,6 +1816,12 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 		case "", "newest":
 			indexHint = " INDEXED BY idx_images_ingested_visible"
 		}
+	}
+	if f, ok := q.Expr.(FilterExpr); ok && f.Key == "folder" && f.Val != "" {
+		indexHint = " INDEXED BY idx_images_folder_visible"
+	}
+	if h := columnFilterIndexHint(q.Expr); h != "" {
+		indexHint = h
 	}
 
 	sql := fmt.Sprintf(
@@ -2114,6 +2221,62 @@ func (b *whereBuilder) resolveRatingIDs() {
 	b.ratingUsage = usage
 }
 
+// resolveCategoryTagByName reads the canonical tag_ids that match
+// the named category-qualified tag name (e.g. character:hatsune_miku
+// resolves to {miku} plus any aliases that point at it). Returns
+// ok=false on a nil-db builder or on a query error so callers fall
+// back to the 2-table join shape.
+func (b *whereBuilder) resolveCategoryTagByName(category, name string) ([]int64, bool) {
+	if b.db == nil || category == "" || name == "" {
+		return nil, false
+	}
+	rows, err := b.db.Read.Query(
+		`SELECT DISTINCT COALESCE(t.canonical_tag_id, t.id)
+		   FROM tags t
+		   JOIN tag_categories tc ON tc.id = t.category_id
+		  WHERE t.name = ? AND tc.name = ?`,
+		name, category,
+	)
+	if err != nil {
+		return nil, false
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, false
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false
+	}
+	return ids, true
+}
+
+// inlineImageTagsTagIDExists emits an EXISTS predicate against
+// image_tags that checks the per-image's tag_id is in the supplied
+// id list. The ids are inlined as %d literals so the planner sees a
+// constant predicate it can short-circuit, and so the predicate
+// rides idx_image_tags_image (image_id, tag_id) without dragging
+// tags / tag_categories into the per-row evaluation.
+func inlineImageTagsTagIDExists(ids []int64) string {
+	if len(ids) == 0 {
+		return "1=0"
+	}
+	var b strings.Builder
+	b.WriteString("EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = i.id AND it.tag_id IN (")
+	for i, id := range ids {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "%d", id)
+	}
+	b.WriteString("))")
+	return b.String()
+}
+
 // imageIDExists builds an EXISTS predicate against the per-image-ids
 // subquery FROM <fromBody> WHERE <where>. alias qualifies image_id;
 // where omits the alias.image_id = i.id link, which the helper supplies.
@@ -2310,6 +2473,14 @@ func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
 		if val == "any" {
 			return "(i.source_type = 'a1111' OR i.source_type = 'comfyui' OR i.source_type = 'a1111,comfyui')"
 		}
+		// "none" is the schema default for non-AI images and is never
+		// combined with another tool in source_type, so it collapses to
+		// a single-column equality the partial source_type_visible
+		// index can seek - the four-LIKE shape below would force the
+		// planner past idx_images_source_type onto idx_images_missing.
+		if val == "none" {
+			return "i.source_type = 'none'"
+		}
 		b.args = append(b.args, val, "%,"+val, val+",%", "%,"+val+",%")
 		return "(i.source_type = ? OR i.source_type LIKE ? OR i.source_type LIKE ? OR i.source_type LIKE ?)"
 
@@ -2318,9 +2489,11 @@ func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
 		// Empty value matches images that carry no source - common for
 		// freshly-ingested files - so the user can triage them with
 		// `source:""`. The bare token form `source:` (no value) is also
-		// useful as the empty-string predicate.
+		// useful as the empty-string predicate. NOCASE so a user who
+		// wrote "Pixiv" once and types `source:pixiv` later still
+		// finds the row.
 		b.args = append(b.args, e.Val)
-		return "i.source = ?"
+		return "i.source = ? COLLATE NOCASE"
 
 	case "cat":
 		b.args = append(b.args, e.Val)
@@ -2406,9 +2579,11 @@ func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
 		// "series" surface, generalised for plain image groupings).
 		// Schema column kept as `series` for backwards compatibility
 		// with existing databases; only the user-facing keyword and
-		// payload field names carry the new vocabulary.
+		// payload field names carry the new vocabulary. NOCASE so a
+		// label saved as "My Comic Series" still matches the user
+		// typing `collection:"my comic series"`.
 		b.args = append(b.args, e.Val)
-		return "i.series = ?"
+		return "i.series = ? COLLATE NOCASE"
 
 	case "pages":
 		op, n, ok := parseIntComp(e.Val)
@@ -2419,6 +2594,178 @@ func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
 		// COALESCE so non-manga rows (NULL page_count) compare as 0;
 		// matches the spec contract that `pages:>=1` excludes images.
 		return fmt.Sprintf("COALESCE(i.page_count, 0) %s ?", op)
+
+	case "name":
+		// Substring match against the filename segment after the last
+		// "/", so a folder named "vacation" doesn't match every file
+		// inside it. Empty value matches nothing (a bare `name:` is
+		// unlikely to be useful and would otherwise alias to "any").
+		// images.basename_lower is the indexed VIRTUAL column over
+		// lower(basename(canonical_path)); reading it directly avoids
+		// a per-row basename() call.
+		//
+		// SHA-256 duplicates land in the gallery as additional
+		// `image_paths` alias rows; the canonical_path-only match
+		// would miss any image found-but-renamed under a second
+		// filename even though the detail page lists the alias. The
+		// EXISTS clause keeps search-side parity with the single-
+		// image GET so typing `name:<alias-basename>` finds the
+		// image whose alias carries that name.
+		if e.Val == "" {
+			return "1=0"
+		}
+		pat := "%" + escapeLike(strings.ToLower(e.Val)) + "%"
+		b.args = append(b.args, pat, pat)
+		return `(i.basename_lower LIKE ? ESCAPE '\' ` +
+			`OR EXISTS (SELECT 1 FROM image_paths ip WHERE ip.image_id = i.id AND ip.is_canonical = 0 AND lower(basename(ip.path)) LIKE ? ESCAPE '\'))`
+
+	case "size":
+		op, n, ok := parseSizeComp(e.Val)
+		if !ok {
+			return "1=0"
+		}
+		b.args = append(b.args, n)
+		return fmt.Sprintf("i.file_size %s ?", op)
+
+	case "mime":
+		// Accept either the bare file_type bucket ("png") or the
+		// `image/png` / `video/webm` form. Anything else falls through
+		// to the empty result `1=0`. Multiple values comma-separated
+		// like `mime:png,jpeg` build an IN list.
+		val := strings.TrimPrefix(strings.ToLower(e.Val), "image/")
+		val = strings.TrimPrefix(val, "video/")
+		if val == "" {
+			return "1=0"
+		}
+		// Comma-separated union; mirrors the type: filter's comma form.
+		allowed := map[string]bool{
+			"jpeg": true, "png": true, "webp": true, "gif": true,
+			"mp4": true, "webm": true, "cbz": true,
+		}
+		seen := map[string]bool{}
+		for _, v := range strings.Split(val, ",") {
+			v = strings.TrimSpace(v)
+			if allowed[v] {
+				seen[v] = true
+			}
+		}
+		if len(seen) == 0 {
+			return "1=0"
+		}
+		quoted := make([]string, 0, len(seen))
+		for ft := range seen {
+			quoted = append(quoted, "'"+ft+"'")
+		}
+		sort.Strings(quoted)
+		return "i.file_type IN (" + strings.Join(quoted, ", ") + ")"
+
+	case "ratio":
+		op, n, ok := parseFloatComp(e.Val)
+		if !ok {
+			return "1=0"
+		}
+		b.args = append(b.args, n)
+		// Width and height are nullable on edge cases (cbz cover failed
+		// to decode); guard against division-by-zero with NULLIF so the
+		// row drops out instead of erroring.
+		return fmt.Sprintf("(CAST(i.width AS REAL) / NULLIF(i.height, 0)) %s ?", op)
+
+	case "tagcount":
+		op, n, ok := parseIntComp(e.Val)
+		if !ok {
+			return "1=0"
+		}
+		b.args = append(b.args, n)
+		return fmt.Sprintf("(SELECT COUNT(*) FROM image_tags it WHERE it.image_id = i.id) %s ?", op)
+
+	case "duration":
+		op, n, ok := parseFloatComp(e.Val)
+		if !ok {
+			return "1=0"
+		}
+		b.args = append(b.args, n)
+		// NULL duration_seconds (non-videos and pre-migration rows)
+		// drops out of any comparison via the IS NOT NULL guard; the
+		// COALESCE form pages: uses would force them into "0 seconds"
+		// matches, which silently advertises every image as a 0-second
+		// clip.
+		return fmt.Sprintf("(i.duration_seconds IS NOT NULL AND i.duration_seconds %s ?)", op)
+
+	case "hash":
+		if e.Val == "" {
+			return "1=0"
+		}
+		b.args = append(b.args, strings.ToLower(e.Val))
+		return "i.sha256 = ?"
+
+	case "id":
+		n, err := strconv.ParseInt(strings.TrimSpace(e.Val), 10, 64)
+		if err != nil {
+			return "1=0"
+		}
+		b.args = append(b.args, n)
+		return "i.id = ?"
+
+	case "phash":
+		return b.buildPhashFilter(e)
+
+	case "relation":
+		return b.buildRelationFilter(e)
+
+	case "prompt":
+		if e.Val == "" {
+			return "1=0"
+		}
+		// Substring match across both SD and ComfyUI metadata tables;
+		// either is enough for the row to qualify. Mirrors the
+		// generated: filter's UNION-of-tables shape.
+		pat := "%" + escapeLike(e.Val) + "%"
+		b.args = append(b.args, pat, pat)
+		sm := b.imageIDExists("sd_metadata sm", "sm", `sm.prompt LIKE ? ESCAPE '\'`, false)
+		cm := b.imageIDExists("comfyui_metadata cm", "cm", `cm.prompt LIKE ? ESCAPE '\'`, false)
+		return "(" + sm + " OR " + cm + ")"
+
+	case "model":
+		if e.Val == "" {
+			return "1=0"
+		}
+		pat := "%" + escapeLike(e.Val) + "%"
+		b.args = append(b.args, pat, pat)
+		sm := b.imageIDExists("sd_metadata sm", "sm", `sm.model LIKE ? ESCAPE '\'`, false)
+		cm := b.imageIDExists("comfyui_metadata cm", "cm", `cm.model_checkpoint LIKE ? ESCAPE '\'`, false)
+		return "(" + sm + " OR " + cm + ")"
+
+	case "sampler":
+		if e.Val == "" {
+			return "1=0"
+		}
+		pat := "%" + escapeLike(e.Val) + "%"
+		b.args = append(b.args, pat, pat)
+		sm := b.imageIDExists("sd_metadata sm", "sm", `sm.sampler LIKE ? ESCAPE '\'`, false)
+		cm := b.imageIDExists("comfyui_metadata cm", "cm", `cm.sampler LIKE ? ESCAPE '\'`, false)
+		return "(" + sm + " OR " + cm + ")"
+
+	case "seed":
+		// Seeds are 64-bit ints in both metadata tables. Accept either
+		// the bare integer or any int-parseable form; anything else
+		// matches nothing. The IN-subquery shape lets the planner
+		// answer the seek through the partial idx_sd_metadata_seed /
+		// idx_comfyui_metadata_seed indexes; an EXISTS form would walk
+		// images first and probe the metadata tables by image_id
+		// rowid, missing the seed indexes.
+		seed, err := strconv.ParseInt(strings.TrimSpace(e.Val), 10, 64)
+		if err != nil {
+			return "1=0"
+		}
+		b.args = append(b.args, seed, seed)
+		return "(i.id IN (SELECT image_id FROM sd_metadata WHERE seed = ?) OR i.id IN (SELECT image_id FROM comfyui_metadata WHERE seed = ?))"
+
+	case "via":
+		if e.Val == "" {
+			return "1=0"
+		}
+		b.args = append(b.args, e.Val)
+		return "i.origin = ?"
 
 	case "tagged":
 		return b.imageTagsPredicate("", e.Val != "true")
@@ -2435,16 +2782,18 @@ func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
 		}
 		// Recursive match: this folder or anywhere beneath it. Escape
 		// LIKE metacharacters so a folder named `foo_bar` only matches
-		// itself (not `fooXbar`).
+		// itself (not `fooXbar`). NOCASE so the help promise of
+		// case-insensitive search holds for operator-edited folder
+		// paths the same way it holds for tag names.
 		b.args = append(b.args, e.Val, escapeLike(e.Val)+"/%")
-		return `(i.folder_path = ? OR i.folder_path LIKE ? ESCAPE '\')`
+		return `(i.folder_path = ? COLLATE NOCASE OR i.folder_path LIKE ? ESCAPE '\')`
 
 	case "folderonly":
 		if e.Val == "" {
 			return "i.folder_path = ''"
 		}
 		b.args = append(b.args, e.Val)
-		return "i.folder_path = ?"
+		return "i.folder_path = ? COLLATE NOCASE"
 
 	case "generated":
 		b.args = append(b.args, e.Val, e.Val)
@@ -2494,15 +2843,38 @@ func (b *whereBuilder) buildFilterExpr(e FilterExpr) string {
 		// ("character:cat") or a literal colon-bearing tag name
 		// ("nier:automata", ":3"). If the key matches a real category
 		// we split; otherwise the whole "key:val" is matched as a
-		// literal tag name.
+		// literal tag name. Tag names round-trip through the create
+		// path lowercased, so the value half gets the same treatment
+		// before the equality compare - otherwise `character:Asuka`
+		// misses a row whose tag was stored as `asuka`. A bare
+		// `<category>:` with no value collapses to "match any image
+		// carrying a tag in that category", mirroring `cat:<name>`;
+		// without this rewrite the gallery surface silently matched
+		// every image.
+		if b.categoryExists(e.Key) {
+			if e.Val == "" {
+				b.args = append(b.args, e.Key)
+				return b.imageIDExists("image_tags it JOIN tags t ON it.tag_id = t.id JOIN tag_categories tc ON tc.id = t.category_id", "it", "tc.name = ?", false)
+			}
+			// Pre-resolve `<category>:<name>` to canonical tag IDs so
+			// the per-row predicate is one image_tags seek + small IN
+			// check instead of a 2-table join evaluated under every
+			// outer cursor iter. ExecuteAdjacent's bucket walk pays
+			// this 2 000 times per random-cat back_q render and the
+			// resolver result is constant across the walk.
+			if ids, ok := b.resolveCategoryTagByName(e.Key, strings.ToLower(e.Val)); ok {
+				if len(ids) == 0 {
+					return "1=0"
+				}
+				return inlineImageTagsTagIDExists(ids)
+			}
+			b.args = append(b.args, strings.ToLower(e.Val), e.Key)
+			return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(t.canonical_tag_id, t.id) FROM tags t JOIN tag_categories tc ON tc.id = t.category_id WHERE t.name = ? AND tc.name = ?)`, false)
+		}
 		if e.Val == "" {
 			return "1=1"
 		}
-		if b.categoryExists(e.Key) {
-			b.args = append(b.args, e.Val, e.Key)
-			return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(t.canonical_tag_id, t.id) FROM tags t JOIN tag_categories tc ON tc.id = t.category_id WHERE t.name = ? AND tc.name = ?)`, false)
-		}
-		b.args = append(b.args, e.Key+":"+e.Val)
+		b.args = append(b.args, strings.ToLower(e.Key+":"+e.Val))
 		return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(canonical_tag_id, id) FROM tags WHERE name = ?)`, false)
 	}
 }
@@ -2522,6 +2894,17 @@ func (b *whereBuilder) buildDateFilter(val string) string {
 	// Two-character operators must be checked before their one-character
 	// prefixes so `>=2026-05-14` doesn't match the `>` arm and strip a
 	// single char, leaving an unparseable `=2026-05-14`.
+	//
+	// `ingested_at` is stored as `YYYY-MM-DDTHH:MM:SSZ`; a bare day
+	// payload like `2026-05-14` is shorter than every real timestamp,
+	// so a plain lexicographic compare to it would treat the day as
+	// "the moment just before 00:00:00Z" and exclude every row from
+	// that day under `<=` (and include every row under `>`). The
+	// inclusive operators (`<=`, `>=`) extend the payload to the
+	// end-of-day boundary so `date:<=2026-05-14` actually catches the
+	// last image ingested at 23:59. The exclusive `>` does the same
+	// (matches: "ingested strictly after day X"); `<` keeps the bare
+	// day so it means "before midnight of day X".
 	for _, op := range []string{">=", "<=", ">", "<"} {
 		if !strings.HasPrefix(val, op) {
 			continue
@@ -2530,7 +2913,11 @@ func (b *whereBuilder) buildDateFilter(val string) string {
 		if !dateFilterRe.MatchString(date) {
 			return "1=0"
 		}
-		b.args = append(b.args, date)
+		bound := date
+		if (op == "<=" || op == ">") && !strings.Contains(date, "T") {
+			bound = date + "T23:59:59Z"
+		}
+		b.args = append(b.args, bound)
 		return "i.ingested_at " + op + " ?"
 	}
 	if idx := strings.Index(val, ".."); idx >= 0 {
@@ -2538,6 +2925,9 @@ func (b *whereBuilder) buildDateFilter(val string) string {
 		to := val[idx+2:]
 		if !dateFilterRe.MatchString(from) || !dateFilterRe.MatchString(to) {
 			return "1=0"
+		}
+		if !strings.Contains(to, "T") {
+			to = to + "T23:59:59Z"
 		}
 		b.args = append(b.args, from, to)
 		return "i.ingested_at BETWEEN ? AND ?"
@@ -2569,4 +2959,166 @@ func parseIntComp(val string) (string, int64, bool) {
 		return op, 0, false
 	}
 	return op, n, true
+}
+
+// parseFloatComp is the float-arg twin of parseIntComp. Used by ratio:
+// and duration:. Rejects empty / non-numeric input the same way.
+func parseFloatComp(val string) (string, float64, bool) {
+	op, raw := parseCompOp(val)
+	n, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return op, 0, false
+	}
+	return op, n, true
+}
+
+// parseSizeComp parses a size comparison value like ">=10MB", "<2GiB",
+// "= 500K", "1024" (bare bytes). Suffixes are case-insensitive and
+// accept either the SI form (KB, MB, GB, TB) or the binary form (KiB,
+// MiB, ...). All resolve to powers of 1024 for parity with the rest of
+// the UI (humanBytes uses 1024-based MiB). Bare numbers are bytes.
+// Returns ok=false on parse failures so callers emit `1=0`.
+func parseSizeComp(val string) (string, int64, bool) {
+	op, raw := parseCompOp(val)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return op, 0, false
+	}
+	// Split numeric prefix from optional unit suffix.
+	i := 0
+	for i < len(raw) {
+		c := raw[i]
+		if (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+' {
+			i++
+			continue
+		}
+		break
+	}
+	numStr := raw[:i]
+	unit := strings.TrimSpace(strings.ToLower(raw[i:]))
+	n, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return op, 0, false
+	}
+	mult := int64(1)
+	switch unit {
+	case "", "b":
+		mult = 1
+	case "k", "kb", "kib":
+		mult = 1 << 10
+	case "m", "mb", "mib":
+		mult = 1 << 20
+	case "g", "gb", "gib":
+		mult = 1 << 30
+	case "t", "tb", "tib":
+		mult = 1 << 40
+	default:
+		return op, 0, false
+	}
+	return op, int64(n * float64(mult)), true
+}
+
+// buildPhashFilter handles the three phash: forms documented in
+// RELATIONS.md §9.1:
+//
+//   - bare `phash:` matches every image that has a phash (was once
+//     ingested with a decodable thumbnail). The negation `-phash:`
+//     is the IS NULL inverse.
+//   - `phash:<16hex>` is an exact-equality lookup on idx_images_phash.
+//   - `phash:<16hex>~<d>` matches every image within Hamming distance
+//     d. When a BK-tree is wired for the gallery it answers the lookup
+//     directly; otherwise the SQL popcount fallback scans phashes.
+//
+// Malformed input collapses to `1=0` so a typo never bleeds into the
+// rest of the query as an empty-match.
+func (b *whereBuilder) buildPhashFilter(e FilterExpr) string {
+	val := strings.TrimSpace(e.Val)
+	if val == "" {
+		return "i.phash IS NOT NULL"
+	}
+	hexPart := val
+	distance := -1
+	if idx := strings.IndexByte(val, '~'); idx >= 0 {
+		hexPart = val[:idx]
+		d, err := strconv.Atoi(strings.TrimSpace(val[idx+1:]))
+		if err != nil || d < 0 || d > 64 {
+			return "1=0"
+		}
+		distance = d
+	}
+	hexPart = strings.TrimSpace(hexPart)
+	if len(hexPart) != 16 {
+		return "1=0"
+	}
+	u, err := strconv.ParseUint(hexPart, 16, 64)
+	if err != nil {
+		return "1=0"
+	}
+	phash := int64(u)
+	if distance < 0 {
+		b.args = append(b.args, phash)
+		return "i.phash = ?"
+	}
+	if b.db != nil {
+		if tree := relations.DefaultRegistry.Lookup(b.db); tree != nil {
+			if err := tree.EnsureBuilt(b.db); err == nil {
+				ids := tree.SearchWithinDistance(phash, distance)
+				if len(ids) == 0 {
+					return "1=0"
+				}
+				placeholders := make([]string, len(ids))
+				for i, id := range ids {
+					placeholders[i] = "?"
+					b.args = append(b.args, id)
+				}
+				return "i.id IN (" + strings.Join(placeholders, ", ") + ")"
+			}
+		}
+	}
+	// Fallback: SQL-side hammingdist scalar. Slower than the BK-tree on
+	// a 1M-row library but correct.
+	b.args = append(b.args, phash, distance)
+	return "(i.phash IS NOT NULL AND hammingdist(i.phash, ?) <= ?)"
+}
+
+// buildRelationFilter implements RELATIONS.md §9.2. Each vocabulary
+// value maps to an EXISTS / NOT-EXISTS over the matching relations
+// table; every clause rides a covering index, so cost is dominated
+// by the outer sort. `any` is the union, `none` is the NOT-any
+// inverse.
+func (b *whereBuilder) buildRelationFilter(e FilterExpr) string {
+	switch strings.ToLower(strings.TrimSpace(e.Val)) {
+	case "duplicate":
+		return "EXISTS (SELECT 1 FROM dup_group_members m WHERE m.image_id = i.id)"
+	case "original":
+		return "EXISTS (SELECT 1 FROM dup_groups g WHERE g.original_image_id = i.id)"
+	case "alternate":
+		return "EXISTS (SELECT 1 FROM alt_group_members m WHERE m.image_id = i.id)"
+	case "version":
+		return "EXISTS (SELECT 1 FROM version_edges v WHERE v.child_image_id = i.id OR v.parent_image_id = i.id)"
+	case "derivative":
+		return "EXISTS (SELECT 1 FROM derivative_edges d WHERE d.derivative_image_id = i.id)"
+	case "source":
+		return "EXISTS (SELECT 1 FROM derivative_edges d WHERE d.source_image_id = i.id)"
+	case "collection":
+		return "i.series IS NOT NULL AND i.series != ''"
+	case "any":
+		return relationAnyClause()
+	case "none":
+		return "NOT (" + relationAnyClause() + ")"
+	}
+	return "1=0"
+}
+
+// relationAnyClause is the union "this image carries any kind of
+// declared relation". Used by `relation:any` directly and by
+// `relation:none` as the negation.
+func relationAnyClause() string {
+	return strings.Join([]string{
+		"EXISTS (SELECT 1 FROM dup_group_members m WHERE m.image_id = i.id)",
+		"EXISTS (SELECT 1 FROM alt_group_members m WHERE m.image_id = i.id)",
+		"EXISTS (SELECT 1 FROM version_edges v WHERE v.child_image_id = i.id OR v.parent_image_id = i.id)",
+		"EXISTS (SELECT 1 FROM derivative_edges d WHERE d.derivative_image_id = i.id OR d.source_image_id = i.id)",
+		"(i.series IS NOT NULL AND i.series != '')",
+	}, " OR ")
 }

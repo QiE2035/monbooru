@@ -1,6 +1,7 @@
 package gallery
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"image"
@@ -186,8 +187,14 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 
 	var imgWidth, imgHeight *int
 	var pageCount *int
+	var durationSec *float64
 	var prefilledSeries string
 	var mangaMeta *models.MangaMetadata
+	if IsVideoType(fileType) {
+		if d, ok := ProbeDurationSeconds(path); ok {
+			durationSec = &d
+		}
+	}
 	if fileType == models.FileTypeCBZ {
 		archive, openErr := OpenManga(path)
 		if openErr != nil {
@@ -250,11 +257,11 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 
 	var imgID int64
 	insertErr := tx.QueryRow(
-		`INSERT INTO images (sha256, canonical_path, folder_path, file_type, width, height, file_size, source_type, origin, page_count, series)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO images (sha256, canonical_path, folder_path, file_type, width, height, file_size, source_type, origin, page_count, series, duration_seconds)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(sha256) DO NOTHING
 		 RETURNING id`,
-		hash, path, folderPath, fileType, toNullInt(imgWidth), toNullInt(imgHeight), fi.Size(), sourceType, origin, toNullInt(pageCount), prefilledSeries,
+		hash, path, folderPath, fileType, toNullInt(imgWidth), toNullInt(imgHeight), fi.Size(), sourceType, origin, toNullInt(pageCount), prefilledSeries, toNullFloat(durationSec),
 	).Scan(&imgID)
 
 	if insertErr == sql.ErrNoRows {
@@ -322,6 +329,12 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 
 	if err := Generate(path, thumbnailsPath, imgID, fileType); err != nil {
 		logx.Warnf("thumbnail generation failed for %q: %v", path, err)
+	} else if err := RecomputeAndStorePhash(context.Background(), database, imgID, thumbnailsPath); err != nil {
+		// Phash failures on a successful thumbnail are rare (decode
+		// shouldn't fail on a JPEG we just wrote). Log and continue -
+		// images.phash stays NULL and the row is invisible to the
+		// relations system until a future recompute lands.
+		logx.Warnf("phash compute failed for %q: %v", path, err)
 	}
 
 	img := &models.Image{
@@ -336,6 +349,7 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 		SourceType:    sourceType,
 		Origin:        origin,
 		PageCount:     pageCount,
+		DurationSec:   durationSec,
 		Series:        prefilledSeries,
 		IngestedAt:    time.Now().UTC(),
 	}
@@ -343,6 +357,13 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 }
 
 func toNullInt(v *int) interface{} {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func toNullFloat(v *float64) interface{} {
 	if v == nil {
 		return nil
 	}

@@ -7,8 +7,8 @@
           data-tag-name="{{.Name}}"
           onclick="applySearchSuggest(this.dataset.tagName)">
     <span class="suggest-name">{{.Name}}</span>
-    {{if .Description}}<span class="suggest-description">{{.Description}}</span><span class="suggest-sep">·</span>{{end}}
-    {{if .Category}}<span class="suggest-category">{{.Category}}</span>{{else}}<span class="suggest-count">{{.UsageCount}}</span>{{end}}
+    {{if .Description}}<span class="suggest-description">{{.Description}}</span>{{end}}
+    {{if not .Category}}<span class="suggest-count">{{.UsageCount}}</span>{{end}}
   </button>
   {{end}}
 </div>

@@ -39,7 +39,7 @@ func TestNextScheduledFire_TodayPassedRollsToTomorrow(t *testing.T) {
 	t.Parallel()
 	srv := newTestServer(t)
 	srv.cfgMu.Lock()
-	srv.cfg.Schedule = config.ScheduleConfig{Time: "01:00", MergeGeneralTags: true}
+	srv.cfg.Schedule = config.ScheduleConfig{Time: "01:00", RemoveOrphans: true}
 	srv.cfgMu.Unlock()
 
 	// "Now" at 10:00 → today's 01:00 is behind; should roll to tomorrow 01:00.
@@ -207,52 +207,6 @@ func TestScheduledRemoveOrphans_ReportsViaJobManager(t *testing.T) {
 	}
 }
 
-func TestScheduledMergeGeneral_MergesAutoGeneralIntoCategorized(t *testing.T) {
-	srv := newTestServer(t)
-	id := seedImage(t, srv, "merge.png", 10, 10)
-
-	cx := srv.Active()
-	var generalID, characterID int64
-	cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
-	cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='character'`).Scan(&characterID)
-	gen, _ := cx.TagSvc.GetOrCreateTag("auto_only_name", generalID)
-	cx.TagSvc.GetOrCreateTag("auto_only_name", characterID) // unique counterpart
-	conf := 0.7
-	if err := cx.TagSvc.AddTagToImage(id, gen.ID, true, &conf); err != nil {
-		t.Fatal(err)
-	}
-
-	// Warm the per-cx tag-count cache so the post-merge assertion can
-	// catch a missing InvalidateCaches call - without the warm load,
-	// the cache pointer would still be nil regardless.
-	if _, err := cx.TagCount(); err != nil {
-		t.Fatal(err)
-	}
-	preCount, _ := cx.TagCount()
-	if preCount == 0 {
-		t.Fatal("warm tag count must be > 0 for the post-merge invalidation assertion to be meaningful")
-	}
-
-	srv.scheduledMergeGeneral(cx)
-
-	got, err := cx.TagSvc.GetTag(gen.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got.IsAlias {
-		t.Error("scheduler merge-general should have aliased the general tag into its character counterpart")
-	}
-
-	// Pin the cache-hygiene contract: merge-general invalidates the
-	// per-cx caches so a Settings or sidebar hit afterwards sees the
-	// merged catalog state. The test asserts the cache's atomic
-	// pointer was nilled (re-load goes back to the DB on the next
-	// TagCount call).
-	if cx.tagCount.Load() != nil {
-		t.Errorf("scheduledMergeGeneral did not InvalidateCaches; tagCount cache still loaded")
-	}
-}
-
 func TestScheduledSync_IngestsNewFiles(t *testing.T) {
 	srv := newTestServer(t)
 	cx := srv.Active()
@@ -304,10 +258,9 @@ func TestRunScheduledActions_SkipsWhenJobRunning(t *testing.T) {
 	// Turn every schedule flag on so the actions would run if reached.
 	srv.cfgMu.Lock()
 	srv.cfg.Schedule = config.ScheduleConfig{
-		Time:             "01:00",
-		SyncGallery:      true,
-		RemoveOrphans:    true,
-		MergeGeneralTags: true,
+		Time:          "01:00",
+		SyncGallery:   true,
+		RemoveOrphans: true,
 	}
 	srv.cfgMu.Unlock()
 
@@ -388,11 +341,10 @@ func TestRunScheduledActions_ExecutesEnabledPhases(t *testing.T) {
 	srv := newTestServer(t)
 	srv.cfgMu.Lock()
 	srv.cfg.Schedule = config.ScheduleConfig{
-		Time:             "01:00",
-		SyncGallery:      true,
-		RemoveOrphans:    true,
-		RunAutoTaggers:   true, // no-op in non-tagger builds (noop.IsAvailable returns false)
-		MergeGeneralTags: true,
+		Time:           "01:00",
+		SyncGallery:    true,
+		RemoveOrphans:  true,
+		RunAutoTaggers: true, // no-op in non-tagger builds (noop.IsAvailable returns false)
 	}
 	srv.cfgMu.Unlock()
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -166,6 +167,12 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 			}
 			return *p
 		},
+		"phashHex": func(p *int64) string {
+			if p == nil {
+				return ""
+			}
+			return fmt.Sprintf("%016x", uint64(*p))
+		},
 		"groupByImageSource": func(tagList []models.ImageTag) []imageTagSourceGroup {
 			// Manual tags split by source: plain UI adds (empty tagger_name)
 			// land in the "user" bucket; API-supplied sources each get their
@@ -306,6 +313,10 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 				return "Stop thumbnail rebuild"
 			case "prune-thumbs":
 				return "Stop thumbnail prune"
+			case "phash":
+				return "Stop phash backfill"
+			case "relations":
+				return "Stop find-pairs"
 			case "move":
 				return "Stop moving"
 			case "tag":
@@ -410,6 +421,8 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 		contexts:    map[string]*galleryCtx{},
 		activeName:  cfg.DefaultGallery,
 	}
+
+	applyRelationsConfig(cfg.Relations)
 
 	for _, g := range cfg.Galleries {
 		cx, err := openGalleryCtx(g)
@@ -642,11 +655,40 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/maintenance/prune-missing", s.pruneMissingImagesPost)
 	mux.HandleFunc("POST /settings/maintenance/prune-orphaned-thumbnails", s.pruneOrphanedThumbnailsPost)
 	mux.HandleFunc("POST /settings/maintenance/recalc-tags", s.recalcTagsPost)
-	mux.HandleFunc("POST /settings/maintenance/merge-general-tags", s.mergeGeneralTagsPost)
-	mux.HandleFunc("GET /settings/maintenance/duplicates-list", s.duplicatesListHandler)
-	mux.HandleFunc("POST /settings/maintenance/remove-duplicates", s.removeDuplicatesPost)
+	// Relocated to /relations/file-duplicates/* in v1.8; old routes
+	// stay alive as 301 redirects for one release so bookmarks survive.
+	mux.HandleFunc("GET /settings/maintenance/duplicates-list", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/relations/file-duplicates/list", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("POST /settings/maintenance/remove-duplicates", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/relations/file-duplicates/remove", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /relations/file-duplicates/list", s.duplicatesListHandler)
+	mux.HandleFunc("POST /relations/file-duplicates/remove", s.removeDuplicatesPost)
+	mux.HandleFunc("POST /relations/file-duplicates/promote", s.promoteAliasPathPost)
+	mux.HandleFunc("GET /relations/duplicates/sha256", s.sha256WalkerPage)
+	mux.HandleFunc("POST /relations/duplicates/sha256/remove-one", s.sha256WalkerRemoveOnePost)
+	mux.HandleFunc("GET /relations/duplicates/marked", s.markedWalkerPage)
+	mux.HandleFunc("POST /relations/duplicates/marked/delete-one", s.markedWalkerDeleteOnePost)
+	mux.HandleFunc("POST /relations/duplicates/marked/delete-all", s.markedWalkerDeleteAllPost)
+	mux.HandleFunc("GET /relations", s.relationsPage)
+	mux.HandleFunc("GET /relations/browse", s.browseRelationsPage)
+	mux.HandleFunc("GET /relations/browse-groups", s.browseGroupsPage)
+	mux.HandleFunc("GET /relations/session", s.sessionPage)
+	mux.HandleFunc("POST /relations/session/decide", s.sessionDecidePost)
+	mux.HandleFunc("POST /relations/dup-group/{id}/copy-tags", s.copyTagsToOriginalPost)
+	mux.HandleFunc("GET /relations/dup-group/{id}/copy-tags/preview", s.copyTagsToOriginalPreview)
+	mux.HandleFunc("POST /settings/relations", s.settingsRelationsPost)
 	mux.HandleFunc("POST /settings/maintenance/re-extract-metadata", s.reExtractMetadataPost)
 	mux.HandleFunc("POST /settings/maintenance/rebuild-thumbnails", s.rebuildThumbnailsPost)
+	mux.HandleFunc("POST /settings/maintenance/compute-phashes", s.computePhashesPost)
+	mux.HandleFunc("POST /relations/find-pairs", s.findRelationPairsPost)
+	mux.HandleFunc("POST /relations/reset-skipped", s.resetSkippedPost)
+	mux.HandleFunc("POST /relations/phash/{id}/recompute", s.recomputePhashPost)
+	mux.HandleFunc("POST /relations/add", s.addRelationPost)
+	mux.HandleFunc("POST /relations/remove", s.removeRelationPost)
+	mux.HandleFunc("GET /internal/images/{id}/related-entries", s.relatedEntriesGet)
+	mux.HandleFunc("GET /images/{id}/relations", s.imageRelationsPage)
 	mux.HandleFunc("POST /settings/maintenance/vacuum-db", s.vacuumDBPost)
 	mux.HandleFunc("POST /settings/maintenance/free-memory", s.freeMemoryPost)
 	mux.HandleFunc("POST /settings/tagger/{name}/enable", s.settingsTaggerEnablePost)
@@ -683,6 +725,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /internal/search/suggest", s.searchSuggest)
 	mux.HandleFunc("GET /internal/folders/suggest", s.foldersSuggest)
 	mux.HandleFunc("GET /internal/collection/suggest", s.collectionSuggest)
+	mux.HandleFunc("GET /internal/source/suggest", s.sourceSuggest)
 	mux.HandleFunc("GET /internal/sidebar", s.gallerySidebar)
 	mux.HandleFunc("GET /internal/sidebar-browse", s.sidebarBrowse)
 	mux.HandleFunc("POST /internal/rating-ceiling", s.ratingCeilingPost)
@@ -727,6 +770,7 @@ func (s *Server) apiResolver(name string) (api.Gallery, bool) {
 		ThumbnailsPath:   cx.ThumbnailsPath,
 		DB:               cx.DB,
 		TagSvc:           cx.TagSvc,
+		RelationsSvc:     cx.RelationsSvc,
 		InvalidateCaches: cx.InvalidateCaches,
 	}, true
 }
@@ -812,10 +856,10 @@ type baseData struct {
 	Galleries     []config.Gallery
 	// Counts surfaced on the footer status bar. Populated per-request;
 	// zero when the active gallery is missing or a query failed.
-	VisibleCount int
-	InboxCount   int
-	TagCount     int
-	SavedCount   int
+	VisibleCount     int
+	InboxCount       int
+	TagCount         int
+	CollectionsCount int
 	// Rating ceiling state for the footer selector. ActiveRating is the
 	// effective level - "explicit" when no cookie is set.
 	RatingLevels []ratingLevel
@@ -832,13 +876,13 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 	sessID := sessionFromContext(r.Context())
 	cx := s.contexts[s.activeName] // ctxMu RLocked by ContextMiddleware
 	degraded := false
-	visible, inbox, tagCount, savedCount := 0, 0, 0, 0
+	visible, inbox, tagCount, collectionsCount := 0, 0, 0, 0
 	if cx != nil {
 		degraded = cx.Degraded
 		visible, _ = cx.VisibleCount()
 		inbox, _ = cx.InboxCount()
 		tagCount, _ = cx.TagCount()
-		savedCount, _ = cx.SavedCount()
+		collectionsCount, _ = cx.CollectionsCount()
 	}
 	// Copy the gallery list so template rendering never dereferences the map
 	// under a concurrent mutation (the middleware lock is scoped to the
@@ -861,10 +905,10 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 		CustomCSS:     s.cfg.Server.CustomCSS != "",
 		ActiveGallery: s.activeName,
 		Galleries:     galleries,
-		VisibleCount:  visible,
-		InboxCount:    inbox,
-		TagCount:      tagCount,
-		SavedCount:    savedCount,
+		VisibleCount:     visible,
+		InboxCount:       inbox,
+		TagCount:         tagCount,
+		CollectionsCount: collectionsCount,
 		RatingLevels:  ratingFooterLevels,
 		ActiveRating:  active,
 		RequestStart:  requestStartFromContext(r.Context()),
@@ -1063,7 +1107,9 @@ func (s *Server) serveMangaPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	// Scope the cached page bytes to the active gallery so a gallery
+	// switch invalidates them; see serveImageFile for the same trick.
+	setGalleryScopedCache(w, s.activeName, fmt.Sprintf("%s-%d", idStr, n), page)
 	http.ServeFile(w, r, page)
 }
 
@@ -1092,7 +1138,7 @@ func (s *Server) serveMangaPageThumb(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	setGalleryScopedCache(w, s.activeName, fmt.Sprintf("%s-%d-thumb", idStr, n), thumb)
 	http.ServeFile(w, r, thumb)
 }
 
@@ -1125,7 +1171,29 @@ func (s *Server) serveImageFile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// /images/{id}/file is the same URL across galleries, so the
+	// browser's cache key alone can't tell them apart - switching
+	// galleries used to keep showing the prior gallery's id=N bytes
+	// until a hard reload. Set an ETag that names the active gallery
+	// so the conditional check (http.serveContent uses If-None-Match)
+	// invalidates on a gallery switch even when mtimes happen to
+	// match. no-cache forces revalidation on every visit so the
+	// matching gallery still hits 304.
+	setGalleryScopedCache(w, s.activeName, idStr, canonPath)
 	http.ServeFile(w, r, canonPath)
+}
+
+// setGalleryScopedCache writes an ETag that includes the gallery name
+// so a browser's cached copy from a different gallery's id=N is
+// invalidated on the next conditional request. Falls back silently if
+// the file can't be stat'd.
+func setGalleryScopedCache(w http.ResponseWriter, gallery, id, path string) {
+	w.Header().Set("Cache-Control", "private, no-cache")
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	w.Header().Set("ETag", fmt.Sprintf(`"%s-%s-%d"`, gallery, id, info.ModTime().Unix()))
 }
 
 // Close stops background goroutines and closes every gallery's database.

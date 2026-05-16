@@ -12,6 +12,7 @@ import (
 	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/jobs"
 	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/leqwin/monbooru/internal/relations"
 	"github.com/leqwin/monbooru/internal/search"
 	"github.com/leqwin/monbooru/internal/tags"
 )
@@ -25,6 +26,7 @@ type galleryCtx struct {
 	ThumbnailsPath string
 	DB             *db.DB
 	TagSvc         *tags.Service
+	RelationsSvc   *relations.Service
 	Degraded       bool
 
 	// GeneralCategoryID is the resolved id of the built-in `general`
@@ -38,13 +40,21 @@ type galleryCtx struct {
 	// nilled by InvalidateCaches after any ingest/delete/missing-toggle so
 	// the next reader re-populates from SQLite. The int counts are pointers
 	// so "not cached" is distinguishable from "cached zero".
-	folderTree   atomic.Pointer[[]gallery.FolderNode]
-	sourceCounts atomic.Pointer[gallery.SourceCounts]
-	seriesCounts atomic.Pointer[[]gallery.SeriesCount]
-	visibleCount atomic.Pointer[int]
-	inboxCount   atomic.Pointer[int]
-	tagCount     atomic.Pointer[int]
-	savedCount   atomic.Pointer[int]
+	folderTree        atomic.Pointer[[]gallery.FolderNode]
+	sourceCounts      atomic.Pointer[gallery.SourceCounts]
+	seriesCounts      atomic.Pointer[[]gallery.SeriesCount]
+	sourceLabelCounts atomic.Pointer[[]gallery.SourceLabelCount]
+	visibleCount      atomic.Pointer[int]
+	inboxCount        atomic.Pointer[int]
+	favoritedCount    atomic.Pointer[int]
+	tagCount          atomic.Pointer[int]
+	collectionsCount  atomic.Pointer[int]
+
+	// bkTree is the in-memory phash index used by the find-pairs job
+	// and the phash: search keyword. Built lazily on first relations
+	// query; the ingest/delete hooks in internal/relations keep it
+	// consistent with subsequent writes once it is built.
+	bkTree *relations.BKTree
 
 	watcherCancel context.CancelFunc
 	watcherDone   chan struct{}
@@ -66,7 +76,7 @@ func (cx *galleryCtx) Sync(ctx context.Context, maxFileSizeMB int, progress func
 
 // InvalidateCaches drops the folder-tree and visible-count caches. Call after
 // any mutation that changes which images are visible (ingest, delete, sync
-// mark-missing, watcher remove). Tag and saved-search counts are dropped too:
+// mark-missing, watcher remove). Tag and collection counts are dropped too:
 // the same image-mutation paths typically change those, and the Settings
 // page's per-gallery cells need them fresh.
 func (cx *galleryCtx) InvalidateCaches() {
@@ -76,10 +86,12 @@ func (cx *galleryCtx) InvalidateCaches() {
 	cx.folderTree.Store(nil)
 	cx.sourceCounts.Store(nil)
 	cx.seriesCounts.Store(nil)
+	cx.sourceLabelCounts.Store(nil)
 	cx.visibleCount.Store(nil)
 	cx.inboxCount.Store(nil)
+	cx.favoritedCount.Store(nil)
 	cx.tagCount.Store(nil)
-	cx.savedCount.Store(nil)
+	cx.collectionsCount.Store(nil)
 	if cx.DB != nil {
 		cx.DB.InvalidateCachedCounts()
 	}
@@ -135,6 +147,22 @@ func (cx *galleryCtx) SeriesCounts() ([]gallery.SeriesCount, error) {
 	return sc, nil
 }
 
+// SourceLabelCounts returns the cached top-25 source labels for the
+// gallery's non-missing image rows. Empty when no image carries a
+// source label; the sidebar partial gates rendering on the slice
+// being non-empty.
+func (cx *galleryCtx) SourceLabelCounts() ([]gallery.SourceLabelCount, error) {
+	if p := cx.sourceLabelCounts.Load(); p != nil {
+		return *p, nil
+	}
+	sc, err := gallery.SourceLabelCountsQuery(cx.DB, 25)
+	if err != nil {
+		return nil, err
+	}
+	cx.sourceLabelCounts.Store(&sc)
+	return sc, nil
+}
+
 // cachedCount lazy-loads and caches a scalar COUNT query. The atomic
 // pointer doubles as the cache slot and the "loaded?" flag; nil means
 // re-query.
@@ -165,6 +193,14 @@ func (cx *galleryCtx) InboxCount() (int, error) {
 	return cx.cachedCount(&cx.inboxCount, `SELECT COUNT(*) FROM images WHERE is_missing = 0 AND is_inbox = 1`)
 }
 
+// FavoritedCount returns the cached count of visible favourited images
+// (is_favorited = 1, is_missing = 0). Used by the sidebar's Favorites
+// panel to surface "<N> favourites / <M> not favourites" without
+// running a search per render.
+func (cx *galleryCtx) FavoritedCount() (int, error) {
+	return cx.cachedCount(&cx.favoritedCount, `SELECT COUNT(*) FROM images WHERE is_missing = 0 AND is_favorited = 1`)
+}
+
 // TagCount returns the cached count of non-alias tags or queries it on demand.
 // Surfaced in the Settings galleries table and the layout footer; uncached the
 // query runs once per render per gallery, which adds up on multi-gallery boxes.
@@ -172,10 +208,13 @@ func (cx *galleryCtx) TagCount() (int, error) {
 	return cx.cachedCount(&cx.tagCount, `SELECT COUNT(*) FROM tags WHERE is_alias = 0`)
 }
 
-// SavedCount returns the cached count of saved searches or queries it on
-// demand. Same role as TagCount on the Settings page and footer.
-func (cx *galleryCtx) SavedCount() (int, error) {
-	return cx.cachedCount(&cx.savedCount, `SELECT COUNT(*) FROM saved_searches`)
+// CollectionsCount returns the cached count of distinct non-empty
+// collection labels (the `series` column) across non-missing images.
+// Surfaced in the layout footer. Reads off idx_images_series (partial
+// on `series != ''`) so the GROUP BY scans only labelled rows.
+func (cx *galleryCtx) CollectionsCount() (int, error) {
+	return cx.cachedCount(&cx.collectionsCount,
+		`SELECT COUNT(*) FROM (SELECT 1 FROM images WHERE is_missing = 0 AND series != '' GROUP BY series)`)
 }
 
 // warmCaches primes the per-gallery aggregations so the first user-facing
@@ -186,13 +225,15 @@ func (cx *galleryCtx) warmCaches() {
 	if cx == nil || cx.DB == nil {
 		return
 	}
-	cx.FolderTree()   //nolint:errcheck
-	cx.SourceCounts() //nolint:errcheck
-	cx.SeriesCounts() //nolint:errcheck
-	cx.VisibleCount() //nolint:errcheck
-	cx.InboxCount()   //nolint:errcheck
-	cx.TagCount()     //nolint:errcheck
-	cx.SavedCount()   //nolint:errcheck
+	cx.FolderTree()        //nolint:errcheck
+	cx.SourceCounts()      //nolint:errcheck
+	cx.SeriesCounts()      //nolint:errcheck
+	cx.SourceLabelCounts() //nolint:errcheck
+	cx.VisibleCount()      //nolint:errcheck
+	cx.InboxCount()        //nolint:errcheck
+	cx.FavoritedCount()    //nolint:errcheck
+	cx.TagCount()          //nolint:errcheck
+	cx.CollectionsCount()  //nolint:errcheck
 }
 
 // openGalleryCtx opens the DB and creates the thumbnails directory. The
@@ -227,6 +268,8 @@ func openGalleryCtx(g config.Gallery) (*galleryCtx, error) {
 		database.Close()
 		return nil, fmt.Errorf("gallery %q: resolve general category: %w", g.Name, err)
 	}
+	tree := relations.NewBKTree()
+	relations.DefaultRegistry.Register(database, tree)
 	return &galleryCtx{
 		Name:              g.Name,
 		GalleryPath:       g.GalleryPath,
@@ -234,8 +277,10 @@ func openGalleryCtx(g config.Gallery) (*galleryCtx, error) {
 		ThumbnailsPath:    g.ThumbnailsPath,
 		DB:                database,
 		TagSvc:            tags.New(database),
+		RelationsSvc:      relations.New(database),
 		Degraded:          degraded,
 		GeneralCategoryID: generalID,
+		bkTree:            tree,
 	}, nil
 }
 
@@ -258,6 +303,7 @@ func (cx *galleryCtx) close() {
 	cx.stopWatcher()
 	cx.stopMangaReclaim()
 	if cx.DB != nil {
+		relations.DefaultRegistry.Unregister(cx.DB)
 		cx.DB.Close()
 	}
 }
@@ -357,6 +403,39 @@ func (s *Server) galleryPath() string {
 		return cx.GalleryPath
 	}
 	return ""
+}
+
+func (s *Server) relationsSvc() *relations.Service {
+	if cx := s.Active(); cx != nil {
+		return cx.RelationsSvc
+	}
+	return nil
+}
+
+// BKTree returns this gallery's lazily-built phash BK-tree. Subsequent
+// callers see the ready tree without re-paying the build cost; the
+// build runs serialised under the tree's own write lock so concurrent
+// first-time callers don't race-rebuild.
+func (cx *galleryCtx) BKTree() (*relations.BKTree, error) {
+	if cx == nil || cx.bkTree == nil {
+		return nil, nil
+	}
+	if err := cx.bkTree.EnsureBuilt(cx.DB); err != nil {
+		return nil, err
+	}
+	return cx.bkTree, nil
+}
+
+// onImageDeleteCallback wires the active gallery's relations service
+// into the gallery.DeleteImage signature. Returns nil when the
+// service isn't available (e.g. mid-switch), so DeleteImage skips the
+// relations cleanup step rather than crashing.
+func (s *Server) onImageDeleteCallback() func(int64) error {
+	svc := s.relationsSvc()
+	if svc == nil {
+		return nil
+	}
+	return svc.OnImageDelete
 }
 
 func (s *Server) thumbnailsPath() string {

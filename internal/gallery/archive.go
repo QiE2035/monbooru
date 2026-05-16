@@ -164,7 +164,7 @@ func (m *Manga) CoverImage() (image.Image, error) {
 		return nil, err
 	}
 	defer rc.Close()
-	img, _, err := image.Decode(rc)
+	img, err := DecodeImageWithCap(rc)
 	if err != nil {
 		return nil, fmt.Errorf("decode cover: %w", err)
 	}

@@ -219,7 +219,7 @@ button.footer-rating-link:hover { color: var(--fg); }
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 12px;
+  padding: 1px 12px;
   cursor: pointer;
   font-size: 12px;
   white-space: nowrap;
@@ -301,7 +301,8 @@ button.footer-rating-link:hover { color: var(--fg); }
 .tag-link { flex: 1; overflow: hidden; text-overflow: ellipsis; }
 
 /* Folder tree section */
-#folder-tree-section, #saved-searches-section, #source-filter-section, #series-filter-section {
+#folder-tree-section, #saved-searches-section, #source-filter-section, #series-filter-section,
+#inbox-filter-section, #favorites-filter-section, #source-labels-section {
   border-top: 1px solid var(--border);
   margin-top: 8px;
   padding-top: 4px;
@@ -312,7 +313,8 @@ button.footer-rating-link:hover { color: var(--fg); }
   gap: 6px;
   padding: 3px 8px;
 }
-#folder-tree-toggle, #source-tree-toggle, #series-tree-toggle {
+#folder-tree-toggle, #source-tree-toggle, #series-tree-toggle,
+#source-labels-toggle, #inbox-filter-toggle, #favorites-filter-toggle {
   background: none;
   border: none;
   padding: 0;
@@ -749,14 +751,15 @@ details summary:hover { color: var(--fg); }
 .tag-name-cell a { text-decoration: none; }
 .tag-name-cell a:hover { text-decoration: underline; }
 .tag-id { color: var(--fg-dim); font-size: 11px; width: 50px; }
-.tag-table .tag-name-cell { min-width: 260px; }
+.tag-table .tag-name-cell { min-width: 200px; }
 .tag-table th:nth-child(4), .tag-table td:nth-child(4) { width: 110px; }
 .tag-table th:nth-child(5), .tag-table td:nth-child(5) { width: 70px; }
 .tag-table th:nth-child(6), .tag-table td:nth-child(6) { width: 70px; }
 /* Implied column: stays on a single line, ellipsises overflow so the
    row height never grows past the others. */
 .tag-implied-cell {
-  max-width: 280px;
+  max-width: 380px;
+  min-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -835,7 +838,7 @@ details summary:hover { color: var(--fg); }
 .form-row label { width: 180px; flex-shrink: 0; color: var(--fg-dim); font-size: 12px; }
 .form-row input, .form-row select { flex: 1; max-width: 300px; }
 
-.flash { padding: 6px 12px; font-size: 12px; margin-top: 8px; }
+.flash { padding: 6px 12px; font-size: 12px; margin: 8px 0; }
 .flash-ok { color: var(--success); border: 1px solid var(--success); background: transparent; }
 .flash-warn { color: var(--warning); border: 1px solid var(--warning); background: transparent; }
 .flash-err { color: var(--error); border: 1px solid var(--error); background: transparent; }
@@ -846,8 +849,22 @@ details summary:hover { color: var(--fg); }
 .settings-cols > .settings-sub { flex: 1 1 240px; min-width: 0; }
 .settings-cols > .field { flex: 1 1 220px; min-width: 0; }
 .settings-actions { text-align: right; margin-top: 12px; }
-.schedule-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 24px; margin-bottom: 12px; }
+.schedule-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px 24px; margin-bottom: 12px; }
 .schedule-grid .field { margin-bottom: 0; }
+.schedule-time-input { width: 6ch; text-align: center; font-family: monospace; }
+/* Slider rows: label + live value on the top row, then min / range / max
+   on the slider row so the bounds sit flush against the track and the
+   slider stretches to the available width. The optional <datalist> below
+   each input paints tick graduations natively. */
+.range-row { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 2px 8px; }
+.range-row > label { grid-column: 1; font-size: 12px; }
+.range-row > output { grid-column: 2; text-align: right; font-family: monospace; color: var(--fg-dim); min-width: 3em; }
+.range-slider-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; }
+.range-slider-row input[type="range"] { flex: 1; min-width: 0; }
+.range-bound { font-size: 11px; color: var(--fg-dim); font-family: monospace; min-width: 2em; }
+.range-bound-min { text-align: right; }
+.range-bound-max { text-align: left; }
+.range-row .field-hint { grid-column: 1 / -1; }
 
 .tags-filter-row { display: flex; gap: 4px; align-items: center; padding: 0 8px; }
 .tags-filter-row input[type="text"] { flex: 1; min-width: 0; }
@@ -1007,8 +1024,6 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   max-height: 80vh;
 }
 
-#autotag-result:not(:empty) { margin-bottom: 8px; }
-
 .detail-topbar {
   display: flex;
   align-items: center;
@@ -1034,7 +1049,8 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 /* Pages grid only carries one button on the right; without an override
    the 420px-wide block plus space-between push it left of the topbar
    edge, breaking visual alignment with the topbar sync button. */
-#pages-grid-page .detail-topbar-right {
+#pages-grid-page .detail-topbar-right,
+#relations-walker-page .detail-topbar-right {
   width: auto;
   justify-content: flex-end;
 }
@@ -1116,7 +1132,27 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 }
 
 .mono-small { font-family: monospace; font-size: 11px; }
-.sha-truncated { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
+.sha-truncated { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: baseline; }
+/* Click-to-copy variant of .sha-truncated: strips the default button
+   chrome so the value still reads as a hash, then layers a hover hint
+   so the click affordance is discoverable. */
+.sha-copyable {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sha-copyable:hover { color: var(--accent); }
+.copy-flash {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--success);
+}
+.copy-flash[hidden] { display: none; }
 .text-warning { color: var(--error); }
 
 /* Generation metadata details */
@@ -1195,6 +1231,21 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   cursor: pointer;
 }
 .btn-edit-external:hover { text-decoration: underline; }
+/* Inline action link used in places that prefer a borderless red [edit]-style
+   chip over the bordered .btn-sm box. Matches .btn-edit-external visually
+   but is button-or-anchor agnostic so a <form><button> can sit next to a
+   plain <a> on the same row. */
+.btn-link-accent {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn-link-accent:hover { text-decoration: underline; }
 .btn-danger {
   color: var(--bg);
   border-color: var(--error);
@@ -1222,6 +1273,15 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   background: var(--bg);
 }
 .btn-success:hover { background: var(--success); color: var(--bg); }
+/* Indigo accent reserved for the Relations session CTA - the operator's
+   "go" button on /relations. Matches .btn-autotag's indigo treatment so
+   the two action accents (auto-tag, start session) stay paired. */
+.btn-purple {
+  color: var(--indigo);
+  border-color: var(--indigo);
+  background: var(--bg);
+}
+.btn-purple:hover { background: var(--indigo); color: var(--bg); border-color: var(--indigo); }
 
 /* Tag list partial */
 .tag-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 10px; }
@@ -1337,7 +1397,7 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   width: 100%;
   border: none;
   border-bottom: 1px solid var(--border);
-  padding: 4px 8px;
+  padding: 3px 8px;
   font-size: 12px;
   background: var(--bg-surface);
   cursor: pointer;
@@ -1349,11 +1409,12 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
    the user actually moves the mouse, so the item doesn't look "selected"
    when only kbd-focused is honoured by Enter. */
 .suggest-dropdown.suggest-fresh .suggest-item:hover { background: var(--bg-surface); }
-.suggest-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.suggest-name { white-space: nowrap; }
+/* Description sits to the right of the name and consumes the slack, so the
+   eye reads the row left-to-right without a hike across blank space. The
+   count (tag rows only) stays pinned to the far right via space-between. */
+.suggest-description { flex: 1; color: var(--fg-dim); font-size: 11px; font-style: italic; overflow: hidden; text-overflow: ellipsis; }
 .suggest-count { color: var(--fg-dim); font-size: 11px; }
-.suggest-category { color: var(--fg-dim); font-size: 11px; }
-.suggest-description { color: var(--fg-dim); font-size: 11px; font-style: italic; }
-.suggest-sep { color: var(--fg-dim); font-size: 11px; }
 
 /* Duplicate filesystem paths section on the detail page. Each entry
    stacks the path on its own row and the action buttons below so the
@@ -1445,6 +1506,8 @@ details.tag-source-group[data-source="implied"][open] > summary::before { conten
 #tags-page-header #btn-delete-tags-search { margin-left: auto; }
 
 .settings-subseparator { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
+.meta-editable-separator { border: 0; border-top: 1px solid var(--border); margin: 8px 0; }
+.meta-editable { margin-top: 4px; }
 
 .maintenance-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
 .maintenance-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
@@ -1454,9 +1517,26 @@ details.tag-source-group[data-source="implied"][open] > summary::before { conten
 .stats-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: normal; color: var(--fg-dim); }
 .stats-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .stats-table td:last-child, .stats-table th:last-child { white-space: nowrap; }
+/* Right-align the value column and pin a min-width so MiB/GiB cells render
+   at a consistent width regardless of the actual value - the rows don't
+   shift around as numbers tick up and down. tabular-nums keeps digit
+   widths uniform inside the cell. */
+.stats-table td:last-child {
+  text-align: right;
+  min-width: 7em;
+  font-variant-numeric: tabular-nums;
+}
 .stats-table th.stats-d1 { padding-left: 24px; }
 .stats-table th.stats-d2 { padding-left: 44px; }
 .stats-table th.stats-d3 { padding-left: 64px; }
+/* Stats section laid out as a 2x2 grid of sub-sections so the four
+   stats panels share the section width instead of stacking. Collapses
+   to one column on narrow viewports where the sub-section labels would
+   wrap. */
+.stats-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; }
+@media (max-width: 900px) {
+  .stats-cols { grid-template-columns: 1fr; }
+}
 
 .tagger-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 
@@ -1480,9 +1560,9 @@ section#tagger .tagger-table td:nth-child(2),
 section#tagger .tagger-table th:nth-child(3),
 section#tagger .tagger-table td:nth-child(3) { width: 1%; white-space: nowrap; text-align: left; }
 section#tagger .tagger-table th:nth-child(4),
-section#tagger .tagger-table td:nth-child(4) { width: 320px; min-width: 320px; text-align: left; }
+section#tagger .tagger-table td:nth-child(4) { width: 420px; min-width: 420px; text-align: left; }
 section#tagger .tagger-table th:nth-child(5),
-section#tagger .tagger-table td:nth-child(5) { width: 280px; min-width: 280px; text-align: left; }
+section#tagger .tagger-table td:nth-child(5) { width: 180px; min-width: 180px; text-align: left; }
 section#tagger .tagger-table th:nth-child(6),
 section#tagger .tagger-table td:nth-child(6),
 section#tagger .tagger-table th:nth-child(7),
@@ -1616,6 +1696,259 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 .upload-file-list li { padding: 1px 0; }
 .related-images { margin-top: 12px; }
 .related-images h3 { font-size: 13px; margin: 0 0 6px; color: var(--fg-dim); }
+/* Related entries: title left, action chips ([See all], [Add a relation])
+   right, single row regardless of width so the panel stays compact in the
+   narrow metadata column. */
+.related-entries-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+.related-entries-header h3 { margin: 0; }
+.related-entries-actions { display: flex; gap: 8px; flex-shrink: 0; }
+/* /images/{id}/relations grid: action chips sit on a single line under the
+   thumbnail. Each <form> is inline-block so two chips ([unlink], [original])
+   share the row without wrapping under each other. */
+.relations-actions-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 12px;
+  flex-wrap: nowrap;
+}
+.relations-actions-row form { display: inline-flex; }
+/* Add-relation dialog: parent and child column inputs separated by a swap
+   button. Each side carries its own h4 header; the swap exchanges values
+   only, so the operator always reads "left = parent" and "right = child"
+   regardless of which image was the originator. */
+.relation-edit-grid {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  /* Dense packing so the swap class can reassign grid-column on the two
+     sides without the default sparse cursor bumping them onto a new row
+     when the explicit column number goes backwards. */
+  grid-auto-flow: dense;
+  align-items: end;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.relation-edit-side h4 { font-size: 12px; color: var(--fg-dim); margin: 0 0 4px; }
+.relation-edit-side input[type="number"] { width: 100%; max-width: none; }
+.relation-edit-side input[readonly] { color: var(--fg-dim); background: var(--bg-input); }
+.relation-edit-swap { display: flex; align-items: center; justify-content: center; padding-bottom: 4px; }
+.relation-edit-swap .btn-link-accent { font-size: 16px; padding: 0 4px; }
+.relation-edit-grid-swapped > [data-side="self"]  { grid-column: 3; }
+.relation-edit-grid-swapped > [data-side="other"] { grid-column: 1; }
+.relation-edit-grid-swapped > .relation-edit-swap { grid-column: 2; }
+.relation-edit-summary { margin: 4px 0 10px; }
+
+/* Relations page: section layout shares .settings-section chrome from the
+   Settings page. The find-pairs row puts every CTA on one line so the
+   buttons read as a tidy toolbar instead of stacking. */
+#relations-page h2 { font-size: 14px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.relations-header-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+/* Anchor + button siblings in the toolbar share a flex baseline so the
+   walker `<a class="btn-sm">` row reads the same height as the form
+   buttons next to it. */
+.relations-header-row .btn-sm,
+.walker-controls .btn-sm {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 10px;
+  line-height: 1.4;
+  text-decoration: none;
+}
+.relations-cards { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 12px; grid-template-columns: 1fr; }
+.relations-card { background: var(--bg-input); border: 1px solid var(--border); padding: 8px 12px; }
+.relations-card-thumbs { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.relations-card-thumb { display: block; width: 80px; aspect-ratio: 1 / 1; border: 1px solid var(--border); overflow: hidden; position: relative; }
+.relations-card-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.relations-card-thumb:hover { border-color: var(--accent); }
+.relations-card-id { position: absolute; bottom: 2px; right: 2px; font-size: 10px; background: rgba(0,0,0,0.6); color: #fff; padding: 0 3px; }
+/* Originals lead a duplicate strip with a small accent chip + extra
+   gap so the eye reads "this one wins" at a glance. */
+.relations-card-original { margin-right: 16px; border-color: var(--accent); }
+.relations-cell-original .manga-page-link { border-color: var(--accent); }
+.relations-card-original .relations-card-tag,
+.relations-cell-original .relations-card-tag {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  padding: 0 4px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Relations session: pair of images side by side, metadata below the
+   action row, decision row centered. Distance label sits on a thin
+   horizontal segment threading the two thumbnails so the operator
+   reads "left vs right at distance N" in one glance. */
+.relations-session { padding: 16px; }
+.session-order-form { display: inline-flex; gap: 12px; align-items: center; margin-left: auto; }
+.session-order-form label { font-size: 12px; color: var(--fg-dim); }
+.session-headers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+.session-role { margin: 0; font-size: 13px; text-align: center; color: var(--fg-dim); }
+.session-pair { display: flex; flex-direction: column; align-items: stretch; gap: 16px; }
+.session-cells {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+}
+.session-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  padding: 12px;
+  min-width: 0;
+}
+.session-cell-img {
+  display: block;
+  max-width: 100%;
+  max-height: 65vh;
+  object-fit: contain;
+  background: #000;
+  border: 1px solid var(--border);
+}
+.session-distance {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 6px;
+  min-width: 160px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.session-distance-line { display: block; width: 100%; border-top: 1px dashed var(--border); }
+.session-distance-label { align-self: center; white-space: nowrap; }
+.session-prompt { text-align: center; color: var(--fg-dim); font-size: 13px; margin: 0 0 8px; }
+.session-legend {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 12px;
+  row-gap: 2px;
+  margin: 0 auto 10px;
+  max-width: 700px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.session-legend dt { font-family: var(--font-mono); color: var(--fg); white-space: nowrap; }
+.session-legend dd { margin: 0; }
+.session-hint { text-align: center; color: var(--fg-dim); font-size: 12px; margin: 0 0 6px; }
+.session-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 4px;
+}
+.session-buttons-secondary { margin-top: 8px; }
+.session-controls { display: flex; justify-content: center; gap: 8px; margin-top: 8px; }
+
+/* Compare dialog: stacked images with a draggable vertical divider
+   driving a clip-path on the top image. The stage's width is bounded
+   by a vw cap so the dialog fits on small displays; the images use
+   max-height to keep tall portraits in view without overflow. */
+.compare-dialog { max-width: 95vw; }
+.compare-stage {
+  position: relative;
+  width: min(80vw, 1100px);
+  user-select: none;
+  cursor: ew-resize;
+  background: var(--bg);
+  overflow: hidden;
+}
+.compare-stage img {
+  display: block;
+  width: 100%;
+  max-height: 80vh;
+  object-fit: contain;
+  pointer-events: none;
+}
+#compare-img-right {
+  position: absolute;
+  top: 0; left: 0;
+}
+.compare-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent, #ffae00);
+  transform: translateX(-1px);
+  pointer-events: none;
+}
+.session-cell-meta { width: 100%; text-align: center; margin-top: 4px; }
+.session-cell-filename {
+  display: block;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-facts { color: var(--fg-dim); margin-top: 4px; }
+.session-remaining { text-align: center; margin-top: 4px; }
+.session-empty { padding: 16px; }
+@media (max-width: 720px) {
+  .session-cells { grid-template-columns: 1fr; }
+  .session-cells .session-distance { flex-direction: row; }
+  .session-cells .session-distance-line { width: 100%; }
+  .session-headers { grid-template-columns: 1fr; }
+}
+
+/* Duplicates walker pages (SHA-256 and marked variants): one case per
+   render, image preview on the left, path list / member list on the
+   right. Mirrors relations_session.html's two-column shape but trades
+   the side-by-side cells for a thumbnail + metadata stack. */
+#relations-walker-page .walker-header { display: flex; gap: 12px; align-items: baseline; margin-bottom: 8px; }
+.walker-page-title { font-size: 14px; color: var(--fg); }
+.walker-body { display: flex; gap: 16px; }
+.walker-thumb { display: block; flex-shrink: 0; width: 180px; aspect-ratio: 1 / 1; border: 1px solid var(--border); overflow: hidden; }
+.walker-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.walker-paths { flex: 1; min-width: 0; }
+.walker-paths-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.walker-paths-list li { padding: 4px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; border-top: 1px dashed var(--border); }
+.walker-members { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.walker-member { background: var(--bg-input); border: 1px solid var(--border); padding: 8px; }
+.walker-member .walker-thumb { width: 100%; aspect-ratio: 1 / 1; }
+.walker-member-meta { display: flex; gap: 8px; align-items: center; margin-top: 4px; font-size: 12px; }
+.walker-member-actions { margin-top: 4px; font-size: 12px; }
+.walker-controls { margin-top: 12px; display: flex; gap: 8px; }
+
+/* Relations browse table (/relations/browse): per-type tabs across the
+   top, then a fixed-column-width grid of (id, thumb, thumb, id, action).
+   Tab matches .filter-btn so the toolbar reads consistent with the
+   rest of the app. */
+#relations-browse-page h2 { font-size: 14px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.browse-tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
+.browse-tab { font-size: 12px; padding: 4px 10px; border: 1px solid var(--border); background: var(--bg-input); color: var(--fg-dim); text-decoration: none; }
+.browse-tab:hover { color: var(--fg); border-color: var(--fg-dim); }
+.browse-tab-active { color: var(--accent); border-color: var(--accent); }
+.browse-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.browse-table th, .browse-table td { padding: 6px 8px; border: 1px solid var(--border); text-align: left; vertical-align: middle; }
+.browse-table th { color: var(--fg-dim); background: var(--bg-surface); }
+/* The Action column rides the right edge of the walker tables so the
+   per-row buttons line up vertically. */
+#relations-walker-page .browse-table th:last-child,
+#relations-walker-page .browse-table td:last-child { text-align: right; white-space: nowrap; width: 1%; }
+.browse-thumb { display: block; width: 80px; aspect-ratio: 1 / 1; border: 1px solid var(--border); overflow: hidden; }
+.browse-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.browse-thumb:hover { border-color: var(--accent); }
 .related-mini-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1635,6 +1968,20 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 }
 .related-mini-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .related-mini-card:hover { border-color: var(--accent); }
+/* Relation-type overlay pinned bottom-right of the thumbnail, matching
+   the manga-pill rhythm so adjacent cards share the same visual weight. */
+.relation-marker {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, 0.7);
+  color: var(--fg);
+  font-size: 10px;
+  padding: 1px 4px;
+  pointer-events: none;
+  z-index: 1;
+  line-height: 1.2;
+}
 
 /* Missing banner (yellow - file absent from disk) */
 .missing-banner {
@@ -1717,8 +2064,26 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 .cat-table-small { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 6px; }
 .cat-table-small td { padding: 2px 4px; }
 
-/* Tags page - action column hugs its buttons; Name takes the remaining space */
-.tag-actions { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
+/* Categories page action column: matches the tags-page rhythm so a
+   user moving between the two pages sees a uniform set of chips. */
+.cat-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+
+/* Tags page - action column hugs its buttons; Name takes the remaining space.
+   The four action buttons sit in a fixed grid so a row missing Rename/Alias
+   (rating built-ins) or Implications (alias rows) still places Delete in the
+   rightmost slot - vertical alignment of the action column doesn't depend on
+   which siblings render. */
+.tag-actions {
+  display: grid;
+  grid-template-columns: 6em 6.5em 9em 5.5em;
+  gap: 4px;
+  align-items: center;
+  white-space: nowrap;
+}
+.tag-actions .btn-rename-trigger      { grid-column: 1; }
+.tag-actions .btn-merge-trigger       { grid-column: 2; }
+.tag-actions .btn-implications-trigger { grid-column: 3; }
+.tag-actions .btn-delete-tag          { grid-column: 4; }
 .tag-table th:last-child, .tag-table td:last-child { width: 1%; white-space: nowrap; }
 .cat-select {
   font-size: 11px;
@@ -1758,6 +2123,11 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
   position: static;
   width: 100%;
   min-width: unset;
+  /* The gallery cheat-sheet lists every filter keyword plus every tag
+     category - 40+ rows on a typical install. The default 200px cap
+     hides most of them behind a scrollbar; give this dropdown more room
+     so the level-1 menu is visible without paging. */
+  max-height: 60vh;
 }
 .suggest-item.kbd-focused { background: var(--bg-input); outline: 1px solid var(--accent); }
 
@@ -1963,6 +2333,32 @@ body.reader-body #gallery-status { display: none; }
 }
 .manga-page-thumb { width: 100%; height: auto; display: block; max-height: 180px; object-fit: contain; background: #000; }
 .manga-page-num { display: block; font-size: 11px; color: var(--fg-dim); padding: 2px; }
+/* See-all relations page reuses the manga-pages-grid shell but wants
+   the gallery-grid behaviour: cells locked to a square so a wide image
+   doesn't squash a tall sibling into a different cell height. */
+#relations-image-page .manga-pages-grid {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+#relations-image-page .manga-page-thumb {
+  aspect-ratio: 1;
+  max-height: none;
+  object-fit: cover;
+}
 
 /* Comic-info metadata table (mirrors meta-table styling). */
 .comic-info-summary { white-space: pre-wrap; }
+
+/* Copy-tags preview dialog (marked-duplicates walker). The tag column
+   stays narrow and scrolls so a long list doesn't blow the dialog
+   open. */
+.copy-tags-preview-body { min-width: 360px; max-width: 520px; }
+.copy-tags-preview-groups { max-height: 50vh; overflow-y: auto; border: 1px solid var(--border); padding: 6px 8px; }
+.copy-tags-preview-group + .copy-tags-preview-group { margin-top: 8px; }
+.copy-tags-preview-group h5 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin: 0 0 2px;
+}
+.copy-tags-preview-list { list-style: none; margin: 0; padding: 0 0 0 8px; }
+.copy-tags-preview-list li { padding: 1px 0; font-size: 12px; }

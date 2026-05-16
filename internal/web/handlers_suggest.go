@@ -9,6 +9,7 @@ import (
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/search"
 	"github.com/leqwin/monbooru/internal/searchkw"
+	"github.com/leqwin/monbooru/internal/tags"
 )
 
 // foldersSuggest returns up to 10 existing folder paths whose name or leading
@@ -82,6 +83,23 @@ func (s *Server) collectionSuggest(w http.ResponseWriter, r *http.Request) {
 	}
 	s.renderTemplate(w, "partials/series_suggest.html", map[string]any{
 		"Series": collections,
+	})
+}
+
+// sourceSuggest mirrors collectionSuggest for the detail-page source
+// edit dialog. Reuses the series_suggest.html partial because the
+// rendered shape (one flat list of free-text labels) is identical;
+// applySeriesSuggest in main.js is generic on the dropdown's nearest
+// text input, so the same client handler covers both dialogs.
+func (s *Server) sourceSuggest(w http.ResponseWriter, r *http.Request) {
+	prefix := strings.TrimSpace(r.URL.Query().Get("prefix"))
+	labels := s.querySourceLabels(prefix, 10)
+	if len(labels) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	s.renderTemplate(w, "partials/series_suggest.html", map[string]any{
+		"Series": labels,
 	})
 }
 
@@ -160,6 +178,124 @@ func (s *Server) queryCollectionLabels(prefix string, limit int) []string {
 			continue
 		}
 		out = append(out, sv)
+	}
+	return out
+}
+
+// queryNameBasenames returns up to limit distinct lowercased file
+// basenames whose name starts with prefix, sampled from non-missing
+// images. Rides the basename_lower partial index via a half-open
+// range seek so the underlying scan is bounded by the prefix's
+// matching slice instead of the full library.
+//
+// The autocomplete is prefix-only on purpose: most operators type
+// the start of a filename and pick from the alphabetical list. The
+// name: filter itself still does substring matches; the
+// autocomplete is just a way to surface candidate values fast.
+func (s *Server) queryNameBasenames(prefix string, limit int) []string {
+	d := s.db()
+	if d == nil || prefix == "" {
+		return nil
+	}
+	low := strings.ToLower(prefix)
+	rows, err := d.Read.Query(
+		`SELECT DISTINCT basename_lower FROM images INDEXED BY idx_images_basename_lower_visible
+		 WHERE is_missing = 0 AND basename_lower != ''
+		   AND basename_lower >= ? AND basename_lower < ?
+		 ORDER BY basename_lower LIMIT ?`,
+		low, nextPrefix(low), limit,
+	)
+	if err != nil {
+		logx.Warnf("name suggest: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	out := make([]string, 0, limit)
+	for rows.Next() {
+		var base string
+		if err := rows.Scan(&base); err != nil {
+			continue
+		}
+		if base == "" {
+			continue
+		}
+		out = append(out, base)
+	}
+	return out
+}
+
+// likeEscape escapes `_`, `%`, and `\` so an operator-typed literal
+// survives a LIKE pattern. Paired with `ESCAPE '\\'` on the LIKE
+// clause itself.
+func likeEscape(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `_`, `\_`, `%`, `\%`)
+	return r.Replace(s)
+}
+
+// querySDStringField returns up to limit distinct values from the
+// matching SD / ComfyUI metadata columns whose value matches prefix.
+// substring=true switches to a `LIKE %prefix%` scan (used by `prompt:`
+// where values are sentences); false uses a prefix-range scan that
+// pins the underlying index. Empty prefix returns alphabetically first
+// values so the dropdown has something to show on focus.
+func (s *Server) querySDStringField(sdField, comfyField, prefix string, limit int, substring bool) []string {
+	d := s.db()
+	if d == nil {
+		return nil
+	}
+	type pair struct{ table, field string }
+	tables := []pair{{"sd_metadata", sdField}, {"comfyui_metadata", comfyField}}
+	seen := make(map[string]struct{}, limit*2)
+	out := make([]string, 0, limit*2)
+	for _, t := range tables {
+		var rows *sql.Rows
+		var err error
+		switch {
+		case prefix == "":
+			rows, err = d.Read.Query(
+				`SELECT DISTINCT `+t.field+` FROM `+t.table+`
+				 WHERE `+t.field+` IS NOT NULL AND `+t.field+` != ''
+				 ORDER BY `+t.field+` LIMIT ?`,
+				limit,
+			)
+		case substring:
+			rows, err = d.Read.Query(
+				`SELECT DISTINCT `+t.field+` FROM `+t.table+`
+				 WHERE `+t.field+` LIKE ? ESCAPE '\'
+				 ORDER BY `+t.field+` LIMIT ?`,
+				"%"+likeEscape(prefix)+"%", limit,
+			)
+		default:
+			rows, err = d.Read.Query(
+				`SELECT DISTINCT `+t.field+` FROM `+t.table+`
+				 WHERE `+t.field+` >= ? AND `+t.field+` < ?
+				 ORDER BY `+t.field+` LIMIT ?`,
+				prefix, nextPrefix(prefix), limit,
+			)
+		}
+		if err != nil {
+			logx.Warnf("%s suggest: %v", t.field, err)
+			continue
+		}
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				continue
+			}
+			if v == "" {
+				continue
+			}
+			if _, dup := seen[v]; dup {
+				continue
+			}
+			seen[v] = struct{}{}
+			out = append(out, v)
+		}
+		rows.Close()
+		if len(out) >= limit {
+			out = out[:limit]
+			break
+		}
 	}
 	return out
 }
@@ -271,12 +407,16 @@ func (s *Server) searchSuggest(w http.ResponseWriter, r *http.Request) {
 			if searchkw.IsKeyword(key) {
 				// Most filter keys carry closed-vocabulary values that are
 				// case-insensitive matches against a static enum (fav:true,
-				// ai:comfyui, ...). collection: is the exception: labels
-				// are operator-entered free text whose case must survive
-				// the prefix-range SQL, so pass it through unchanged.
+				// ai:comfyui, ...). The free-text keys are the exceptions:
+				// labels are operator-entered free text whose case must
+				// survive the prefix-range SQL, so pass them through
+				// unchanged. They all accept the quoted form
+				// (`source:"foo bar"`); strip a leading `"` so the dropdown
+				// keeps matching while the user is mid-quote.
 				vp := strings.ToLower(val)
-				if key == "collection" {
-					vp = val
+				switch key {
+				case "collection", "source", "name", "prompt", "model", "sampler":
+					vp = strings.TrimPrefix(val, `"`)
 				}
 				rows := s.systemSuggestLevel2(key, vp)
 				if len(rows) == 0 {
@@ -377,7 +517,8 @@ func (s *Server) renderSystemSuggest(w http.ResponseWriter, rest string) {
 // `key:value` search token: the search-filter keywords plus every
 // existing tag category. A category whose name doubles as a filter
 // keyword (rating: is both) is folded into the keyword row to avoid
-// duplicate dropdown entries.
+// duplicate dropdown entries. Category rows carry their own colour so
+// the dropdown reads at a glance like the rest of the tag UI.
 func (s *Server) systemSuggestLevel1(prefix string) []searchSuggestRow {
 	var rows []searchSuggestRow
 	for _, kw := range searchkw.Keywords {
@@ -390,17 +531,18 @@ func (s *Server) systemSuggestLevel1(prefix string) []searchSuggestRow {
 			Description: searchkw.Descriptions[kw],
 		})
 	}
-	for _, name := range s.systemCategoryNames() {
-		if searchkw.IsKeyword(name) {
+	for _, cat := range s.systemCategoryRows() {
+		if searchkw.IsKeyword(cat.Name) {
 			continue
 		}
-		if !strings.HasPrefix(name, prefix) {
+		if !strings.HasPrefix(cat.Name, prefix) {
 			continue
 		}
 		rows = append(rows, searchSuggestRow{
-			Name:        name + ":",
-			Category:    "system",
-			Description: "tag category",
+			Name:          cat.Name + ":",
+			Category:      "system",
+			CategoryColor: cat.Color,
+			Description:   "tag category",
 		})
 	}
 	return rows
@@ -409,13 +551,14 @@ func (s *Server) systemSuggestLevel1(prefix string) []searchSuggestRow {
 func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
 	if key == "cat" {
 		var rows []searchSuggestRow
-		for _, name := range s.systemCategoryNames() {
-			if !strings.HasPrefix(name, valPrefix) {
+		for _, cat := range s.systemCategoryRows() {
+			if !strings.HasPrefix(cat.Name, valPrefix) {
 				continue
 			}
 			rows = append(rows, searchSuggestRow{
-				Name:     "cat:" + name,
-				Category: "system",
+				Name:          "cat:" + cat.Name,
+				Category:      "system",
+				CategoryColor: cat.Color,
 			})
 			if len(rows) >= 10 {
 				break
@@ -436,12 +579,82 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
 		}
 		return rows
 	}
+	// Source labels are operator-edited free text that frequently contains
+	// spaces; quote each suggestion so the parser still treats it as one
+	// token. Mirrors the collection: branch above.
 	if key == "source" {
 		labels := s.querySourceLabels(valPrefix, 10)
 		rows := make([]searchSuggestRow, 0, len(labels))
 		for _, lbl := range labels {
 			rows = append(rows, searchSuggestRow{
-				Name:     "source:" + lbl,
+				Name:     `source:"` + lbl + `"`,
+				Category: "system",
+			})
+		}
+		return rows
+	}
+	// name: surfaces distinct file basenames whose substring matches
+	// the prefix, mirroring the executor's `canonical_path LIKE '%/<val>%'`
+	// shape. Empty prefix returns nothing - on a million-image library a
+	// blank scan would walk the whole table and overflow the suggest budget.
+	// Filenames frequently contain spaces; wrap each suggestion in quotes
+	// so the parser keeps the value as a single token, matching the
+	// source: / collection: branches.
+	if key == "name" {
+		if valPrefix == "" {
+			return nil
+		}
+		names := s.queryNameBasenames(valPrefix, 10)
+		rows := make([]searchSuggestRow, 0, len(names))
+		for _, n := range names {
+			rows = append(rows, searchSuggestRow{
+				Name:     `name:"` + n + `"`,
+				Category: "system",
+			})
+		}
+		return rows
+	}
+	// model: / sampler: are typically short low-cardinality identifiers
+	// (e.g. `sdxl_v1.0`, `Euler a`). Surface distinct values from both
+	// metadata tables that prefix-match the typed text. Quote the value
+	// so multi-word sampler names like `Euler a` survive the parser.
+	if key == "model" {
+		labels := s.querySDStringField("model", "model_checkpoint", valPrefix, 10, false)
+		rows := make([]searchSuggestRow, 0, len(labels))
+		for _, lbl := range labels {
+			rows = append(rows, searchSuggestRow{
+				Name:     `model:"` + lbl + `"`,
+				Category: "system",
+			})
+		}
+		return rows
+	}
+	if key == "sampler" {
+		labels := s.querySDStringField("sampler", "sampler", valPrefix, 10, false)
+		rows := make([]searchSuggestRow, 0, len(labels))
+		for _, lbl := range labels {
+			rows = append(rows, searchSuggestRow{
+				Name:     `sampler:"` + lbl + `"`,
+				Category: "system",
+			})
+		}
+		return rows
+	}
+	// prompt: stores free-text sentences, so substring-match the prefix
+	// against existing prompts. Empty prefix returns nothing - listing
+	// the alphabetically first prompts isn't useful, and a full-table
+	// distinct on a sentence column is expensive. Prompts always contain
+	// spaces; the quoted form is the only one the parser can ingest as
+	// a single token.
+	if key == "prompt" {
+		if valPrefix == "" {
+			return nil
+		}
+		labels := s.querySDStringField("prompt", "prompt", valPrefix, 10, true)
+		rows := make([]searchSuggestRow, 0, len(labels))
+		for _, lbl := range labels {
+			rows = append(rows, searchSuggestRow{
+				Name:     `prompt:"` + lbl + `"`,
 				Category: "system",
 			})
 		}
@@ -486,27 +699,36 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
 	return nil
 }
 
-// systemCategoryNames pulls the live category list once per request.
+// systemCategoryRow pairs a tag-category name with its colour so the
+// system: dropdown can render each row in the category's accent.
+type systemCategoryRow struct {
+	Name  string
+	Color string
+}
+
+// systemCategoryRows pulls the live category list once per request.
 // tag_categories is small (~9 builtin plus a handful of user rows) so
 // it's cheaper to read all and filter in Go than to run a LIKE per
-// keystroke and worry about escaping underscored names.
-func (s *Server) systemCategoryNames() []string {
+// keystroke and worry about escaping underscored names. Color is the
+// hex value from the categories table; unknown values fall back to
+// the neutral default via tags.SafeCategoryColor.
+func (s *Server) systemCategoryRows() []systemCategoryRow {
 	d := s.db()
 	if d == nil {
 		return nil
 	}
-	dbrows, err := d.Read.Query(`SELECT name FROM tag_categories ORDER BY name`)
+	dbrows, err := d.Read.Query(`SELECT name, color FROM tag_categories ORDER BY name`)
 	if err != nil {
 		return nil
 	}
 	defer dbrows.Close()
-	var out []string
+	var out []systemCategoryRow
 	for dbrows.Next() {
-		var name string
-		if err := dbrows.Scan(&name); err != nil {
+		var name, color string
+		if err := dbrows.Scan(&name, &color); err != nil {
 			return out
 		}
-		out = append(out, name)
+		out = append(out, systemCategoryRow{Name: name, Color: tags.SafeCategoryColor(color)})
 	}
 	return out
 }

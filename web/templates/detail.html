@@ -52,6 +52,8 @@
   {{end}}
 
   <div id="autotag-result"></div>
+  <div id="relation-flash"></div>
+  <div id="external-edit-flash"></div>
 
   {{/* Top bar: back link | prev/next + download/fav (mirrors body column layout) */}}
   <div class="detail-topbar">
@@ -109,12 +111,21 @@
     <form hx-post="/images/{{.Image.ID}}/external"
           hx-target="#external-source-error"
           hx-swap="innerHTML"
-          hx-on::after-request="if(event.detail.xhr.status===204)document.getElementById('external-source-dialog').close()">
+          hx-on::after-request="onExternalEditResponse(event, 'external-source-dialog', 'Source')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <p>Edit <strong>Source</strong></p>
       <div class="field">
         <label>Source label (max 200 chars)</label>
-        <input type="text" name="source" id="external-source-input" maxlength="200" autocomplete="off">
+        <div class="series-input-wrap">
+          <input type="text" name="source" id="external-source-input" maxlength="200" autocomplete="off"
+                 hx-get="/internal/source/suggest"
+                 hx-trigger="input changed delay:200ms"
+                 hx-target="#external-source-suggest"
+                 hx-swap="innerHTML"
+                 hx-vals='js:{prefix: document.getElementById("external-source-input").value}'
+                 onkeydown="handleSuggestKey(event, 'external-source-suggest', 'external-source-input')">
+          <div id="external-source-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
+        </div>
       </div>
       <div id="external-source-error"></div>
       <div class="dialog-actions">
@@ -128,7 +139,7 @@
     <form hx-post="/images/{{.Image.ID}}/external"
           hx-target="#external-url-error"
           hx-swap="innerHTML"
-          hx-on::after-request="if(event.detail.xhr.status===204)document.getElementById('external-url-dialog').close()">
+          hx-on::after-request="onExternalEditResponse(event, 'external-url-dialog', 'URL')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <p>Edit <strong>URL</strong></p>
       <div class="field">
@@ -147,7 +158,7 @@
     <form hx-post="/images/{{.Image.ID}}/external"
           hx-target="#external-collection-error"
           hx-swap="innerHTML"
-          hx-on::after-request="if(event.target===this&&event.detail.xhr.status===204)document.getElementById('external-collection-dialog').close()">
+          hx-on::after-request="onExternalEditResponse(event, 'external-collection-dialog', 'Collection')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <p>Edit <strong>Collection</strong></p>
       <div class="field">
@@ -175,7 +186,7 @@
     <form hx-post="/images/{{.Image.ID}}/external"
           hx-target="#external-order-error"
           hx-swap="innerHTML"
-          hx-on::after-request="if(event.detail.xhr.status===204)document.getElementById('external-order-dialog').close()">
+          hx-on::after-request="onExternalEditResponse(event, 'external-order-dialog', 'Order')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <p>Edit <strong>Order within collection</strong></p>
       <div class="field">
@@ -209,6 +220,120 @@
     </form>
   </dialog>
   {{end}}
+
+  <dialog id="relation-edit-dialog">
+    <form hx-post="/relations/add"
+          hx-target="#relation-edit-error"
+          hx-swap="innerHTML"
+          hx-on::after-request="onRelationEditResponse(event)">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <input type="hidden" name="direction" id="relation-edit-direction" value="ab">
+      <p>Declare a <strong>relation</strong> between this image and another.</p>
+      <div class="relation-edit-grid" id="relation-edit-grid">
+        <div class="relation-edit-side" data-side="self">
+          <h4>This image</h4>
+          <input type="number" name="a" id="relation-parent-id" value="{{.Image.ID}}" readonly required>
+        </div>
+        <div class="relation-edit-swap">
+          <button type="button" class="btn-link-accent" id="relation-edit-swap-btn"
+                  title="Swap which side is left" aria-label="Swap which side is left">⇄</button>
+        </div>
+        <div class="relation-edit-side" data-side="other">
+          <h4>Other image</h4>
+          <input type="number" name="b" id="relation-other-id" min="1" step="1" required>
+        </div>
+      </div>
+      <div class="field">
+        <label>Relation type</label>
+        <label><input type="radio" name="type" value="duplicate" checked> Duplicates</label>
+        <label><input type="radio" name="type" value="alternate"> Alternates</label>
+        <label><input type="radio" name="type" value="version"> Version</label>
+        <label><input type="radio" name="type" value="derivative"> Derivative</label>
+      </div>
+      <p class="relation-edit-summary field-hint" id="relation-edit-summary"
+         data-self-id="{{.Image.ID}}">Pick the other image and a relation type.</p>
+      <div id="relation-edit-error"></div>
+      <div class="dialog-actions">
+        <button type="submit" name="force" value="true" id="relation-edit-overwrite-btn"
+                class="btn-danger" hidden>Overwrite existing relation</button>
+        <button type="submit">Add relation</button>
+        <button type="button" onclick="document.getElementById('relation-edit-dialog').close()">Cancel</button>
+      </div>
+    </form>
+    <script>
+    (function() {
+      var dlg = document.getElementById('relation-edit-dialog');
+      if (!dlg) return;
+      var grid = document.getElementById('relation-edit-grid');
+      var parentInput = document.getElementById('relation-parent-id');
+      var otherInput = document.getElementById('relation-other-id');
+      var dirInput = document.getElementById('relation-edit-direction');
+      var summary = document.getElementById('relation-edit-summary');
+      var swap = document.getElementById('relation-edit-swap-btn');
+      var selfID = summary && summary.dataset.selfId ? summary.dataset.selfId : '';
+
+      function sideLabel(input) {
+        if (!input) return '';
+        var v = (input.value || '').trim();
+        if (v === '' || v === '0') return v === '' ? '(other image)' : '#' + v;
+        if (v === selfID) return 'this image';
+        return '#' + v;
+      }
+      function selectedType() {
+        var r = dlg.querySelector('input[name="type"]:checked');
+        return r ? r.value : 'duplicate';
+      }
+      function refreshSummary() {
+        if (!summary) return;
+        // "This image" stays anchored to the parentInput; the swap only
+        // toggles which side counts as the operator's left so the
+        // directional verbs read the way they will commit.
+        var left = sideLabel(parentInput);
+        var right = sideLabel(otherInput);
+        if (dirInput && dirInput.value === 'ba') {
+          var tmp = left; left = right; right = tmp;
+        }
+        var t = selectedType();
+        var s;
+        switch (t) {
+          case 'alternate':
+            s = left + ' and ' + right + ' are alternates.';
+            break;
+          case 'version':
+            s = right + ' is a newer version of ' + left + '.';
+            break;
+          case 'derivative':
+            s = right + ' is a derivative of ' + left + '.';
+            break;
+          default:
+            s = right + ' is a duplicate of ' + left + '.';
+        }
+        summary.textContent = s;
+      }
+      if (swap) swap.addEventListener('click', function() {
+        if (!dirInput || !grid) return;
+        dirInput.value = (dirInput.value === 'ba') ? 'ab' : 'ba';
+        grid.classList.toggle('relation-edit-grid-swapped', dirInput.value === 'ba');
+        refreshSummary();
+      });
+      if (otherInput) otherInput.addEventListener('input', refreshSummary);
+      dlg.querySelectorAll('input[name="type"]').forEach(function(r) {
+        r.addEventListener('change', refreshSummary);
+      });
+      // Refresh after the dialog opens so the [Add a relation] click in
+      // main.js (which resets values, then showModal()) lands a sentence
+      // matching the post-reset state. Also reset the direction so a
+      // previously-swapped session doesn't leak across re-opens.
+      var open = dlg.showModal.bind(dlg);
+      dlg.showModal = function() {
+        if (dirInput) dirInput.value = 'ab';
+        if (grid) grid.classList.remove('relation-edit-grid-swapped');
+        open();
+        refreshSummary();
+      };
+    })();
+    </script>
+  </dialog>
 
   <div class="detail-body">
     {{/* Left: media + nav */}}
@@ -324,6 +449,11 @@
         {{/* Basic metadata table */}}
         <table class="meta-table">
           <tbody>
+            <tr><th>Image ID</th><td>
+              <button type="button" class="mono-small sha-copyable"
+                      data-copy="{{.Image.ID}}" title="Click to copy">{{.Image.ID}}</button>
+              <span class="copy-flash" hidden>copied</span>
+            </td></tr>
             <tr><th>Path</th><td class="mono-small">{{.Image.CanonicalPath}}</td></tr>
             <tr><th>Type</th><td>{{.Image.FileType}}
               {{if and .Image.SourceType (ne .Image.SourceType "none")}}
@@ -339,12 +469,51 @@
             {{if .Image.Width}}
             <tr><th>Resolution</th><td>{{deref .Image.Width}} × {{deref .Image.Height}}</td></tr>
             {{end}}
+            {{if .Image.DurationSec}}
+            <tr><th>Duration</th><td>{{printf "%.1f" (deref64f .Image.DurationSec)}} s</td></tr>
+            {{end}}
             <tr><th>File size</th><td>{{humanBytes .Image.FileSize}}</td></tr>
-            <tr><th>SHA-256</th><td class="mono-small sha-truncated" title="{{.Image.SHA256}}">{{.Image.SHA256}}</td></tr>
+            <tr><th>SHA-256</th><td>
+              <button type="button" class="mono-small sha-truncated sha-copyable"
+                      data-copy="{{.Image.SHA256}}" title="Click to copy">{{.Image.SHA256}}</button>
+              <span class="copy-flash" hidden>copied</span>
+            </td></tr>
+            <tr><th>pHash</th><td>
+              {{if .Image.Phash}}
+                {{$hex := phashHex .Image.Phash}}
+                <button type="button" class="mono-small sha-copyable" data-copy="{{$hex}}" title="Click to copy">{{$hex}}</button>
+                <a href="/?q=phash:{{$hex}}~{{.PhashDistance}}" class="btn-link-accent" title="Search near-duplicates (Hamming distance {{.PhashDistance}})">[search near-duplicates]</a>
+                <span class="copy-flash" hidden>copied</span>
+              {{else}}
+                <span class="field-hint">(not computed)</span>
+                <form hx-post="/relations/phash/{{.Image.ID}}/recompute" hx-swap="none"
+                      hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+                  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+                  <button type="submit" class="btn-link-accent">[backfill]</button>
+                </form>
+              {{end}}
+            </td></tr>
             <tr><th>Ingested</th><td>{{.Image.IngestedAt.Format "2006-01-02 15:04:05"}}</td></tr>
             {{if .Image.Origin}}<tr><th>Added via</th><td>{{.Image.Origin}}</td></tr>{{end}}
+            {{if and .IsManga .Image.PageCount}}
+            <tr><th>Pages</th><td>{{deref .Image.PageCount}}</td></tr>
+            {{end}}
+            {{if .Image.AutoTaggedAt}}
+            <tr><th>Auto-tagged</th><td>{{.Image.AutoTaggedAt.Format "2006-01-02 15:04:05"}}</td></tr>
+            {{end}}
+            {{if .Image.IsMissing}}
+            <tr><th>Status</th><td class="text-warning">⚠ File missing from disk</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+
+        {{/* Editable fields sit below the read-only metadata so a click on
+             [edit] is visually separated from the rest of the panel. */}}
+        <hr class="meta-editable-separator">
+        <table class="meta-table meta-editable">
+          <tbody>
             <tr><th>Source</th><td>
-              {{if .Image.Source}}<span class="meta-source-value">{{.Image.Source}}</span>{{else}}<span class="field-hint">(none)</span>{{end}}
+              {{if .Image.Source}}<a href="/?q={{urlQ (printf "source:\"%s\"" .Image.Source)}}" class="meta-source-value" title="Search this source">{{.Image.Source}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
               <button type="button" class="btn-sm btn-edit-external" data-field="source" data-value="{{.Image.Source}}" title="Edit source">[edit]</button>
             </td></tr>
             <tr><th>URL</th><td>
@@ -359,15 +528,6 @@
               {{if .Image.SeriesOrder}}<span class="meta-source-value">#{{deref .Image.SeriesOrder}}</span>{{else}}<span class="field-hint">(none)</span>{{end}}
               <button type="button" class="btn-sm btn-edit-external" data-field="order" data-value="{{if .Image.SeriesOrder}}{{deref .Image.SeriesOrder}}{{end}}" title="Edit order">[edit]</button>
             </td></tr>
-            {{if and .IsManga .Image.PageCount}}
-            <tr><th>Pages</th><td>{{deref .Image.PageCount}}</td></tr>
-            {{end}}
-            {{if .Image.AutoTaggedAt}}
-            <tr><th>Auto-tagged</th><td>{{.Image.AutoTaggedAt.Format "2006-01-02 15:04:05"}}</td></tr>
-            {{end}}
-            {{if .Image.IsMissing}}
-            <tr><th>Status</th><td class="text-warning">⚠ File missing from disk</td></tr>
-            {{end}}
           </tbody>
         </table>
 
@@ -529,42 +689,12 @@
         </details>
         {{end}}
 
-        {{/* Duplicate filesystem paths sharing this image's SHA-256.
-             The "Duplicates" label is intentionally distinct from tag
-             aliases above; the two concepts share no logic. The path
-             stacks above the action buttons so the narrow metadata
-             panel doesn't crush the row into wrap city. */}}
-        {{if gt (len .ImagePaths) 1}}
-        <div class="duplicates-section">
-          <h3>Duplicates</h3>
-          <ul class="duplicates-list">
-            {{range .ImagePaths}}
-            <li class="duplicates-entry">
-              <div class="duplicates-path mono-small">{{.Path}}</div>
-              <div class="duplicates-actions">
-                {{if .IsCanonical}}
-                <span class="btn-sm btn-canonical" aria-disabled="true">Canonical</span>
-                {{else}}
-                <form method="POST" action="/images/{{$.Image.ID}}/canonical-path" style="display:inline">
-                  <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-                  <input type="hidden" name="path" value="{{.Path}}">
-                  <button type="submit" class="btn-sm">Set canonical</button>
-                </form>
-                <button class="btn-sm btn-danger"
-                        hx-delete="/images/{{$.Image.ID}}/aliases/{{.ID}}"
-                        hx-target="closest .duplicates-entry"
-                        hx-swap="outerHTML"
-                        hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'>Remove</button>
-                {{end}}
-              </div>
-            </li>
-            {{end}}
-          </ul>
-        </div>
-        {{end}}
-
       </div>
     </details>
+    <div id="related-entries-panel"
+         hx-get="/internal/images/{{.Image.ID}}/related-entries?back_q={{.BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}"
+         hx-trigger="load, relations-changed"
+         hx-swap="innerHTML"></div>
     <div hx-get="/images/{{.Image.ID}}/related?back_q={{.BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}" hx-trigger="load" hx-swap="outerHTML"></div>
     </div>{{/* end detail-meta-col */}}
   </div>

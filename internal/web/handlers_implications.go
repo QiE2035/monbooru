@@ -179,6 +179,27 @@ func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string)
 	}
 	s.jobs.Update(0, total, fmt.Sprintf("%s 0/%d…", verb, total))
 
+	// Pre-walk the implied tag's closure once for the remove path; it's
+	// invariant across the propagation job. The chunked tx loop below
+	// then passes the resolved slice to propagateRemoveImplication so a
+	// big-fan-out parent doesn't pay an N×graph-walk inside the
+	// writer-held chunk transaction.
+	var removeClosure []int64
+	if op == "remove" {
+		closureTx, err := s.db().Read.Begin()
+		if err != nil {
+			s.jobs.Fail(err.Error())
+			return
+		}
+		removeClosure, err = tags.TransitiveImpliedTx(closureTx, []int64{impliedID})
+		closureTx.Rollback()
+		if err != nil {
+			s.jobs.Fail(err.Error())
+			return
+		}
+		removeClosure = append([]int64{impliedID}, removeClosure...)
+	}
+
 	for start := 0; start < total; start += chunkSize {
 		if ctx.Err() != nil {
 			s.jobs.Complete(fmt.Sprintf("%s cancelled (%d/%d)", verb, processed, total))
@@ -203,7 +224,7 @@ func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string)
 					return
 				}
 			} else {
-				if err := propagateRemoveImplication(tx, imageID, parentID, impliedID); err != nil {
+				if err := propagateRemoveImplication(tx, imageID, parentID, removeClosure); err != nil {
 					tx.Rollback()
 					s.jobs.Fail(err.Error())
 					return
@@ -242,18 +263,13 @@ func propagateAddImplication(tx *sql.Tx, imageID, parentID, ratingCatID int64) e
 	return tags.ApplyImpliedFanoutTx(tx, imageID, parentID, ratingCatID, isAuto == 1)
 }
 
-// propagateRemoveImplication walks the implied tag (and its transitive
-// dependents) on this image and drops any row whose only justification
-// was the now-deleted edge. is_implied=0 rows (user-owned) and rows
-// still implied by another parent on the image are preserved.
-func propagateRemoveImplication(tx *sql.Tx, imageID, parentID, impliedID int64) error {
-	// Closure under the now-gone edge: every tag that was implied via
-	// parent → implied → ... must be reconsidered.
-	closure, err := tags.TransitiveImpliedTx(tx, []int64{impliedID})
-	if err != nil {
-		return err
-	}
-	closure = append([]int64{impliedID}, closure...)
+// propagateRemoveImplication walks the supplied implied-tag closure
+// on this image and drops any row whose only justification was the
+// now-deleted edge. is_implied=0 rows (user-owned) and rows still
+// implied by another parent on the image are preserved. The closure
+// (impliedID plus its transitive children) is resolved once by the
+// caller and reused across every image carrying the parent.
+func propagateRemoveImplication(tx *sql.Tx, imageID, parentID int64, closure []int64) error {
 	for _, id := range closure {
 		var rowImplied int
 		err := tx.QueryRow(
