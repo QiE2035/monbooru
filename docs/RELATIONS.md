@@ -51,7 +51,7 @@ Both run the same job. The Hamming-distance cutoff comes from
 range 0..12); set it tighter for fewer, more confident pairs.
 
 The job also probes incrementally: when a fresh image is ingested,
-monbooru searches the in-memory for near-duplicates and
+monbooru searches the in-memory BK-tree for near-duplicates and
 queues any hits without waiting for the next manual scan. Toggling
 this off via the TOML config is possible (`relations.incremental_on_ingest`)
 but the value resets to `true` on every settings save.
@@ -83,12 +83,12 @@ Two parallel views, each with its own walker:
   duplicate groups. Each row shows the original and one non-original
   member; **Delete** removes the non-original from the gallery. The
   **Copy tags** button (when relevant) layers the duplicate's tags
-  onto the original before the delete. **Delete all duplicates**
-  removes every non-original member of every marked group.
+  onto the original before the delete. **Delete all duplicate
+  images** removes every non-original member of every marked group.
 - **SHA-256 duplicates** (`/relations/duplicates/sha256`) - file-level
   alias paths: one byte-identical image stored at multiple paths on
   disk. **Delete** removes the duplicate path and its file; the canonical
-  path is kept. **Delete all duplicates** runs this across every
+  path is kept. **Delete all duplicate files** runs this across every
   alias.
 
 Both walkers are also linked from the Relations hub under

@@ -1,12 +1,6 @@
 {{define "relations_session.html"}}
 {{template "layout_head" .}}
-<div id="sidebar-inner">
-  <nav class="settings-nav">
-    <a href="/relations#find">Find relations</a>
-    <a href="/relations#browse">Browse relations</a>
-    <a href="/relations#duplicates">Duplicates</a>
-  </nav>
-</div>
+<div id="sidebar-inner"></div>
 {{template "layout_mid" .}}
 
 <div id="relations-session-page" class="relations-session">
@@ -15,6 +9,10 @@
       <a class="back-link" href="/relations">← Back to Relations</a>
       <span class="detail-nav-sep">·</span>
       <strong class="walker-page-title">Relations session</strong>
+      {{if .Pair}}
+      <span class="detail-nav-sep">·</span>
+      <span class="field-hint"><strong>{{.Remaining}}</strong> pair(s) remaining</span>
+      {{end}}
     </div>
     <form method="get" action="/relations/session" class="session-order-form">
       <span class="field-hint">Order</span>
@@ -26,8 +24,19 @@
 
   {{if not .Pair}}
   <section class="session-empty">
+    {{if gt .HiddenByCeiling 0}}
+    <h3>No pairs at your <strong>{{.Ceiling}}</strong> rating ceiling.</h3>
+    <p class="field-hint"><strong>{{.HiddenByCeiling}}</strong> pair(s) are hidden because one or both sides exceed the current ceiling.</p>
+    <form hx-post="/internal/rating-ceiling?level=explicit" hx-swap="none"
+          hx-on::after-request="if(event.detail.successful){window.location.reload()}"
+          style="display:inline">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <button type="submit" class="btn-sm btn-purple">Raise ceiling to explicit</button>
+    </form>
+    {{else}}
     <h3>No pairs to review.</h3>
     <p class="field-hint">The queue is empty. Run <a href="/relations">Find new pairs</a> to surface more candidates.</p>
+    {{end}}
   </section>
   {{else}}
   {{- $first := .Pair.A -}}
@@ -41,59 +50,44 @@
     {{- $secondSide = "A" -}}
   {{- end -}}
   <section class="session-pair" data-a="{{.Pair.A.ID}}" data-b="{{.Pair.B.ID}}">
-    <div class="session-headers">
-      <h4 class="session-role" data-role="left">Left</h4>
-      <h4 class="session-role" data-role="right">Right</h4>
-    </div>
     <div class="session-cells">
       <div class="session-cell" data-side="{{$firstSide}}">
+        <h4 class="session-role" data-role="left">Left</h4>
         <a href="/images/{{$first.ID}}" target="_blank">
           <img src="/thumbnails/{{$.ActiveGallery}}/{{$first.ID}}.jpg" alt="image {{$first.ID}}" class="session-cell-img">
         </a>
         <div class="session-cell-meta">
           <strong class="session-cell-filename">{{$first.Filename}}</strong>
-          <div class="session-facts mono-small">
-            #{{$first.ID}} · {{$first.Width.Int64}}×{{$first.Height.Int64}} · {{humanBytes $first.FileSize}} · {{$first.TagCount}} tag(s)
-          </div>
+          <div class="session-facts mono-small">#{{$first.ID}}</div>
         </div>
       </div>
-      <div class="session-distance" aria-hidden="true">
-        <span class="session-distance-line"></span>
-        <span class="session-distance-label">distance <strong>{{.Pair.Distance}}</strong></span>
-        <span class="session-distance-line"></span>
+      <div class="session-bridge">
+        <div class="session-distance" aria-hidden="true">
+          <span class="session-distance-line"></span>
+          <span class="session-distance-label">distance <strong>{{.Pair.Distance}}</strong></span>
+          <span class="session-distance-line"></span>
+        </div>
+        <div class="session-controls">
+          <button type="button" id="session-swap" title="Swap which side is left (W)">Swap sides (W)</button>
+          <button type="button" id="session-compare" title="Compare the two images (C)">Compare (C)</button>
+        </div>
       </div>
       <div class="session-cell" data-side="{{$secondSide}}">
+        <h4 class="session-role" data-role="right">Right</h4>
         <a href="/images/{{$second.ID}}" target="_blank">
           <img src="/thumbnails/{{$.ActiveGallery}}/{{$second.ID}}.jpg" alt="image {{$second.ID}}" class="session-cell-img">
         </a>
         <div class="session-cell-meta">
           <strong class="session-cell-filename">{{$second.Filename}}</strong>
-          <div class="session-facts mono-small">
-            #{{$second.ID}} · {{$second.Width.Int64}}×{{$second.Height.Int64}} · {{humanBytes $second.FileSize}} · {{$second.TagCount}} tag(s)
-          </div>
+          <div class="session-facts mono-small">#{{$second.ID}}</div>
         </div>
       </div>
     </div>
 
-    <p class="session-prompt">The <strong>right</strong> image is <em id="session-role-noun" data-default="a duplicate / an alternate version / a newer version / a derivative">a duplicate / an alternate version / a newer version / a derivative</em> of the <strong>left</strong> image.</p>
-
-    <dl class="session-legend">
-      <dt>1 Duplicate</dt>
-      <dd>same image, different files. e.g. the same scan saved twice at different qualities.</dd>
-      <dt>2 Alternate version</dt>
-      <dd>same subject, different rendering. e.g. two recolours of one composition.</dd>
-      <dt>3 Newer version</dt>
-      <dd>right is a revised iteration of left. e.g. fixed lineart, an upscaled redo.</dd>
-      <dt>4 Derivative</dt>
-      <dd>right is built on top of left. e.g. an edit, recolour, or fanart of the original.</dd>
-      <dt>5 Not related</dt>
-      <dd>surface-level mismatch; the pair will not resurface in any session.</dd>
-      <dt>6 Skip</dt>
-      <dd>defer the decision; the pair returns at the back of the queue.</dd>
-    </dl>
+    <p class="session-prompt"><span id="session-prompt-text" data-default="Hover a decision below to preview what it commits.">Hover a decision below to preview what it commits.</span></p>
 
     <form id="session-decision-form" hx-post="/relations/session/decide" hx-swap="none"
-          hx-on::after-request="if(event.detail.successful&&event.detail.xhr.status===204){window.location.reload()}">
+          hx-on::after-request="onSessionDecideResponse(event)">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <input type="hidden" name="a" value="{{.Pair.A.ID}}">
       <input type="hidden" name="b" value="{{.Pair.B.ID}}">
@@ -102,34 +96,62 @@
 
       <p class="session-hint">Use the buttons below to commit the decision, or swap sides first.</p>
       <div class="session-buttons">
-        <button type="submit" name="type" value="duplicate"  data-role-noun="a duplicate"          title="Right is a duplicate of left (1)">1 Duplicate</button>
-        <button type="submit" name="type" value="alternate"  data-role-noun="an alternate version" title="Right is an alternate version of left (2)">2 Alternate version</button>
-        <button type="submit" name="type" value="version"    data-role-noun="a newer version"      title="Right is the newer version of left (3)">3 Newer version</button>
-        <button type="submit" name="type" value="derivative" data-role-noun="a derivative"         title="Right is a derivative of left (4)">4 Derivative</button>
+        <button type="submit" name="type" value="duplicate"
+                data-prompt-sentence="{right} is the same image as {left} ({left} is the original)."
+                title="Right is the same image as left (1)">1 Same image (Duplicate)</button>
+        <button type="submit" name="type" value="alternate"
+                data-prompt-sentence="{left} and {right} are variants."
+                title="Right is a variant of left (2)">2 Variant (Alternate)</button>
+        <button type="submit" name="type" value="version"
+                data-prompt-sentence="{right} is a newer revision of {left}."
+                title="Right is a newer revision of left (3)">3 Newer revision (Version)</button>
+        <button type="submit" name="type" value="derivative"
+                data-prompt-sentence="{right} is based on {left}."
+                title="Right is based on left (4)">4 Based on (Derivative)</button>
       </div>
       <div class="session-buttons session-buttons-secondary">
-        <button type="submit" name="type" value="not_related" title="Not related (5)">5 Not related</button>
-        <button type="submit" name="type" value="skip"        title="Skip (6 / Space)">6 Skip</button>
-      </div>
-      <div class="session-controls">
-        <button type="button" id="session-swap" title="Swap which side is left (W)">Swap sides (W)</button>
-        <button type="button" id="session-compare" title="Compare the two images (C)">Compare (C)</button>
-        <button type="button" id="session-pause" title="Pause and return to Relations (Esc)">Pause (Esc)</button>
+        <button type="submit" name="type" value="not_related"
+                data-prompt-sentence="{left} and {right} are not related; the pair stays out of every future session."
+                title="Not related (5)">5 Not related</button>
+        <button type="submit" name="type" value="skip"
+                data-prompt-sentence="Skip this pair - it returns at the back of the queue."
+                title="Skip (6 / Space)">6 Skip</button>
       </div>
     </form>
 
+    {{template "partials/relations_comparison.html" (dict "Left" .Left "Right" .Right)}}
+
     <dialog id="session-compare-dialog" class="compare-dialog">
+      <div class="compare-captions" aria-hidden="true">
+        <span class="compare-caption">Left <span class="mono-small" id="compare-caption-left-id">#?</span></span>
+        <span class="compare-caption">Right <span class="mono-small" id="compare-caption-right-id">#?</span></span>
+      </div>
       <div class="compare-stage" id="compare-stage">
         <img id="compare-img-left"  alt="left">
         <img id="compare-img-right" alt="right">
-        <div class="compare-divider" id="compare-divider" aria-hidden="true"></div>
+        <div class="compare-divider" id="compare-divider" aria-hidden="true">
+          <span class="compare-divider-handle">&#x21d4;</span>
+        </div>
       </div>
       <div class="dialog-actions">
         <button type="button" id="compare-close">Close</button>
       </div>
     </dialog>
 
-    <p class="session-remaining field-hint"><strong>{{.Remaining}}</strong> pair(s) remaining · distance <strong>{{.Pair.Distance}}</strong></p>
+    <dialog id="session-postdecide-delete-dialog">
+      <h4><span id="postdecide-dup-id">#?</span> has been marked as a duplicate of <span id="postdecide-original-id">#?</span></h4>
+      <p>Delete <span id="postdecide-dup-id-body">#?</span> from disk now?</p>
+      <p class="field-hint">The original stays in the gallery; only this duplicate file is removed from disk.</p>
+      <label id="postdecide-copy-tags-label" hidden>
+        <input type="checkbox" id="postdecide-copy-tags">
+        Copy unique tags onto the original first
+      </label>
+      <div class="dialog-actions">
+        <button type="button" id="postdecide-keep" class="btn-sm" autofocus>Keep file</button>
+        <button type="button" id="postdecide-delete" class="btn-danger btn-sm">Delete now</button>
+      </div>
+    </dialog>
+
   </section>
   {{end}}
 </div>
@@ -149,6 +171,7 @@
       if (document.querySelector('dialog[open]')) return;
       var tag = e.target.tagName;
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+      e.preventDefault();
       window.location.href = '/relations';
     });
     return;
@@ -159,18 +182,25 @@
   function flipSides() {
     var cells = pair.querySelector('.session-cells');
     if (!cells) return;
-    // Children are [leftThumb, distance, rightThumb]. Move the right
-    // thumb in front of the left, then slide the distance segment
-    // between them, so the final order reads [right, distance, left].
-    // The per-cell metadata lives inside each thumb cell so it travels
-    // with the swap.
+    // Children are [leftCell, bridge, rightCell]; swap left and right
+    // around the bridge so the final order reads [right, bridge, left].
+    // The per-cell heading and meta live inside each cell so they
+    // travel with the swap; the bridge stays put.
     var left = cells.children[0];
-    var distance = cells.children[1];
+    var bridge = cells.children[1];
     var right = cells.children[2];
-    if (!left || !distance || !right) return;
+    if (!left || !bridge || !right) return;
     cells.insertBefore(right, left);
-    cells.insertBefore(distance, left);
-    var newLeftSide = cells.children[0].dataset.side;
+    cells.insertBefore(bridge, left);
+    // Update the in-cell Left / Right headings so they keep matching
+    // the side the operator now reads as left.
+    var newLeftCell = cells.children[0];
+    var newRightCell = cells.children[2];
+    var lh = newLeftCell.querySelector('.session-role');
+    var rh = newRightCell.querySelector('.session-role');
+    if (lh) { lh.textContent = 'Left'; lh.dataset.role = 'left'; }
+    if (rh) { rh.textContent = 'Right'; rh.dataset.role = 'right'; }
+    var newLeftSide = newLeftCell.dataset.side;
     var aID = pair.dataset.a, bID = pair.dataset.b;
     leftInput.value = (newLeftSide === 'A') ? aID : bID;
   }
@@ -178,24 +208,27 @@
   var swap = document.getElementById('session-swap');
   if (swap) swap.addEventListener('click', flipSides);
 
-  var pause = document.getElementById('session-pause');
-  if (pause) pause.addEventListener('click', function() { window.location.href = '/relations'; });
-
-  // Adapt the prompt's role-noun span when the operator hovers or
-  // tabs onto one of the four decision buttons, so the sentence
-  // matches the button about to fire. Leave / blur restores the
-  // listing default so a keyboard user without focus still sees the
-  // full menu.
-  var noun = document.getElementById('session-role-noun');
-  if (noun) {
-    var defaultNoun = noun.getAttribute('data-default') || noun.textContent;
-    var roleButtons = form.querySelectorAll('button[data-role-noun]');
-    roleButtons.forEach(function(btn) {
-      var word = btn.getAttribute('data-role-noun');
-      btn.addEventListener('mouseenter', function() { noun.textContent = word; });
-      btn.addEventListener('focus',      function() { noun.textContent = word; });
-      btn.addEventListener('mouseleave', function() { noun.textContent = defaultNoun; });
-      btn.addEventListener('blur',       function() { noun.textContent = defaultNoun; });
+  // Prompt preview: every decision button (including 5 Not related
+  // and 6 Skip) carries the full sentence shape via
+  // data-prompt-sentence; the {left} / {right} placeholders resolve
+  // against the operator's current left / right (so a Swap flip is
+  // reflected immediately).
+  var prompt = document.getElementById('session-prompt-text');
+  if (prompt) {
+    var defaultPrompt = prompt.getAttribute('data-default') || prompt.textContent;
+    function resolvePrompt(template) {
+      if (!leftInput || !pair) return template;
+      var leftID = leftInput.value;
+      var rightID = (leftID === pair.dataset.a) ? pair.dataset.b : pair.dataset.a;
+      return template.replace(/{left}/g, '#' + leftID).replace(/{right}/g, '#' + rightID);
+    }
+    var promptButtons = form.querySelectorAll('button[data-prompt-sentence]');
+    promptButtons.forEach(function(btn) {
+      var tmpl = btn.getAttribute('data-prompt-sentence');
+      btn.addEventListener('mouseenter', function() { prompt.textContent = resolvePrompt(tmpl); });
+      btn.addEventListener('focus',      function() { prompt.textContent = resolvePrompt(tmpl); });
+      btn.addEventListener('mouseleave', function() { prompt.textContent = defaultPrompt; });
+      btn.addEventListener('blur',       function() { prompt.textContent = defaultPrompt; });
     });
   }
 
@@ -223,6 +256,10 @@
     var rightID = (leftID === aID) ? bID : aID;
     if (imgLeftEl)  imgLeftEl.src  = '/images/' + leftID + '/file';
     if (imgRightEl) imgRightEl.src = '/images/' + rightID + '/file';
+    var capL = document.getElementById('compare-caption-left-id');
+    var capR = document.getElementById('compare-caption-right-id');
+    if (capL) capL.textContent = '#' + leftID;
+    if (capR) capR.textContent = '#' + rightID;
     setSplit(50);
     compareDlg.showModal();
   }
@@ -246,6 +283,100 @@
     compareStage.addEventListener('touchmove',  function(e) { trackSplit(e); }, {passive: true});
   }
 
+  // Post-decide modal hook. The decision form's hx-on::after-request
+  // calls onSessionDecideResponse: when the server flagged a duplicate
+  // decision via X-Relations-Post-Decision, open the delete dialog
+  // instead of advancing. Every other decision rides the auto-reload.
+  var postdecideDlg = document.getElementById('session-postdecide-delete-dialog');
+  var pdCsrf = form.querySelector('input[name="_csrf"]');
+  var pdCSRFValue = pdCsrf ? pdCsrf.value : '';
+  var pdState = { dupID: 0, originalID: 0, groupID: 0 };
+  window.onSessionDecideResponse = function(evt) {
+    var detail = evt.detail || {};
+    var xhr = detail.xhr;
+    if (!detail.successful || !xhr) return;
+    if (xhr.getResponseHeader('X-Relations-Post-Decision') === 'duplicate-cleanup') {
+      pdState.dupID = parseInt(xhr.getResponseHeader('X-Relations-Duplicate-ID') || '0', 10);
+      pdState.originalID = parseInt(xhr.getResponseHeader('X-Relations-Duplicate-OriginalID') || '0', 10);
+      pdState.groupID = parseInt(xhr.getResponseHeader('X-Relations-Duplicate-GroupID') || '0', 10);
+      var hasUnique = xhr.getResponseHeader('X-Relations-Duplicate-HasUniqueTags') === '1';
+      var dupHeaderEl = document.getElementById('postdecide-dup-id');
+      var dupBodyEl = document.getElementById('postdecide-dup-id-body');
+      var origEl = document.getElementById('postdecide-original-id');
+      var copyLabel = document.getElementById('postdecide-copy-tags-label');
+      var copyBox = document.getElementById('postdecide-copy-tags');
+      if (dupHeaderEl) dupHeaderEl.textContent = '#' + pdState.dupID;
+      if (dupBodyEl) dupBodyEl.textContent = '#' + pdState.dupID;
+      if (origEl) origEl.textContent = '#' + pdState.originalID;
+      if (copyBox) copyBox.checked = false;
+      if (copyLabel) copyLabel.hidden = !hasUnique;
+      if (postdecideDlg) postdecideDlg.showModal();
+      return;
+    }
+    if (xhr.status === 204) {
+      window.location.reload();
+    }
+  };
+  var pdKeep = document.getElementById('postdecide-keep');
+  if (pdKeep) pdKeep.addEventListener('click', function() {
+    if (postdecideDlg) postdecideDlg.close();
+    window.location.reload();
+  });
+  var pdDelete = document.getElementById('postdecide-delete');
+  if (pdDelete) pdDelete.addEventListener('click', function() {
+    var copyBox = document.getElementById('postdecide-copy-tags');
+    // URL-encoded body so the handler's r.ParseForm() actually reads
+    // the fields; FormData lands as multipart and Go's ParseForm
+    // leaves r.Form empty for non-urlencoded posts.
+    var headers = {
+      'HX-Request': 'true',
+      'X-CSRF-Token': pdCSRFValue,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    };
+    var promise = Promise.resolve();
+    if (copyBox && copyBox.checked && pdState.groupID > 0) {
+      var copyParams = new URLSearchParams();
+      copyParams.append('_csrf', pdCSRFValue);
+      promise = fetch('/relations/dup-group/' + pdState.groupID + '/copy-tags', {
+        method: 'POST', headers: headers, body: copyParams.toString(),
+      });
+    }
+    promise.then(function() {
+      var delParams = new URLSearchParams();
+      delParams.append('_csrf', pdCSRFValue);
+      delParams.append('image_id', String(pdState.dupID));
+      return fetch('/relations/duplicates/marked/delete-one', {
+        method: 'POST', headers: headers, body: delParams.toString(),
+      });
+    }).then(function() {
+      if (postdecideDlg) postdecideDlg.close();
+      window.location.reload();
+    });
+  });
+  // Esc on the post-decide dialog must default to Keep (the safer
+  // path); the native dialog cancel event fires before close, and
+  // Keep just reloads.
+  if (postdecideDlg) postdecideDlg.addEventListener('cancel', function(e) {
+    e.preventDefault();
+    if (pdKeep) pdKeep.click();
+  });
+  // Dialog-scoped shortcuts: D commits the delete; Enter keeps the
+  // file (matches the autofocused Keep button). Both run only while
+  // the modal is open so they do not collide with the queue
+  // shortcuts wired below.
+  if (postdecideDlg) postdecideDlg.addEventListener('keydown', function(e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (e.key === 'd' || e.key === 'D') {
+      e.preventDefault();
+      if (pdDelete) pdDelete.click();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (pdKeep) pdKeep.click();
+    }
+  });
+
   // Keyboard shortcuts. 1-6 trigger the corresponding decision button;
   // W flips sides; C opens Compare; Space behaves like Skip.
   document.addEventListener('keydown', function(e) {
@@ -267,7 +398,7 @@
     else if (e.key === ' ') { btnIndex = 5; e.preventDefault(); }
     else if (e.key === 'w' || e.key === 'W') { flipSides(); return; }
     else if (e.key === 'c' || e.key === 'C') { openCompare(); return; }
-    else if (e.key === 'Escape') { window.location.href = '/relations'; return; }
+    else if (e.key === 'Escape') { e.preventDefault(); window.location.href = '/relations'; return; }
     if (btnIndex < 0) return;
     var btn = form.querySelectorAll('button[type="submit"]')[btnIndex];
     if (btn) btn.click();

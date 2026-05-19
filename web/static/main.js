@@ -1110,6 +1110,10 @@ function showConfirm(message, onOk, danger, okLabel) {
   okBtn.onclick = function() { close(); onOk(); };
   cancelBtn.onclick = close;
   dlg.showModal();
+  // Land focus on the safer button so a keyboard-only operator can
+  // commit safe prompts with a single Enter while destructive prompts
+  // (those carrying a danger line) require an explicit Tab to OK.
+  if (danger) cancelBtn.focus(); else okBtn.focus();
 }
 
 document.body.addEventListener('htmx:confirm', function(e) {
@@ -1155,6 +1159,8 @@ document.addEventListener('click', function(e) {
   var self = btn.getAttribute('data-relations-add');
   if (parentInput) { parentInput.value = self; parentInput.readOnly = true; }
   if (otherInput) { otherInput.value = ''; otherInput.readOnly = false; }
+  var otherThumb = document.getElementById('relation-edit-thumb-other');
+  if (otherThumb) { otherThumb.hidden = true; otherThumb.removeAttribute('src'); otherThumb.alt = ''; }
   var dupRadio = dlg.querySelector('input[name="type"][value="duplicate"]');
   if (dupRadio) dupRadio.checked = true;
   var err = document.getElementById('relation-edit-error');

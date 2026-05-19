@@ -17,16 +17,16 @@
 
   {{if .Relations.DupGroup}}
   <section class="relations-section">
-    <h3>Duplicates of {{if eq .Relations.DupGroup.Original .Self}}this image{{else}}image {{.Relations.DupGroup.Original}}{{end}}</h3>
+    <h3>Same image as {{if eq .Relations.DupGroup.Original .Self}}this image{{else}}image {{.Relations.DupGroup.Original}}{{end}}</h3>
     <ul class="manga-pages-grid">
-      {{range $id := .Relations.DupGroup.Members}}
-      {{if ne $id $.Self}}
+      {{range $id := .DupGroupMembersOrdered}}
       <li class="manga-page-cell{{if eq $id $.Relations.DupGroup.Original}} relations-cell-original{{end}}">
-        <a href="/images/{{$id}}" class="manga-page-link">
+        <a href="/images/{{$id}}" class="manga-page-link{{if eq $id $.Self}} relations-tree-current{{end}}" title="Image {{$id}}{{if eq $id $.Self}} (this image){{end}}">
           <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy" class="manga-page-thumb">
           {{if eq $id $.Relations.DupGroup.Original}}<span class="relations-card-tag">original</span>{{end}}
-          <span class="manga-page-num">#{{$id}}</span>
+          <span class="manga-page-num">{{if eq $id $.Relations.DupGroup.Original}}Original{{else}}Duplicate{{end}} · #{{$id}}</span>
         </a>
+        {{if ne $id $.Self}}
         <div class="relations-actions-row">
           <form hx-post="/relations/remove" hx-swap="none"
                 hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline"
@@ -47,8 +47,8 @@
           </form>
           {{end}}
         </div>
+        {{end}}
       </li>
-      {{end}}
       {{end}}
     </ul>
   </section>
@@ -56,15 +56,15 @@
 
   {{if .Relations.AltGroupMembers}}
   <section class="relations-section">
-    <h3>Alternates</h3>
+    <h3>Variants</h3>
     <ul class="manga-pages-grid">
-      {{range $id := .Relations.AltGroupMembers}}
-      {{if ne $id $.Self}}
+      {{range $id := .AltGroupMembersOrdered}}
       <li class="manga-page-cell">
-        <a href="/images/{{$id}}" class="manga-page-link">
+        <a href="/images/{{$id}}" class="manga-page-link{{if eq $id $.Self}} relations-tree-current{{end}}" title="Image {{$id}}{{if eq $id $.Self}} (this image){{end}}">
           <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy" class="manga-page-thumb">
-          <span class="manga-page-num">A · {{$id}}</span>
+          <span class="manga-page-num">Alternate · #{{$id}}</span>
         </a>
+        {{if ne $id $.Self}}
         <div class="relations-actions-row">
           <form hx-post="/relations/remove" hx-swap="none"
                 hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
@@ -74,54 +74,49 @@
             <button type="submit" class="btn-link-accent">[unlink]</button>
           </form>
         </div>
+        {{end}}
       </li>
-      {{end}}
       {{end}}
     </ul>
   </section>
   {{end}}
 
-  {{if or .Relations.VersionParent .Relations.VersionChild}}
+  {{if .VersionChainGens}}
   <section class="relations-section">
-    <h3>Version history</h3>
-    <ul class="manga-pages-grid">
+    <h3>Revision history</h3>
+    <div class="relations-card-chain">
+      {{range $g, $gen := .VersionChainGens}}
+      {{if $g}}<span class="relations-chain-arrow" aria-hidden="true">→</span>{{end}}
+      {{range $id := $gen}}
+      <a href="/images/{{$id}}" class="relations-card-thumb relations-page-thumb-cell{{if eq $id $.Self}} relations-tree-current{{end}}" title="Image {{$id}}{{if eq $id $.Self}} (this image){{end}}">
+        <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy" class="relations-page-thumb-img">
+        <span class="relations-page-thumb-num">Version · #{{$id}}</span>
+      </a>
+      {{end}}
+      {{end}}
+    </div>
+    <div class="relations-actions-row">
       {{if .Relations.VersionParent}}
-      <li class="manga-page-cell">
-        <a href="/images/{{deref64 .Relations.VersionParent}}" class="manga-page-link">
-          <img src="/thumbnails/{{.ActiveGallery}}/{{deref64 .Relations.VersionParent}}.jpg" alt="image {{deref64 .Relations.VersionParent}}" loading="lazy" class="manga-page-thumb">
-          <span class="manga-page-num">V← previous · {{deref64 .Relations.VersionParent}}</span>
-        </a>
-        <div class="relations-actions-row">
-          <form hx-post="/relations/remove" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
-            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <input type="hidden" name="type" value="version">
-            <input type="hidden" name="a" value="{{deref64 .Relations.VersionParent}}">
-            <input type="hidden" name="b" value="{{.Image.ID}}">
-            <button type="submit" class="btn-link-accent">[unlink]</button>
-          </form>
-        </div>
-      </li>
+      <form hx-post="/relations/remove" hx-swap="none"
+            hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <input type="hidden" name="type" value="version">
+        <input type="hidden" name="a" value="{{deref64 .Relations.VersionParent}}">
+        <input type="hidden" name="b" value="{{.Image.ID}}">
+        <button type="submit" class="btn-link-accent">[unlink earlier revision]</button>
+      </form>
       {{end}}
       {{if .Relations.VersionChild}}
-      <li class="manga-page-cell">
-        <a href="/images/{{deref64 .Relations.VersionChild}}" class="manga-page-link">
-          <img src="/thumbnails/{{.ActiveGallery}}/{{deref64 .Relations.VersionChild}}.jpg" alt="image {{deref64 .Relations.VersionChild}}" loading="lazy" class="manga-page-thumb">
-          <span class="manga-page-num">V→ next · {{deref64 .Relations.VersionChild}}</span>
-        </a>
-        <div class="relations-actions-row">
-          <form hx-post="/relations/remove" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
-            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <input type="hidden" name="type" value="version">
-            <input type="hidden" name="a" value="{{.Image.ID}}">
-            <input type="hidden" name="b" value="{{deref64 .Relations.VersionChild}}">
-            <button type="submit" class="btn-link-accent">[unlink]</button>
-          </form>
-        </div>
-      </li>
+      <form hx-post="/relations/remove" hx-swap="none"
+            hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <input type="hidden" name="type" value="version">
+        <input type="hidden" name="a" value="{{.Image.ID}}">
+        <input type="hidden" name="b" value="{{deref64 .Relations.VersionChild}}">
+        <button type="submit" class="btn-link-accent">[unlink newer revision]</button>
+      </form>
       {{end}}
-    </ul>
+    </div>
   </section>
   {{end}}
 
@@ -141,50 +136,65 @@
   </section>
   {{end}}
 
-  {{if or .Relations.DerivativeSource .Relations.Derivatives}}
+  {{if .DerivativeTreeRows}}
   <section class="relations-section">
-    <h3>Derivatives</h3>
-    <ul class="manga-pages-grid">
-      {{if .Relations.DerivativeSource}}
-      <li class="manga-page-cell">
-        <a href="/images/{{deref64 .Relations.DerivativeSource}}" class="manga-page-link">
-          <img src="/thumbnails/{{.ActiveGallery}}/{{deref64 .Relations.DerivativeSource}}.jpg" alt="image {{deref64 .Relations.DerivativeSource}}" loading="lazy" class="manga-page-thumb">
-          <span class="manga-page-num">S source · {{deref64 .Relations.DerivativeSource}}</span>
-        </a>
-        <div class="relations-actions-row">
-          <form hx-post="/relations/remove" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
-            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <input type="hidden" name="type" value="derivative">
-            <input type="hidden" name="a" value="{{deref64 .Relations.DerivativeSource}}">
-            <input type="hidden" name="b" value="{{.Image.ID}}">
-            <button type="submit" class="btn-link-accent">[unlink]</button>
-          </form>
+    <h3>Image based on {{if .Relations.DerivativeSource}}image {{deref64 .Relations.DerivativeSource}}{{else}}this image{{end}}</h3>
+    <div class="relations-card-tree">
+      {{range .DerivativeTreeRows}}
+      {{$row := .}}
+      <div class="relations-tree-row" data-depth="{{.Depth}}">
+        {{if .Trunks}}
+        <div class="relations-tree-prefix" aria-hidden="true">
+          {{range $row.Trunks}}<span class="relations-tree-trunk" data-style="{{.}}"></span>{{end}}
         </div>
-      </li>
+        {{end}}
+        <a href="/images/{{.ID}}" class="relations-card-thumb relations-page-thumb-cell{{if eq .ID $.Self}} relations-tree-current{{end}}" title="Image {{.ID}}{{if eq .ID $.Self}} (this image){{end}}">
+          <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy" class="relations-page-thumb-img">
+          <span class="relations-page-thumb-num">{{if eq .Depth 0}}Source · {{else}}Derivative · {{end}}#{{.ID}}</span>
+        </a>
+      </div>
+      {{end}}
+    </div>
+    <div class="relations-actions-row">
+      {{if .Relations.DerivativeSource}}
+      <form hx-post="/relations/remove" hx-swap="none"
+            hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <input type="hidden" name="type" value="derivative">
+        <input type="hidden" name="a" value="{{deref64 .Relations.DerivativeSource}}">
+        <input type="hidden" name="b" value="{{.Image.ID}}">
+        <button type="submit" class="btn-link-accent">[unlink source]</button>
+      </form>
       {{end}}
       {{range $id := .Relations.Derivatives}}
-      <li class="manga-page-cell">
-        <a href="/images/{{$id}}" class="manga-page-link">
-          <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy" class="manga-page-thumb">
-          <span class="manga-page-num">→ derivative · {{$id}}</span>
-        </a>
-        <div class="relations-actions-row">
-          <form hx-post="/relations/remove" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
-            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-            <input type="hidden" name="type" value="derivative">
-            <input type="hidden" name="a" value="{{$.Image.ID}}">
-            <input type="hidden" name="b" value="{{$id}}">
-            <button type="submit" class="btn-link-accent">[unlink]</button>
-          </form>
-        </div>
-      </li>
+      <form hx-post="/relations/remove" hx-swap="none"
+            hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+        <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+        <input type="hidden" name="type" value="derivative">
+        <input type="hidden" name="a" value="{{$.Image.ID}}">
+        <input type="hidden" name="b" value="{{$id}}">
+        <button type="submit" class="btn-link-accent">[unlink derivative #{{$id}}]</button>
+      </form>
       {{end}}
-    </ul>
+    </div>
   </section>
   {{end}}
 </div>
+
+<script>
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Escape') return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.defaultPrevented) return;
+  if (document.querySelector('dialog[open]')) return;
+  var tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  var back = document.querySelector('.back-link');
+  if (!back) return;
+  e.preventDefault();
+  back.click();
+});
+</script>
 
 {{template "layout_end" .}}
 {{end}}

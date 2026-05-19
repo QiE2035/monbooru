@@ -232,6 +232,11 @@
       <div class="relation-edit-grid" id="relation-edit-grid">
         <div class="relation-edit-side" data-side="self">
           <h4>This image</h4>
+          <div class="relation-edit-thumb-slot">
+            <img class="relation-edit-thumb" id="relation-edit-thumb-self"
+                 src="/thumbnails/{{.ActiveGallery}}/{{.Image.ID}}.jpg"
+                 alt="image {{.Image.ID}}" loading="lazy">
+          </div>
           <input type="number" name="a" id="relation-parent-id" value="{{.Image.ID}}" readonly required>
         </div>
         <div class="relation-edit-swap">
@@ -240,15 +245,21 @@
         </div>
         <div class="relation-edit-side" data-side="other">
           <h4>Other image</h4>
-          <input type="number" name="b" id="relation-other-id" min="1" step="1" required>
+          <div class="relation-edit-thumb-slot">
+            <img class="relation-edit-thumb" id="relation-edit-thumb-other"
+                 alt="" loading="lazy" hidden>
+          </div>
+          <input type="text" name="b" id="relation-other-id" inputmode="numeric"
+                 pattern="[0-9]+" required
+                 placeholder="image id">
         </div>
       </div>
       <div class="field">
         <label>Relation type</label>
-        <label><input type="radio" name="type" value="duplicate" checked> Duplicates</label>
-        <label><input type="radio" name="type" value="alternate"> Alternates</label>
-        <label><input type="radio" name="type" value="version"> Version</label>
-        <label><input type="radio" name="type" value="derivative"> Derivative</label>
+        <label><input type="radio" name="type" value="duplicate" checked> Same image (Duplicate)</label>
+        <label><input type="radio" name="type" value="alternate"> Variant (Alternate)</label>
+        <label><input type="radio" name="type" value="version"> Newer revision (Version)</label>
+        <label><input type="radio" name="type" value="derivative"> Based on (Derivative)</label>
       </div>
       <p class="relation-edit-summary field-hint" id="relation-edit-summary"
          data-self-id="{{.Image.ID}}">Pick the other image and a relation type.</p>
@@ -270,6 +281,8 @@
       var dirInput = document.getElementById('relation-edit-direction');
       var summary = document.getElementById('relation-edit-summary');
       var swap = document.getElementById('relation-edit-swap-btn');
+      var otherThumb = document.getElementById('relation-edit-thumb-other');
+      var gallery = {{.ActiveGallery}};
       var selfID = summary && summary.dataset.selfId ? summary.dataset.selfId : '';
 
       function sideLabel(input) {
@@ -297,16 +310,18 @@
         var s;
         switch (t) {
           case 'alternate':
-            s = left + ' and ' + right + ' are alternates.';
+            s = left + ' and ' + right + ' are variants.';
             break;
           case 'version':
-            s = right + ' is a newer version of ' + left + '.';
+            s = right + ' is a newer revision of ' + left + '.';
             break;
           case 'derivative':
-            s = right + ' is a derivative of ' + left + '.';
+            s = right + ' is based on ' + left + '.';
             break;
           default:
-            s = right + ' is a duplicate of ' + left + '.';
+            // Duplicate: the side passed first ("left") becomes the
+            // original on a fresh group, so name it explicitly.
+            s = right + ' is the same image as ' + left + ' (' + left + ' is the original).';
         }
         summary.textContent = s;
       }
@@ -316,7 +331,37 @@
         grid.classList.toggle('relation-edit-grid-swapped', dirInput.value === 'ba');
         refreshSummary();
       });
-      if (otherInput) otherInput.addEventListener('input', refreshSummary);
+      // Pasted "http://host/images/12" or "/images/12" inputs collapse
+      // to "12" so the field always submits a bare integer.
+      function normaliseInput() {
+        if (!otherInput) return;
+        var raw = (otherInput.value || '').trim();
+        var m = raw.match(/\/images\/(\d+)(?:[\/?#]|$)/);
+        if (m && m[1] && m[1] !== raw) {
+          otherInput.value = m[1];
+        }
+      }
+      function refreshOtherThumb() {
+        if (!otherThumb || !otherInput) return;
+        var raw = (otherInput.value || '').trim();
+        if (!/^\d+$/.test(raw) || raw === '0') {
+          otherThumb.hidden = true;
+          otherThumb.removeAttribute('src');
+          otherThumb.alt = '';
+          return;
+        }
+        otherThumb.alt = 'image ' + raw;
+        otherThumb.hidden = false;
+        otherThumb.src = '/thumbnails/' + encodeURIComponent(gallery) + '/' + raw + '.jpg';
+      }
+      if (otherInput) otherInput.addEventListener('input', function() {
+        normaliseInput();
+        refreshOtherThumb();
+        refreshSummary();
+      });
+      if (otherThumb) otherThumb.addEventListener('error', function() {
+        otherThumb.hidden = true;
+      });
       dlg.querySelectorAll('input[name="type"]').forEach(function(r) {
         r.addEventListener('change', refreshSummary);
       });
@@ -329,6 +374,7 @@
         if (dirInput) dirInput.value = 'ab';
         if (grid) grid.classList.remove('relation-edit-grid-swapped');
         open();
+        refreshOtherThumb();
         refreshSummary();
       };
     })();

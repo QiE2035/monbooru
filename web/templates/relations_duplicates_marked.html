@@ -1,12 +1,6 @@
 {{define "relations_duplicates_marked.html"}}
 {{template "layout_head" .}}
-<div id="sidebar-inner">
-  <nav class="settings-nav">
-    <a href="/relations#find">Find relations</a>
-    <a href="/relations#browse">Browse relations</a>
-    <a href="/relations#duplicates">Duplicates</a>
-  </nav>
-</div>
+<div id="sidebar-inner"></div>
 {{template "layout_mid" .}}
 
 <div id="relations-walker-page">
@@ -14,18 +8,18 @@
     <div class="detail-nav-group">
       <a href="/relations#duplicates" class="back-link">← Back to Relations</a>
       <span class="detail-nav-sep">·</span>
-      <strong class="walker-page-title">Marked duplicates</strong>
+      <strong class="walker-page-title">Duplicate images</strong>
     </div>
     {{if .MarkedRows}}
     <div class="detail-topbar-right">
       <form hx-post="/relations/duplicates/marked/delete-all"
             hx-target="#flash-walker-marked" hx-swap="innerHTML"
             hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-            hx-confirm="Delete every non-original member of every marked duplicate group? Files are removed from disk."
+            hx-confirm="Delete every non-original member of every duplicate-image group? Files are removed from disk."
             data-confirm-ok="Delete all"
             style="display:inline">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <button type="submit" class="btn-danger btn-sm">Delete all duplicates</button>
+        <button type="submit" class="btn-danger btn-sm">Delete all duplicate images</button>
       </form>
     </div>
     {{end}}
@@ -33,7 +27,7 @@
 
   {{if not .MarkedRows}}
   <section class="session-empty">
-    <h3>No marked duplicate groups.</h3>
+    <h3>No duplicate-image groups.</h3>
     <p class="field-hint">Start a Relations session or use the detail-page Relations panel to declare a duplicate.</p>
   </section>
   {{else}}
@@ -44,6 +38,7 @@
         <th>Original</th>
         <th>Duplicate</th>
         <th>Duplicate ID</th>
+        <th>Marked at</th>
         <th>Action</th>
       </tr>
     </thead>
@@ -52,8 +47,9 @@
       <tr>
         <td><a href="/images/{{.OriginalID}}">#{{.OriginalID}}</a></td>
         <td>
-          <a href="/images/{{.OriginalID}}" class="browse-thumb">
+          <a href="/images/{{.OriginalID}}" class="browse-thumb relations-card-original" title="Original image #{{.OriginalID}}">
             <img src="/thumbnails/{{$.ActiveGallery}}/{{.OriginalID}}.jpg" alt="image {{.OriginalID}}" loading="lazy">
+            <span class="relations-card-tag">original</span>
           </a>
         </td>
         <td>
@@ -62,6 +58,7 @@
           </a>
         </td>
         <td><a href="/images/{{.DuplicateID}}">#{{.DuplicateID}}</a></td>
+        <td class="mono-small">{{.MarkedAt}}</td>
         <td>
           {{if .HasTagsToCopy}}
           <button type="button" class="btn-link-accent btn-copy-tags-preview"
@@ -116,6 +113,7 @@ document.addEventListener('keydown', function(e) {
   if (document.querySelector('dialog[open]')) return;
   var tag = e.target.tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  e.preventDefault();
   window.location.href = '/relations#duplicates';
 });
 </script>

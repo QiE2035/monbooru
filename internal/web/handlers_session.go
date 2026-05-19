@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/leqwin/monbooru/internal/tags"
 )
 
 // validOrderModes enumerates the three session walk orders per
@@ -82,27 +84,58 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 		// reload picks up the same shuffle.
 		saveSessionOrder(cx, order)
 	}
-	pair, remaining, err := loadNextPair(cx, order)
+	ceiling := ratingCeilingFromRequest(r)
+	excludeIDs, _ := ratingExcludeTagIDs(cx, ceiling)
+	pair, remaining, rawRemaining, err := loadNextPair(cx, order, excludeIDs)
 	if err != nil {
 		logx.Warnf("session next pair: %v", err)
 		http.Error(w, "load pair", http.StatusInternalServerError)
 		return
 	}
+	var leftFacts, rightFacts relationCompareFacts
+	if pair != nil {
+		// The template puts the bigger-filesize side in slot "left". The
+		// compare table mirrors that orientation so the operator's eye
+		// reads "left vs right" without the W swap reshuffling the rows.
+		leftID := pair.LeftID
+		rightID := pair.A.ID
+		if leftID == pair.A.ID {
+			rightID = pair.B.ID
+		}
+		leftFacts, rightFacts, err = loadCompareFacts(cx, leftID, rightID)
+		if err != nil {
+			logx.Debugf("session compare facts: %v", err)
+		}
+	}
 	s.renderTemplate(w, "relations_session.html", sessionPageData{
-		baseData:      s.base(r, "relations", "Session - Monbooru"),
-		Pair:          pair,
-		Remaining:     remaining,
-		Order:         order,
-		ActiveGallery: s.activeName,
+		baseData:        s.base(r, "relations", "Session - Monbooru"),
+		Pair:            pair,
+		Remaining:       remaining,
+		HiddenByCeiling: rawRemaining - remaining,
+		Ceiling:         ceiling,
+		Order:           order,
+		ActiveGallery:   s.activeName,
+		Left:            leftFacts,
+		Right:           rightFacts,
 	})
 }
 
 type sessionPageData struct {
 	baseData
-	Pair          *sessionPairView
-	Remaining     int
-	Order         string
-	ActiveGallery string
+	Pair *sessionPairView
+	// Remaining is the visible queue total (post-ceiling). HiddenByCeiling
+	// is the number of unresolved pairs filtered out because at least one
+	// side carries a rating tag above the cookie ceiling.
+	Remaining       int
+	HiddenByCeiling int
+	Ceiling         string
+	Order           string
+	ActiveGallery   string
+	// Left / Right hold the comparison-table data oriented to the
+	// template's left/right slots so the table reads consistently with
+	// the thumbs.
+	Left  relationCompareFacts
+	Right relationCompareFacts
 }
 
 // loadSessionOrder reads the order_mode for the singleton session
@@ -132,36 +165,61 @@ func saveSessionOrder(cx *galleryCtx, mode string) {
 
 // loadNextPair pulls the next queue row plus both image rows and the
 // total remaining count. The total-remaining COUNT is a lightweight
-// covering query against the queue table.
-func loadNextPair(cx *galleryCtx, order string) (*sessionPairView, int, error) {
-	var remaining int
-	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs`).Scan(&remaining); err != nil {
-		return nil, 0, err
+// covering query against the queue table. excludeRatingIDs holds the
+// rating tag IDs strictly above the cookie ceiling; pairs where either
+// side carries one are filtered out so the session walks only what the
+// operator's ceiling already lets them see in the gallery.
+//
+// Returns (pair, visible, raw, err): visible is the post-filter count,
+// raw is the unfiltered total - the difference is the "N pairs hidden
+// by your ceiling" the empty-queue branch surfaces.
+func loadNextPair(cx *galleryCtx, order string, excludeRatingIDs []int64) (*sessionPairView, int, int, error) {
+	var rawRemaining int
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs`).Scan(&rawRemaining); err != nil {
+		return nil, 0, 0, err
 	}
-	if remaining == 0 {
-		return nil, 0, nil
+	if rawRemaining == 0 {
+		return nil, 0, 0, nil
 	}
-	q := `
+	where, args := ratingExcludeWhereClause("ia.id", "ib.id", excludeRatingIDs)
+	visible := rawRemaining
+	if where != "" {
+		countQ := `
+			SELECT COUNT(*)
+			FROM potential_relation_pairs p
+			JOIN images ia ON ia.id = p.a_image_id
+			JOIN images ib ON ib.id = p.b_image_id
+			WHERE ` + where
+		if err := cx.DB.Read.QueryRow(countQ, args...).Scan(&visible); err != nil {
+			return nil, 0, rawRemaining, err
+		}
+	}
+	if visible == 0 {
+		return nil, 0, rawRemaining, nil
+	}
+	selectQ := `
 		SELECT p.a_image_id, p.b_image_id, p.distance,
 		       ia.canonical_path, COALESCE(ia.width, 0), COALESCE(ia.height, 0), ia.file_size,
 		       ib.canonical_path, COALESCE(ib.width, 0), COALESCE(ib.height, 0), ib.file_size
 		FROM potential_relation_pairs p
 		JOIN images ia ON ia.id = p.a_image_id
-		JOIN images ib ON ib.id = p.b_image_id
-		` + orderClauseForMode(order) + `
-		LIMIT 1`
+		JOIN images ib ON ib.id = p.b_image_id`
+	if where != "" {
+		selectQ += "\n\t\tWHERE " + where
+	}
+	selectQ += "\n\t\t" + orderClauseForMode(order) + "\n\t\tLIMIT 1"
 	var aPath, bPath string
 	var aW, aH, bW, bH sql.NullInt64
-	view := sessionPairView{Order: order, Remaining: remaining}
-	if err := cx.DB.Read.QueryRow(q).Scan(
+	view := sessionPairView{Order: order, Remaining: visible}
+	if err := cx.DB.Read.QueryRow(selectQ, args...).Scan(
 		&view.A.ID, &view.B.ID, &view.Distance,
 		&aPath, &aW, &aH, &view.A.FileSize,
 		&bPath, &bW, &bH, &view.B.FileSize,
 	); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, remaining, nil
+			return nil, visible, rawRemaining, nil
 		}
-		return nil, remaining, err
+		return nil, visible, rawRemaining, err
 	}
 	view.A.Width = aW
 	view.A.Height = aH
@@ -176,7 +234,220 @@ func loadNextPair(cx *galleryCtx, order string) (*sessionPairView, int, error) {
 		(view.B.FileSize == view.A.FileSize && view.B.ID < view.A.ID) {
 		view.LeftID = view.B.ID
 	}
-	return &view, remaining, nil
+	return &view, visible, rawRemaining, nil
+}
+
+// ratingExcludeTagIDs returns the tag IDs whose rating rank is strictly
+// above ceiling. An empty or "explicit" ceiling returns nil so callers
+// emit no WHERE predicate. Missing rating tag rows (fresh install) also
+// return nil; the per-rating-tag join below would never match anyway.
+func ratingExcludeTagIDs(cx *galleryCtx, ceiling string) ([]int64, error) {
+	if ceiling == "" || ceiling == "explicit" {
+		return nil, nil
+	}
+	rank := -1
+	for i, l := range tags.RatingLevels {
+		if l == ceiling {
+			rank = i
+			break
+		}
+	}
+	if rank < 0 || rank >= len(tags.RatingLevels)-1 {
+		return nil, nil
+	}
+	names := tags.RatingLevels[rank+1:]
+	placeholders := make([]string, len(names))
+	args := make([]any, 0, len(names))
+	for i, n := range names {
+		placeholders[i] = "?"
+		args = append(args, n)
+	}
+	q := `SELECT id FROM tags
+	       WHERE category_id = (SELECT id FROM tag_categories WHERE name = 'rating')
+	         AND name IN (` + strings.Join(placeholders, ",") + `)`
+	rows, err := cx.DB.Read.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			return nil, scanErr
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ratingExcludeWhereClause builds a pair of NOT EXISTS predicates that
+// gate each side of a queue row on the absence of any rating tag in
+// excludeIDs. Returns ("", nil) when excludeIDs is empty so the caller
+// can omit the WHERE entirely and keep the covering scan.
+func ratingExcludeWhereClause(leftCol, rightCol string, excludeIDs []int64) (string, []any) {
+	if len(excludeIDs) == 0 {
+		return "", nil
+	}
+	placeholders := make([]string, len(excludeIDs))
+	for i := range excludeIDs {
+		placeholders[i] = "?"
+	}
+	in := strings.Join(placeholders, ",")
+	tmpl := func(col string) string {
+		return `NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = ` + col + ` AND it.tag_id IN (` + in + `))`
+	}
+	args := make([]any, 0, 2*len(excludeIDs))
+	for _, id := range excludeIDs {
+		args = append(args, id)
+	}
+	for _, id := range excludeIDs {
+		args = append(args, id)
+	}
+	return tmpl(leftCol) + " AND " + tmpl(rightCol), args
+}
+
+// ratingExcludeWhereClauseSingle is the one-column variant for rows
+// whose ceiling test is a single image id (e.g. the SHA-256 walker).
+// Returns ("", nil) when excludeIDs is empty.
+func ratingExcludeWhereClauseSingle(col string, excludeIDs []int64) (string, []any) {
+	if len(excludeIDs) == 0 {
+		return "", nil
+	}
+	placeholders := make([]string, len(excludeIDs))
+	for i := range excludeIDs {
+		placeholders[i] = "?"
+	}
+	in := strings.Join(placeholders, ",")
+	args := make([]any, 0, len(excludeIDs))
+	for _, id := range excludeIDs {
+		args = append(args, id)
+	}
+	return `NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = ` + col + ` AND it.tag_id IN (` + in + `))`, args
+}
+
+// relationCompareFacts is one side of the under-thumbs comparison
+// table. Strings are pre-formatted so the template just renders the
+// rows. UniqueTags lists tag names this side carries that the other
+// does not; UniqueTagsTotal is the full count (the template caps the
+// visible names and shows "+N more").
+type relationCompareFacts struct {
+	ImageID          int64
+	ResolutionW      int64
+	ResolutionH      int64
+	FileSize         int64
+	AddedAt          string
+	TagCount         int
+	UniqueTags       []string
+	UniqueTagsTotal  int
+	Format           string
+}
+
+// loadCompareFacts loads the comparison table data for two image ids.
+// One SELECT per side covers width/height/file_size/ingested_at/
+// canonical_path; a second SELECT computes the tag-delta lists. Tag
+// counts are loaded through the existing countTags helper.
+func loadCompareFacts(cx *galleryCtx, leftID, rightID int64) (relationCompareFacts, relationCompareFacts, error) {
+	left := relationCompareFacts{ImageID: leftID}
+	right := relationCompareFacts{ImageID: rightID}
+	if err := scanCompareFacts(cx, leftID, &left); err != nil {
+		return left, right, err
+	}
+	if err := scanCompareFacts(cx, rightID, &right); err != nil {
+		return left, right, err
+	}
+	leftUnique, rightUnique, err := loadTagDelta(cx, leftID, rightID)
+	if err != nil {
+		return left, right, err
+	}
+	const cap = 5
+	left.UniqueTagsTotal = len(leftUnique)
+	right.UniqueTagsTotal = len(rightUnique)
+	if len(leftUnique) > cap {
+		left.UniqueTags = leftUnique[:cap]
+	} else {
+		left.UniqueTags = leftUnique
+	}
+	if len(rightUnique) > cap {
+		right.UniqueTags = rightUnique[:cap]
+	} else {
+		right.UniqueTags = rightUnique
+	}
+	return left, right, nil
+}
+
+func scanCompareFacts(cx *galleryCtx, id int64, dst *relationCompareFacts) error {
+	var w, h sql.NullInt64
+	var addedAt sql.NullString
+	var canonical, fileType string
+	if err := cx.DB.Read.QueryRow(
+		`SELECT COALESCE(width, 0), COALESCE(height, 0), file_size, ingested_at, canonical_path, file_type
+		 FROM images WHERE id = ?`, id,
+	).Scan(&w, &h, &dst.FileSize, &addedAt, &canonical, &fileType); err != nil {
+		return err
+	}
+	if w.Valid {
+		dst.ResolutionW = w.Int64
+	}
+	if h.Valid {
+		dst.ResolutionH = h.Int64
+	}
+	if addedAt.Valid {
+		// Drop the time-of-day so the table reads "2026-04-29" not the full
+		// RFC3339 string the database emits.
+		if i := strings.IndexByte(addedAt.String, 'T'); i > 0 {
+			dst.AddedAt = addedAt.String[:i]
+		} else {
+			dst.AddedAt = addedAt.String
+		}
+	}
+	if dot := strings.LastIndexByte(canonical, '.'); dot >= 0 {
+		dst.Format = strings.ToLower(canonical[dot:])
+	}
+	dst.TagCount = countTags(cx, id)
+	return nil
+}
+
+// loadTagDelta returns the names of every tag carried by exactly one
+// of the two image ids. The HAVING COUNT(*) = 1 clause splits the join
+// into "left only" vs "right only" by re-reading the per-row image_id.
+// Rating tags are excluded because the table caller is comparing the
+// images, not their ratings.
+func loadTagDelta(cx *galleryCtx, leftID, rightID int64) (left []string, right []string, err error) {
+	rows, err := cx.DB.Read.Query(`
+		WITH delta AS (
+			SELECT it.tag_id, MAX(it.image_id) AS owner_id
+			FROM image_tags it
+			LEFT JOIN tags t ON t.id = it.tag_id
+			LEFT JOIN tag_categories tc ON tc.id = t.category_id
+			WHERE it.image_id IN (?, ?)
+			  AND (tc.name IS NULL OR tc.name != 'rating')
+			GROUP BY it.tag_id
+			HAVING COUNT(*) = 1
+		)
+		SELECT delta.owner_id, t.name
+		FROM delta
+		JOIN tags t ON t.id = delta.tag_id
+		ORDER BY t.name
+		LIMIT 200`, leftID, rightID,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var owner int64
+		var name string
+		if scanErr := rows.Scan(&owner, &name); scanErr != nil {
+			return nil, nil, scanErr
+		}
+		if owner == leftID {
+			left = append(left, name)
+		} else if owner == rightID {
+			right = append(right, name)
+		}
+	}
+	return left, right, rows.Err()
 }
 
 func baseNameOf(p string) string {
@@ -279,7 +550,69 @@ func (s *Server) sessionDecidePost(w http.ResponseWriter, r *http.Request) {
 	); err != nil {
 		logx.Warnf("session queue drop: %v", err)
 	}
+	if decision == "duplicate" && writeDuplicatePostDecideHeaders(w, cx, left, right) {
+		return
+	}
 	sessionRedirect(w, r)
+}
+
+// writeDuplicatePostDecideHeaders fills the X-Relations-Post-Decision
+// header set so the session template can pop a "Delete this duplicate
+// from disk?" dialog instead of auto-advancing. Returns true when the
+// headers were written (the caller skips the redirect) and false when
+// the resolved state doesn't merit a prompt (no group, member missing
+// a row, etc.) - the caller then falls through to the usual redirect.
+func writeDuplicatePostDecideHeaders(w http.ResponseWriter, cx *galleryCtx, left, right int64) bool {
+	// Find the dup group that now contains the pair. Both sides are
+	// members; the non-original side is the one the dialog targets.
+	var gid, original int64
+	if err := cx.DB.Read.QueryRow(`
+		SELECT g.id, g.original_image_id
+		FROM dup_group_members ma
+		JOIN dup_group_members mb ON ma.group_id = mb.group_id
+		JOIN dup_groups g ON g.id = ma.group_id
+		WHERE ma.image_id = ? AND mb.image_id = ?
+		LIMIT 1`, left, right,
+	).Scan(&gid, &original); err != nil {
+		logx.Debugf("dup post-decide group lookup: %v", err)
+		return false
+	}
+	nonOriginal := left
+	if left == original {
+		nonOriginal = right
+	}
+	var canonical string
+	if err := cx.DB.Read.QueryRow(`SELECT canonical_path FROM images WHERE id = ?`, nonOriginal).Scan(&canonical); err != nil {
+		logx.Debugf("dup post-decide filename: %v", err)
+		return false
+	}
+	var hasUnique int
+	cx.DB.Read.QueryRow(`
+		SELECT COUNT(*) FROM (
+			SELECT it.tag_id
+			FROM image_tags it
+			LEFT JOIN tags t ON t.id = it.tag_id
+			LEFT JOIN tag_categories tc ON tc.id = t.category_id
+			WHERE it.image_id = ?
+			  AND (tc.name IS NULL OR tc.name != 'rating')
+			  AND NOT EXISTS (
+			    SELECT 1 FROM image_tags it2 WHERE it2.image_id = ? AND it2.tag_id = it.tag_id
+			  )
+			LIMIT 1
+		)`, nonOriginal, original,
+	).Scan(&hasUnique)
+	w.Header().Set("X-Relations-Post-Decision", "duplicate-cleanup")
+	w.Header().Set("X-Relations-Duplicate-ID", strconv.FormatInt(nonOriginal, 10))
+	w.Header().Set("X-Relations-Duplicate-OriginalID", strconv.FormatInt(original, 10))
+	w.Header().Set("X-Relations-Duplicate-GroupID", strconv.FormatInt(gid, 10))
+	w.Header().Set("X-Relations-Duplicate-Filename", baseNameOf(canonical))
+	if hasUnique > 0 {
+		w.Header().Set("X-Relations-Duplicate-HasUniqueTags", "1")
+	} else {
+		w.Header().Set("X-Relations-Duplicate-HasUniqueTags", "0")
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return true
 }
 
 // sessionRedirect sends the operator back to /relations/session so

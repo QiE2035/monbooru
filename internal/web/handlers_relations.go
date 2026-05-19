@@ -217,7 +217,7 @@ func (s *Server) imageRelationsPage(w http.ResponseWriter, r *http.Request) {
 		nextOriginal = next
 	}
 	thumbURL := fmt.Sprintf("/thumbnails/%s/%d.jpg", s.activeName, id)
-	s.renderTemplate(w, "relations_image.html", relationsImagePageData{
+	pageData := relationsImagePageData{
 		baseData:                       s.base(r, "gallery", fmt.Sprintf("Relations - %d", id)),
 		Image:                          *img,
 		Relations:                      rels,
@@ -225,12 +225,177 @@ func (s *Server) imageRelationsPage(w http.ResponseWriter, r *http.Request) {
 		Collection:                     siblings,
 		ThumbnailURL:                   thumbURL,
 		NextOriginalIfOriginalUnlinked: nextOriginal,
+		AltGroupMembersOrdered:         reorderSelfFirst(rels.AltGroupMembers, id),
 		BackQ:                          r.URL.Query().Get("back_q"),
 		BackSort:                       r.URL.Query().Get("back_sort"),
 		BackOrder:                      r.URL.Query().Get("back_order"),
 		BackSeed:                       r.URL.Query().Get("back_seed"),
 		BackPage:                       r.URL.Query().Get("back_page"),
-	})
+	}
+	if rels.DupGroup != nil {
+		pageData.DupGroupMembersOrdered = reorderSelfFirst(rels.DupGroup.Members, id)
+	}
+	if rels.VersionParent != nil || rels.VersionChild != nil {
+		gens, vErr := versionChainGensForImage(cx, id)
+		if vErr != nil {
+			logx.Warnf("relations page version chain %d: %v", id, vErr)
+		}
+		pageData.VersionChainGens = gens
+	}
+	if rels.DerivativeSource != nil || len(rels.Derivatives) > 0 {
+		treeRows, tErr := derivativeTreeRowsForImage(cx, id)
+		if tErr != nil {
+			logx.Warnf("relations page derivative tree %d: %v", id, tErr)
+		}
+		pageData.DerivativeTreeRows = treeRows
+	}
+	s.renderTemplate(w, "relations_image.html", pageData)
+}
+
+// reorderSelfFirst returns members with self at index 0 (if present),
+// then the rest in their original order. Used so dup/alt sections on
+// /images/{id}/relations render the current image at the leftmost
+// cell - the same lead-with-self framing the version chain and
+// derivative tree already apply via the relations-tree-current accent.
+func reorderSelfFirst(members []int64, self int64) []int64 {
+	if len(members) == 0 {
+		return members
+	}
+	out := make([]int64, 0, len(members))
+	hasSelf := false
+	for _, m := range members {
+		if m == self {
+			hasSelf = true
+		} else {
+			out = append(out, m)
+		}
+	}
+	if hasSelf {
+		return append([]int64{self}, out...)
+	}
+	return out
+}
+
+// versionChainGensForImage walks the version chain that contains
+// imageID and returns the BFS generations (one image per generation
+// because the chain is strictly linear). Walks up via child_image_id
+// to find the root, then down via parent_image_id to enumerate every
+// descendant. Capped at MaxVersionChainDepth steps in each direction
+// so a corrupt cycle can't loop indefinitely.
+func versionChainGensForImage(cx *galleryCtx, imageID int64) ([][]int64, error) {
+	root := imageID
+	for i := 0; i < relations.MaxVersionChainDepth; i++ {
+		var p int64
+		err := cx.DB.Read.QueryRow(`SELECT parent_image_id FROM version_edges WHERE child_image_id = ?`, root).Scan(&p)
+		if errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		root = p
+	}
+	members := []int64{root}
+	cur := root
+	for i := 0; i < relations.MaxVersionChainDepth; i++ {
+		var c int64
+		err := cx.DB.Read.QueryRow(`SELECT child_image_id FROM version_edges WHERE parent_image_id = ?`, cur).Scan(&c)
+		if errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		members = append(members, c)
+		cur = c
+	}
+	if len(members) <= 1 {
+		return nil, nil
+	}
+	gens := make([][]int64, len(members))
+	for i, m := range members {
+		gens[i] = []int64{m}
+	}
+	return gens, nil
+}
+
+// derivativeTreeRowsForImage walks up from imageID via the derivative
+// source link to the tree root and DFSes down, returning each tree
+// node tagged with its depth and the trunk segments the template
+// renders as CSS-drawn branch lines. Same depth budget as the version
+// chain walk for safety.
+func derivativeTreeRowsForImage(cx *galleryCtx, imageID int64) ([]treeRow, error) {
+	root := imageID
+	for i := 0; i < relations.MaxVersionChainDepth; i++ {
+		var s int64
+		err := cx.DB.Read.QueryRow(`SELECT source_image_id FROM derivative_edges WHERE derivative_image_id = ?`, root).Scan(&s)
+		if errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		root = s
+	}
+	rows := []treeRow{{ID: root, Depth: 0}}
+	if err := dfsDerivativeChildren(cx, root, 1, nil, &rows); err != nil {
+		return nil, err
+	}
+	if len(rows) <= 1 {
+		return nil, nil
+	}
+	return rows, nil
+}
+
+// dfsDerivativeChildren appends each derivative of `parent` (and the
+// subtree below each) to rows in DFS order. ancestorTrunks carries
+// the line/empty pattern from the root toward `parent`; the function
+// appends a connector (tee or elbow) per child so the template can
+// paint each row's branch glyph. Capped at the chain depth constant
+// so a malformed graph can't recurse forever.
+func dfsDerivativeChildren(cx *galleryCtx, parent int64, depth int, ancestorTrunks []string, rows *[]treeRow) error {
+	if depth > relations.MaxVersionChainDepth {
+		return nil
+	}
+	children, err := cx.DB.Read.Query(
+		`SELECT derivative_image_id FROM derivative_edges WHERE source_image_id = ? ORDER BY derivative_image_id`,
+		parent,
+	)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for children.Next() {
+		var d int64
+		if scanErr := children.Scan(&d); scanErr != nil {
+			children.Close()
+			return scanErr
+		}
+		ids = append(ids, d)
+	}
+	if err := children.Err(); err != nil {
+		children.Close()
+		return err
+	}
+	children.Close()
+	for i, id := range ids {
+		isLast := i == len(ids)-1
+		*rows = append(*rows, treeRow{ID: id, Depth: depth, Trunks: rowTrunks(ancestorTrunks, depth, isLast)})
+		childAncestors := extendAncestorTrunks(ancestorTrunks, depth, isLast)
+		if err := dfsDerivativeChildren(cx, id, depth+1, childAncestors, rows); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// relationComparePair carries the two sides of the comparison table
+// for a 1:1 relation slot (version parent/child or derivative
+// source/derivative) so the relations_image.html template can include
+// the comparison partial inline.
+type relationComparePair struct {
+	Left  relationCompareFacts
+	Right relationCompareFacts
 }
 
 // filterCollectionSiblings drops every sibling that is already named in
@@ -283,11 +448,27 @@ type relationsImagePageData struct {
 	// promoted to original if the current group's original tile is
 	// unlinked. Non-zero only when the group has 3+ members.
 	NextOriginalIfOriginalUnlinked int64
-	BackQ                          string
-	BackSort                       string
-	BackOrder                      string
-	BackSeed                       string
-	BackPage                       string
+	// DupGroupMembersOrdered and AltGroupMembersOrdered carry the
+	// group's member ids with Self pushed to position 0 so the per-image
+	// page renders the current image at the leftmost cell, matching the
+	// way the version chain and derivative tree highlight self.
+	DupGroupMembersOrdered []int64
+	AltGroupMembersOrdered []int64
+	// VersionChainGens groups the chain containing the current image
+	// one-image-per-generation, root first. Nil when the image is not
+	// in any version chain.
+	VersionChainGens [][]int64
+	// DerivativeTreeRows flattens the derivative tree containing the
+	// current image in DFS order, each row tagged with its depth so
+	// the template can indent children under their parent and the
+	// branching is visible. Nil when the image has no derivative
+	// edges.
+	DerivativeTreeRows []treeRow
+	BackQ              string
+	BackSort           string
+	BackOrder          string
+	BackSeed           string
+	BackPage           string
 }
 
 // recomputePhashPost recomputes phash for the named image. Hooked from
@@ -354,10 +535,12 @@ func (s *Server) addRelationPost(w http.ResponseWriter, r *http.Request) {
 	case "version":
 		if force {
 			// ClearBetween only touched the a-b pair; a version conflict
-			// with a third image still blocks the insert. Drop every
-			// version_edge that names either side so AddVersionEdge can
-			// land cleanly.
-			if cErr := cx.RelationsSvc.ClearVersionEdgesInvolving(a, b); cErr != nil {
+			// with a third image still blocks the insert. After the
+			// direction swap above, a is the new parent and b the new
+			// child; drop only the rows that would violate the per-row
+			// uniqueness for this (parent, child) so existing chain
+			// entries on either endpoint that don't conflict survive.
+			if cErr := cx.RelationsSvc.ClearVersionEdgeConflictsFor(a, b); cErr != nil {
 				writeRelationError(w, cErr)
 				return
 			}
@@ -585,6 +768,119 @@ func (s *Server) copyTagsToOriginalPreview(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// reverseRelationPost flips the direction of a version or derivative
+// edge. Form fields:
+//   - type: "version" | "derivative"
+//   - a, b: image ids in their current direction (parent/child or
+//     source/derivative). After commit, b -> a.
+func (s *Server) reverseRelationPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	cx := s.Active()
+	if cx == nil || cx.RelationsSvc == nil {
+		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+		return
+	}
+	a, b, ok := parseRelationPair(w, r)
+	if !ok {
+		return
+	}
+	switch r.FormValue("type") {
+	case "version":
+		if err := cx.RelationsSvc.ReverseVersionEdge(a, b); err != nil {
+			writeRelationError(w, err)
+			return
+		}
+	case "derivative":
+		if err := cx.RelationsSvc.ReverseDerivativeEdge(a, b); err != nil {
+			writeRelationError(w, err)
+			return
+		}
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`<div class="flash flash-err">Unknown relation type.</div>`))
+		return
+	}
+	w.Write([]byte(`<div class="flash flash-ok">Edge reversed.</div>`))
+}
+
+// mergeGroupsPost merges N alt or dup groups into one. Form fields:
+//   - kind: "alt" or "dup"
+//   - group_id: repeated (the operator's selection). At least two
+//     distinct ids are required.
+//   - keep_original_from (dup only): the group whose original_image_id
+//     becomes the survivor's original. Empty preserves the survivor's
+//     existing original.
+//
+// On success the response carries HX-Redirect back to the unified
+// browse page so the freshly merged group renders without a manual
+// reload.
+func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	cx := s.Active()
+	if cx == nil || cx.RelationsSvc == nil {
+		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+		return
+	}
+	kind := r.URL.Query().Get("kind")
+	if kind == "" {
+		kind = r.FormValue("kind")
+	}
+	if kind != "alt" && kind != "dup" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`<div class="flash flash-err">Unknown merge kind.</div>`))
+		return
+	}
+	raw := r.Form["group_id"]
+	ids := make([]int64, 0, len(raw))
+	seen := map[int64]bool{}
+	for _, s := range raw {
+		v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil || seen[v] {
+			continue
+		}
+		seen[v] = true
+		ids = append(ids, v)
+	}
+	if len(ids) < 2 {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`<div class="flash flash-err">Pick at least two groups to merge.</div>`))
+		return
+	}
+	switch kind {
+	case "alt":
+		if err := cx.RelationsSvc.MergeAltGroups(ids); err != nil {
+			writeRelationError(w, err)
+			return
+		}
+	case "dup":
+		var keep int64
+		if raw := strings.TrimSpace(r.FormValue("keep_original_from")); raw != "" {
+			if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
+				keep = v
+			}
+		}
+		if err := cx.RelationsSvc.MergeDupGroups(ids, keep); err != nil {
+			writeRelationError(w, err)
+			return
+		}
+	}
+	redirectKind := "duplicate"
+	if kind == "alt" {
+		redirectKind = "alternate"
+	}
+	target := "/relations/browse?kind=" + redirectKind
+	if isHTMXRequest(r) {
+		w.Header().Set("HX-Redirect", target)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
 // copyTagsToOriginalPost runs CopyTagsFromDuplicatesToOriginal for a
 // duplicate group. Wired to the per-card button on the Relations page.
 func (s *Server) copyTagsToOriginalPost(w http.ResponseWriter, r *http.Request) {
@@ -620,7 +916,12 @@ func parseRelationPair(w http.ResponseWriter, r *http.Request) (int64, int64, bo
 		return 0, 0, false
 	}
 	if a == b {
-		w.WriteHeader(http.StatusBadRequest)
+		// Status 200 mirrors writeRelationError so HTMX swaps the body
+		// into the dialog's target; a 4xx response would be dropped on
+		// the floor by the default htmx config and the operator would
+		// see no feedback at all.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`<div class="flash flash-err">Cannot relate an image to itself.</div>`))
 		return 0, 0, false
 	}
@@ -628,17 +929,21 @@ func parseRelationPair(w http.ResponseWriter, r *http.Request) (int64, int64, bo
 }
 
 // formInt64 parses an integer form field, writing the error flash on
-// failure.
+// failure. Status 200 (rather than 400) so HTMX picks the body up and
+// swaps it into the dialog target the caller hands it; default config
+// drops 4xx swaps and the operator would otherwise see no feedback.
 func formInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 	raw := strings.TrimSpace(r.FormValue(name))
 	if raw == "" {
-		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(fmt.Sprintf(`<div class="flash flash-err">Missing %s.</div>`, html.EscapeString(name))))
 		return 0, false
 	}
 	v, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(fmt.Sprintf(`<div class="flash flash-err">Invalid %s.</div>`, html.EscapeString(name))))
 		return 0, false
 	}

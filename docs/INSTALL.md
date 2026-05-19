@@ -52,7 +52,7 @@ All override the TOML config. Pattern: `MONBOORU_{SECTION}_{KEY}`.
 | `MONBOORU_AUTH_ENABLE_PASSWORD` | `auth.enable_password` | bool |
 | `MONBOORU_AUTH_PASSWORD_HASH` | `auth.password_hash` | string |
 | `MONBOORU_AUTH_SESSION_LIFETIME_DAYS` | `auth.session_lifetime_days` | int |
-| `MONBOORU_AUTH_API_TOKEN` | `auth.api_token` | string |
+| `MONBOORU_AUTH_API_TOKEN` | `auth.api_token` (the REST API bearer token) | string |
 | `MONBOORU_LOG_LEVEL` | `log.level` | `warn` / `info` / `debug` |
 
 Per-tagger settings (enable, confidence, worker count) live in the

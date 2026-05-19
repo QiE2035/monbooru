@@ -50,10 +50,13 @@ details.
 
 The dialog has two modes:
 
-- **Merge** (default) - add new images and tags from the upload to the
-  target gallery. Existing rows are kept; tags from the upload are
-  layered onto matching SHA-256 rows.
+- **Merge** (the dialog's preselected radio) - add new images and tags
+  from the upload to the target gallery. Existing rows are kept; tags
+  from the upload are layered onto matching SHA-256 rows.
 - **Replace** - wipe the target gallery's DB and thumbnails, then load
   the upload into the empty gallery. Type-to-confirm the gallery's
   name. Refused on the active gallery and the default gallery (switch
   / demote first).
+
+After Replace finishes, monbooru kicks off a thumbnail rebuild in the
+background and switches the active gallery to the freshly imported one.

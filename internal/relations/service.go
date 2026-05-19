@@ -124,9 +124,17 @@ func (s *Service) AddAlternate(a, b int64) error {
 	return tx.Commit()
 }
 
-// AddVersionEdge declares child as the newer version of parent. Refuses
-// if either side is already part of a version edge - the chain is
-// strict.
+// MaxVersionChainDepth caps how far AddVersionEdge walks the existing
+// chain when checking for a cycle. Mirrors the implications walker's
+// depth budget so a pathological chain can't loop indefinitely.
+const MaxVersionChainDepth = 16
+
+// AddVersionEdge declares child as the newer version of parent. The
+// chain is strict: each image has at most one parent (PK on
+// child_image_id) and at most one child (UNIQUE on parent_image_id), so
+// the only forbidden configurations are (a) child already has a parent,
+// (b) parent already has a child, or (c) adding the edge would close a
+// loop with an existing ancestor chain.
 func (s *Service) AddVersionEdge(parent, child int64) error {
 	if parent == child {
 		return ErrSelfRelation
@@ -143,13 +151,30 @@ func (s *Service) AddVersionEdge(parent, child int64) error {
 	}
 	var n int
 	if err := tx.QueryRow(
-		`SELECT COUNT(*) FROM version_edges WHERE child_image_id IN (?, ?) OR parent_image_id IN (?, ?)`,
-		parent, child, parent, child,
+		`SELECT COUNT(*) FROM version_edges WHERE child_image_id = ? OR parent_image_id = ?`,
+		child, parent,
 	).Scan(&n); err != nil {
 		return err
 	}
 	if n > 0 {
 		return ErrVersionExists
+	}
+	// Walk parent's ancestors; if child is anywhere up that chain, the
+	// new edge would close a cycle.
+	cur := parent
+	for i := 0; i < MaxVersionChainDepth; i++ {
+		var ancestor int64
+		err := tx.QueryRow(`SELECT parent_image_id FROM version_edges WHERE child_image_id = ?`, cur).Scan(&ancestor)
+		if errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if ancestor == child {
+			return ErrVersionExists
+		}
+		cur = ancestor
 	}
 	if _, err := tx.Exec(
 		`INSERT INTO version_edges (child_image_id, parent_image_id, created_at) VALUES (?, ?, ?)`,
@@ -162,7 +187,8 @@ func (s *Service) AddVersionEdge(parent, child int64) error {
 
 // AddDerivativeEdge declares derivative was made from source. A source
 // can carry many derivatives (tree); each derivative has exactly one
-// source.
+// source. Refuses when the derivative already has a source or when
+// adding the edge would close a cycle with an existing source chain.
 func (s *Service) AddDerivativeEdge(source, derivative int64) error {
 	if source == derivative {
 		return ErrSelfRelation
@@ -185,6 +211,24 @@ func (s *Service) AddDerivativeEdge(source, derivative int64) error {
 	}
 	if n > 0 {
 		return ErrDerivativeExists
+	}
+	// Walk source's source-chain; if derivative is anywhere up that
+	// chain, the new edge would close a cycle. Same depth budget as
+	// the version chain so a pathological tree can't loop indefinitely.
+	cur := source
+	for i := 0; i < MaxVersionChainDepth; i++ {
+		var ancestor int64
+		err := tx.QueryRow(`SELECT source_image_id FROM derivative_edges WHERE derivative_image_id = ?`, cur).Scan(&ancestor)
+		if errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if ancestor == derivative {
+			return ErrDerivativeExists
+		}
+		cur = ancestor
 	}
 	if _, err := tx.Exec(
 		`INSERT INTO derivative_edges (derivative_image_id, source_image_id, created_at) VALUES (?, ?, ?)`,
@@ -378,6 +422,140 @@ func (s *Service) DissolveAltGroup(groupID int64) error {
 	return err
 }
 
+// MergeAltGroups consolidates N alt groups into one. The lowest id is
+// the survivor; every alt_group_members.group_id pointing at the
+// others is repointed at the survivor; the now-empty alt_groups rows
+// are deleted. Idempotent on a single-group input.
+func (s *Service) MergeAltGroups(groupIDs []int64) error {
+	groupIDs = dedupAndSortInt64(groupIDs)
+	if len(groupIDs) <= 1 {
+		return nil
+	}
+	tx, err := s.db.Write.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := mergeAltGroupsTx(tx, groupIDs); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// MergeDupGroups consolidates N dup groups into one. The lowest id is
+// the survivor; member rows from the others are repointed; the
+// survivor's original_image_id is taken from the group named by
+// keepOriginalFrom. Pass 0 to keep the survivor's existing original.
+// Idempotent on a single-group input.
+func (s *Service) MergeDupGroups(groupIDs []int64, keepOriginalFrom int64) error {
+	groupIDs = dedupAndSortInt64(groupIDs)
+	if len(groupIDs) <= 1 {
+		return nil
+	}
+	tx, err := s.db.Write.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := mergeDupGroupsTx(tx, groupIDs, keepOriginalFrom); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// dedupAndSortInt64 returns the input sorted ascending with duplicates
+// removed. The merge primitives use this so the lowest id is always at
+// index 0 (the survivor) regardless of caller argument order.
+func dedupAndSortInt64(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]int64, 0, len(ids))
+	seen := map[int64]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	// Insertion-sort style for tiny N (UI sends at most a handful).
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j-1] > out[j]; j-- {
+			out[j-1], out[j] = out[j], out[j-1]
+		}
+	}
+	return out
+}
+
+// mergeAltGroupsTx implements MergeAltGroups inside an existing
+// transaction. groupIDs must be deduplicated and sorted ascending.
+func mergeAltGroupsTx(tx *sql.Tx, groupIDs []int64) error {
+	if len(groupIDs) <= 1 {
+		return nil
+	}
+	survivor := groupIDs[0]
+	others := groupIDs[1:]
+	for _, gid := range others {
+		if _, err := tx.Exec(
+			`UPDATE alt_group_members SET group_id = ? WHERE group_id = ?`, survivor, gid,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM alt_groups WHERE id = ?`, gid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mergeDupGroupsTx implements MergeDupGroups inside an existing
+// transaction. groupIDs must be deduplicated and sorted ascending.
+// keepOriginalFrom names which group's original_image_id is copied
+// onto the survivor; 0 means "keep the survivor's existing original".
+func mergeDupGroupsTx(tx *sql.Tx, groupIDs []int64, keepOriginalFrom int64) error {
+	if len(groupIDs) <= 1 {
+		return nil
+	}
+	survivor := groupIDs[0]
+	others := groupIDs[1:]
+	if keepOriginalFrom != 0 && keepOriginalFrom != survivor {
+		// Caller asked to inherit a non-survivor's original. Copy it onto
+		// the survivor row before we delete the source group.
+		valid := false
+		for _, gid := range others {
+			if gid == keepOriginalFrom {
+				valid = true
+				break
+			}
+		}
+		if valid {
+			var original int64
+			if err := tx.QueryRow(
+				`SELECT original_image_id FROM dup_groups WHERE id = ?`, keepOriginalFrom,
+			).Scan(&original); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(
+				`UPDATE dup_groups SET original_image_id = ? WHERE id = ?`, original, survivor,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	for _, gid := range others {
+		if _, err := tx.Exec(
+			`UPDATE dup_group_members SET group_id = ? WHERE group_id = ?`, survivor, gid,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM dup_groups WHERE id = ?`, gid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RemoveVersionEdge deletes the parent -> child edge if it exists.
 // Idempotent.
 func (s *Service) RemoveVersionEdge(parent, child int64) error {
@@ -385,6 +563,36 @@ func (s *Service) RemoveVersionEdge(parent, child int64) error {
 		`DELETE FROM version_edges WHERE parent_image_id = ? AND child_image_id = ?`, parent, child,
 	)
 	return err
+}
+
+// ReverseVersionEdge swaps the parent/child of the named edge in one
+// transaction so the chain points the other way. Idempotent on a
+// missing edge.
+func (s *Service) ReverseVersionEdge(parent, child int64) error {
+	if parent == child {
+		return ErrSelfRelation
+	}
+	tx, err := s.db.Write.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(
+		`DELETE FROM version_edges WHERE parent_image_id = ? AND child_image_id = ?`, parent, child,
+	)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return tx.Commit()
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO version_edges (child_image_id, parent_image_id, created_at) VALUES (?, ?, ?)`,
+		parent, child, nowISO(),
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // RemoveDerivativeEdge deletes the source -> derivative edge if it
@@ -396,6 +604,35 @@ func (s *Service) RemoveDerivativeEdge(source, derivative int64) error {
 	return err
 }
 
+// ReverseDerivativeEdge swaps the source and derivative sides of the
+// named edge in one transaction. Idempotent on a missing edge.
+func (s *Service) ReverseDerivativeEdge(source, derivative int64) error {
+	if source == derivative {
+		return ErrSelfRelation
+	}
+	tx, err := s.db.Write.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(
+		`DELETE FROM derivative_edges WHERE source_image_id = ? AND derivative_image_id = ?`, source, derivative,
+	)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return tx.Commit()
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO derivative_edges (derivative_image_id, source_image_id, created_at) VALUES (?, ?, ?)`,
+		source, derivative, nowISO(),
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // RemoveNotRelated forgets a previously-rejected pair so it becomes
 // eligible to resurface in find-pairs again. Idempotent.
 func (s *Service) RemoveNotRelated(a, b int64) error {
@@ -404,15 +641,18 @@ func (s *Service) RemoveNotRelated(a, b int64) error {
 	return err
 }
 
-// ClearVersionEdgesInvolving drops every version_edge that names a or
-// b on either side, so a subsequent AddVersionEdge can land a fresh
-// edge in the operator-chosen direction. Used by the detail-page
-// "Replace existing version edge" affordance when the conflict is
-// with a third image (which ClearBetween wouldn't touch).
-func (s *Service) ClearVersionEdgesInvolving(a, b int64) error {
+// ClearVersionEdgeConflictsFor drops only the version_edge rows that
+// would block an AddVersionEdge(parent, child) insert: the row where
+// `child` is already a child (second parent for it) and the row where
+// `parent` is already a parent (second child for it). Edges between
+// either endpoint and a third image that don't violate the per-row
+// uniqueness keep standing, so the operator's "Replace existing
+// version edge" click only sacrifices the directly-conflicting links
+// and the rest of the chain stays intact.
+func (s *Service) ClearVersionEdgeConflictsFor(parent, child int64) error {
 	_, err := s.db.Write.Exec(
-		`DELETE FROM version_edges WHERE child_image_id IN (?, ?) OR parent_image_id IN (?, ?)`,
-		a, b, a, b,
+		`DELETE FROM version_edges WHERE child_image_id = ? OR parent_image_id = ?`,
+		child, parent,
 	)
 	return err
 }
@@ -674,7 +914,11 @@ func pairShareGroupTx(tx *sql.Tx, table string, a, b int64) (bool, error) {
 	return n > 0, nil
 }
 
-// mergeIntoDupGroupTx is the dup-group five-case merge.
+// mergeIntoDupGroupTx is the dup-group five-case merge. When both sides
+// already belong to distinct dup groups, the two are folded together
+// through mergeDupGroupsTx; the lower-id group survives and keeps its
+// existing original_image_id. The operator can flip that from the
+// browse-groups Merge dialog when a different original is wanted.
 func mergeIntoDupGroupTx(tx *sql.Tx, a, b int64) error {
 	groupA, err := lookupGroupIDTx(tx, "dup_group_members", a)
 	if err != nil {
@@ -721,20 +965,15 @@ func mergeIntoDupGroupTx(tx *sql.Tx, a, b int64) error {
 	case groupA.Int64 == groupB.Int64:
 		// Already in the same group - idempotent no-op.
 	default:
-		if _, err := tx.Exec(
-			`UPDATE dup_group_members SET group_id = ? WHERE group_id = ?`, groupA.Int64, groupB.Int64,
-		); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`DELETE FROM dup_groups WHERE id = ?`, groupB.Int64); err != nil {
-			return err
-		}
+		return mergeDupGroupsTx(tx, []int64{groupA.Int64, groupB.Int64}, 0)
 	}
 	return nil
 }
 
 // mergeIntoAltGroupTx is the alt-group equivalent. Alt groups carry no
-// original_image_id, so the singleton-start case just creates a row.
+// original_image_id, so the singleton-start case just creates a row;
+// distinct-group merges defer to mergeAltGroupsTx so the same survivor-
+// id contract holds.
 func mergeIntoAltGroupTx(tx *sql.Tx, a, b int64) error {
 	groupA, err := lookupGroupIDTx(tx, "alt_group_members", a)
 	if err != nil {
@@ -774,14 +1013,7 @@ func mergeIntoAltGroupTx(tx *sql.Tx, a, b int64) error {
 	case groupA.Int64 == groupB.Int64:
 		// Same group; no-op.
 	default:
-		if _, err := tx.Exec(
-			`UPDATE alt_group_members SET group_id = ? WHERE group_id = ?`, groupA.Int64, groupB.Int64,
-		); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`DELETE FROM alt_groups WHERE id = ?`, groupB.Int64); err != nil {
-			return err
-		}
+		return mergeAltGroupsTx(tx, []int64{groupA.Int64, groupB.Int64})
 	}
 	return nil
 }
@@ -820,14 +1052,7 @@ func propagateAltOnDuplicateTx(tx *sql.Tx, a, b int64) error {
 	case groupA.Int64 == groupB.Int64:
 		// Already in the same alt group.
 	default:
-		if _, err := tx.Exec(
-			`UPDATE alt_group_members SET group_id = ? WHERE group_id = ?`, groupA.Int64, groupB.Int64,
-		); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`DELETE FROM alt_groups WHERE id = ?`, groupB.Int64); err != nil {
-			return err
-		}
+		return mergeAltGroupsTx(tx, []int64{groupA.Int64, groupB.Int64})
 	}
 	return nil
 }

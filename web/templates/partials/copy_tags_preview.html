@@ -23,7 +23,7 @@
   {{if .Groups}}
   <form hx-post="/relations/dup-group/{{.GroupID}}/copy-tags"
         hx-target="#flash-walker-marked" hx-swap="innerHTML"
-        hx-on::after-request="if(event.detail.successful){document.getElementById('copy-tags-preview-dialog').close()}"
+        hx-on::after-request="if(event.detail.successful){document.getElementById('copy-tags-preview-dialog').close();setTimeout(function(){window.location.reload()},1500)}"
         style="display:inline">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <button type="submit">Copy {{.Total}} tag(s)</button>

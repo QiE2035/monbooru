@@ -45,7 +45,7 @@
         <tr><td><code>cat:character</code></td><td>Images with any tag in the given category.</td></tr>
         <tr><td><code>tagged:true</code></td><td>Only images with at least one tag. <code>tagged:false</code> restricts to images with no tags.</td></tr>
         <tr><td><code>autotagged:true</code></td><td>Only images with at least one auto-tag. <code>autotagged:false</code> restricts to images with no auto-tags.</td></tr>
-        <tr><td><code>tagcount:&gt;=10</code></td><td>Number of tags on the image (excludes alias resolutions).</td></tr>
+        <tr><td><code>tagcount:&gt;=10</code></td><td>Number of tags on the image (counts every row, including implied tags fanned out from an implication).</td></tr>
         <tr><td><code>rating:explicit</code></td><td>Filter by rating (<code>general</code>/<code>sensitive</code>/<code>questionable</code>/<code>explicit</code>). When an image carries more than one rating tag the highest wins. The footer's <code>sfw</code> level corresponds to <code>rating:general</code>.</td></tr>
       </tbody>
     </table>
@@ -55,7 +55,7 @@
       <thead><tr><th>Syntax</th><th>Description</th></tr></thead>
       <tbody>
         <tr><td><code>name:vacation</code></td><td>Substring match against the filename (the path segment after the last "/"). Case-insensitive; folder names don't bleed in.</td></tr>
-        <tr><td><code>size:&gt;=10MB</code></td><td>File size comparison. Accepts bare bytes or a unit suffix (<code>B</code>, <code>KB</code>, <code>MB</code>, <code>GB</code>, <code>TB</code>, and the binary <code>KiB</code>/<code>MiB</code> equivalents). Sizes are 1024-based.</td></tr>
+        <tr><td><code>size:&gt;=10MB</code></td><td>File size comparison. Accepts bare bytes or a unit suffix: <code>B</code>, <code>K</code>/<code>KB</code>/<code>KiB</code>, <code>M</code>/<code>MB</code>/<code>MiB</code>, <code>G</code>/<code>GB</code>/<code>GiB</code>, <code>T</code>/<code>TB</code>/<code>TiB</code>. Every unit is 1024-based.</td></tr>
         <tr><td><code>mime:png</code></td><td>File-type filter. Accepts the bare bucket (<code>png</code>, <code>jpeg</code>, <code>webp</code>, <code>gif</code>, <code>mp4</code>, <code>webm</code>, <code>cbz</code>) or the <code>image/...</code> / <code>video/...</code> form. Comma-separates as a union.</td></tr>
         <tr><td><code>type:image</code> / <code>type:archive</code> / <code>type:animated</code></td><td>Narrow by file-type bucket. <code>image</code> = jpeg/png/webp/gif/mp4/webm, <code>archive</code> = cbz/zip (manga, image-zip..), <code>animated</code> = gif/mp4/webm. Comma-separates as a union.</td></tr>
         <tr><td><code>width:&gt;=1920</code></td><td>Filter by image width.</td></tr>
@@ -115,7 +115,7 @@
       <thead><tr><th>Syntax</th><th>Description</th></tr></thead>
       <tbody>
         <tr><td><code>phash:&lt;16hex&gt;</code></td><td>Exact perceptual-hash match. Useful via the <code>[copy]</code> button on the detail page's pHash row.</td></tr>
-        <tr><td><code>phash:&lt;16hex&gt;~4</code></td><td>Within Hamming distance 4 (near-duplicates). Distances 0..12 accepted.</td></tr>
+        <tr><td><code>phash:&lt;16hex&gt;~4</code></td><td>Within Hamming distance 4 (near-duplicates). Distances 0..64 accepted.</td></tr>
         <tr><td><code>phash:</code> / <code>-phash:</code></td><td>Has a perceptual hash / doesn't have one.</td></tr>
         <tr><td><code>relation:duplicate</code></td><td>Image is in any duplicate group.</td></tr>
         <tr><td><code>relation:original</code></td><td>Image is the chosen original of a duplicate group.</td></tr>
@@ -226,16 +226,12 @@
     <ul>
       <li><strong>Duplicate</strong> - same image, different files. Members live in a group with a chosen <em>original</em> (the canonical representative).</li>
       <li><strong>Alternate</strong> - same subject, different rendering. Members live in an unranked group; no member is privileged.</li>
-      <li><strong>Version</strong> - directed parent &rarr; child edge. Each image has at most one parent and at most one child.</li>
-      <li><strong>Derivative</strong> - directed source &rarr; derivative edge. A derivative has exactly one source; a source can carry many derivatives.</li>
+      <li><strong>Version</strong> - directed parent &rarr; child edge. Each image has at most one parent (the earlier version) and at most one child (the newer version).</li>
+      <li><strong>Derivative</strong> - directed source &rarr; derivative edge. A derivative has exactly one source it is based on; a source can carry many derivatives.</li>
       <li><strong>Not related</strong> - a rejected pair recorded so the find-pairs queue never resurfaces it.</li>
     </ul>
     <p>Open the <a href="/relations">Relations</a> page to start a session to walk candidate pairs, and cleanup duplicates. </p>
     <p>Two duplicates walkers cover the cleanup:</p>
-    <ul>
-      <li><strong>SHA-256 duplicates</strong> - the same byte-identical image stored at multiple paths on disk.</li>
-      <li><strong>Marked duplicates</strong> - declared duplicate groups.</li>
-    </ul>
     <p>From any image's detail page, <strong>Add a relation</strong> opens a dialog for declaring an edge against another image directly without going through a session.</p>
   </section>
 

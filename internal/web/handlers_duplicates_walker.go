@@ -30,6 +30,7 @@ type markedDuplicateRow struct {
 	GroupID       int64
 	OriginalID    int64
 	DuplicateID   int64
+	MarkedAt      string
 	HasTagsToCopy bool
 }
 
@@ -52,12 +53,17 @@ func (s *Server) sha256WalkerPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no gallery", http.StatusServiceUnavailable)
 		return
 	}
-	rows, err := cx.DB.Read.Query(`
-		SELECT i.id, i.canonical_path, ip.id, ip.path
+	excludeIDs, _ := ratingExcludeTagIDs(cx, ratingCeilingFromRequest(r))
+	q := `SELECT i.id, i.canonical_path, ip.id, ip.path
 		FROM images i
-		JOIN image_paths ip ON ip.image_id = i.id AND ip.is_canonical = 0
-		ORDER BY i.id, ip.id
-	`)
+		JOIN image_paths ip ON ip.image_id = i.id AND ip.is_canonical = 0`
+	args := []any{}
+	if where, wargs := ratingExcludeWhereClauseSingle("i.id", excludeIDs); where != "" {
+		q += ` WHERE ` + where
+		args = append(args, wargs...)
+	}
+	q += ` ORDER BY i.id, ip.id`
+	rows, err := cx.DB.Read.Query(q, args...)
 	if err != nil {
 		logx.Warnf("sha256 walker query: %v", err)
 		http.Error(w, "load duplicates", http.StatusInternalServerError)
@@ -79,7 +85,7 @@ func (s *Server) sha256WalkerPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderTemplate(w, "relations_duplicates_sha256.html", relationsWalkerData{
-		baseData:      s.base(r, "relations", "SHA-256 duplicates walker - Monbooru"),
+		baseData:      s.base(r, "relations", "Duplicate files - Monbooru"),
 		ActiveGallery: s.activeName,
 		Kind:          "sha256",
 		Sha256Rows:    out,
@@ -87,22 +93,28 @@ func (s *Server) sha256WalkerPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // markedWalkerPage lists every (original, duplicate) pairing across
-// every dup_group in one table. One row per non-original member; rows
-// sharing a group_id are emitted consecutively so the per-group
-// [copy tags] action sits next to the group's first row.
+// every dup_group in one table. One row per non-original member,
+// ordered by the membership's created_at descending so the freshest
+// markings land at the top - the operator's most recent decisions are
+// the ones most likely to need a follow-up action.
 func (s *Server) markedWalkerPage(w http.ResponseWriter, r *http.Request) {
 	cx := s.Active()
 	if cx == nil || cx.DB == nil {
 		http.Error(w, "no gallery", http.StatusServiceUnavailable)
 		return
 	}
-	rows, err := cx.DB.Read.Query(`
-		SELECT g.id, g.original_image_id, m.image_id
+	excludeIDs, _ := ratingExcludeTagIDs(cx, ratingCeilingFromRequest(r))
+	q := `SELECT g.id, g.original_image_id, m.image_id, m.created_at
 		FROM dup_group_members m
 		JOIN dup_groups g ON g.id = m.group_id
-		WHERE m.image_id != g.original_image_id
-		ORDER BY g.id, m.image_id
-	`)
+		WHERE m.image_id != g.original_image_id`
+	args := []any{}
+	if where, wargs := ratingExcludeWhereClause("g.original_image_id", "m.image_id", excludeIDs); where != "" {
+		q += ` AND ` + where
+		args = append(args, wargs...)
+	}
+	q += ` ORDER BY m.created_at DESC, g.id DESC, m.image_id`
+	rows, err := cx.DB.Read.Query(q, args...)
 	if err != nil {
 		logx.Warnf("marked walker query: %v", err)
 		http.Error(w, "load duplicates", http.StatusInternalServerError)
@@ -112,11 +124,13 @@ func (s *Server) markedWalkerPage(w http.ResponseWriter, r *http.Request) {
 	var out []markedDuplicateRow
 	for rows.Next() {
 		var dr markedDuplicateRow
-		if scanErr := rows.Scan(&dr.GroupID, &dr.OriginalID, &dr.DuplicateID); scanErr != nil {
+		var marked string
+		if scanErr := rows.Scan(&dr.GroupID, &dr.OriginalID, &dr.DuplicateID, &marked); scanErr != nil {
 			logx.Warnf("marked walker scan: %v", scanErr)
 			http.Error(w, "scan duplicates", http.StatusInternalServerError)
 			return
 		}
+		dr.MarkedAt = humanISOTime(marked)
 		out = append(out, dr)
 	}
 	if err := rows.Err(); err != nil {
@@ -127,7 +141,7 @@ func (s *Server) markedWalkerPage(w http.ResponseWriter, r *http.Request) {
 		logx.Warnf("marked walker tags-to-copy: %v", err)
 	}
 	s.renderTemplate(w, "relations_duplicates_marked.html", relationsWalkerData{
-		baseData:      s.base(r, "relations", "Marked duplicates walker - Monbooru"),
+		baseData:      s.base(r, "relations", "Duplicate images - Monbooru"),
 		ActiveGallery: s.activeName,
 		Kind:          "marked",
 		MarkedRows:    out,

@@ -1,94 +1,95 @@
 {{define "relations.html"}}
 {{template "layout_head" .}}
-<div id="sidebar-inner">
-  <nav class="settings-nav">
-    <a href="#find">Find relations</a>
-    <a href="#browse">Browse relations</a>
-    <a href="#duplicates">Duplicates</a>
-  </nav>
-</div>
+<div id="sidebar-inner"></div>
 {{template "layout_mid" .}}
 
 <div id="relations-page">
   <h2>Relations</h2>
   <div id="flash-relations"></div>
 
-  <section id="find" class="settings-section">
-    <h3>Find relations</h3>
-    <div class="relations-header-row">
-      <a class="btn-sm btn-purple" href="/relations/session">Start a session</a>
-      <form hx-post="/relations/find-pairs" hx-target="#flash-relations" hx-swap="innerHTML"
-            hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}"
-            style="display:inline">
-        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <button type="submit" class="btn-sm">Find new pairs</button>
-      </form>
-      <form hx-post="/relations/reset-skipped" hx-target="#flash-relations" hx-swap="innerHTML"
-            hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-            hx-confirm="Move every skipped pair back to the unresolved queue?"
-            data-confirm-ok="Reset"
-            style="display:inline">
-        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <button type="submit" class="btn-sm">Reset skipped</button>
-      </form>
-    </div>
-    <p class="field-hint">
-      Queue: <strong>{{.Counts.QueueOpen}}</strong> unresolved, <strong>{{.Counts.QueueSkipped}}</strong> skipped
-      {{if gt .Counts.PhashMissing 0}}· <a href="/?q=-phash:" title="Search images without a phash"><strong>{{.Counts.PhashMissing}}</strong></a> image(s) without a phash{{end}}
-    </p>
-    {{if and (eq .Counts.QueueOpen 0) (eq .Counts.QueueSkipped 0)}}
-    <p class="field-hint">The queue is empty. Click <strong>Find new pairs</strong> to surface candidates with similar perceptual hashes.</p>
-    {{end}}
-    <p class="field-hint">Sessions walk the queue pairwise; mark each candidate as duplicate / alternate / version / derivative / not related.</p>
-  </section>
+  <div class="relations-hub-cols">
+    <section id="find" class="settings-section">
+      <h3>Find relations</h3>
+      <p class="field-hint">Walk a queue of candidate pairs surfaced by perceptual-hash similarity. Decide one pair at a time as same image, variant, newer revision, based on, or not related.</p>
+      {{- $emptyQueue := and (eq .Counts.QueueOpen 0) (eq .Counts.QueueSkipped 0) -}}
+      <div class="relations-header-row">
+        <form hx-post="/relations/find-pairs" hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}"
+              style="display:inline">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <button type="submit" class="btn-sm{{if $emptyQueue}} btn-purple{{end}}">Find new pairs</button>
+        </form>
+        {{if $emptyQueue}}
+        <button type="button" class="btn-sm" disabled title="Empty queue - find pairs first">Start a session</button>
+        {{else}}
+        <a class="btn-sm btn-purple" href="/relations/session">Start a session</a>
+        {{end}}
+        <form hx-post="/relations/reset-skipped" hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
+              hx-confirm="Move every skipped pair back to the unresolved queue?"
+              data-confirm-ok="Reset"
+              style="display:inline">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <button type="submit" class="btn-sm"{{if eq .Counts.QueueSkipped 0}} disabled title="No skipped pairs to reset"{{end}}>Reset skipped{{if gt .Counts.QueueSkipped 0}} ({{.Counts.QueueSkipped}}){{end}}</button>
+        </form>
+      </div>
+      <p class="field-hint">
+        Queue: <strong>{{.Counts.QueueOpen}}</strong> unresolved, <strong>{{.Counts.QueueSkipped}}</strong> skipped
+        {{if gt .Counts.PhashMissing 0}}· <a href="/?q=-phash:" title="Search images without a phash"><strong>{{.Counts.PhashMissing}}</strong></a> image(s) without a phash{{end}}
+      </p>
+      {{if and (eq .Counts.QueueOpen 0) (eq .Counts.QueueSkipped 0)}}
+      <p class="field-hint">The queue is empty. Click <strong>Find new pairs</strong> to surface candidates with similar perceptual hashes.</p>
+      {{end}}
+    </section>
 
-  <section id="browse" class="settings-section">
-    <h3>Browse relations</h3>
-    <p class="field-hint">
-      <strong>{{.Counts.DupGroups}}</strong> duplicate group(s) ·
-      <strong>{{.Counts.AltGroups}}</strong> alternate group(s) ·
-      <strong>{{.Counts.VersionEdges}}</strong> version edge(s) ·
-      <strong>{{.Counts.Derivatives}}</strong> derivative edge(s)
-    </p>
-    <div class="relations-header-row">
-      <a class="btn-sm" href="/relations/browse">Browse pair relations</a>
-      <a class="btn-sm" href="/relations/browse-groups">Browse groups</a>
-    </div>
-  </section>
+    <section id="browse" class="settings-section">
+      <h3>Browse relations</h3>
+      <p class="field-hint">Review every relation already declared, grouped by kind. Dissolve groups, merge groups, unlink edges, or jump back to the images.</p>
+      <p class="field-hint">
+        <strong>{{.Counts.DupGroups}}</strong> same-image group(s) ·
+        <strong>{{.Counts.AltGroups}}</strong> variant group(s) ·
+        <strong>{{.Counts.VersionEdges}}</strong> revision edge(s) ·
+        <strong>{{.Counts.Derivatives}}</strong> based-on edge(s)
+      </p>
+      <div class="relations-header-row">
+        <a class="btn-sm" href="/relations/browse">Browse relations</a>
+      </div>
+    </section>
+  </div>
 
   <section id="duplicates" class="settings-section">
     <h3>Duplicates</h3>
     <div class="settings-cols">
       <div class="settings-sub">
-        <h4>SHA-256 duplicates</h4>
-        <p class="field-hint">Images stored at multiple paths on disk sharing one byte-identical SHA-256.</p>
+        <h4>Duplicate files</h4>
+        <p class="field-hint">The same file saved at more than one path on disk.</p>
         <div class="relations-header-row">
-          <a class="btn-sm" href="/relations/duplicates/sha256">Walk duplicates</a>
+          <a class="btn-sm" href="/relations/duplicates/sha256">Review duplicate files</a>
           <form hx-post="/relations/file-duplicates/remove"
                 hx-target="#flash-relations" hx-swap="innerHTML"
                 hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-                hx-confirm="Remove every non-canonical duplicate and its file from disk? The canonical path stays."
+                hx-confirm="Remove every non-canonical duplicate file and its bytes from disk? The canonical path stays."
                 data-confirm-ok="Remove all"
                 style="display:inline">
             <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
             <input type="hidden" name="all" value="true">
-            <button type="submit" class="btn-danger btn-sm">Delete all duplicates</button>
+            <button type="submit" class="btn-danger btn-sm">Delete all duplicate files</button>
           </form>
         </div>
       </div>
       <div class="settings-sub">
-        <h4>Marked duplicates</h4>
-        <p class="field-hint"><strong>{{.Counts.DupGroups}}</strong> duplicate group(s) declared via the Relations session or the detail-page panel.</p>
+        <h4>Duplicate images</h4>
+        <p class="field-hint">Images you marked as duplicates of each other. <strong>{{.Counts.DupGroups}}</strong> group(s) declared via the Relations session or the detail-page panel.</p>
         <div class="relations-header-row">
-          <a class="btn-sm" href="/relations/duplicates/marked">Walk duplicates</a>
+          <a class="btn-sm" href="/relations/duplicates/marked">Review duplicate images</a>
           <form hx-post="/relations/duplicates/marked/delete-all"
                 hx-target="#flash-relations" hx-swap="innerHTML"
                 hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-                hx-confirm="Delete every non-original member of every marked duplicate group? Files are removed from disk."
+                hx-confirm="Delete every non-original member of every duplicate-image group? Files are removed from disk."
                 data-confirm-ok="Delete all"
                 style="display:inline">
             <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <button type="submit" class="btn-danger btn-sm">Delete all duplicates</button>
+            <button type="submit" class="btn-danger btn-sm">Delete all duplicate images</button>
           </form>
         </div>
       </div>

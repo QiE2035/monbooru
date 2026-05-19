@@ -279,6 +279,84 @@ func TestAddVersionEdgeRefusesSecondChild(t *testing.T) {
 	}
 }
 
+// Chains are valid as long as each image has at most one parent and one
+// child; the schema permits X->Y->Z so the service must too.
+func TestAddVersionEdgeAllowsSuccessiveChain(t *testing.T) {
+	database, svc := setupTestDB(t)
+	x := insertImage(t, database, "x", 100)
+	y := insertImage(t, database, "y", 100)
+	z := insertImage(t, database, "z", 100)
+	if err := svc.AddVersionEdge(x, y); err != nil {
+		t.Fatalf("x->y: %v", err)
+	}
+	if err := svc.AddVersionEdge(y, z); err != nil {
+		t.Fatalf("y->z (chain extension): %v", err)
+	}
+}
+
+// ClearVersionEdgeConflictsFor must wipe only the edges that block the
+// new (parent, child) insert: a row where the new child already has a
+// parent, or a row where the new parent already has a child. Edges
+// that name one endpoint but don't violate the per-row uniqueness for
+// the new (parent, child) survive.
+func TestClearVersionEdgeConflictsForKeepsThirdImageEdges(t *testing.T) {
+	database, svc := setupTestDB(t)
+	a := insertImage(t, database, "a", 100)
+	b := insertImage(t, database, "b", 100)
+	c := insertImage(t, database, "c", 100)
+	e := insertImage(t, database, "e", 100)
+	// Two unrelated edges seed the table: b is newer than a (a -> b)
+	// and e is newer than c (c -> e). Adding (parent=a, child=c) would
+	// conflict only on the first row (a already parents b); the
+	// second row touches c on its parent side but doesn't violate any
+	// uniqueness for (a, c).
+	if err := svc.AddVersionEdge(a, b); err != nil {
+		t.Fatalf("seed a->b: %v", err)
+	}
+	if err := svc.AddVersionEdge(c, e); err != nil {
+		t.Fatalf("seed c->e: %v", err)
+	}
+	if err := svc.ClearVersionEdgeConflictsFor(a, c); err != nil {
+		t.Fatalf("ClearVersionEdgeConflictsFor: %v", err)
+	}
+	var count int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM version_edges WHERE child_image_id = ? AND parent_image_id = ?`, b, a,
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("a->b row count = %d, want 0 (was the conflict)", count)
+	}
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM version_edges WHERE child_image_id = ? AND parent_image_id = ?`, e, c,
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("c->e row count = %d, want 1 (unrelated third-image edge)", count)
+	}
+}
+
+// A back-edge that would close a loop with the existing chain must be
+// rejected even though neither endpoint violates the per-row schema
+// constraint directly.
+func TestAddVersionEdgeRejectsCycle(t *testing.T) {
+	database, svc := setupTestDB(t)
+	x := insertImage(t, database, "x", 100)
+	y := insertImage(t, database, "y", 100)
+	z := insertImage(t, database, "z", 100)
+	if err := svc.AddVersionEdge(x, y); err != nil {
+		t.Fatalf("x->y: %v", err)
+	}
+	if err := svc.AddVersionEdge(y, z); err != nil {
+		t.Fatalf("y->z: %v", err)
+	}
+	if err := svc.AddVersionEdge(z, x); !errors.Is(err, ErrVersionExists) {
+		t.Fatalf("z->x (cycle): got %v, want ErrVersionExists", err)
+	}
+}
+
 func TestAddDerivativeEdgeAllowsMultipleDerivatives(t *testing.T) {
 	database, svc := setupTestDB(t)
 	source := insertImage(t, database, "src", 100)
@@ -309,6 +387,25 @@ func TestAddDerivativeEdgeRefusesSecondSource(t *testing.T) {
 	}
 	if err := svc.AddDerivativeEdge(s2, d); !errors.Is(err, ErrDerivativeExists) {
 		t.Fatalf("second source: got %v, want ErrDerivativeExists", err)
+	}
+}
+
+// Adding an edge whose derivative is already an ancestor of source on
+// the existing source chain closes a loop; the cycle walk must catch
+// it.
+func TestAddDerivativeEdgeRejectsCycle(t *testing.T) {
+	database, svc := setupTestDB(t)
+	a := insertImage(t, database, "a", 100)
+	b := insertImage(t, database, "b", 100)
+	c := insertImage(t, database, "c", 100)
+	if err := svc.AddDerivativeEdge(a, b); err != nil {
+		t.Fatalf("a->b: %v", err)
+	}
+	if err := svc.AddDerivativeEdge(b, c); err != nil {
+		t.Fatalf("b->c: %v", err)
+	}
+	if err := svc.AddDerivativeEdge(c, a); !errors.Is(err, ErrDerivativeExists) {
+		t.Fatalf("c->a (cycle): got %v, want ErrDerivativeExists", err)
 	}
 }
 
@@ -807,6 +904,228 @@ func TestNextOriginalIfRemovedPicksBiggest(t *testing.T) {
 	}
 	if next != 0 {
 		t.Fatalf("next original on 2-member group = %d, want 0", next)
+	}
+}
+
+// AddDuplicate(A, B) when A and B already sit in distinct dup groups
+// must merge those groups instead of erroring. The survivor (lowest
+// group id) keeps its original_image_id; every member of the higher-id
+// group migrates over.
+func TestAddDuplicateAutoMergesDistinctGroups(t *testing.T) {
+	database, svc := setupTestDB(t)
+	a := insertImage(t, database, "a", 500)
+	b := insertImage(t, database, "b", 200)
+	c := insertImage(t, database, "c", 600)
+	d := insertImage(t, database, "d", 250)
+	if err := svc.AddDuplicate(a, b); err != nil {
+		t.Fatalf("a-b dup: %v", err)
+	}
+	if err := svc.AddDuplicate(c, d); err != nil {
+		t.Fatalf("c-d dup: %v", err)
+	}
+	gAB, origAB := dupGroupOf(t, database, a)
+	gCD, _ := dupGroupOf(t, database, c)
+	if !gAB.Valid || !gCD.Valid || gAB.Int64 == gCD.Int64 {
+		t.Fatalf("setup: two distinct dup groups expected")
+	}
+	// Session presses Duplicate on (b, d); both already grouped.
+	if err := svc.AddDuplicate(b, d); err != nil {
+		t.Fatalf("AddDuplicate(b, d) on cross-group pair: %v", err)
+	}
+	gPost, origPost := dupGroupOf(t, database, a)
+	gPostD, _ := dupGroupOf(t, database, d)
+	if !gPost.Valid || !gPostD.Valid || gPost.Int64 != gPostD.Int64 {
+		t.Fatalf("after auto-merge: a in %v, d in %v; expected same group", gPost, gPostD)
+	}
+	if dupGroupSize(t, database, gPost.Int64) != 4 {
+		t.Errorf("merged dup group size = %d, want 4", dupGroupSize(t, database, gPost.Int64))
+	}
+	// Survivor is the lower id; its original_image_id is preserved.
+	if origPost.Int64 != origAB.Int64 {
+		t.Errorf("original_image_id after merge = %d, want %d (survivor kept)", origPost.Int64, origAB.Int64)
+	}
+	var groups int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM dup_groups`).Scan(&groups); err != nil {
+		t.Fatal(err)
+	}
+	if groups != 1 {
+		t.Errorf("dup_groups rows after merge = %d, want 1", groups)
+	}
+}
+
+// AddAlternate(A, B) when both sides already sit in distinct alt
+// groups must fold those groups together rather than error.
+func TestAddAlternateAutoMergesDistinctGroups(t *testing.T) {
+	database, svc := setupTestDB(t)
+	a := insertImage(t, database, "a", 100)
+	b := insertImage(t, database, "b", 200)
+	c := insertImage(t, database, "c", 150)
+	d := insertImage(t, database, "d", 250)
+	if err := svc.AddAlternate(a, b); err != nil {
+		t.Fatalf("a-b alt: %v", err)
+	}
+	if err := svc.AddAlternate(c, d); err != nil {
+		t.Fatalf("c-d alt: %v", err)
+	}
+	gAB := altGroupOf(t, database, a)
+	gCD := altGroupOf(t, database, c)
+	if !gAB.Valid || !gCD.Valid || gAB.Int64 == gCD.Int64 {
+		t.Fatalf("setup: two distinct alt groups expected")
+	}
+	if err := svc.AddAlternate(b, d); err != nil {
+		t.Fatalf("AddAlternate(b, d) cross-group: %v", err)
+	}
+	gA := altGroupOf(t, database, a)
+	gD := altGroupOf(t, database, d)
+	if !gA.Valid || !gD.Valid || gA.Int64 != gD.Int64 {
+		t.Fatalf("after auto-merge: a alt = %v, d alt = %v; expected same group", gA, gD)
+	}
+	var rowCount, memberCount int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM alt_groups`).Scan(&rowCount); err != nil {
+		t.Fatal(err)
+	}
+	if rowCount != 1 {
+		t.Errorf("alt_groups rows after merge = %d, want 1", rowCount)
+	}
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM alt_group_members WHERE group_id = ?`, gA.Int64).Scan(&memberCount); err != nil {
+		t.Fatal(err)
+	}
+	if memberCount != 4 {
+		t.Errorf("merged alt group size = %d, want 4", memberCount)
+	}
+}
+
+// MergeAltGroups consolidates two distinct alt groups into one: every
+// member of the higher-id group ends up under the lower-id group, and
+// the higher-id alt_groups row goes away.
+func TestMergeAltGroupsCombinesTwoGroups(t *testing.T) {
+	database, svc := setupTestDB(t)
+	a := insertImage(t, database, "a", 100)
+	b := insertImage(t, database, "b", 200)
+	c := insertImage(t, database, "c", 150)
+	d := insertImage(t, database, "d", 250)
+	if err := svc.AddAlternate(a, b); err != nil {
+		t.Fatalf("a-b alt: %v", err)
+	}
+	if err := svc.AddAlternate(c, d); err != nil {
+		t.Fatalf("c-d alt: %v", err)
+	}
+	gAB := altGroupOf(t, database, a)
+	gCD := altGroupOf(t, database, c)
+	if !gAB.Valid || !gCD.Valid || gAB.Int64 == gCD.Int64 {
+		t.Fatalf("setup: expected two distinct alt groups, got %v / %v", gAB, gCD)
+	}
+	if err := svc.MergeAltGroups([]int64{gAB.Int64, gCD.Int64}); err != nil {
+		t.Fatalf("MergeAltGroups: %v", err)
+	}
+	gA := altGroupOf(t, database, a)
+	gD := altGroupOf(t, database, d)
+	if !gA.Valid || !gD.Valid || gA.Int64 != gD.Int64 {
+		t.Fatalf("after merge: a alt = %v, d alt = %v; expected the same group", gA, gD)
+	}
+	var rowCount int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM alt_groups`).Scan(&rowCount); err != nil {
+		t.Fatal(err)
+	}
+	if rowCount != 1 {
+		t.Errorf("alt_groups rows = %d, want 1", rowCount)
+	}
+	var memberCount int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM alt_group_members WHERE group_id = ?`, gA.Int64).Scan(&memberCount); err != nil {
+		t.Fatal(err)
+	}
+	if memberCount != 4 {
+		t.Errorf("merged alt group size = %d, want 4", memberCount)
+	}
+}
+
+// MergeAltGroups on a single-group input must be a no-op (the
+// idempotent contract the dup-group merge UI relies on).
+func TestMergeAltGroupsSingleGroupNoOp(t *testing.T) {
+	database, svc := setupTestDB(t)
+	a := insertImage(t, database, "a", 100)
+	b := insertImage(t, database, "b", 200)
+	if err := svc.AddAlternate(a, b); err != nil {
+		t.Fatalf("AddAlternate: %v", err)
+	}
+	gid := altGroupOf(t, database, a)
+	if !gid.Valid {
+		t.Fatal("alt group missing")
+	}
+	if err := svc.MergeAltGroups([]int64{gid.Int64}); err != nil {
+		t.Fatalf("MergeAltGroups single: %v", err)
+	}
+	post := altGroupOf(t, database, a)
+	if !post.Valid || post.Int64 != gid.Int64 {
+		t.Errorf("single-group merge changed membership: pre=%v post=%v", gid, post)
+	}
+}
+
+// MergeDupGroups picks the lowest id as the survivor and keeps the
+// survivor's original_image_id when keepOriginalFrom is 0.
+func TestMergeDupGroupsKeepsSurvivorOriginal(t *testing.T) {
+	database, svc := setupTestDB(t)
+	a := insertImage(t, database, "a", 500)
+	b := insertImage(t, database, "b", 200)
+	c := insertImage(t, database, "c", 600)
+	d := insertImage(t, database, "d", 250)
+	if err := svc.AddDuplicate(a, b); err != nil {
+		t.Fatalf("a-b dup: %v", err)
+	}
+	if err := svc.AddDuplicate(c, d); err != nil {
+		t.Fatalf("c-d dup: %v", err)
+	}
+	gAB, origAB := dupGroupOf(t, database, a)
+	gCD, origCD := dupGroupOf(t, database, c)
+	if !gAB.Valid || !gCD.Valid || gAB.Int64 == gCD.Int64 {
+		t.Fatalf("setup: two distinct dup groups expected")
+	}
+	// Sanity: AddDuplicate(a, b) makes a the original; same for c-d.
+	if origAB.Int64 != a {
+		t.Fatalf("origAB = %d, want %d", origAB.Int64, a)
+	}
+	if origCD.Int64 != c {
+		t.Fatalf("origCD = %d, want %d", origCD.Int64, c)
+	}
+	if err := svc.MergeDupGroups([]int64{gAB.Int64, gCD.Int64}, 0); err != nil {
+		t.Fatalf("MergeDupGroups: %v", err)
+	}
+	gPost, origPost := dupGroupOf(t, database, a)
+	gPostD, _ := dupGroupOf(t, database, d)
+	if !gPost.Valid || !gPostD.Valid || gPost.Int64 != gPostD.Int64 {
+		t.Fatalf("post-merge: a in %v, d in %v; expected the same group", gPost, gPostD)
+	}
+	if dupGroupSize(t, database, gPost.Int64) != 4 {
+		t.Errorf("merged dup group size = %d, want 4", dupGroupSize(t, database, gPost.Int64))
+	}
+	// Survivor is the lower id. keepOriginalFrom=0 preserves its original.
+	if origPost.Int64 != a {
+		t.Errorf("post-merge original = %d, want %d (survivor kept)", origPost.Int64, a)
+	}
+}
+
+// MergeDupGroups with keepOriginalFrom set to the non-survivor group
+// copies that group's original_image_id onto the survivor row.
+func TestMergeDupGroupsKeepOriginalFromNonSurvivor(t *testing.T) {
+	database, svc := setupTestDB(t)
+	a := insertImage(t, database, "a", 500)
+	b := insertImage(t, database, "b", 200)
+	c := insertImage(t, database, "c", 600)
+	d := insertImage(t, database, "d", 250)
+	if err := svc.AddDuplicate(a, b); err != nil {
+		t.Fatalf("a-b dup: %v", err)
+	}
+	if err := svc.AddDuplicate(c, d); err != nil {
+		t.Fatalf("c-d dup: %v", err)
+	}
+	gAB, _ := dupGroupOf(t, database, a)
+	gCD, _ := dupGroupOf(t, database, c)
+	if err := svc.MergeDupGroups([]int64{gAB.Int64, gCD.Int64}, gCD.Int64); err != nil {
+		t.Fatalf("MergeDupGroups: %v", err)
+	}
+	_, origPost := dupGroupOf(t, database, a)
+	if origPost.Int64 != c {
+		t.Errorf("post-merge original = %d, want %d (inherited from %d)", origPost.Int64, c, gCD.Int64)
 	}
 }
 

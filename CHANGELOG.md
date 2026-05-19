@@ -1,5 +1,30 @@
 # Changelog
 
+## [v1.8.1] - 2026-05-19
+### Added
+- Unified `/relations/browse?kind=` with tabs per kind; group tabs carry per-card checkboxes for multi-select merge.
+- `/images/{id}/relations` shows the full version chain (left-to-right with arrows) and derivative tree; current image accented.
+- Comparison table on pair-shape views (session, browse, per-image): resolution, file size, added-on, tag count, tag delta, format. 
+- Session Duplicate decision opens a Delete-now / Keep modal with an optional copy-tags pre-step; Esc and Enter default to Keep, D triggers delete.
+- Add-relation dialog: preview tile per side; pasting `/images/{id}` or a full URL fills the id.
+- Browse cards: declared-at line under the toolbar and an ingest-date pill on every thumbnail.
+- Two-column hub (Find / Browse) with state-aware accent; Start a session disables with a tooltip when the queue is empty.
+- Marked-duplicates walker grows a Marked-at column.
+
+### Changed
+- Plain-language relations labels on user-facing surfaces: Same image, Variant, Newer revision, Based on, Not related. Search keywords, schema, REST API, and CSS classes stay on technical names.
+- Session UI rebuild: Swap and Compare on a centred bridge between thumbs, accent per primary decision button, button hover writes the committed `{left}/{right}` sentence to the prompt; remaining-pair counter moves into the topbar; compare slider gains a chevron handle and Left/Right caption strip.
+- Marked-duplicates walker sorts rows newest-first and badges the Original column.
+
+### Fixed
+- Version chain: extending an existing chain (X -> Y, then Y -> Z) is allowed; only schema-enforced collisions and cycle closures reject.
+- Derivative edge: two-node loops (A -> B then B -> A) and longer cycles caught by walking the source chain.
+- Chain edge replace drops only the rows that collide with the new pair, so other chain entries survive when overwriting one step.
+- Browse cards, duplicates walkers, session pair feeder, and hub queue counters honour the rating ceiling; empty-queue branch offers a one-click ceiling raise.
+
+### Removed
+- Session inline 1-6 legend (the `?` cheat-sheet still documents the shortcuts).
+
 ## [v1.8.0] - 2026-05-16
 ### Added
 - Relations system. New `/relations` top-level page (between Tags and Settings) with Find / Duplicates / Browse sections. A 64-bit perceptual hash (pHash) computed at ingest, with a backfill job for existing libraries, feeds a background find-pairs job that fills a queue of near-duplicate candidates. Sessions step through the queue in a swipe-style UI: decide Duplicates / Alternates / Version / Derivative / Not related / Skip with keyboard shortcuts; Compare opens a draggable before/after slider; Swap-sides flips parent/child for directional types. Browse-pair (with a Not-related tab and unlink) and Browse-groups pages round out the surface. Settings -> Maintenance grows `Compute perceptual hashes` and `Rebuild pair queue` buttons; a daily scheduler phase runs find-pairs on its own.

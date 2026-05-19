@@ -21,16 +21,16 @@ Designed for organizing your local media collection, including AI-generated imag
 - Tag-based gallery with folder tree, favorites, saved searches, related-image suggestions
 - Videos and animated GIFs alongside images, with animated hover previews on the grid
 - Manga / comic / archive support: browse CBZ / ZIP archives as a single object with a built-in reader
+- Stable Diffusion metadata extraction from A1111/Forge and ComfyUI (prompts, models, seeds, full workflow)
+- Tag management: merge duplicates, create aliases, implications and custom categories
+- Batch operations on a selection or on a whole search: delete, move, add/remove tags, auto-tag
+- Optional auto-tagging with local ONNX models (WD14 SwinV2, JoyTag, Camie v2, or any compatible model), CPU or GPU (CUDA)
 - Watcher that picks up new, moved, and deleted files within a few seconds; multi-file browser upload; SHA-256 dedup so the same file under two paths is recognised as one image
 - Inbox system: new ingests land in the inbox; flip to archived once curated.
-- Stable Diffusion metadata extraction from A1111/Forge and ComfyUI (prompts, models, seeds, full workflow)
-- Optional auto-tagging with local ONNX models (WD14 SwinV2, JoyTag, Camie v2, or any compatible model), CPU or GPU (CUDA)
 - Search with wildcards, OR, exclusions, plus filters on folder, date, size, dimensions, category, generation recipe...
 - Image relations: declared duplicates, alternates, version chains, and derivative edges. Near-duplicates are computed using perceptual hashes.
 - Collections with an optional within-collection order
 - Built-in rating tags (general / sensitive / questionable / explicit) with a SFW ceiling toggle in the footer that hides anything above the chosen level
-- Tag management: merge duplicates, create aliases, implications and custom categories
-- Batch operations on a selection or on a whole search: delete, move, add/remove tags, auto-tag
 - Multiple galleries, each with its own filesystem and database; switch between them at runtime
 - Per-gallery export and import for backup or migration. The importer also reads Hydrus network and Blombooru exports - see [docs/MIGRATING.md](docs/MIGRATING.md)
 - REST API for third-party integrations (e.g. adding images to the gallery from an external app)

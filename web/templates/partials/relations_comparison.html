@@ -1,0 +1,61 @@
+{{define "partials/relations_comparison.html"}}
+{{- $L := .Left -}}
+{{- $R := .Right -}}
+<table class="relations-compare-table">
+  <thead>
+    <tr><th>Field</th><th>Left #{{$L.ImageID}}</th><th>Right #{{$R.ImageID}}</th></tr>
+  </thead>
+  <tbody>
+    {{- $lwin := and (gt $L.ResolutionW 0) (or (gt $L.ResolutionW $R.ResolutionW) (and (eq $L.ResolutionW $R.ResolutionW) (gt $L.ResolutionH $R.ResolutionH))) -}}
+    {{- $rwin := and (gt $R.ResolutionW 0) (or (gt $R.ResolutionW $L.ResolutionW) (and (eq $R.ResolutionW $L.ResolutionW) (gt $R.ResolutionH $L.ResolutionH))) -}}
+    <tr>
+      <th>Resolution</th>
+      <td{{if $lwin}} class="cmp-win" title="Higher resolution"{{end}}>{{$L.ResolutionW}}×{{$L.ResolutionH}}{{if $lwin}} ←{{end}}</td>
+      <td{{if $rwin}} class="cmp-win" title="Higher resolution"{{end}}>{{$R.ResolutionW}}×{{$R.ResolutionH}}{{if $rwin}} ←{{end}}</td>
+    </tr>
+    {{if ne $L.FileSize $R.FileSize}}
+    <tr>
+      <th>File size</th>
+      <td{{if gt $L.FileSize $R.FileSize}} class="cmp-win" title="Larger file"{{end}}>{{humanBytes $L.FileSize}}{{if gt $L.FileSize $R.FileSize}} ←{{end}}</td>
+      <td{{if gt $R.FileSize $L.FileSize}} class="cmp-win" title="Larger file"{{end}}>{{humanBytes $R.FileSize}}{{if gt $R.FileSize $L.FileSize}} ←{{end}}</td>
+    </tr>
+    {{end}}
+    {{if ne $L.AddedAt $R.AddedAt}}
+    <tr>
+      <th>Added</th>
+      <td>{{if $L.AddedAt}}{{$L.AddedAt}}{{else}}—{{end}}</td>
+      <td>{{if $R.AddedAt}}{{$R.AddedAt}}{{else}}—{{end}}</td>
+    </tr>
+    {{end}}
+    {{if ne $L.TagCount $R.TagCount}}
+    <tr>
+      <th>Tag count</th>
+      <td{{if gt $L.TagCount $R.TagCount}} class="cmp-win" title="More tags"{{end}}>{{$L.TagCount}}{{if gt $L.TagCount $R.TagCount}} ←{{end}}</td>
+      <td{{if gt $R.TagCount $L.TagCount}} class="cmp-win" title="More tags"{{end}}>{{$R.TagCount}}{{if gt $R.TagCount $L.TagCount}} ←{{end}}</td>
+    </tr>
+    {{end}}
+    {{if or $L.UniqueTags $R.UniqueTags}}
+    <tr>
+      <th>Tags only here</th>
+      <td class="cmp-tag-cell">
+        {{if $L.UniqueTags}}
+          <span title="{{range $i, $n := $L.UniqueTags}}{{if $i}}, {{end}}{{$n}}{{end}}{{if gt $L.UniqueTagsTotal (len $L.UniqueTags)}}, +{{sub $L.UniqueTagsTotal (len $L.UniqueTags)}} more{{end}}">{{range $i, $n := $L.UniqueTags}}{{if $i}}, {{end}}{{$n}}{{end}}{{if gt $L.UniqueTagsTotal (len $L.UniqueTags)}}, +{{sub $L.UniqueTagsTotal (len $L.UniqueTags)}} more{{end}}</span>
+        {{else}}(none){{end}}
+      </td>
+      <td class="cmp-tag-cell">
+        {{if $R.UniqueTags}}
+          <span title="{{range $i, $n := $R.UniqueTags}}{{if $i}}, {{end}}{{$n}}{{end}}{{if gt $R.UniqueTagsTotal (len $R.UniqueTags)}}, +{{sub $R.UniqueTagsTotal (len $R.UniqueTags)}} more{{end}}">{{range $i, $n := $R.UniqueTags}}{{if $i}}, {{end}}{{$n}}{{end}}{{if gt $R.UniqueTagsTotal (len $R.UniqueTags)}}, +{{sub $R.UniqueTagsTotal (len $R.UniqueTags)}} more{{end}}</span>
+        {{else}}(none){{end}}
+      </td>
+    </tr>
+    {{end}}
+    {{if ne $L.Format $R.Format}}
+    <tr>
+      <th>Format</th>
+      <td>{{if $L.Format}}{{$L.Format}}{{else}}—{{end}}</td>
+      <td>{{if $R.Format}}{{$R.Format}}{{else}}—{{end}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

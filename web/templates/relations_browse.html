@@ -1,12 +1,6 @@
 {{define "relations_browse.html"}}
 {{template "layout_head" .}}
-<div id="sidebar-inner">
-  <nav class="settings-nav">
-    <a href="/relations#find">Find relations</a>
-    <a href="/relations#browse">Browse relations</a>
-    <a href="/relations#duplicates">Duplicates</a>
-  </nav>
-</div>
+<div id="sidebar-inner"></div>
 {{template "layout_mid" .}}
 
 <div id="relations-browse-page">
@@ -14,96 +8,335 @@
     <div class="detail-nav-group">
       <a href="/relations" class="back-link">← Back to Relations</a>
       <span class="detail-nav-sep">·</span>
-      <strong class="walker-page-title">Browse pair relations</strong>
+      <strong class="walker-page-title">Browse relations</strong>
     </div>
   </div>
 
   <div id="flash-relations"></div>
 
   <nav class="browse-tabs">
-    <a href="/relations/browse?type=duplicate"   class="browse-tab{{if eq .Type "duplicate"}}   browse-tab-active{{end}}">Duplicates</a>
-    <a href="/relations/browse?type=alternate"   class="browse-tab{{if eq .Type "alternate"}}   browse-tab-active{{end}}">Alternates</a>
-    <a href="/relations/browse?type=version"     class="browse-tab{{if eq .Type "version"}}     browse-tab-active{{end}}">Versions</a>
-    <a href="/relations/browse?type=derivative"  class="browse-tab{{if eq .Type "derivative"}}  browse-tab-active{{end}}">Derivatives</a>
-    <a href="/relations/browse?type=not_related" class="browse-tab{{if eq .Type "not_related"}} browse-tab-active{{end}}">Not related</a>
+    <a href="/relations/browse?kind=duplicate"   class="browse-tab{{if eq .Kind "duplicate"}}   browse-tab-active{{end}}">Same image <span class="field-hint">({{.Counts.DupGroups}})</span></a>
+    <a href="/relations/browse?kind=alternate"   class="browse-tab{{if eq .Kind "alternate"}}   browse-tab-active{{end}}">Variants <span class="field-hint">({{.Counts.AltGroups}})</span></a>
+    <a href="/relations/browse?kind=version"     class="browse-tab{{if eq .Kind "version"}}     browse-tab-active{{end}}">Revision history <span class="field-hint">({{.Counts.VersionEdges}})</span></a>
+    <a href="/relations/browse?kind=derivative"  class="browse-tab{{if eq .Kind "derivative"}}  browse-tab-active{{end}}">Based on <span class="field-hint">({{.Counts.Derivatives}})</span></a>
+    <a href="/relations/browse?kind=not_related" class="browse-tab{{if eq .Kind "not_related"}} browse-tab-active{{end}}">Not related <span class="field-hint">({{.Counts.NotRelatedPairs}})</span></a>
   </nav>
 
-  {{if not .Rows}}
-  <p class="field-hint">No {{.Type}} relations declared yet.</p>
+  {{if not .Cards}}
+  {{if eq .Kind "not_related"}}
+  <p class="field-hint">You haven't rejected any pairs yet - pairs you mark Not related during a session will appear here so the queue stops resurfacing them.</p>
   {{else}}
-  <table class="browse-table">
-    <thead>
-      <tr>
-        <th>Left ID</th>
-        <th>Left</th>
-        <th>Right</th>
-        <th>Right ID</th>
-        <th>Action</th>
-      </tr>
-    </thead>
-    <tbody>
-      {{range .Rows}}
-      <tr>
-        <td><a href="/images/{{.ParentID}}">#{{.ParentID}}</a></td>
-        <td>
-          <a href="/images/{{.ParentID}}" class="browse-thumb">
-            <img src="/thumbnails/{{$.ActiveGallery}}/{{.ParentID}}.jpg" alt="image {{.ParentID}}" loading="lazy">
-          </a>
-        </td>
-        <td>
-          <a href="/images/{{.ChildID}}" class="browse-thumb">
-            <img src="/thumbnails/{{$.ActiveGallery}}/{{.ChildID}}.jpg" alt="image {{.ChildID}}" loading="lazy">
-          </a>
-        </td>
-        <td><a href="/images/{{.ChildID}}">#{{.ChildID}}</a></td>
-        <td>
-          <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
-                hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-                hx-confirm="Unlink this relation?"
-                data-confirm-ok="Unlink"
-                style="display:inline">
-            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-            {{if eq $.Type "duplicate"}}
-              <input type="hidden" name="type" value="duplicate">
-              <input type="hidden" name="image_id" value="{{.ChildID}}">
-            {{else if eq $.Type "alternate"}}
-              <input type="hidden" name="type" value="alternate">
-              <input type="hidden" name="image_id" value="{{.ChildID}}">
-            {{else if eq $.Type "version"}}
-              <input type="hidden" name="type" value="version">
-              <input type="hidden" name="a" value="{{.ParentID}}">
-              <input type="hidden" name="b" value="{{.ChildID}}">
-            {{else if eq $.Type "derivative"}}
-              <input type="hidden" name="type" value="derivative">
-              <input type="hidden" name="a" value="{{.ParentID}}">
-              <input type="hidden" name="b" value="{{.ChildID}}">
-            {{else if eq $.Type "not_related"}}
-              <input type="hidden" name="type" value="not_related">
-              <input type="hidden" name="a" value="{{.ParentID}}">
-              <input type="hidden" name="b" value="{{.ChildID}}">
-            {{end}}
-            <button type="submit" class="btn-link-accent">[unlink]</button>
-          </form>
-        </td>
-      </tr>
+  <p class="field-hint">Nothing declared yet for this kind.</p>
+  {{end}}
+  {{else}}
+  {{if or (eq .Kind "duplicate") (eq .Kind "alternate")}}
+  <div class="merge-toolbar" id="merge-toolbar">
+    <span class="merge-toolbar-count"><span id="merge-selected-count">0</span> selected</span>
+    <button type="button" class="btn-sm btn-purple" id="merge-selected-btn" disabled>Merge selected</button>
+  </div>
+  {{end}}
+  <ul class="relations-cards">
+    {{range .Cards}}
+    {{$card := .}}
+    <li class="relations-card relations-card-{{.Kind}}" data-group-id="{{.GroupID}}" data-group-kind="{{.Kind}}" data-group-original="{{.Original}}">
+      {{if eq .Kind "duplicate"}}
+        <label class="merge-select" title="Select this group for merging">
+          <input type="checkbox" name="group_id" value="{{.GroupID}}" class="merge-checkbox" data-original-id="{{.Original}}">
+        </label>
+        <strong>Duplicate group #{{.GroupID}}</strong>
+        ({{len .Members}} member(s), original #{{.Original}})
+        <form hx-post="/relations/dup-group/{{.GroupID}}/copy-tags"
+              hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-confirm="Copy tags from the duplicates onto the original? Rating tags are excluded."
+              data-confirm-ok="Copy"
+              style="display:inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <button type="submit" class="btn-link-accent">[copy tags]</button>
+        </form>
+        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-confirm="Dissolve this same-image group?"
+              data-confirm-ok="Dissolve"
+              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <input type="hidden" name="type" value="dissolve-dup">
+          <input type="hidden" name="group_id" value="{{.GroupID}}">
+          <button type="submit" class="btn-link-accent">[dissolve]</button>
+        </form>
+      {{else if eq .Kind "alternate"}}
+        <label class="merge-select" title="Select this group for merging">
+          <input type="checkbox" name="group_id" value="{{.GroupID}}" class="merge-checkbox">
+        </label>
+        <strong>Alternate group #{{.GroupID}}</strong>
+        ({{len .Members}} member(s))
+        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-confirm="Dissolve this variant group?"
+              data-confirm-ok="Dissolve"
+              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <input type="hidden" name="type" value="dissolve-alt">
+          <input type="hidden" name="group_id" value="{{.GroupID}}">
+          <button type="submit" class="btn-link-accent">[dissolve]</button>
+        </form>
+      {{else if eq .Kind "version"}}
+        <strong>Version chain #{{index .Members 0}}</strong>
+        ({{len .Members}} image(s), oldest #{{index .Members 0}} → newest #{{index .Members (sub (len .Members) 1)}})
+        <a class="btn-link-accent" href="/images/{{index .Members 0}}/relations" title="Open the root image's relations page to reverse or unlink any edge in this chain">[edit chain]</a>
+      {{else if eq .Kind "derivative"}}
+        <strong>Derivative tree</strong>
+        ({{len .Members}} image(s), source #{{index .Members 0}})
+        <a class="btn-link-accent" href="/images/{{index .Members 0}}/relations" title="Open the source image's relations page to reverse or unlink any edge in this tree">[edit tree]</a>
+      {{else if eq .Kind "not_related"}}
+        <strong>Not related</strong>
+        (#{{index .Members 0}} ↔ #{{index .Members 1}})
+        {{if .Compare}}
+        <button type="button" class="btn-link-accent btn-relations-info" title="Show the comparison details">[info]</button>
+        {{end}}
+        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-confirm="Unlink this not-related pair? It can resurface in find-pairs."
+              data-confirm-ok="Unlink"
+              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <input type="hidden" name="type" value="not_related">
+          <input type="hidden" name="a" value="{{index .Members 0}}">
+          <input type="hidden" name="b" value="{{index .Members 1}}">
+          <button type="submit" class="btn-link-accent">[unlink]</button>
+        </form>
       {{end}}
-    </tbody>
-  </table>
+      {{if .CreatedAt}}
+      <div class="relations-card-meta field-hint">declared <time>{{.CreatedAt}}</time></div>
+      {{end}}
+      {{if .Compare}}
+        <div class="relations-info-content" hidden>{{template "partials/relations_comparison.html" (dict "Left" .Compare.Left "Right" .Compare.Right)}}</div>
+      {{end}}
+      {{if eq .Kind "version"}}
+      <div class="relations-card-chain">
+        {{range $i, $id := .Members}}
+        {{if $i}}<span class="relations-chain-arrow" aria-hidden="true">→</span>{{end}}
+        <a href="/images/{{$id}}" class="relations-card-thumb" title="Image {{$id}} - added {{index $card.MemberIngestedAt $id}}">
+          <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy">
+          <span class="relations-card-id">#{{$id}}</span>
+          <span class="relations-card-date">{{index $card.MemberIngestedAt $id}}</span>
+        </a>
+        {{end}}
+      </div>
+      {{else if eq .Kind "derivative"}}
+      <div class="relations-card-tree">
+        {{range .TreeRows}}
+        {{$row := .}}
+        <div class="relations-tree-row" data-depth="{{.Depth}}">
+          {{if .Trunks}}
+          <div class="relations-tree-prefix" aria-hidden="true">
+            {{range $row.Trunks}}<span class="relations-tree-trunk" data-style="{{.}}"></span>{{end}}
+          </div>
+          {{end}}
+          <a href="/images/{{.ID}}" class="relations-card-thumb" title="Image {{.ID}} - added {{index $card.MemberIngestedAt .ID}}">
+            <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy">
+            <span class="relations-card-id">#{{.ID}}</span>
+            <span class="relations-card-date">{{index $card.MemberIngestedAt .ID}}</span>
+          </a>
+        </div>
+        {{end}}
+      </div>
+      {{else}}
+      <div class="relations-card-thumbs{{if eq .Kind "not_related"}} relations-card-thumbs-pair{{end}}">
+        {{if and (eq .Kind "duplicate") .Original}}
+        {{$orig := .Original}}
+        <a href="/images/{{$orig}}" class="relations-card-thumb relations-card-original" title="Original {{$orig}} - added {{index $card.MemberIngestedAt $orig}}">
+          <img src="/thumbnails/{{$.ActiveGallery}}/{{$orig}}.jpg" alt="image {{$orig}}" loading="lazy">
+          <span class="relations-card-id">#{{$orig}}</span>
+          <span class="relations-card-tag">original</span>
+          <span class="relations-card-date">{{index $card.MemberIngestedAt $orig}}</span>
+        </a>
+        {{range $id := .Members}}
+          {{if ne $id $orig}}
+          <a href="/images/{{$id}}" class="relations-card-thumb" title="Image {{$id}} - added {{index $card.MemberIngestedAt $id}}">
+            <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy">
+            <span class="relations-card-id">#{{$id}}</span>
+            <span class="relations-card-date">{{index $card.MemberIngestedAt $id}}</span>
+          </a>
+          {{end}}
+        {{end}}
+        {{else if eq .Kind "not_related"}}
+        {{$left := index .Members 0}}{{$right := index .Members 1}}
+        <a href="/images/{{$left}}" class="relations-card-thumb" title="Image {{$left}} - added {{index $card.MemberIngestedAt $left}}">
+          <img src="/thumbnails/{{$.ActiveGallery}}/{{$left}}.jpg" alt="image {{$left}}" loading="lazy">
+          <span class="relations-card-id">#{{$left}}</span>
+          <span class="relations-card-date">{{index $card.MemberIngestedAt $left}}</span>
+        </a>
+        <span class="relations-card-arrow" aria-hidden="true">↔</span>
+        <a href="/images/{{$right}}" class="relations-card-thumb" title="Image {{$right}} - added {{index $card.MemberIngestedAt $right}}">
+          <img src="/thumbnails/{{$.ActiveGallery}}/{{$right}}.jpg" alt="image {{$right}}" loading="lazy">
+          <span class="relations-card-id">#{{$right}}</span>
+          <span class="relations-card-date">{{index $card.MemberIngestedAt $right}}</span>
+        </a>
+        {{else}}
+        {{range $id := .Members}}
+        <a href="/images/{{$id}}" class="relations-card-thumb" title="Image {{$id}} - added {{index $card.MemberIngestedAt $id}}">
+          <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy">
+          <span class="relations-card-id">#{{$id}}</span>
+          <span class="relations-card-date">{{index $card.MemberIngestedAt $id}}</span>
+        </a>
+        {{end}}
+        {{end}}
+      </div>
+      {{end}}
+    </li>
+    {{end}}
+  </ul>
   {{end}}
 </div>
 
+<dialog id="merge-dup-dialog">
+  <form id="merge-dup-form" method="post" action="/relations/browse-groups/merge?kind=dup">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <h4>Merge same-image groups</h4>
+    <p class="field-hint">Which group's original wins on the merged row?</p>
+    <ul id="merge-dup-choices" class="merge-dup-choices"></ul>
+    <div class="dialog-actions">
+      <button type="submit" class="btn-purple">Merge</button>
+      <button type="button" onclick="document.getElementById('merge-dup-dialog').close()">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="relations-info-dialog">
+  <h4>Comparison details</h4>
+  <div id="relations-info-body"></div>
+  <div class="dialog-actions">
+    <button type="button" onclick="document.getElementById('relations-info-dialog').close()">Close</button>
+  </div>
+</dialog>
+
 <script>
+(function() {
+  var kind = {{.Kind}};
+  if (kind !== 'duplicate' && kind !== 'alternate') return;
+  var toolbarCount = document.getElementById('merge-selected-count');
+  var toolbarBtn = document.getElementById('merge-selected-btn');
+  if (!toolbarCount || !toolbarBtn) return;
+  function selectedCheckboxes() {
+    return Array.prototype.slice.call(document.querySelectorAll('.merge-checkbox:checked'));
+  }
+  function refresh() {
+    var sel = selectedCheckboxes();
+    toolbarCount.textContent = sel.length;
+    toolbarBtn.disabled = sel.length < 2;
+  }
+  document.querySelectorAll('.merge-checkbox').forEach(function(cb) {
+    cb.addEventListener('change', refresh);
+  });
+  refresh();
+  var mergeKind = (kind === 'duplicate') ? 'dup' : 'alt';
+  toolbarBtn.addEventListener('click', function() {
+    var sel = selectedCheckboxes();
+    if (sel.length < 2) return;
+    if (mergeKind === 'alt') {
+      showConfirm('Merge ' + sel.length + ' variant groups into one?', function() {
+        submitMerge(sel.map(function(cb) { return cb.value; }), '/relations/browse-groups/merge?kind=alt', null);
+      }, '', 'Merge');
+      return;
+    }
+    var dlg = document.getElementById('merge-dup-dialog');
+    var choices = document.getElementById('merge-dup-choices');
+    if (!dlg || !choices) return;
+    choices.innerHTML = '';
+    var defaultGroupID = null;
+    sel.forEach(function(cb) {
+      var card = cb.closest('.relations-card');
+      if (!card) return;
+      var origID = cb.dataset.originalId || card.dataset.groupOriginal;
+      var thumb = '/thumbnails/{{.ActiveGallery}}/' + origID + '.jpg';
+      var li = document.createElement('li');
+      li.className = 'merge-dup-choice';
+      li.innerHTML = ''
+        + '<label>'
+        + '  <input type="radio" name="keep_original_from" value="' + cb.value + '">'
+        + '  <img src="' + thumb + '" alt="image ' + origID + '" class="merge-dup-thumb">'
+        + '  <span class="merge-dup-meta">Group ' + cb.value + ' (original #' + origID + ')</span>'
+        + '</label>';
+      choices.appendChild(li);
+      var gid = parseInt(cb.value, 10);
+      if (defaultGroupID === null || gid < defaultGroupID) {
+        defaultGroupID = gid;
+      }
+    });
+    if (defaultGroupID !== null) {
+      var radio = choices.querySelector('input[value="' + defaultGroupID + '"]');
+      if (radio) radio.checked = true;
+    }
+    var form = document.getElementById('merge-dup-form');
+    form.dataset.selectedIds = JSON.stringify(sel.map(function(cb) { return cb.value; }));
+    dlg.showModal();
+  });
+  var dupForm = document.getElementById('merge-dup-form');
+  if (dupForm) {
+    dupForm.addEventListener('submit', function(e) {
+      e.preventDefault();
+      var ids = [];
+      try { ids = JSON.parse(dupForm.dataset.selectedIds || '[]'); } catch (_) { ids = []; }
+      if (ids.length < 2) return;
+      var keep = dupForm.querySelector('input[name="keep_original_from"]:checked');
+      submitMerge(ids, '/relations/browse-groups/merge?kind=dup',
+        keep ? keep.value : '');
+    });
+  }
+  function submitMerge(ids, url, keepOriginalFrom) {
+    // URL-encoded body so the handler's r.ParseForm() actually sees
+    // the group_id fields; a FormData body lands as multipart and
+    // Go's ParseForm leaves r.Form empty for non-urlencoded posts.
+    var params = new URLSearchParams();
+    params.append('_csrf', {{.CSRFToken}});
+    ids.forEach(function(id) { params.append('group_id', id); });
+    if (keepOriginalFrom !== null && keepOriginalFrom !== '') {
+      params.append('keep_original_from', keepOriginalFrom);
+    }
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        'HX-Request': 'true',
+        'X-CSRF-Token': {{.CSRFToken}},
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    }).then(function(resp) {
+      if (resp.ok) {
+        var redirect = resp.headers.get('HX-Redirect');
+        window.location.href = redirect || ('/relations/browse?kind=' + (url.indexOf('kind=dup') > -1 ? 'duplicate' : 'alternate'));
+      } else {
+        return resp.text().then(function(txt) {
+          var flash = document.getElementById('flash-relations');
+          if (flash) flash.innerHTML = txt;
+        });
+      }
+    });
+  }
+})();
+
+// [info] per-card button lifts that row's hidden comparison block into
+// a shared dialog. The hidden node lives inside the card so we keep
+// the row-scoped data in DOM rather than serialising it through
+// dataset attributes.
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('.btn-relations-info');
+  if (!btn) return;
+  var card = btn.closest('.relations-card');
+  if (!card) return;
+  var content = card.querySelector('.relations-info-content');
+  var body = document.getElementById('relations-info-body');
+  var dlg = document.getElementById('relations-info-dialog');
+  if (!content || !body || !dlg) return;
+  body.innerHTML = content.innerHTML;
+  dlg.showModal();
+});
+
 document.addEventListener('keydown', function(e) {
   if (e.key !== 'Escape') return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.defaultPrevented) return;
-  // hx-confirm and the layout dialogs (gallery switch, shortcuts help)
-  // expect Esc to dismiss them, not jump back to /relations. The native
-  // close runs after the keydown bubble, so the dialog is still [open]
-  // at this point.
   if (document.querySelector('dialog[open]')) return;
   var tag = e.target.tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  e.preventDefault();
   window.location.href = '/relations';
 });
 </script>

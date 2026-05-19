@@ -70,8 +70,35 @@ WD14 firing on the photos.
 ## Override label routing (dispatcher)
 
 Drop a `dispatch.json` next to the tagger's `model.onnx` to remap a
-label to another category, rename it, or drop it entirely. Format and
-the shipped defaults are at `internal/tagger/dispatch_default/<tagger>.json`.
+label to another category, rename it, or drop it entirely. The shipped
+defaults are at `internal/tagger/dispatch_default/<tagger>.json`.
+
+Schema:
+
+```json
+{
+  "version": 1,
+  "rules": [
+    { "source": "monochrome",      "category": "medium" },
+    { "source": "artist_name",     "category": "meta"   },
+    { "source": "ugly_label",      "category": ""       },
+    { "source": "twitter_username","category": "meta", "name": "twitter" }
+  ]
+}
+```
+
+- `source` matches the raw label the model emits.
+- `category` is the destination category name. An empty string drops
+  the label entirely.
+- `name` (optional) renames the tag on insertion; empty keeps the
+  source name. The renamed value is run through the tag-name allowlist
+  before storage.
+
+The overlay applies on top of the embedded default for the same
+tagger: same-source entries replace the default, new sources append.
+Rules pointing at a category that does not exist on the gallery are
+skipped with a debug log; the embedded default for that source
+survives the failed override.
 
 ## GPU (CUDA)
 
