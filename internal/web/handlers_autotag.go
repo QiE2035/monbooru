@@ -37,11 +37,15 @@ func logAutotagPeak(scope string, baselineRSS uint64) {
 // uploadPage renders the multi-file upload form.
 func (s *Server) uploadPage(w http.ResponseWriter, r *http.Request) {
 	base := s.base(r, "upload", "Upload - Monbooru")
-	// The cached InboxCount is ceiling-blind; "View inbox (N)" would
-	// mis-promise the post-click match count whenever a rating ceiling
-	// hides higher-rated rows. Recompute against the active ceiling so
-	// the parenthesised number matches what a click would surface.
-	inboxCount := s.ceilingAwareCount(base.ActiveRating, "inbox:true", base.InboxCount)
+	// The footer InboxCount stays ceiling-blind; "View inbox (N)"
+	// promises the post-click match count so it reads the ceiling-
+	// aware cached count instead.
+	inboxCount := base.InboxCount
+	if cx := s.Active(); cx != nil {
+		if n, err := cx.InboxCountUnder(resolveCeiling(r, cx)); err == nil {
+			inboxCount = n
+		}
+	}
 	s.renderTemplate(w, "upload.html", map[string]any{
 		"Title":           base.Title,
 		"ActiveNav":       base.ActiveNav,
@@ -243,14 +247,12 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	// OOB-swap the anchor with the freshly cached count whenever the
 	// upload actually moved rows into the inbox. The cached InboxCount
 	// is ceiling-blind; recompute against the active ceiling so the
-	// parenthesised number matches what a click would surface (mirrors
-	// uploadPage's initial render).
+	// parenthesised number matches what a click would surface.
 	if added > 0 {
-		cached := 0
+		inbox := 0
 		if cx := s.Active(); cx != nil {
-			cached, _ = cx.InboxCount()
+			inbox, _ = cx.InboxCountUnder(resolveCeiling(r, cx))
 		}
-		inbox := s.ceilingAwareCount(ratingCeilingFromRequest(r), "inbox:true", cached)
 		count := ""
 		if inbox > 0 {
 			count = fmt.Sprintf(" (%d)", inbox)
@@ -296,6 +298,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, parseErr.Error(), http.StatusBadRequest)
 			return
 		}
+		expr = resolveCeiling(r, s.Active()).Apply(expr)
 		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
 			ids = append(ids, t.ID)
 			return nil

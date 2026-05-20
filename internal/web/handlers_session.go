@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/tags"
 )
 
 // validOrderModes enumerates the three session walk orders per
@@ -84,9 +83,8 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 		// reload picks up the same shuffle.
 		saveSessionOrder(cx, order)
 	}
-	ceiling := ratingCeilingFromRequest(r)
-	excludeIDs, _ := ratingExcludeTagIDs(cx, ceiling)
-	pair, remaining, rawRemaining, err := loadNextPair(cx, order, excludeIDs)
+	ceiling := resolveCeiling(r, cx)
+	pair, remaining, rawRemaining, err := loadNextPair(cx, order, ceiling)
 	if err != nil {
 		logx.Warnf("session next pair: %v", err)
 		http.Error(w, "load pair", http.StatusInternalServerError)
@@ -112,7 +110,7 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 		Pair:            pair,
 		Remaining:       remaining,
 		HiddenByCeiling: rawRemaining - remaining,
-		Ceiling:         ceiling,
+		Ceiling:         ceiling.Level(),
 		Order:           order,
 		ActiveGallery:   s.activeName,
 		Left:            leftFacts,
@@ -165,15 +163,15 @@ func saveSessionOrder(cx *galleryCtx, mode string) {
 
 // loadNextPair pulls the next queue row plus both image rows and the
 // total remaining count. The total-remaining COUNT is a lightweight
-// covering query against the queue table. excludeRatingIDs holds the
-// rating tag IDs strictly above the cookie ceiling; pairs where either
-// side carries one are filtered out so the session walks only what the
-// operator's ceiling already lets them see in the gallery.
+// covering query against the queue table. ceiling gates each side of
+// the pair on the absence of a rating tag above the cookie level so
+// the session walks only what the operator's ceiling already lets them
+// see in the gallery.
 //
 // Returns (pair, visible, raw, err): visible is the post-filter count,
 // raw is the unfiltered total - the difference is the "N pairs hidden
 // by your ceiling" the empty-queue branch surfaces.
-func loadNextPair(cx *galleryCtx, order string, excludeRatingIDs []int64) (*sessionPairView, int, int, error) {
+func loadNextPair(cx *galleryCtx, order string, ceiling *Ceiling) (*sessionPairView, int, int, error) {
 	var rawRemaining int
 	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs`).Scan(&rawRemaining); err != nil {
 		return nil, 0, 0, err
@@ -181,7 +179,7 @@ func loadNextPair(cx *galleryCtx, order string, excludeRatingIDs []int64) (*sess
 	if rawRemaining == 0 {
 		return nil, 0, 0, nil
 	}
-	where, args := ratingExcludeWhereClause("ia.id", "ib.id", excludeRatingIDs)
+	where, args := ceiling.WhereTwo("ia.id", "ib.id")
 	visible := rawRemaining
 	if where != "" {
 		countQ := `
@@ -235,95 +233,6 @@ func loadNextPair(cx *galleryCtx, order string, excludeRatingIDs []int64) (*sess
 		view.LeftID = view.B.ID
 	}
 	return &view, visible, rawRemaining, nil
-}
-
-// ratingExcludeTagIDs returns the tag IDs whose rating rank is strictly
-// above ceiling. An empty or "explicit" ceiling returns nil so callers
-// emit no WHERE predicate. Missing rating tag rows (fresh install) also
-// return nil; the per-rating-tag join below would never match anyway.
-func ratingExcludeTagIDs(cx *galleryCtx, ceiling string) ([]int64, error) {
-	if ceiling == "" || ceiling == "explicit" {
-		return nil, nil
-	}
-	rank := -1
-	for i, l := range tags.RatingLevels {
-		if l == ceiling {
-			rank = i
-			break
-		}
-	}
-	if rank < 0 || rank >= len(tags.RatingLevels)-1 {
-		return nil, nil
-	}
-	names := tags.RatingLevels[rank+1:]
-	placeholders := make([]string, len(names))
-	args := make([]any, 0, len(names))
-	for i, n := range names {
-		placeholders[i] = "?"
-		args = append(args, n)
-	}
-	q := `SELECT id FROM tags
-	       WHERE category_id = (SELECT id FROM tag_categories WHERE name = 'rating')
-	         AND name IN (` + strings.Join(placeholders, ",") + `)`
-	rows, err := cx.DB.Read.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if scanErr := rows.Scan(&id); scanErr != nil {
-			return nil, scanErr
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
-// ratingExcludeWhereClause builds a pair of NOT EXISTS predicates that
-// gate each side of a queue row on the absence of any rating tag in
-// excludeIDs. Returns ("", nil) when excludeIDs is empty so the caller
-// can omit the WHERE entirely and keep the covering scan.
-func ratingExcludeWhereClause(leftCol, rightCol string, excludeIDs []int64) (string, []any) {
-	if len(excludeIDs) == 0 {
-		return "", nil
-	}
-	placeholders := make([]string, len(excludeIDs))
-	for i := range excludeIDs {
-		placeholders[i] = "?"
-	}
-	in := strings.Join(placeholders, ",")
-	tmpl := func(col string) string {
-		return `NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = ` + col + ` AND it.tag_id IN (` + in + `))`
-	}
-	args := make([]any, 0, 2*len(excludeIDs))
-	for _, id := range excludeIDs {
-		args = append(args, id)
-	}
-	for _, id := range excludeIDs {
-		args = append(args, id)
-	}
-	return tmpl(leftCol) + " AND " + tmpl(rightCol), args
-}
-
-// ratingExcludeWhereClauseSingle is the one-column variant for rows
-// whose ceiling test is a single image id (e.g. the SHA-256 walker).
-// Returns ("", nil) when excludeIDs is empty.
-func ratingExcludeWhereClauseSingle(col string, excludeIDs []int64) (string, []any) {
-	if len(excludeIDs) == 0 {
-		return "", nil
-	}
-	placeholders := make([]string, len(excludeIDs))
-	for i := range excludeIDs {
-		placeholders[i] = "?"
-	}
-	in := strings.Join(placeholders, ",")
-	args := make([]any, 0, len(excludeIDs))
-	for _, id := range excludeIDs {
-		args = append(args, id)
-	}
-	return `NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = ` + col + ` AND it.tag_id IN (` + in + `))`, args
 }
 
 // relationCompareFacts is one side of the under-thumbs comparison

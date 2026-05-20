@@ -221,11 +221,21 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 		err  error
 	)
 	if allFlag {
-		rows, err = s.db().Read.Query(`
+		// The sha256 walker filters non-canonical aliases by ceiling
+		// so explicit-rated images don't surface in the table. Mirror
+		// that filter here so "Delete all duplicate files" can't wipe
+		// aliases the operator can't see.
+		q := `
 			SELECT ip.id, ip.path
 			FROM image_paths ip
-			WHERE ip.is_canonical = 0
-		`)
+			JOIN images i ON i.id = ip.image_id
+			WHERE ip.is_canonical = 0`
+		args := []any{}
+		if where, wargs := resolveCeiling(r, s.Active()).WhereOne("i.id"); where != "" {
+			q += ` AND ` + where
+			args = append(args, wargs...)
+		}
+		rows, err = s.db().Read.Query(q, args...)
 	} else {
 		// Build an IN (?,?,...) query restricted to the supplied path_ids
 		// that still aren't canonical - callers can't use this endpoint to

@@ -50,6 +50,21 @@ type galleryCtx struct {
 	tagCount          atomic.Pointer[int]
 	collectionsCount  atomic.Pointer[int]
 
+	// Parallel caches keyed by ceiling level, populated lazily on first
+	// access from a sidebar / relations-hub render under that ceiling
+	// and dropped together with the blind caches on InvalidateCaches.
+	// The maps are stored by atomic pointer so reads are lock-free; the
+	// helper below performs copy-on-write to add a level. Three active
+	// ceilings × N galleries at steady state is trivial storage.
+	visibleCountUnder      atomic.Pointer[map[string]int]
+	inboxCountUnder        atomic.Pointer[map[string]int]
+	favoritedCountUnder    atomic.Pointer[map[string]int]
+	phashMissingUnder      atomic.Pointer[map[string]int]
+	folderTreeUnder        atomic.Pointer[map[string][]gallery.FolderNode]
+	sourceCountsUnder      atomic.Pointer[map[string]gallery.SourceCounts]
+	seriesCountsUnder      atomic.Pointer[map[string][]gallery.SeriesCount]
+	sourceLabelCountsUnder atomic.Pointer[map[string][]gallery.SourceLabelCount]
+
 	// bkTree is the in-memory phash index used by the find-pairs job
 	// and the phash: search keyword. Built lazily on first relations
 	// query; the ingest/delete hooks in internal/relations keep it
@@ -92,6 +107,14 @@ func (cx *galleryCtx) InvalidateCaches() {
 	cx.favoritedCount.Store(nil)
 	cx.tagCount.Store(nil)
 	cx.collectionsCount.Store(nil)
+	cx.visibleCountUnder.Store(nil)
+	cx.inboxCountUnder.Store(nil)
+	cx.favoritedCountUnder.Store(nil)
+	cx.phashMissingUnder.Store(nil)
+	cx.folderTreeUnder.Store(nil)
+	cx.sourceCountsUnder.Store(nil)
+	cx.seriesCountsUnder.Store(nil)
+	cx.sourceLabelCountsUnder.Store(nil)
 	if cx.DB != nil {
 		cx.DB.InvalidateCachedCounts()
 	}
@@ -215,6 +238,174 @@ func (cx *galleryCtx) TagCount() (int, error) {
 func (cx *galleryCtx) CollectionsCount() (int, error) {
 	return cx.cachedCount(&cx.collectionsCount,
 		`SELECT COUNT(*) FROM (SELECT 1 FROM images WHERE is_missing = 0 AND series != '' GROUP BY series)`)
+}
+
+// lookupByCeiling reads a per-ceiling cache slot; returns (zero, false)
+// when the level isn't yet cached. Copy-on-write semantics: the caller
+// stages a new map and Stores it on a miss so concurrent readers see a
+// fully-formed snapshot.
+func lookupByCeiling[V any](slot *atomic.Pointer[map[string]V], level string) (V, bool) {
+	if m := slot.Load(); m != nil {
+		if v, ok := (*m)[level]; ok {
+			return v, true
+		}
+	}
+	var zero V
+	return zero, false
+}
+
+func storeByCeiling[V any](slot *atomic.Pointer[map[string]V], level string, value V) {
+	for {
+		current := slot.Load()
+		newMap := make(map[string]V, 4)
+		if current != nil {
+			for k, v := range *current {
+				newMap[k] = v
+			}
+		}
+		newMap[level] = value
+		if slot.CompareAndSwap(current, &newMap) {
+			return
+		}
+	}
+}
+
+// VisibleCountUnder returns the count of non-missing images excluding
+// any whose tag list intersects the ceiling's excluded rating ids. An
+// inactive ceiling delegates to the blind VisibleCount.
+func (cx *galleryCtx) VisibleCountUnder(c *Ceiling) (int, error) {
+	if c == nil || !c.IsActive() {
+		return cx.VisibleCount()
+	}
+	if v, ok := lookupByCeiling(&cx.visibleCountUnder, c.level); ok {
+		return v, nil
+	}
+	n, err := gallery.VisibleCountUnder(cx.DB, c.ExcludedTagIDs())
+	if err != nil {
+		return 0, err
+	}
+	storeByCeiling(&cx.visibleCountUnder, c.level, n)
+	return n, nil
+}
+
+// InboxCountUnder is the inbox analogue of VisibleCountUnder.
+func (cx *galleryCtx) InboxCountUnder(c *Ceiling) (int, error) {
+	if c == nil || !c.IsActive() {
+		return cx.InboxCount()
+	}
+	if v, ok := lookupByCeiling(&cx.inboxCountUnder, c.level); ok {
+		return v, nil
+	}
+	n, err := gallery.InboxCountUnder(cx.DB, c.ExcludedTagIDs())
+	if err != nil {
+		return 0, err
+	}
+	storeByCeiling(&cx.inboxCountUnder, c.level, n)
+	return n, nil
+}
+
+// FavoritedCountUnder is the favourited analogue.
+func (cx *galleryCtx) FavoritedCountUnder(c *Ceiling) (int, error) {
+	if c == nil || !c.IsActive() {
+		return cx.FavoritedCount()
+	}
+	if v, ok := lookupByCeiling(&cx.favoritedCountUnder, c.level); ok {
+		return v, nil
+	}
+	n, err := gallery.FavoritedCountUnder(cx.DB, c.ExcludedTagIDs())
+	if err != nil {
+		return 0, err
+	}
+	storeByCeiling(&cx.favoritedCountUnder, c.level, n)
+	return n, nil
+}
+
+// PhashMissingUnder returns the relations-hub "PhashMissing" count
+// excluding rows above the ceiling. An inactive ceiling reads the
+// uncached blind query (same shape loadRelationsCounts uses today) so
+// the cold path stays equivalent to the existing behaviour.
+func (cx *galleryCtx) PhashMissingUnder(c *Ceiling) (int, error) {
+	if c == nil || !c.IsActive() {
+		var n int
+		err := cx.DB.Read.QueryRow(
+			`SELECT COUNT(*) FROM images WHERE phash IS NULL AND is_missing = 0`,
+		).Scan(&n)
+		return n, err
+	}
+	if v, ok := lookupByCeiling(&cx.phashMissingUnder, c.level); ok {
+		return v, nil
+	}
+	n, err := gallery.PhashMissingUnder(cx.DB, c.ExcludedTagIDs())
+	if err != nil {
+		return 0, err
+	}
+	storeByCeiling(&cx.phashMissingUnder, c.level, n)
+	return n, nil
+}
+
+// FolderTreeUnder returns the ceiling-aware folder tree. An inactive
+// ceiling delegates to the blind FolderTree cache.
+func (cx *galleryCtx) FolderTreeUnder(c *Ceiling) ([]gallery.FolderNode, error) {
+	if c == nil || !c.IsActive() {
+		return cx.FolderTree()
+	}
+	if v, ok := lookupByCeiling(&cx.folderTreeUnder, c.level); ok {
+		return v, nil
+	}
+	tree, err := gallery.FolderTreeUnder(cx.DB, c.ExcludedTagIDs())
+	if err != nil {
+		return nil, err
+	}
+	storeByCeiling(&cx.folderTreeUnder, c.level, tree)
+	return tree, nil
+}
+
+// SourceCountsUnder returns the ceiling-aware AI source breakdown.
+func (cx *galleryCtx) SourceCountsUnder(c *Ceiling) (gallery.SourceCounts, error) {
+	if c == nil || !c.IsActive() {
+		return cx.SourceCounts()
+	}
+	if v, ok := lookupByCeiling(&cx.sourceCountsUnder, c.level); ok {
+		return v, nil
+	}
+	sc, err := gallery.SourceCountsUnderQuery(cx.DB, c.ExcludedTagIDs())
+	if err != nil {
+		return gallery.SourceCounts{}, err
+	}
+	storeByCeiling(&cx.sourceCountsUnder, c.level, sc)
+	return sc, nil
+}
+
+// SeriesCountsUnder returns the ceiling-aware top-25 collection labels.
+func (cx *galleryCtx) SeriesCountsUnder(c *Ceiling) ([]gallery.SeriesCount, error) {
+	if c == nil || !c.IsActive() {
+		return cx.SeriesCounts()
+	}
+	if v, ok := lookupByCeiling(&cx.seriesCountsUnder, c.level); ok {
+		return v, nil
+	}
+	sc, err := gallery.SeriesCountsUnderQuery(cx.DB, 25, c.ExcludedTagIDs())
+	if err != nil {
+		return nil, err
+	}
+	storeByCeiling(&cx.seriesCountsUnder, c.level, sc)
+	return sc, nil
+}
+
+// SourceLabelCountsUnder returns the ceiling-aware top-25 source labels.
+func (cx *galleryCtx) SourceLabelCountsUnder(c *Ceiling) ([]gallery.SourceLabelCount, error) {
+	if c == nil || !c.IsActive() {
+		return cx.SourceLabelCounts()
+	}
+	if v, ok := lookupByCeiling(&cx.sourceLabelCountsUnder, c.level); ok {
+		return v, nil
+	}
+	sc, err := gallery.SourceLabelCountsUnderQuery(cx.DB, 25, c.ExcludedTagIDs())
+	if err != nil {
+		return nil, err
+	}
+	storeByCeiling(&cx.sourceLabelCountsUnder, c.level, sc)
+	return sc, nil
 }
 
 // warmCaches primes the per-gallery aggregations so the first user-facing

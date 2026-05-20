@@ -862,6 +862,10 @@ type baseData struct {
 	InboxCount       int
 	TagCount         int
 	CollectionsCount int
+	// HiddenByCeiling drives the "N hidden images in the current search"
+	// footer cell. Only the gallery handler populates it; on every other
+	// page the field stays at 0 and the cell renders empty.
+	HiddenByCeiling int
 	// Rating ceiling state for the footer selector. ActiveRating is the
 	// effective level - "explicit" when no cookie is set.
 	RatingLevels []ratingLevel
@@ -891,7 +895,7 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 	// request, but the slice is cheap and small).
 	galleries := make([]config.Gallery, len(s.cfg.Galleries))
 	copy(galleries, s.cfg.Galleries)
-	active := ratingCeilingFromRequest(r)
+	active := readRatingCookie(r)
 	if active == "" {
 		active = "explicit"
 	}

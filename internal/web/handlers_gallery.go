@@ -17,6 +17,13 @@ import (
 	"github.com/leqwin/monbooru/internal/tagger"
 )
 
+// galleryHiddenIndicatorBudget caps the time the first gallery
+// search.Execute may spend before the handler skips the second
+// no-ceiling COUNT that drives the "N hidden" indicator. The render
+// degrades to the existing matches-only line instead of paying a
+// second slow pass when the first already ate the search budget.
+const galleryHiddenIndicatorBudget = 300 * time.Millisecond
+
 type galleryData struct {
 	baseData
 	Query             string
@@ -109,8 +116,8 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	if parseErr != nil {
 		logx.Warnf("gallery search parse: %v", parseErr)
 	}
-	ceiling := ratingCeilingFromRequest(r)
-	expr = applyRatingCeiling(expr, ceiling)
+	ceiling := resolveCeiling(r, s.Active())
+	expr = ceiling.Apply(expr)
 	sq := search.Query{
 		Expr:       expr,
 		Sort:       sortStr,
@@ -118,7 +125,7 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		RandomSeed: randomSeed,
 		Page:       page,
 		Limit:      s.cfg.UI.PageSize,
-		CacheKey:   search.BuildAdjacencyCacheKey(s.activeName, queryStr, sortStr, orderStr, randomSeed, ceiling),
+		CacheKey:   search.BuildAdjacencyCacheKey(s.activeName, queryStr, sortStr, orderStr, randomSeed, ceiling.Level()),
 	}
 	// Unfiltered browse hits the full-visible count on every page; serve it
 	// from the per-gallery cache to skip the O(N) index scan. The cache
@@ -134,12 +141,14 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 
 	htmxGridTarget := isHTMXRequest(r) && r.Header.Get("HX-Target") == "gallery-grid"
 
+	firstStart := time.Now()
 	result, err := search.Execute(s.db(), sq)
 	if err != nil {
 		logx.Errorf("gallery search: %v", err)
 		http.Error(w, "search error", http.StatusInternalServerError)
 		return
 	}
+	firstElapsed := time.Since(firstStart)
 
 	totalPages := 1
 	if s.cfg.UI.PageSize > 0 {
@@ -175,6 +184,41 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Compute the "N hidden" indicator: unfiltered total minus the
+	// ceiling-aware total. Filtered queries probe the bare-expr
+	// adjacency cache, then fall back to a COUNT-only Execute. The
+	// budget guard skips the fallback when the first Execute already
+	// burned the search budget so the render degrades gracefully.
+	hiddenByCeiling := 0
+	if ceiling.IsActive() {
+		rawTotal := -1
+		bareExpr, _ := search.Parse(queryStr)
+		switch {
+		case bareExpr == nil:
+			if cx := s.Active(); cx != nil {
+				if n, err := cx.VisibleCount(); err == nil {
+					rawTotal = n
+				}
+			}
+		case firstElapsed < galleryHiddenIndicatorBudget:
+			bareKey := search.BuildAdjacencyCacheKey(s.activeName, queryStr, sortStr, orderStr, randomSeed, "")
+			if cachedIDs, ok := search.AdjacencyCacheGet(bareKey); ok {
+				rawTotal = len(cachedIDs)
+			} else {
+				rawResult, err := search.Execute(s.db(), search.Query{
+					Expr: bareExpr, Sort: sortStr, Order: orderStr,
+					RandomSeed: randomSeed, Page: 1, Limit: 1,
+				})
+				if err == nil {
+					rawTotal = rawResult.Total
+				}
+			}
+		}
+		if rawTotal > result.Total {
+			hiddenByCeiling = rawTotal - result.Total
+		}
+	}
+
 	// Full-page renders ship the sidebar as a placeholder that lazy-loads via
 	// GET /internal/sidebar, so first paint isn't blocked on the folder-tree
 	// aggregation. Search/pagination HTMX responses still need the sidebar
@@ -187,7 +231,7 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 
 	var sb sidebarBundle
 	if htmxGridTarget {
-		sb = s.sidebarLoad(ids)
+		sb = s.sidebarLoad(ids, ceiling)
 	}
 
 	data := galleryData{
@@ -210,12 +254,17 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		SavedSearches:     sb.Saved,
 		EnabledTaggers:    tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
 	}
-	// The cached InboxCount is ceiling-blind; the inbox-filter button's
-	// tooltip would mis-promise the post-click match count whenever a
-	// rating ceiling hides higher-rated rows. Recompute against the
-	// active ceiling so the parenthesised number matches what clicking
-	// the button would surface. Mirrors the same fix on /upload.
-	data.InboxCount = s.ceilingAwareCount(data.ActiveRating, "inbox:true", data.InboxCount)
+	data.HiddenByCeiling = hiddenByCeiling
+	// The footer InboxCount stays ceiling-blind (it's a true gallery
+	// shape number), but the toolbar tooltip "Inbox (N)" promises the
+	// post-click match count - the operator clicks and lands on the
+	// ceiling-filtered list. Patch data.InboxCount with the
+	// ceiling-aware cached count so the parenthesised number matches.
+	if cx := s.Active(); cx != nil {
+		if n, err := cx.InboxCountUnder(ceiling); err == nil {
+			data.InboxCount = n
+		}
+	}
 
 	if htmxGridTarget {
 		s.renderTemplate(w, "partials/gallery_htmx.html", data)
@@ -253,7 +302,12 @@ type sidebarBundle struct {
 // query cost sequentially - rare enough (sidebar warmup runs at
 // gallery open and after every cache invalidation) that the warm-
 // path simplification is the right tradeoff.
-func (s *Server) sidebarLoad(pageImageIDs []int64) sidebarBundle {
+//
+// ceiling drives the per-image aggregates so the sidebar reflects what
+// the operator sees in the gallery. A nil or inactive ceiling reads
+// the existing blind caches, leaving the no-ceiling steady state
+// untouched.
+func (s *Server) sidebarLoad(pageImageIDs []int64, ceiling *Ceiling) sidebarBundle {
 	var sb sidebarBundle
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -278,13 +332,13 @@ func (s *Server) sidebarLoad(pageImageIDs []int64) sidebarBundle {
 		}
 	}()
 	if cx := s.Active(); cx != nil {
-		sb.Folders, _ = cx.FolderTree()
-		sb.Sources, _ = cx.SourceCounts()
-		sb.Series, _ = cx.SeriesCounts()
-		sb.SourceLabels, _ = cx.SourceLabelCounts()
-		visible, _ := cx.VisibleCount()
-		inbox, _ := cx.InboxCount()
-		fav, _ := cx.FavoritedCount()
+		sb.Folders, _ = cx.FolderTreeUnder(ceiling)
+		sb.Sources, _ = cx.SourceCountsUnder(ceiling)
+		sb.Series, _ = cx.SeriesCountsUnder(ceiling)
+		sb.SourceLabels, _ = cx.SourceLabelCountsUnder(ceiling)
+		visible, _ := cx.VisibleCountUnder(ceiling)
+		inbox, _ := cx.InboxCountUnder(ceiling)
+		fav, _ := cx.FavoritedCountUnder(ceiling)
 		sb.Favorited = fav
 		sb.NonFavorited = visible - fav
 		if sb.NonFavorited < 0 {
@@ -306,6 +360,7 @@ func (s *Server) sidebarLoad(pageImageIDs []int64) sidebarBundle {
 func (s *Server) gallerySidebar(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	queryStr := q.Get("q")
+	ceiling := resolveCeiling(r, s.Active())
 
 	// galleryHandler piggy-backs the page's image IDs on the lazy-load URL
 	// so we don't re-run search.Execute just to enumerate them. A direct
@@ -341,7 +396,7 @@ func (s *Server) gallerySidebar(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		expr, _ := search.Parse(queryStr)
-		expr = applyRatingCeiling(expr, ratingCeilingFromRequest(r))
+		expr = ceiling.Apply(expr)
 		sq := search.Query{
 			Expr:       expr,
 			Sort:       sortStr,
@@ -363,10 +418,10 @@ func (s *Server) gallerySidebar(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sb := s.sidebarLoad(ids)
+	sb := s.sidebarLoad(ids, ceiling)
 	inboxCount := 0
 	if cx := s.Active(); cx != nil {
-		inboxCount, _ = cx.InboxCount()
+		inboxCount, _ = cx.InboxCountUnder(ceiling)
 	}
 
 	s.renderTemplate(w, "partials/sidebar_content.html", map[string]any{
@@ -391,6 +446,7 @@ func (s *Server) gallerySidebar(w http.ResponseWriter, r *http.Request) {
 // the folder-tree aggregation cost on first paint.
 func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 	queryStr := r.URL.Query().Get("q")
+	ceiling := resolveCeiling(r, s.Active())
 
 	var (
 		folders        []gallery.FolderNode
@@ -406,33 +462,33 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		if cx := s.Active(); cx != nil {
-			folders, _ = cx.FolderTree()
+			folders, _ = cx.FolderTreeUnder(ceiling)
 		}
 	}()
 	go func() {
 		defer wg.Done()
 		if cx := s.Active(); cx != nil {
-			sources, _ = cx.SourceCounts()
+			sources, _ = cx.SourceCountsUnder(ceiling)
 		}
 	}()
 	go func() {
 		defer wg.Done()
 		if cx := s.Active(); cx != nil {
-			series, _ = cx.SeriesCounts()
+			series, _ = cx.SeriesCountsUnder(ceiling)
 		}
 	}()
 	go func() {
 		defer wg.Done()
 		if cx := s.Active(); cx != nil {
-			sourceLabels, _ = cx.SourceLabelCounts()
+			sourceLabels, _ = cx.SourceLabelCountsUnder(ceiling)
 		}
 	}()
 	go func() {
 		defer wg.Done()
 		if cx := s.Active(); cx != nil {
-			visible, _ = cx.VisibleCount()
-			inbox, _ = cx.InboxCount()
-			fav, _ = cx.FavoritedCount()
+			visible, _ = cx.VisibleCountUnder(ceiling)
+			inbox, _ = cx.InboxCountUnder(ceiling)
+			fav, _ = cx.FavoritedCountUnder(ceiling)
 		}
 	}()
 	go func() {

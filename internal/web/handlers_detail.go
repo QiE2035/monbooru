@@ -108,7 +108,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 			backOrder = "desc"
 		}
 	}
-	ceiling := ratingCeilingFromRequest(r)
+	ceiling := resolveCeiling(r, s.Active())
 
 	// Resolve back_page so Escape and "← Back" land on the page that
 	// actually contains the current image, even after prev/next walked
@@ -125,7 +125,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		if backSort == "random" && backSeed != "" {
 			seed, _ = strconv.ParseInt(backSeed, 10, 64)
 		}
-		cacheKey := search.BuildAdjacencyCacheKey(s.activeName, backQ, backSort, backOrder, seed, ceiling)
+		cacheKey := search.BuildAdjacencyCacheKey(s.activeName, backQ, backSort, backOrder, seed, ceiling.Level())
 		if ids, ok := search.AdjacencyCacheGet(cacheKey); ok {
 			for i, mid := range ids {
 				if mid == id {
@@ -269,7 +269,7 @@ func (s *Server) relatedImagesHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	related, _ := s.tagSvc().RelatedImages(id, 6, ratingCeilingFromRequest(r))
+	related, _ := s.tagSvc().RelatedImages(id, 6, readRatingCookie(r))
 	q := r.URL.Query()
 	s.renderTemplate(w, "partials/related_images.html", map[string]any{
 		"Images":        related,
@@ -365,9 +365,9 @@ func buildDetailURL(id int64, q, sort, order, page, seed string) string {
 // referring gallery so the same shuffle resolves to the same neighbours.
 // ceiling AND-chains the cookie-ceiling NotExprs onto the parsed back_q so
 // adjacency walks the same set the gallery shows.
-func (s *Server) findAdjacentImages(currentID int64, queryStr, sortStr, orderStr, seedStr, ceiling string) (prevID, nextID *int64) {
+func (s *Server) findAdjacentImages(currentID int64, queryStr, sortStr, orderStr, seedStr string, ceiling *Ceiling) (prevID, nextID *int64) {
 	sq := adjacentSearchQuery(queryStr, sortStr, orderStr, seedStr, ceiling)
-	sq.CacheKey = search.BuildAdjacencyCacheKey(s.activeName, queryStr, sortStr, orderStr, sq.RandomSeed, ceiling)
+	sq.CacheKey = search.BuildAdjacencyCacheKey(s.activeName, queryStr, sortStr, orderStr, sq.RandomSeed, ceiling.Level())
 	prevID, nextID, err := search.ExecuteAdjacent(s.db(), sq, currentID)
 	if err != nil {
 		logx.Warnf("findAdjacentImages: %v", err)
@@ -375,9 +375,9 @@ func (s *Server) findAdjacentImages(currentID int64, queryStr, sortStr, orderStr
 	return
 }
 
-func adjacentSearchQuery(queryStr, sortStr, orderStr, seedStr, ceiling string) search.Query {
+func adjacentSearchQuery(queryStr, sortStr, orderStr, seedStr string, ceiling *Ceiling) search.Query {
 	expr, _ := search.Parse(queryStr)
-	expr = applyRatingCeiling(expr, ceiling)
+	expr = ceiling.Apply(expr)
 	sq := search.Query{
 		Expr:  expr,
 		Sort:  sortStr,

@@ -1,5 +1,17 @@
 # Changelog
 
+## [v1.8.2] - 2026-05-20
+### Added
+- Detail page: in-page zoomable image viewer with shortcut `v`, dimmed backdrop, click-outside-to-close, and 0.5x-4x zoom range.
+- Reader: clicking a page opens the in-page image viewer.
+- Footer shows "N hidden" next to the match count under an active rating ceiling.
+
+### Changed
+- Rating ceiling extends to sidebar counts, relations hub and browse counters, relations bulk-delete, and batch / auto-tag.
+
+### Fixed
+- Relations hub and browse counters count chains and trees, not edges.
+
 ## [v1.8.1] - 2026-05-19
 ### Added
 - Unified `/relations/browse?kind=` with tabs per kind; group tabs carry per-card checkboxes for multi-select merge.

@@ -53,12 +53,12 @@ func (s *Server) sha256WalkerPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no gallery", http.StatusServiceUnavailable)
 		return
 	}
-	excludeIDs, _ := ratingExcludeTagIDs(cx, ratingCeilingFromRequest(r))
+	ceiling := resolveCeiling(r, cx)
 	q := `SELECT i.id, i.canonical_path, ip.id, ip.path
 		FROM images i
 		JOIN image_paths ip ON ip.image_id = i.id AND ip.is_canonical = 0`
 	args := []any{}
-	if where, wargs := ratingExcludeWhereClauseSingle("i.id", excludeIDs); where != "" {
+	if where, wargs := ceiling.WhereOne("i.id"); where != "" {
 		q += ` WHERE ` + where
 		args = append(args, wargs...)
 	}
@@ -103,13 +103,13 @@ func (s *Server) markedWalkerPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no gallery", http.StatusServiceUnavailable)
 		return
 	}
-	excludeIDs, _ := ratingExcludeTagIDs(cx, ratingCeilingFromRequest(r))
+	ceiling := resolveCeiling(r, cx)
 	q := `SELECT g.id, g.original_image_id, m.image_id, m.created_at
 		FROM dup_group_members m
 		JOIN dup_groups g ON g.id = m.group_id
 		WHERE m.image_id != g.original_image_id`
 	args := []any{}
-	if where, wargs := ratingExcludeWhereClause("g.original_image_id", "m.image_id", excludeIDs); where != "" {
+	if where, wargs := ceiling.WhereTwo("g.original_image_id", "m.image_id"); where != "" {
 		q += ` AND ` + where
 		args = append(args, wargs...)
 	}
@@ -252,7 +252,10 @@ func (s *Server) markedWalkerDeleteOnePost(w http.ResponseWriter, r *http.Reques
 
 // markedWalkerDeleteAllPost removes every non-original member from
 // every dup_group. Each delete rides gallery.DeleteImage so the file
-// is removed alongside the row.
+// is removed alongside the row. The walker page filters rows by the
+// active ceiling (so members above the cookie level never surface);
+// the bulk-delete mirrors that filter so the operator can't wipe
+// rows they can't see.
 func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
@@ -262,12 +265,17 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "no gallery", http.StatusServiceUnavailable)
 		return
 	}
-	rows, err := cx.DB.Read.Query(`
+	q := `
 		SELECT m.image_id
 		FROM dup_group_members m
 		JOIN dup_groups g ON g.id = m.group_id
-		WHERE m.image_id != g.original_image_id
-	`)
+		WHERE m.image_id != g.original_image_id`
+	args := []any{}
+	if where, wargs := resolveCeiling(r, cx).WhereTwo("g.original_image_id", "m.image_id"); where != "" {
+		q += ` AND ` + where
+		args = append(args, wargs...)
+	}
+	rows, err := cx.DB.Read.Query(q, args...)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))

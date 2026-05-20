@@ -294,6 +294,153 @@ function handlePagesGridKey(e) {
   return false;
 }
 
+// Image viewer (lightbox). Triggered from the detail page by clicking
+// the still-image, the .btn-view button, or pressing 'b'. Uses a
+// <dialog> so the browser handles Esc / scroll lock natively; the
+// keymap below runs first in the global router so wheel-driven zoom
+// and pan keys don't leak into detail-page bindings.
+var lightbox = (function () {
+  var dlg = null, img = null, stage = null, zoomLbl = null, openLink = null;
+  var scale = 1, tx = 0, ty = 0;
+  var panning = false, px0 = 0, py0 = 0, tx0 = 0, ty0 = 0;
+  // pressMoved guards click-to-close so a drag-to-pan never dismisses the
+  // viewer. Squared 4px threshold matches the browser's own click-vs-drag
+  // tolerance, which is what users feel.
+  var pressMoved = false;
+  var bound = false;
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  function apply() {
+    if (!img) return;
+    img.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+    if (zoomLbl) zoomLbl.textContent = Math.round(scale * 100) + '%';
+  }
+  function reset() { scale = 1; tx = 0; ty = 0; apply(); }
+  function zoomAt(cx, cy, factor) {
+    var ns = clamp(scale * factor, 0.5, 4);
+    var k = ns / scale;
+    tx = cx - k * (cx - tx);
+    ty = cy - k * (cy - ty);
+    scale = ns;
+    apply();
+  }
+  // 1:1 means one image pixel renders to one device pixel. The currently
+  // displayed width is naturalWidth at scale=1 multiplied by the CSS fit,
+  // so we invert through whatever scale is active right now to land on
+  // naturalWidth without re-reading the un-transformed bounding box.
+  function oneToOne() {
+    if (!img || !img.naturalWidth) return;
+    var r = img.getBoundingClientRect();
+    if (!r.width) return;
+    var ns = clamp(img.naturalWidth * scale / r.width, 0.5, 4);
+    var k = ns / scale;
+    tx = k * tx; ty = k * ty;
+    scale = ns;
+    apply();
+  }
+  function onWheel(e) {
+    e.preventDefault();
+    var sr = stage.getBoundingClientRect();
+    var cx = e.clientX - (sr.left + sr.width / 2);
+    var cy = e.clientY - (sr.top + sr.height / 2);
+    zoomAt(cx, cy, e.deltaY < 0 ? 1.2 : 1 / 1.2);
+  }
+  function onPointerDown(e) {
+    if (e.button !== 0) return;
+    stage.setPointerCapture(e.pointerId);
+    panning = true;
+    pressMoved = false;
+    px0 = e.clientX; py0 = e.clientY;
+    tx0 = tx; ty0 = ty;
+    stage.classList.add('grabbing');
+  }
+  function onPointerMove(e) {
+    if (!panning) return;
+    if (!pressMoved) {
+      var dx = e.clientX - px0, dy = e.clientY - py0;
+      if (dx * dx + dy * dy > 16) pressMoved = true;
+    }
+    tx = tx0 + (e.clientX - px0);
+    ty = ty0 + (e.clientY - py0);
+    apply();
+  }
+  function onPointerEnd(e) {
+    if (!panning) return;
+    panning = false;
+    stage.releasePointerCapture(e.pointerId);
+    stage.classList.remove('grabbing');
+    // Click-to-close: release without panning, off the image itself.
+    // Releases *on* the image fall through so dblclick still toggles
+    // fit / 1:1 (the first click of a dblclick must not dismiss).
+    if (pressMoved || !img) return;
+    var r = img.getBoundingClientRect();
+    if (!r.width || e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+      dlg.close();
+    }
+  }
+  function onDblClick() {
+    if (Math.abs(scale - 1) < 0.01) oneToOne();
+    else reset();
+  }
+  function ensure() {
+    if (dlg) return true;
+    dlg = document.getElementById('image-lightbox');
+    if (!dlg) return false;
+    img = document.getElementById('lightbox-img');
+    stage = document.getElementById('lightbox-stage');
+    zoomLbl = document.getElementById('lightbox-zoom');
+    openLink = document.getElementById('lightbox-open');
+    if (!bound && stage) {
+      stage.addEventListener('wheel', onWheel, { passive: false });
+      stage.addEventListener('pointerdown', onPointerDown);
+      stage.addEventListener('pointermove', onPointerMove);
+      stage.addEventListener('pointerup', onPointerEnd);
+      stage.addEventListener('pointercancel', onPointerEnd);
+      stage.addEventListener('dblclick', onDblClick);
+      dlg.addEventListener('close', reset);
+      var closeBtn = document.getElementById('lightbox-close');
+      if (closeBtn) closeBtn.addEventListener('click', function () { dlg.close(); });
+      bound = true;
+    }
+    return true;
+  }
+  return {
+    open: function (e, src) {
+      // Pass-through for modifier / middle clicks so target=_blank still
+      // opens the raw file in a new tab. Returning truthy keeps the
+      // anchor's default navigation alive.
+      if (e && (e.button === 1 || e.ctrlKey || e.metaKey || e.shiftKey)) return true;
+      if (!ensure()) return true;
+      if (e && e.preventDefault) e.preventDefault();
+      img.src = src;
+      if (openLink) openLink.href = src;
+      reset();
+      if (!dlg.open) dlg.showModal();
+      return false;
+    },
+    handleKey: function (e) {
+      if (!dlg || !dlg.open) return false;
+      var t = e.target.tagName.toLowerCase();
+      if (t === 'input' || t === 'textarea' || e.target.isContentEditable) return false;
+      switch (e.key) {
+        case '+': case '=':
+          e.preventDefault(); zoomAt(0, 0, 1.2); return true;
+        case '-':
+          e.preventDefault(); zoomAt(0, 0, 1 / 1.2); return true;
+        case '0':
+          e.preventDefault(); reset(); return true;
+        case '1':
+          e.preventDefault(); oneToOne(); return true;
+      }
+      return false;
+    },
+  };
+})();
+
+// Exposed for inline onclick on the still-image link and the
+// .btn-view button in .detail-actions.
+function openLightbox(e, src) { return lightbox.open(e, src); }
+
 // Reader keymap. The reader is a separate <body class="reader-body"> that
 // hides every gallery / detail control via CSS, so its keys must run
 // before the global keymap and short-circuit it; otherwise the gallery's
@@ -355,6 +502,14 @@ function handleReaderKey(e) {
       var openLink = document.querySelector('.reader-open');
       if (openLink) openLink.click();
       return true;
+    case 'v':
+      var pageLink = document.querySelector('.reader-page-link');
+      if (pageLink) {
+        e.preventDefault();
+        openLightbox(null, pageLink.href);
+        return true;
+      }
+      return false;
     case 'Escape': case 'Backspace':
       e.preventDefault();
       window.location.href = detail;
@@ -368,6 +523,7 @@ document.addEventListener('keydown', function(e) {
   var tag = e.target.tagName.toLowerCase();
   var isInput = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
 
+  if (lightbox.handleKey(e)) return;
   if (handleReaderKey(e)) return;
   if (handlePagesGridKey(e)) return;
 
@@ -585,6 +741,14 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'P' && isDetailPage()) {
     var pagesBtn = document.querySelector('.btn-manga-action.btn-pages');
     if (pagesBtn) { e.preventDefault(); window.location.href = pagesBtn.href; return; }
+  }
+
+  // 'v' → open the image viewer. Gated on the still-image branch
+  // (the .detail-img-link anchor only renders for non-video / non-manga
+  // / not-missing rows), so the key no-ops on every other surface.
+  if (e.key === 'v' && isDetailPage()) {
+    var lbTrigger = document.querySelector('.detail-img-link');
+    if (lbTrigger) { e.preventDefault(); openLightbox(null, lbTrigger.href); return; }
   }
 
   // 't' → auto-tag on selection / open detail auto-tag dialog.

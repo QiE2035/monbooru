@@ -12,76 +12,7 @@ import (
 	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/search"
-	"github.com/leqwin/monbooru/internal/tags"
 )
-
-// ratingCeilingFromRequest reads the monbooru_rating_ceiling cookie and
-// returns the active level. Empty string and "explicit" both mean "no
-// ceiling" - callers should treat them as a no-op. Anything outside the
-// closed enum is dropped to "" so a stale or hand-crafted cookie can't
-// inject arbitrary AST values.
-func ratingCeilingFromRequest(r *http.Request) string {
-	c, err := r.Cookie("monbooru_rating_ceiling")
-	if err != nil {
-		return ""
-	}
-	switch c.Value {
-	case "general", "sensitive", "questionable", "explicit":
-		return c.Value
-	}
-	return ""
-}
-
-// applyRatingCeiling AND-chains a NotExpr per rating level above the
-// ceiling onto userExpr. An empty/unknown ceiling and "explicit" pass
-// through unchanged.
-func applyRatingCeiling(userExpr search.Expr, ceiling string) search.Expr {
-	rank := -1
-	for i, l := range tags.RatingLevels {
-		if l == ceiling {
-			rank = i
-			break
-		}
-	}
-	if rank < 0 || rank >= len(tags.RatingLevels)-1 {
-		return userExpr
-	}
-	var ce search.Expr
-	for i := rank + 1; i < len(tags.RatingLevels); i++ {
-		not := search.NotExpr{Expr: search.FilterExpr{Key: "rating", Val: tags.RatingLevels[i]}}
-		if ce == nil {
-			ce = not
-		} else {
-			ce = search.AndExpr{Left: ce, Right: not}
-		}
-	}
-	if userExpr == nil {
-		return ce
-	}
-	return search.AndExpr{Left: userExpr, Right: ce}
-}
-
-// ceilingAwareCount runs queryStr against the active gallery with the
-// rating ceiling applied and returns the match total. Returns cached
-// when no ceiling is in effect or on any query error - the cached
-// value is the ceiling-blind shortcut from the per-gallery atomic
-// counters, which the toolbar / sidebar copy of "inbox (N)" /
-// "archived (N)" pulls from on the no-ceiling steady state.
-func (s *Server) ceilingAwareCount(ceiling, queryStr string, cached int) int {
-	if ceiling == "" || ceiling == "explicit" {
-		return cached
-	}
-	expr, _ := search.Parse(queryStr)
-	expr = applyRatingCeiling(expr, ceiling)
-	res, err := search.Execute(s.db(), search.Query{
-		Expr: expr, Sort: "newest", Order: "desc", Page: 1, Limit: 1,
-	})
-	if err != nil {
-		return cached
-	}
-	return res.Total
-}
 
 // ratingCeilingPost sets or clears the monbooru_rating_ceiling cookie.
 // Posting level=explicit (or any out-of-enum value) clears the cookie so
@@ -91,25 +22,7 @@ func (s *Server) ratingCeilingPost(w http.ResponseWriter, r *http.Request) {
 	if level == "" {
 		level = r.FormValue("level")
 	}
-	switch level {
-	case "general", "sensitive", "questionable":
-		http.SetCookie(w, &http.Cookie{
-			Name:     "monbooru_rating_ceiling",
-			Value:    level,
-			Path:     "/",
-			HttpOnly: true,
-			MaxAge:   31_536_000,
-			SameSite: http.SameSiteLaxMode,
-		})
-	default:
-		// "explicit" or any unknown value clears the cookie.
-		http.SetCookie(w, &http.Cookie{
-			Name:   "monbooru_rating_ceiling",
-			Value:  "",
-			Path:   "/",
-			MaxAge: -1,
-		})
-	}
+	writeRatingCookie(w, level)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -205,7 +118,7 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 		if orderStr == "" {
 			orderStr = "desc"
 		}
-		prevID, nextID = s.findAdjacentImages(id, backQ, sortStr, orderStr, backSeed, ratingCeilingFromRequest(r))
+		prevID, nextID = s.findAdjacentImages(id, backQ, sortStr, orderStr, backSeed, resolveCeiling(r, s.Active()))
 	}
 
 	result, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), id, s.tagSvc().RemoveAllTagsFromImage, s.onImageDeleteCallback())

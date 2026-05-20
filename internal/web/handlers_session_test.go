@@ -79,15 +79,13 @@ func TestSessionLoadNextPair_RatingCeilingFiltersBothSides(t *testing.T) {
 	// Pair 2: untagged + explicit → hidden under any ceiling below explicit.
 	queueRow(t, srv.db(), a, bID, 4)
 
-	excludeIDs, err := ratingExcludeTagIDs(cx, "sensitive")
-	if err != nil {
-		t.Fatalf("ratingExcludeTagIDs: %v", err)
-	}
+	ceiling := &Ceiling{level: "sensitive", cx: cx}
+	excludeIDs := ceiling.ExcludedTagIDs()
 	if len(excludeIDs) != 2 {
 		t.Fatalf("excludeIDs len = %d, want 2 (questionable + explicit)", len(excludeIDs))
 	}
 
-	pair, visible, raw, err := loadNextPair(cx, "smallest_distance_first", excludeIDs)
+	pair, visible, raw, err := loadNextPair(cx, "smallest_distance_first", ceiling)
 	if err != nil {
 		t.Fatalf("loadNextPair: %v", err)
 	}
@@ -108,11 +106,11 @@ func TestSessionLoadNextPair_RatingCeilingFiltersBothSides(t *testing.T) {
 	}
 
 	// Empty ceiling matches every pair.
-	noFilter, _ := ratingExcludeTagIDs(cx, "")
-	if len(noFilter) != 0 {
-		t.Errorf("ratingExcludeTagIDs(empty) returned %d ids, want 0", len(noFilter))
+	none := &Ceiling{level: "", cx: cx}
+	if got := none.ExcludedTagIDs(); len(got) != 0 {
+		t.Errorf("ExcludedTagIDs(empty) returned %d ids, want 0", len(got))
 	}
-	_, visibleNo, rawNo, err := loadNextPair(cx, "smallest_distance_first", noFilter)
+	_, visibleNo, rawNo, err := loadNextPair(cx, "smallest_distance_first", none)
 	if err != nil {
 		t.Fatalf("loadNextPair no-filter: %v", err)
 	}

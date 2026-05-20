@@ -6,6 +6,8 @@
 </div>
 {{/* OOB status line so the match count reflects the new search */}}
 <div id="gallery-status" class="status-bar" hx-swap-oob="true"><span id="result-count" class="result-count">{{.Result.Total}}</span> {{plural .Result.Total "match" "matches"}}</div>
+{{/* OOB footer cell so the "N hidden images in the current search" tracks the new search */}}
+<span id="footer-hidden" class="footer-hidden" hx-swap-oob="true">{{with .HiddenByCeiling}}<span class="footer-sep-strong">::</span>{{.}} hidden images in the current search{{end}}</span>
 {{/* OOB toolbar: keeps the Actions chooser button in sync with the current search.
      Without this, the toolbar rendered on full-page load goes stale on every htmx swap. */}}
 <div id="save-search-area" hx-swap-oob="true">{{template "partials/save_search_area.html" .}}</div>

@@ -25,7 +25,7 @@
 <body class="reader-body">
   <main id="reader" data-image-id="{{.Image.ID}}" data-page="{{.Page}}" data-total="{{.PageCount}}" data-detail-url="{{$detailHref}}">
     <div class="reader-stage">
-      <a href="/images/{{.Image.ID}}/page/{{.Page}}" target="_blank" rel="noopener" class="reader-page-link" title="Open page in new tab (o)">
+      <a href="/images/{{.Image.ID}}/page/{{.Page}}" target="_blank" rel="noopener" class="reader-page-link" title="Zoom page (v)" onclick="return openLightbox(event, this.href)">
         <img src="/images/{{.Image.ID}}/page/{{.Page}}" alt="Page {{.Page}}" class="reader-img">
       </a>
       {{if gt .Page 1}}
@@ -62,6 +62,7 @@
       <a class="reader-open" href="/images/{{.Image.ID}}/page/{{.Page}}" target="_blank" rel="noopener" title="Open page in new tab (o)">↗</a>
     </nav>
   </main>
+  {{template "partials/image_lightbox.html" .}}
   <dialog id="reader-jump-dialog">
     <form method="GET" action="/images/{{.Image.ID}}/read">
       {{if .BackToPages}}<input type="hidden" name="from" value="pages">{{end}}

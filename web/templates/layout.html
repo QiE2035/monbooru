@@ -90,6 +90,10 @@
       <span class="footer-sep-strong">::</span>
       <span class="footer-rating-label">rating:</span>
       {{$active := .ActiveRating}}{{$csrf := .CSRFToken}}{{range $i, $lv := .RatingLevels}}{{if $i}}<span class="footer-sep">·</span>{{end}}{{if eq $lv.Value $active}}<span class="footer-rating-active">[{{$lv.Label}}]</span>{{else}}<form hx-post="/internal/rating-ceiling?level={{$lv.Value}}" hx-swap="none" hx-on::after-request="window.location.reload()" style="display:inline"><input type="hidden" name="_csrf" value="{{$csrf}}"><button type="submit" class="footer-rating-link">{{$lv.Label}}</button></form>{{end}}{{end}}
+      {{/* {{with}} keeps the cell empty (and `:empty` CSS-hidden) on every
+           non-gallery surface where the handler flattens baseData into a
+           map without the HiddenByCeiling key. */}}
+      <span id="footer-hidden" class="footer-hidden">{{with .HiddenByCeiling}}<span class="footer-sep-strong">::</span>{{.}} hidden images in the current search{{end}}</span>
     </div>
     <div id="footer-right">
       page loaded in <span id="page-load-ms">{{pageLoadMs .RequestStart}}</span> ms · <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="/api/v1/docs" target="_blank" rel="noopener">API</a>
@@ -179,6 +183,21 @@
             <tr><td><kbd>e u</kbd></td><td>Edit URL</td></tr>
             <tr><td><kbd>R</kbd></td><td>Open in reader</td></tr>
             <tr><td><kbd>P</kbd></td><td>See all pages</td></tr>
+            <tr><td><kbd>v</kbd></td><td>Open image viewer</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section data-surface="lightbox">
+        <h4>Image viewer</h4>
+        <table>
+          <tbody>
+            <tr><td>Click image / <kbd>v</kbd></td><td>Open viewer</td></tr>
+            <tr><td>Click background / <kbd>Esc</kbd></td><td>Close</td></tr>
+            <tr><td>Wheel</td><td>Zoom toward cursor</td></tr>
+            <tr><td>Drag</td><td>Pan</td></tr>
+            <tr><td>Double click</td><td>Toggle fit / 1:1</td></tr>
+            <tr><td><kbd>+</kbd> / <kbd>-</kbd></td><td>Zoom in / out</td></tr>
+            <tr><td><kbd>0</kbd> / <kbd>1</kbd></td><td>Fit / 1:1</td></tr>
           </tbody>
         </table>
       </section>
@@ -217,6 +236,7 @@
             <tr><td><kbd>p</kbd></td><td>Jump to page</td></tr>
             <tr><td><kbd>P</kbd></td><td>See all pages</td></tr>
             <tr><td><kbd>o</kbd></td><td>Open page in new tab</td></tr>
+            <tr><td>Click page / <kbd>v</kbd></td><td>Zoom page in viewer</td></tr>
             <tr><td><kbd>Esc</kbd> / <kbd>Backspace</kbd></td><td>Back</td></tr>
           </tbody>
         </table>
@@ -254,6 +274,7 @@
       </div>
     </form>
   </dialog>
+  {{template "partials/image_lightbox.html" .}}
   {{with .Galleries}}{{if gt (len .) 1}}
   <dialog id="gallery-switch-dialog">
     <p>Switch gallery</p>

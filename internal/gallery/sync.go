@@ -717,21 +717,16 @@ func FolderTree(database *db.DB) ([]FolderNode, error) {
 		return nil, err
 	}
 	defer rows.Close()
-
-	type folderCount struct {
-		path  string
-		count int
+	flat, err := scanFolderRows(rows)
+	if err != nil {
+		return nil, err
 	}
-	var flat []folderCount
+	return buildFolderTree(flat), nil
+}
 
-	for rows.Next() {
-		var fc folderCount
-		if err := rows.Scan(&fc.path, &fc.count); err != nil {
-			return nil, fmt.Errorf("scanning folder row: %w", err)
-		}
-		flat = append(flat, fc)
-	}
-
+// buildFolderTree turns a flat (path, count) list from the database
+// into the rolled-up tree the sidebar renders.
+func buildFolderTree(flat []folderCount) []FolderNode {
 	// Add intermediate ancestor paths so the full arborescence shows.
 	known := map[string]bool{"": true}
 	for _, fc := range flat {
@@ -811,7 +806,7 @@ func FolderTree(database *db.DB) ([]FolderNode, error) {
 		return n
 	}
 
-	return []FolderNode{toValue(rootP)}, nil
+	return []FolderNode{toValue(rootP)}
 }
 
 func countSlashes(s string) int {

@@ -17,8 +17,8 @@
   <nav class="browse-tabs">
     <a href="/relations/browse?kind=duplicate"   class="browse-tab{{if eq .Kind "duplicate"}}   browse-tab-active{{end}}">Same image <span class="field-hint">({{.Counts.DupGroups}})</span></a>
     <a href="/relations/browse?kind=alternate"   class="browse-tab{{if eq .Kind "alternate"}}   browse-tab-active{{end}}">Variants <span class="field-hint">({{.Counts.AltGroups}})</span></a>
-    <a href="/relations/browse?kind=version"     class="browse-tab{{if eq .Kind "version"}}     browse-tab-active{{end}}">Revision history <span class="field-hint">({{.Counts.VersionEdges}})</span></a>
-    <a href="/relations/browse?kind=derivative"  class="browse-tab{{if eq .Kind "derivative"}}  browse-tab-active{{end}}">Based on <span class="field-hint">({{.Counts.Derivatives}})</span></a>
+    <a href="/relations/browse?kind=version"     class="browse-tab{{if eq .Kind "version"}}     browse-tab-active{{end}}">Revision history <span class="field-hint">({{.Counts.VersionChains}})</span></a>
+    <a href="/relations/browse?kind=derivative"  class="browse-tab{{if eq .Kind "derivative"}}  browse-tab-active{{end}}">Based on <span class="field-hint">({{.Counts.DerivativeTrees}})</span></a>
     <a href="/relations/browse?kind=not_related" class="browse-tab{{if eq .Kind "not_related"}} browse-tab-active{{end}}">Not related <span class="field-hint">({{.Counts.NotRelatedPairs}})</span></a>
   </nav>
 

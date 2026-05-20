@@ -40,6 +40,11 @@ func (s *Server) resolveBatchScope(w http.ResponseWriter, r *http.Request, errLa
 				html.EscapeString(parseErr.Error()) + `</div>`))
 			return nil, false
 		}
+		// "act on current search" must mirror what the operator sees in
+		// the gallery - including the cookie ceiling. Without this wrap
+		// a SFW-ceiling-on operator clicking "delete all current search"
+		// would wipe explicit rows they can't even see.
+		expr = resolveCeiling(r, s.Active()).Apply(expr)
 		var ids []int64
 		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
 			ids = append(ids, t.ID)
@@ -129,6 +134,7 @@ func (s *Server) deleteSearchPost(w http.ResponseWriter, r *http.Request) {
 			html.EscapeString(parseErr.Error()) + `</div>`))
 		return
 	}
+	expr = resolveCeiling(r, s.Active()).Apply(expr)
 
 	// Stream the matching targets off the cursor so very large result sets
 	// don't allocate a second intermediate copy on top of whatever the
@@ -268,6 +274,7 @@ func (s *Server) batchMove(w http.ResponseWriter, r *http.Request) {
 				html.EscapeString(parseErr.Error()) + `</div>`))
 			return
 		}
+		expr = resolveCeiling(r, s.Active()).Apply(expr)
 		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
 			ids = append(ids, t.ID)
 			return nil
