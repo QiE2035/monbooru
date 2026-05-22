@@ -29,9 +29,8 @@ func init() {
 }
 
 // FindPairsOptions controls one find-pairs invocation. Distance clamps
-// to 0..12 by the caller per RELATIONS.md §5.1; Replace=true wipes the
-// queue before re-scanning, otherwise existing rows survive and only
-// new candidates are added.
+// to 0..12 by the caller; Replace=true wipes the queue before re-scanning,
+// otherwise existing rows survive and only new candidates are added.
 type FindPairsOptions struct {
 	Distance       int
 	Replace        bool
@@ -211,9 +210,9 @@ func pairAlreadyKnown(ctx context.Context, database *db.DB, a, b int64) (bool, e
 		return false, err
 	}
 	defer tx.Rollback()
-	// Use the shared service-layer helper for the relation tables;
-	// `not_related` blocks find-pairs from resurfacing rejections.
-	if got, err := pairHasOtherRelationTx(txAsSqlTx(tx), a, b, ""); err != nil {
+	// pairHasOtherRelationTx only does SELECTs, so the read pool is
+	// fine; `not_related` blocks find-pairs from resurfacing rejections.
+	if got, err := pairHasOtherRelationTx(tx, a, b, ""); err != nil {
 		return false, err
 	} else if got {
 		return true, nil
@@ -225,12 +224,6 @@ func pairAlreadyKnown(ctx context.Context, database *db.DB, a, b int64) (bool, e
 	}
 	return n > 0, nil
 }
-
-// txAsSqlTx adapts a read-only sql.Tx interface so the helper that
-// usually takes a write-side *sql.Tx works against the read pool too.
-// pairHasOtherRelationTx only does SELECTs, so the read pool is
-// sufficient.
-func txAsSqlTx(tx *sql.Tx) *sql.Tx { return tx }
 
 // lookupPhashFromTree retrieves an image's phash through the tree's
 // id->phash index. Used to compute the stored Hamming distance for

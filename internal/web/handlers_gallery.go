@@ -44,6 +44,7 @@ type galleryData struct {
 	SavedSearches     []models.SavedSearch
 	SidebarURL        string                // populated on full-page renders so the placeholder can lazy-load the sidebar
 	EnabledTaggers    []tagger.TaggerStatus // gates the gallery's Auto-tag controls; mirrors detailData.EnabledTaggers
+	ActiveTagTerms    map[string]bool       // top-level AND-positive terms in the current query, keyed by both "category:name" and bare "name"; drives the sidebar + / - toggle
 }
 
 func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
@@ -253,6 +254,7 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		NonInboxCount:     sb.NonInbox,
 		SavedSearches:     sb.Saved,
 		EnabledTaggers:    tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
+		ActiveTagTerms:    computeActiveTagTerms(queryStr),
 	}
 	data.HiddenByCeiling = hiddenByCeiling
 	// The footer InboxCount stays ceiling-blind (it's a true gallery
@@ -437,6 +439,7 @@ func (s *Server) gallerySidebar(w http.ResponseWriter, r *http.Request) {
 		"InboxCount":        inboxCount,
 		"NonInboxCount":     sb.NonInbox,
 		"SavedSearches":     sb.Saved,
+		"ActiveTagTerms":    computeActiveTagTerms(queryStr),
 	})
 }
 
@@ -565,6 +568,37 @@ func buildSidebarURL(q, sort, order, page, seed string, ids []int64) string {
 	}
 	v.Set("ids", sb.String())
 	return "/internal/sidebar?" + v.Encode()
+}
+
+// computeActiveTagTerms walks the parsed query and collects the leaves a
+// sidebar "+" button should render as "-" (toggle-off). Only top-level
+// AND-positive exact leaves qualify - leaves nested under NOT or OR, and
+// wildcarded tags, are skipped because removing one term in those shapes
+// changes the search semantics in a way the toggle can't honestly express.
+// Keys are lowercased so the lookup matches the sidebar's "category:name"
+// and bare-name forms regardless of how the user typed them.
+func computeActiveTagTerms(query string) map[string]bool {
+	set := make(map[string]bool)
+	expr, err := search.Parse(query)
+	if err != nil || expr == nil {
+		return set
+	}
+	var walk func(search.Expr)
+	walk = func(e search.Expr) {
+		switch v := e.(type) {
+		case search.AndExpr:
+			walk(v.Left)
+			walk(v.Right)
+		case search.TagExpr:
+			if v.Tag != "" && v.Wildcard == "" {
+				set[v.Tag] = true
+			}
+		case search.FilterExpr:
+			set[v.Key+":"+strings.ToLower(v.Val)] = true
+		}
+	}
+	walk(expr)
+	return set
 }
 
 // buildGalleryURL constructs a properly URL-encoded gallery redirect URL.

@@ -173,7 +173,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 	isManga := img.FileType == models.FileTypeCBZ
 	var wg sync.WaitGroup
 	wg.Add(5)
-	go func() { defer wg.Done(); imageTags, _ = s.tagSvc().GetImageTags(id) }()
+	go func() { defer wg.Done(); _, imageTags, _ = s.tagSvc().GetImageTags(id) }()
 	go func() { defer wg.Done(); sdMeta = loadSDMeta(ctx, s.db(), id) }()
 	go func() { defer wg.Done(); comfyMeta = loadComfyMeta(ctx, s.db(), id) }()
 	go func() { defer wg.Done(); imagePaths = loadImagePaths(ctx, s.db(), id) }()

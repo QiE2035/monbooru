@@ -136,7 +136,7 @@ func (s *Server) pagesGridHandler(w http.ResponseWriter, r *http.Request) {
 	// itself; the back link from the grid lands on the detail page,
 	// not back on the grid.
 	backQS, backKVQS := buildReaderBackQS(backQ, backSort, backOrder, backPage, backSeed, false)
-	imageTags, _ := s.tagSvc().GetImageTags(id)
+	_, imageTags, _ := s.tagSvc().GetImageTags(id)
 	data := pagesGridData{
 		baseData:  s.base(r, "gallery", filepath.Base(img.CanonicalPath)+" - Pages - Monbooru"),
 		Image:     *img,

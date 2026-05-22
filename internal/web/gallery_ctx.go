@@ -49,6 +49,7 @@ type galleryCtx struct {
 	favoritedCount    atomic.Pointer[int]
 	tagCount          atomic.Pointer[int]
 	collectionsCount  atomic.Pointer[int]
+	phashMissing      atomic.Pointer[int]
 
 	// Parallel caches keyed by ceiling level, populated lazily on first
 	// access from a sidebar / relations-hub render under that ceiling
@@ -107,6 +108,7 @@ func (cx *galleryCtx) InvalidateCaches() {
 	cx.favoritedCount.Store(nil)
 	cx.tagCount.Store(nil)
 	cx.collectionsCount.Store(nil)
+	cx.phashMissing.Store(nil)
 	cx.visibleCountUnder.Store(nil)
 	cx.inboxCountUnder.Store(nil)
 	cx.favoritedCountUnder.Store(nil)
@@ -321,16 +323,16 @@ func (cx *galleryCtx) FavoritedCountUnder(c *Ceiling) (int, error) {
 }
 
 // PhashMissingUnder returns the relations-hub "PhashMissing" count
-// excluding rows above the ceiling. An inactive ceiling reads the
-// uncached blind query (same shape loadRelationsCounts uses today) so
-// the cold path stays equivalent to the existing behaviour.
+// excluding rows above the ceiling. An inactive ceiling reads from
+// the blind cache; loadRelationsCounts is invoked on every relations
+// hub / browse render, and the underlying SELECT walks every visible
+// row because the phash partial index excludes NULLs. The cache is
+// dropped on any ingest / delete (InvalidateCaches) and on every
+// phash write (InvalidatePhashMissing).
 func (cx *galleryCtx) PhashMissingUnder(c *Ceiling) (int, error) {
 	if c == nil || !c.IsActive() {
-		var n int
-		err := cx.DB.Read.QueryRow(
-			`SELECT COUNT(*) FROM images WHERE phash IS NULL AND is_missing = 0`,
-		).Scan(&n)
-		return n, err
+		return cx.cachedCount(&cx.phashMissing,
+			`SELECT COUNT(*) FROM images WHERE phash IS NULL AND is_missing = 0`)
 	}
 	if v, ok := lookupByCeiling(&cx.phashMissingUnder, c.level); ok {
 		return v, nil
@@ -341,6 +343,18 @@ func (cx *galleryCtx) PhashMissingUnder(c *Ceiling) (int, error) {
 	}
 	storeByCeiling(&cx.phashMissingUnder, c.level, n)
 	return n, nil
+}
+
+// InvalidatePhashMissing drops the cached PhashMissing counts. Call
+// after a phash write that changes the NULL/non-NULL count: single-
+// image recompute, the compute-phashes backfill, rebuild-thumbnails
+// completion. Ingest / delete already route through InvalidateCaches.
+func (cx *galleryCtx) InvalidatePhashMissing() {
+	if cx == nil {
+		return
+	}
+	cx.phashMissing.Store(nil)
+	cx.phashMissingUnder.Store(nil)
 }
 
 // FolderTreeUnder returns the ceiling-aware folder tree. An inactive

@@ -23,7 +23,10 @@ import (
 // full index scan because the default case-insensitive collation can't bound
 // it. The empty-prefix branch keeps the simpler shape so the seek skips the
 // tail-bound machinery; the planner already short-circuits via DISTINCT once
-// 10 unique folder paths have surfaced.
+// 10 unique folder paths have surfaced. NOCASE on both bounds + the matching
+// partial index keeps the suggest in step with the case-insensitive
+// `folder:` search filter so capitalised paths surface from a lowercase
+// prefix and vice versa.
 func (s *Server) foldersSuggest(w http.ResponseWriter, r *http.Request) {
 	prefix := strings.TrimSpace(r.URL.Query().Get("prefix"))
 	var (
@@ -32,15 +35,17 @@ func (s *Server) foldersSuggest(w http.ResponseWriter, r *http.Request) {
 	)
 	if prefix == "" {
 		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT folder_path FROM images INDEXED BY idx_images_folder_visible
+			`SELECT DISTINCT folder_path FROM images INDEXED BY idx_images_folder_nocase_visible
 			 WHERE is_missing = 0 AND folder_path != ''
-			 ORDER BY folder_path LIMIT 10`,
+			 ORDER BY folder_path COLLATE NOCASE LIMIT 10`,
 		)
 	} else {
 		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT folder_path FROM images INDEXED BY idx_images_folder_visible
-			 WHERE is_missing = 0 AND folder_path >= ? AND folder_path < ?
-			 ORDER BY folder_path LIMIT 10`,
+			`SELECT DISTINCT folder_path FROM images INDEXED BY idx_images_folder_nocase_visible
+			 WHERE is_missing = 0
+			   AND folder_path >= ? COLLATE NOCASE
+			   AND folder_path < ? COLLATE NOCASE
+			 ORDER BY folder_path COLLATE NOCASE LIMIT 10`,
 			prefix, nextPrefix(prefix),
 		)
 	}
@@ -106,7 +111,9 @@ func (s *Server) sourceSuggest(w http.ResponseWriter, r *http.Request) {
 // querySourceLabels returns distinct existing images.source values whose
 // prefix matches the typed value. Drives the `source:` autocomplete in
 // the search-bar `system:` level-2 dropdown, mirroring the same shape as
-// queryCollectionLabels (indexed range, top-N).
+// queryCollectionLabels (indexed range, top-N). NOCASE on the bounds +
+// idx_images_source_nocase_visible keeps the suggest case-insensitive
+// to match the `source:` search filter.
 func (s *Server) querySourceLabels(prefix string, limit int) []string {
 	var (
 		rows *sql.Rows
@@ -114,16 +121,18 @@ func (s *Server) querySourceLabels(prefix string, limit int) []string {
 	)
 	if prefix == "" {
 		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT source FROM images INDEXED BY idx_images_source
-			 WHERE source != ''
-			 ORDER BY source LIMIT ?`,
+			`SELECT DISTINCT source FROM images INDEXED BY idx_images_source_nocase_visible
+			 WHERE source != '' AND is_missing = 0
+			 ORDER BY source COLLATE NOCASE LIMIT ?`,
 			limit,
 		)
 	} else {
 		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT source FROM images INDEXED BY idx_images_source
-			 WHERE source != '' AND source >= ? AND source < ?
-			 ORDER BY source LIMIT ?`,
+			`SELECT DISTINCT source FROM images INDEXED BY idx_images_source_nocase_visible
+			 WHERE source != '' AND is_missing = 0
+			   AND source >= ? COLLATE NOCASE
+			   AND source < ? COLLATE NOCASE
+			 ORDER BY source COLLATE NOCASE LIMIT ?`,
 			prefix, nextPrefix(prefix), limit,
 		)
 	}
@@ -146,6 +155,8 @@ func (s *Server) querySourceLabels(prefix string, limit int) []string {
 // queryCollectionLabels lifts the SQL out of collectionSuggest so the
 // search-bar `collection:` autocomplete can reuse it from
 // systemSuggestLevel2 without duplicating the indexed-range query.
+// NOCASE on the bounds + idx_images_series_nocase keeps the suggest in
+// step with the case-insensitive `collection:` search filter.
 func (s *Server) queryCollectionLabels(prefix string, limit int) []string {
 	var (
 		rows *sql.Rows
@@ -153,16 +164,18 @@ func (s *Server) queryCollectionLabels(prefix string, limit int) []string {
 	)
 	if prefix == "" {
 		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT series FROM images INDEXED BY idx_images_series
+			`SELECT DISTINCT series FROM images INDEXED BY idx_images_series_nocase
 			 WHERE series != ''
-			 ORDER BY series LIMIT ?`,
+			 ORDER BY series COLLATE NOCASE LIMIT ?`,
 			limit,
 		)
 	} else {
 		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT series FROM images INDEXED BY idx_images_series
-			 WHERE series != '' AND series >= ? AND series < ?
-			 ORDER BY series LIMIT ?`,
+			`SELECT DISTINCT series FROM images INDEXED BY idx_images_series_nocase
+			 WHERE series != ''
+			   AND series >= ? COLLATE NOCASE
+			   AND series < ? COLLATE NOCASE
+			 ORDER BY series COLLATE NOCASE LIMIT ?`,
 			prefix, nextPrefix(prefix), limit,
 		)
 	}

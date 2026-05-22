@@ -107,6 +107,30 @@ func TestParse_LeadingORChain_DropsOperators(t *testing.T) {
 	}
 }
 
+// Literal `AND` is the long-hand form of the implicit space-AND; the
+// parser must drop it instead of treating it as a tag token. Without
+// the drop, `a AND b` lowercases the keyword into a tag named "and",
+// intersects a never-matching leaf into the AND-of-three predicate,
+// and the query silently returns zero results.
+func TestParse_AndKeyword_DropsOperator(t *testing.T) {
+	bare, _ := Parse("a b")
+	keyword, _ := Parse("a AND b")
+	if fmt.Sprintf("%+v", keyword) != fmt.Sprintf("%+v", bare) {
+		t.Errorf("`a AND b` should parse like `a b`\n bare: %+v\n  AND: %+v", bare, keyword)
+	}
+}
+
+// Case-insensitive: lowercase `and` is the same keyword.
+func TestParse_AndKeyword_CaseInsensitive(t *testing.T) {
+	for _, q := range []string{"a and b", "a And b", "a aNd b"} {
+		bare, _ := Parse("a b")
+		got, _ := Parse(q)
+		if fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", bare) {
+			t.Errorf("`%s` should parse like `a b`, got %+v", q, got)
+		}
+	}
+}
+
 func TestParse_NOT(t *testing.T) {
 	e, _ := Parse("-blonde_hair")
 	not, ok := e.(NotExpr)
@@ -1221,6 +1245,64 @@ func TestFastCountFolder(t *testing.T) {
 	}
 }
 
+// TestFastCountFolder_CaseInsensitive pins the help-promise that
+// folder names match regardless of case for the recursive folder:
+// form.
+func TestFastCountFolder_CaseInsensitive(t *testing.T) {
+	database, env := setupSearchDB(t)
+
+	for i, name := range []string{"a.png", "b.png", "c.png"} {
+		ingestTestImage(t, database, env, name)
+		var folder string
+		switch i {
+		case 0:
+			folder = "Characters"
+		case 1:
+			folder = "Characters/asuka"
+		case 2:
+			folder = "Other"
+		}
+		if _, err := database.Write.Exec(
+			`UPDATE images SET folder_path = ? WHERE canonical_path LIKE '%' || ? || '%'`,
+			folder, name,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cases := []struct {
+		val  string
+		want int
+	}{
+		{"Characters", 2},
+		{"characters", 2},
+		{"CHARACTERS", 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.val, func(t *testing.T) {
+			got, ok := fastCountFolder(database, FilterExpr{Key: "folder", Val: tc.val})
+			if !ok {
+				t.Fatal("fastCountFolder ok=false")
+			}
+			if got != tc.want {
+				t.Errorf("folder:%s count = %d, want %d", tc.val, got, tc.want)
+			}
+		})
+	}
+
+	result, err := Execute(database, Query{
+		Expr:  FilterExpr{Key: "folder", Val: "CHARACTERS"},
+		Page:  1,
+		Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 2 {
+		t.Errorf("Execute folder:CHARACTERS Total = %d, want 2", result.Total)
+	}
+}
+
 // TestFastCountFolder_MatchesSlowPath verifies the helper agrees with
 // Execute's count phase under the same expression - the slow OR-LIKE
 // shape and the helper's index seeks must produce the same total.
@@ -1996,6 +2078,30 @@ func TestFastTagTotal_CategoryQualifiedTag(t *testing.T) {
 	}
 }
 
+func TestFastTagTotal_CategoryQualifiedMixedCase(t *testing.T) {
+	// Help promises case-insensitive search; the fast-count probe must
+	// lowercase the value before comparing against tags.name (which is
+	// stored lowercase) so `character:Asuka` returns the same count as
+	// `character:asuka`.
+	database, _ := setupSearchDB(t)
+	var charID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID)
+	if _, err := database.Write.Exec(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES ('asuka', ?, 3)`, charID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, val := range []string{"asuka", "Asuka", "ASUKA"} {
+		n, ok := fastTagTotal(database, FilterExpr{Key: "character", Val: val})
+		if !ok {
+			t.Fatalf("character:%s should hit fast path", val)
+		}
+		if n != 3 {
+			t.Errorf("character:%s count = %d, want 3", val, n)
+		}
+	}
+}
+
 func TestFastTagTotal_CategoryQualifiedFollowsAlias(t *testing.T) {
 	// character:cat aliased to character:feline - querying the alias
 	// should report the canonical's usage_count.
@@ -2184,8 +2290,9 @@ func TestPickAndDriverTag_SingleWildcard(t *testing.T) {
 	if len(legs) != 1 {
 		t.Fatalf("legs = %d, want 1 single-leaf path", len(legs))
 	}
-	if legs[0].leaf.Tag != "blue" || legs[0].leaf.Wildcard != "prefix" {
-		t.Errorf("driver leaf = %+v, want {blue, prefix}", legs[0].leaf)
+	leaf0, ok0 := legs[0].leaf.(TagExpr)
+	if !ok0 || leaf0.Tag != "blue" || leaf0.Wildcard != "prefix" {
+		t.Errorf("driver leaf = %+v, want TagExpr{blue, prefix}", legs[0].leaf)
 	}
 	if len(legs[0].ids) != 2 {
 		t.Errorf("driver canonicals = %d, want 2 (blue_eyes + blue_hair)", len(legs[0].ids))
@@ -2314,7 +2421,11 @@ func TestPickAndDriverTag_PopularIntersect(t *testing.T) {
 	}
 	picked := map[string]bool{}
 	for _, l := range legs {
-		picked[l.leaf.Tag] = true
+		tl, ok := l.leaf.(TagExpr)
+		if !ok {
+			t.Fatalf("leg leaf = %T, want TagExpr", l.leaf)
+		}
+		picked[tl.Tag] = true
 	}
 	if !picked["a_pop"] || !picked["b_pop"] {
 		t.Errorf("picked = %v, want {a_pop, b_pop} (least-popular pair)", picked)
@@ -2336,8 +2447,218 @@ func TestPickAndDriverTag_PopularIntersect(t *testing.T) {
 	if len(legs2) != 1 {
 		t.Fatalf("legs = %d, want 1 single-leg path on the rare leaf", len(legs2))
 	}
-	if legs2[0].leaf.Tag != "d_rare" {
-		t.Errorf("driver leaf = %q, want d_rare", legs2[0].leaf.Tag)
+	tl2, ok2 := legs2[0].leaf.(TagExpr)
+	if !ok2 || tl2.Tag != "d_rare" {
+		t.Errorf("driver leaf = %+v, want TagExpr{d_rare}", legs2[0].leaf)
+	}
+}
+
+// TestPickAndDriverTag_CategoryQualifiedFilterAtRoot pins the FilterExpr
+// extension: a single `character:miku` at root with allowSingleLiteral
+// engages the driver via the category-resolved canonical tag IDs, so
+// the rank / random-cursor COUNT rides an IN-bounded scan instead of
+// per-row EXISTS over the visible set. Outside random sort and the
+// RankInQuery COUNT, single-FilterExpr-at-root keeps its old skip
+// path (the data SELECT's LIMIT short-circuits the EXISTS scan).
+func TestPickAndDriverTag_CategoryQualifiedFilterAtRoot(t *testing.T) {
+	database, _ := setupSearchDB(t)
+	var charID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID)
+	var mikuID int64
+	database.Write.QueryRow(
+		`INSERT INTO tags (name, category_id, usage_count) VALUES ('miku', ?, 12) RETURNING id`, charID,
+	).Scan(&mikuID)
+
+	filt := FilterExpr{Key: "character", Val: "miku"}
+	if _, ok := pickAndDriverTag(database, filt, false); ok {
+		t.Error("single FilterExpr at root should not engage the driver under indexed sort")
+	}
+	legs, ok := pickAndDriverTag(database, filt, true)
+	if !ok {
+		t.Fatal("single FilterExpr at root should engage the driver under allowSingleLiteral")
+	}
+	if len(legs) != 1 {
+		t.Fatalf("legs = %d, want 1", len(legs))
+	}
+	fl, isFilter := legs[0].leaf.(FilterExpr)
+	if !isFilter || fl.Key != "character" || fl.Val != "miku" {
+		t.Errorf("driver leaf = %+v, want FilterExpr{character:miku}", legs[0].leaf)
+	}
+	if len(legs[0].ids) != 1 || legs[0].ids[0] != mikuID {
+		t.Errorf("driver ids = %v, want [%d]", legs[0].ids, mikuID)
+	}
+}
+
+// TestExecute_RandomSortCategoryFilterDriver verifies the FilterExpr
+// driver suppresses the per-row EXISTS for the matched leaf at random
+// sort: the same image set surfaces, with no double-counting from
+// leaving the EXISTS in alongside the IN(...) driver.
+func TestExecute_RandomSortCategoryFilterDriver(t *testing.T) {
+	database, env := setupSearchDB(t)
+	for _, name := range []string{"cm1.png", "cm2.png", "other.png"} {
+		ingestTestImage(t, database, env, name)
+	}
+	var cm1, cm2, other int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%cm1.png'`).Scan(&cm1)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%cm2.png'`).Scan(&cm2)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%other.png'`).Scan(&other)
+
+	var charID, generalID int64
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID)
+	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	var mikuID, redID int64
+	database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES ('miku', ?) RETURNING id`, charID).Scan(&mikuID)
+	database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES ('red', ?) RETURNING id`, generalID).Scan(&redID)
+	attachTag(t, database, cm1, mikuID)
+	attachTag(t, database, cm2, mikuID)
+	attachTag(t, database, other, redID)
+
+	result, err := Execute(database, Query{
+		Expr:       FilterExpr{Key: "character", Val: "miku"},
+		Sort:       "random",
+		RandomSeed: 42,
+		Page:       1,
+		Limit:      40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int64]bool{}
+	for _, img := range result.Results {
+		got[img.ID] = true
+	}
+	if !got[cm1] || !got[cm2] || got[other] {
+		t.Errorf("results = %+v, want exactly {cm1, cm2}", got)
+	}
+}
+
+// TestCeilingChainRewritesToColumnPredicate pins the rewrite that
+// turns the Ceiling.Apply chain (three NOT EXISTS subqueries against
+// image_tags) into a single `i.rating_rank <= ?` predicate riding
+// the stored column. Each ceiling level emits the matching numeric
+// rank; unknown levels in the chain fall through to the NOT EXISTS
+// shape so a typo can't push the ceiling rank to the floor.
+func TestCeilingChainRewritesToColumnPredicate(t *testing.T) {
+	database, _ := setupSearchDB(t)
+
+	chain := AndExpr{
+		Left: NotExpr{Expr: FilterExpr{Key: "rating", Val: "sensitive"}},
+		Right: AndExpr{
+			Left:  NotExpr{Expr: FilterExpr{Key: "rating", Val: "questionable"}},
+			Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
+		},
+	}
+	where, args, _ := buildWhereDB(chain, database)
+	if !strings.Contains(where, "i.rating_rank <= ?") {
+		t.Errorf("where = %q, want i.rating_rank <= ?", where)
+	}
+	if strings.Contains(where, "NOT EXISTS") {
+		t.Errorf("where = %q, expected the chain to be rewritten away", where)
+	}
+	if len(args) != 1 || args[0] != 0 {
+		t.Errorf("args = %v, want [0] for ceiling=general", args)
+	}
+
+	// Ceiling chain wrapped against a userExpr (the shape Ceiling.Apply
+	// actually emits in the gallery handler). The userExpr survives the
+	// peel as an EXISTS subquery with the leaf value in args.
+	mixed := AndExpr{Left: TagExpr{Tag: "blue_eyes"}, Right: chain}
+	whereMix, argsMix, _ := buildWhereDB(mixed, database)
+	if !strings.Contains(whereMix, "i.rating_rank <= ?") {
+		t.Errorf("mixed where = %q, want column predicate alongside the userExpr", whereMix)
+	}
+	if !strings.Contains(whereMix, "image_tags") {
+		t.Errorf("mixed where = %q, want the userExpr leaf preserved as image_tags EXISTS", whereMix)
+	}
+	if len(argsMix) != 2 || argsMix[0] != 0 || argsMix[1] != "blue_eyes" {
+		t.Errorf("mixed args = %v, want [0, \"blue_eyes\"]", argsMix)
+	}
+
+	// Unknown level in the chain - the rewriter falls back to the slow
+	// NOT EXISTS path so a hand-edited cookie can't silently widen the
+	// ceiling.
+	bogus := NotExpr{Expr: FilterExpr{Key: "rating", Val: "ultra"}}
+	whereBogus, argsBogus, _ := buildWhereDB(bogus, database)
+	if strings.Contains(whereBogus, "rating_rank") {
+		t.Errorf("unknown-level where = %q, want fall-through (no column rewrite)", whereBogus)
+	}
+	if len(argsBogus) != 0 {
+		t.Errorf("unknown-level args = %v, want []", argsBogus)
+	}
+}
+
+// TestRatingRankTrigger_RoundTrip exercises the AFTER INSERT / DELETE
+// triggers on image_tags: adding a rating sets rating_rank to that
+// level's rank, replacing it bumps the rank up (and PruneLowerRatings's
+// delete fires the AD trigger that re-MAXes the remaining tags),
+// removing the last rating tag drops rating_rank back to -1.
+func TestRatingRankTrigger_RoundTrip(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "r.png")
+	var imgID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%r.png'`).Scan(&imgID)
+
+	read := func() int {
+		var n int
+		database.Read.QueryRow(`SELECT rating_rank FROM images WHERE id = ?`, imgID).Scan(&n)
+		return n
+	}
+	ratingID := func(name string) int64 {
+		var id int64
+		database.Read.QueryRow(
+			`SELECT t.id FROM tags t JOIN tag_categories tc ON tc.id = t.category_id WHERE tc.name = 'rating' AND t.name = ?`, name,
+		).Scan(&id)
+		return id
+	}
+
+	if r := read(); r != -1 {
+		t.Errorf("unrated image rating_rank = %d, want -1", r)
+	}
+
+	// Insert sensitive: trigger fires WHEN the inserted tag_id is a
+	// rating canonical, recomputes MAX(rank) over remaining rating
+	// tags - which is just sensitive.
+	if _, err := database.Write.Exec(
+		`INSERT INTO image_tags (image_id, tag_id) VALUES (?, ?)`, imgID, ratingID("sensitive"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if r := read(); r != 1 {
+		t.Errorf("after insert sensitive: rating_rank = %d, want 1", r)
+	}
+
+	// Add explicit on top - higher rank wins. The PruneLowerRatings
+	// invariant is upheld by the service layer, not the schema, so we
+	// just keep sensitive AND explicit here and rely on the AI trigger's
+	// MAX recompute to pick the higher one.
+	if _, err := database.Write.Exec(
+		`INSERT INTO image_tags (image_id, tag_id) VALUES (?, ?)`, imgID, ratingID("explicit"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if r := read(); r != 3 {
+		t.Errorf("after insert explicit: rating_rank = %d, want 3", r)
+	}
+
+	// Delete explicit - the AD trigger recomputes MAX of remaining,
+	// which is sensitive.
+	if _, err := database.Write.Exec(
+		`DELETE FROM image_tags WHERE image_id = ? AND tag_id = ?`, imgID, ratingID("explicit"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if r := read(); r != 1 {
+		t.Errorf("after delete explicit: rating_rank = %d, want 1", r)
+	}
+
+	// Drop the last rating - column falls back to -1.
+	if _, err := database.Write.Exec(
+		`DELETE FROM image_tags WHERE image_id = ? AND tag_id = ?`, imgID, ratingID("sensitive"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if r := read(); r != -1 {
+		t.Errorf("after delete last rating: rating_rank = %d, want -1", r)
 	}
 }
 
@@ -2636,36 +2957,11 @@ func TestBuildOrder_Unknown(t *testing.T) {
 }
 
 func TestBuildOrder_Random(t *testing.T) {
-	// The seed is mixed before interpolation so the multiplier the
-	// SQL sees is mixSeed(seed), not the raw input.
+	// random sort emits the random_key SQL function with the raw seed
+	// interpolated; the function does its own mix per call.
 	got := buildOrder("random", "", 12345)
-	mixed := mixSeed(12345)
-	if !strings.Contains(got, fmt.Sprintf("%d", mixed)) {
-		t.Errorf("random: expected mixed seed %d in order clause, got %q", mixed, got)
-	}
-}
-
-func TestMixSeed_StableForSameInput(t *testing.T) {
-	if mixSeed(1) != mixSeed(1) {
-		t.Error("mixSeed must be deterministic for the same input")
-	}
-}
-
-func TestMixSeed_OddAndHighBitForSmallSeeds(t *testing.T) {
-	// Every non-zero seed must produce an odd value with the 2^30 bit
-	// set so `(id * mixed) & 2^31-1` is a permutation that overflows
-	// uint32 for any plausible image id.
-	for _, in := range []int64{1, 7, 100, 1000, 12345, 9999999} {
-		out := mixSeed(in)
-		if out&1 == 0 {
-			t.Errorf("mixSeed(%d) = %d is even; the modular product is not a permutation", in, out)
-		}
-		if out < (1 << 30) {
-			t.Errorf("mixSeed(%d) = %d < 2^30; small seeds would still produce identity order", in, out)
-		}
-		if out >= (1 << 31) {
-			t.Errorf("mixSeed(%d) = %d >= 2^31; multiplication can overflow int64 at large image ids", in, out)
-		}
+	if !strings.Contains(got, "random_key(i.id, 12345)") {
+		t.Errorf("random: expected random_key(i.id, 12345) in order clause, got %q", got)
 	}
 }
 
@@ -2734,6 +3030,44 @@ func TestBuildWhere_InboxFalse(t *testing.T) {
 	}
 	if !strings.Contains(where, "is_inbox = 0") {
 		t.Errorf("where = %q", where)
+	}
+}
+
+func TestBuildWhere_BooleanAliases(t *testing.T) {
+	// Each closed-vocabulary boolean filter accepts the same alias set so
+	// `inbox:yes` lands on the affirmative cohort instead of silently
+	// flipping to the negation.
+	for _, key := range []string{"fav", "inbox", "missing", "tagged", "autotagged"} {
+		t.Run(key+"/affirmative", func(t *testing.T) {
+			ref, refArgs, _ := buildWhere(FilterExpr{Key: key, Val: "true"})
+			for _, alias := range []string{"true", "yes", "y", "on", "1", "YES", "On"} {
+				got, args, _ := buildWhere(FilterExpr{Key: key, Val: alias})
+				if got != ref {
+					t.Errorf("%s:%s SQL = %q, want %q", key, alias, got, ref)
+				}
+				if len(args) != len(refArgs) {
+					t.Errorf("%s:%s args shape = %v, want %v", key, alias, args, refArgs)
+				}
+			}
+		})
+		t.Run(key+"/negative", func(t *testing.T) {
+			ref, refArgs, _ := buildWhere(FilterExpr{Key: key, Val: "false"})
+			for _, alias := range []string{"false", "no", "n", "off", "0", "NO", "Off"} {
+				got, args, _ := buildWhere(FilterExpr{Key: key, Val: alias})
+				if got != ref {
+					t.Errorf("%s:%s SQL = %q, want %q", key, alias, got, ref)
+				}
+				if len(args) != len(refArgs) {
+					t.Errorf("%s:%s args shape = %v, want %v", key, alias, args, refArgs)
+				}
+			}
+		})
+		t.Run(key+"/garbage_returns_1=0", func(t *testing.T) {
+			got, _, _ := buildWhere(FilterExpr{Key: key, Val: "maybe"})
+			if !strings.Contains(got, "1=0") {
+				t.Errorf("%s:maybe SQL = %q, want a 1=0 branch instead of a silent flip to false", key, got)
+			}
+		})
 	}
 }
 
@@ -2877,29 +3211,44 @@ func TestBuildWhere_NegatedMissingFalse(t *testing.T) {
 }
 
 func TestBuildWhere_Name(t *testing.T) {
-	// name: rides the indexed basename_lower VIRTUAL column so the
-	// match is scoped to the filename segment without paying the
-	// per-row basename() function call. The value is lowercased on
-	// both sides to keep the search case-insensitive end-to-end, and
-	// the same pattern is bound twice: once for the canonical row's
-	// basename_lower and once for the alias-path EXISTS so SHA-256
-	// duplicates show up under either filename.
+	// name: with a >=3-char substring rides the FTS5 trigram tables
+	// so the leading-wildcard LIKE pattern becomes an indexed seek.
+	// The value is lowercased on both sides to keep the search
+	// case-insensitive end-to-end, and the same pattern is bound
+	// twice: once for the canonical_path FTS rowid lookup and once
+	// for the alias-path FTS image_id lookup so SHA-256 duplicates
+	// show up under either filename.
 	expr := FilterExpr{Key: "name", Val: "Vacation"}
 	where, args, _ := buildWhere(expr)
-	if !strings.Contains(where, "i.basename_lower LIKE") {
-		t.Errorf("where = %q, want basename_lower LIKE", where)
+	if !strings.Contains(where, "image_basename_canonical_fts MATCH") {
+		t.Errorf("where = %q, want canonical FTS MATCH", where)
 	}
-	if !strings.Contains(where, "FROM image_paths ip") {
-		t.Errorf("where = %q, want an alias-path EXISTS", where)
+	if !strings.Contains(where, "image_basename_alias_fts MATCH") {
+		t.Errorf("where = %q, want alias FTS MATCH", where)
 	}
 	if len(args) != 2 {
-		t.Fatalf("args = %v, want canonical+alias pattern args", args)
+		t.Fatalf("args = %v, want canonical+alias phrase args", args)
 	}
 	for _, a := range args {
 		got, _ := a.(string)
-		if got != "%vacation%" {
-			t.Errorf("pattern = %q, want %%vacation%% (lowercase, no leading /)", got)
+		if got != `"vacation"` {
+			t.Errorf("phrase = %q, want \"vacation\" (lowercase, quoted)", got)
 		}
+	}
+}
+
+// TestBuildWhere_NameShortFallback pins the LIKE fall-through: the
+// FTS5 trigram tokenizer requires at least 3 characters of overlap
+// to produce a useful index probe, so 1- or 2-character substrings
+// stay on the existing basename_lower LIKE + alias-path EXISTS shape.
+func TestBuildWhere_NameShortFallback(t *testing.T) {
+	expr := FilterExpr{Key: "name", Val: "im"}
+	where, _, _ := buildWhere(expr)
+	if !strings.Contains(where, "i.basename_lower LIKE") {
+		t.Errorf("where = %q, want basename_lower LIKE for short inputs", where)
+	}
+	if strings.Contains(where, "image_basename_canonical_fts") {
+		t.Errorf("where = %q, expected the FTS path to skip on a 2-char input", where)
 	}
 }
 
@@ -2997,8 +3346,8 @@ func TestBuildWhere_RatioBadValueRejected(t *testing.T) {
 func TestBuildWhere_TagCount(t *testing.T) {
 	expr := FilterExpr{Key: "tagcount", Val: ">=5"}
 	where, args, _ := buildWhere(expr)
-	if !strings.Contains(where, "FROM image_tags") {
-		t.Errorf("where = %q, want a tag-count subquery", where)
+	if !strings.Contains(where, "i.tag_count >=") {
+		t.Errorf("where = %q, want a tag_count column predicate", where)
 	}
 	if len(args) != 1 || args[0] != int64(5) {
 		t.Errorf("args = %v, want [5]", args)
@@ -3070,6 +3419,9 @@ func TestBuildWhere_Via(t *testing.T) {
 	where, args, _ := buildWhere(expr)
 	if !strings.Contains(where, "i.origin = ?") {
 		t.Errorf("where = %q", where)
+	}
+	if !strings.Contains(where, "COLLATE NOCASE") {
+		t.Errorf("via: should COLLATE NOCASE to match the case-insensitive search promise, got %q", where)
 	}
 	if len(args) != 1 || args[0] != "upload" {
 		t.Errorf("args = %v, want [upload]", args)
@@ -3637,10 +3989,9 @@ func TestRankInQuery_RandomNoSeed(t *testing.T) {
 }
 
 // A small caller-supplied seed (e.g. `seed=1` on the API) must
-// produce a shuffled order, not strict id-ASC. The bare
-// `(id * seed) & 2^31-1` formula collapses to identity for small
-// seeds; mixSeed keeps the multiplier above 2^30 so the masking
-// actually permutes.
+// produce a shuffled order, not strict id-ASC. random_key() runs a
+// SplitMix64 per (id, seed) so adjacent ids end up at unrelated
+// positions regardless of seed magnitude.
 func TestExecute_RandomSmallSeedShuffles(t *testing.T) {
 	database, env := setupSearchDB(t)
 	for i := 0; i < 8; i++ {
@@ -3692,6 +4043,68 @@ func TestExecute_RandomSeedStableAcrossCalls(t *testing.T) {
 			t.Errorf("position %d: first %d, second %d (order not stable)", i, first.Results[i].ID, second.Results[i].ID)
 		}
 	}
+}
+
+// A small seed must not produce an arithmetic stride across
+// consecutive ids in the sorted result; random_key() runs a SplitMix64
+// per (id, seed) so adjacent output positions hold ids that differ by
+// varying amounts.
+func TestExecute_RandomSmallSeedNoArithmeticStride(t *testing.T) {
+	database, env := setupSearchDB(t)
+	for i := 0; i < 30; i++ {
+		ingestTestImage(t, database, env, fmt.Sprintf("stride_%02d.png", i))
+	}
+
+	for _, seed := range []int64{1, 2, 10, 42} {
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			q := Query{Sort: "random", RandomSeed: seed, Page: 1, Limit: 40}
+			res, err := Execute(database, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Results) < 30 {
+				t.Fatalf("got %d rows, want >= 30", len(res.Results))
+			}
+			ids := make([]int64, len(res.Results))
+			for i, img := range res.Results {
+				ids[i] = img.ID
+			}
+			first := ids[1] - ids[0]
+			constantStride := true
+			for i := 2; i < len(ids); i++ {
+				if ids[i]-ids[i-1] != first {
+					constantStride = false
+					break
+				}
+			}
+			if constantStride {
+				t.Errorf("seed=%d produced a constant id stride %d: %v", seed, first, ids)
+			}
+			if ids[0] < ids[len(ids)-1] && monotonic(ids) {
+				t.Errorf("seed=%d returned a monotonic id sequence: %v", seed, ids)
+			}
+			if ids[0] > ids[len(ids)-1] && monotonic(reverseInt64s(ids)) {
+				t.Errorf("seed=%d returned a reversed monotonic id sequence: %v", seed, ids)
+			}
+		})
+	}
+}
+
+func monotonic(ids []int64) bool {
+	for i := 1; i < len(ids); i++ {
+		if ids[i] <= ids[i-1] {
+			return false
+		}
+	}
+	return true
+}
+
+func reverseInt64s(in []int64) []int64 {
+	out := make([]int64, len(in))
+	for i, v := range in {
+		out[len(in)-1-i] = v
+	}
+	return out
 }
 
 func TestRankInQuery_RandomSeeded(t *testing.T) {
@@ -4336,6 +4749,56 @@ func TestBuildWhere_DateFilter(t *testing.T) {
 	}
 	if len(args) == 0 {
 		t.Error("expected args for date filter")
+	}
+}
+
+// Half-open forms `date:..X` and `date:X..` collapse to a single
+// inclusive bound: `..X` ≡ `<=X`, `X..` ≡ `>=X`. The level-2
+// cheat-sheet expansion advertises `..` alongside `>=` / `<=` so an
+// operator driven by the dropdown can omit one endpoint when they
+// only know one side.
+func TestBuildWhere_DateFilter_HalfOpenRanges(t *testing.T) {
+	upper, upperArgs, _ := buildWhere(FilterExpr{Key: "date", Val: "..2026-05-19"})
+	if !strings.Contains(upper, "<= ?") || strings.Contains(upper, "BETWEEN") {
+		t.Errorf("`date:..X` should produce <= bound, got %q", upper)
+	}
+	if len(upperArgs) != 1 || upperArgs[0] != "2026-05-19T23:59:59Z" {
+		t.Errorf("upper bound args = %v, want [\"2026-05-19T23:59:59Z\"]", upperArgs)
+	}
+
+	lower, lowerArgs, _ := buildWhere(FilterExpr{Key: "date", Val: "2026-05-19.."})
+	if !strings.Contains(lower, ">= ?") || strings.Contains(lower, "BETWEEN") {
+		t.Errorf("`date:X..` should produce >= bound, got %q", lower)
+	}
+	if len(lowerArgs) != 1 || lowerArgs[0] != "2026-05-19" {
+		t.Errorf("lower bound args = %v, want [\"2026-05-19\"]", lowerArgs)
+	}
+
+	// Bare `..` is the silent-zero shape callers hit when they delete
+	// both endpoints; it must explicitly emit 1=0.
+	emptyWhere, _, _ := buildWhere(FilterExpr{Key: "date", Val: ".."})
+	if !strings.Contains(emptyWhere, "1=0") {
+		t.Errorf("bare `..` should emit 1=0, got %q", emptyWhere)
+	}
+}
+
+// `date:=YYYY-MM-DD` is the explicit form a user familiar with the
+// sibling ordinal filters (`size:=`, `pages:=`, `tagcount:=`) would
+// type; the executor must treat it as the bare `date:YYYY-MM-DD`
+// form, not a parse-failure that returns 1=0.
+func TestBuildWhere_DateFilter_EqualsOperator(t *testing.T) {
+	bareWhere, bareArgs, _ := buildWhere(FilterExpr{Key: "date", Val: "2026-05-19"})
+	equalsWhere, equalsArgs, _ := buildWhere(FilterExpr{Key: "date", Val: "=2026-05-19"})
+	if bareWhere != equalsWhere {
+		t.Errorf("`=date` should produce the same SQL as bare date\n bare: %q\nequal: %q", bareWhere, equalsWhere)
+	}
+	if len(bareArgs) != len(equalsArgs) {
+		t.Errorf("arg shape mismatch: bare=%v, equals=%v", bareArgs, equalsArgs)
+	}
+	for i := range bareArgs {
+		if bareArgs[i] != equalsArgs[i] {
+			t.Errorf("arg[%d]: bare=%v, equals=%v", i, bareArgs[i], equalsArgs[i])
+		}
 	}
 }
 

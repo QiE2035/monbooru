@@ -92,6 +92,59 @@ func TestMoveImage_HappyPath(t *testing.T) {
 	}
 }
 
+// Folders / source autocomplete share the case-insensitivity of the
+// matching `folder:` / `source:` search filters. The prefix-range
+// seek must agree so a user typing a lowercase prefix surfaces a
+// capitalised folder name.
+func TestFoldersSuggest_CaseInsensitivePrefix(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	sub := filepath.Join(cx.GalleryPath, "Characters")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(sub, "f.png")
+	img := image.NewRGBA(image.Rect(0, 0, 9, 9))
+	f, _ := os.Create(p)
+	_ = png.Encode(f, img)
+	f.Close()
+	if _, _, err := gallery.Ingest(cx.DB, cx.GalleryPath, cx.ThumbnailsPath, p, "png", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, prefix := range []string{"ch", "Ch", "CHAR"} {
+		req := httptest.NewRequest("GET", "/internal/folders/suggest?prefix="+prefix, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("folders suggest prefix=%s: %d", prefix, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "Characters") {
+			t.Errorf("prefix=%s should surface Characters folder, got %s", prefix, w.Body.String())
+		}
+	}
+}
+
+func TestSourceSuggest_CaseInsensitivePrefix(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "src.png", 7, 7)
+	if _, err := srv.Active().DB.Write.Exec(
+		`UPDATE images SET source = 'Pixiv' WHERE id = ?`, id,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, prefix := range []string{"pix", "Pix", "PIXIV"} {
+		req := httptest.NewRequest("GET", "/internal/source/suggest?prefix="+prefix, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("source suggest prefix=%s: %d", prefix, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), `data-series="Pixiv"`) {
+			t.Errorf("prefix=%s should surface Pixiv source, got %s", prefix, w.Body.String())
+		}
+	}
+}
+
 func TestFoldersSuggest_PrefixFilter(t *testing.T) {
 	srv := newTestServer(t)
 	cx := srv.Active()

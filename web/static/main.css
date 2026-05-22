@@ -116,6 +116,19 @@ button:disabled:hover, button[disabled]:hover { border-color: var(--border); }
 @media (max-width: 600px) {
   #footer { flex-direction: column; align-items: flex-start; }
 }
+/* At very narrow widths the counts strip ("[default] · 52 img · ...")
+   wraps inside #footer-left and the leading "::" separator is left
+   dangling at the end of the first line before the rating row. Turn
+   that separator into a zero-height flex-row break so the rating row
+   starts cleanly on its own line. */
+@media (max-width: 480px) {
+  #footer-left .footer-sep-strong {
+    flex-basis: 100%;
+    height: 0;
+    overflow: hidden;
+    margin: 0;
+  }
+}
 #footer a { color: var(--fg-dim); }
 #footer a:hover { color: var(--fg); }
 .footer-gallery { color: var(--accent); }
@@ -377,6 +390,7 @@ button.footer-rating-link:hover { color: var(--fg); }
   flex-shrink: 0;
 }
 .tag-add-btn:hover { color: var(--accent); }
+.tag-add-btn.active { color: var(--accent); }
 
 /* Gallery grid */
 #gallery-header {
@@ -1169,6 +1183,12 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .gen-meta { margin-top: 8px; }
 .gen-text { white-space: pre-wrap; font-family: monospace; font-size: 11px; margin: 0; max-height: 200px; overflow-y: auto; }
 .code-block { background: var(--bg-alt, #1a1a1a); border: 1px solid var(--border); padding: 6px 8px; margin: 4px 0 8px; font-size: 11px; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
+/* Label line sitting just above each .code-block: keeps the label
+   strong, the parenthetical hint dim, and the trailing Copy button +
+   "copied" flash aligned at the right edge so the click target sits
+   next to the command it copies. */
+.code-block-label { display: flex; align-items: baseline; gap: 8px; margin-top: 8px; }
+.code-block-label > .code-block-copy { margin-left: auto; }
 .node-list-details { margin-top: 8px; }
 .node-list { max-height: 400px; overflow-y: auto; margin-top: 6px; font-size: 11px; }
 .node-entry { border-top: 1px solid var(--border); padding: 4px 0; }
@@ -1567,7 +1587,7 @@ section#tagger .tagger-table td:nth-child(2),
 section#tagger .tagger-table th:nth-child(3),
 section#tagger .tagger-table td:nth-child(3) { width: 1%; white-space: nowrap; text-align: left; }
 section#tagger .tagger-table th:nth-child(4),
-section#tagger .tagger-table td:nth-child(4) { width: 420px; min-width: 420px; text-align: left; }
+section#tagger .tagger-table td:nth-child(4) { width: 360px; min-width: 360px; text-align: left; }
 section#tagger .tagger-table th:nth-child(5),
 section#tagger .tagger-table td:nth-child(5) { width: 180px; min-width: 180px; text-align: left; }
 section#tagger .tagger-table th:nth-child(6),
@@ -1576,9 +1596,11 @@ section#tagger .tagger-table th:nth-child(7),
 section#tagger .tagger-table td:nth-child(7) { width: 1%; white-space: nowrap; text-align: right; }
 /* Visual gap between Galleries and the action columns. Relying on
    table-layout: auto to distribute leftover between columns isn't
-   predictable across browsers, so use a fixed left padding instead. */
+   predictable across browsers, so use a fixed left padding instead.
+   16px is enough to read as a separation while leaving the action
+   columns inside the typical content width on a 1440 desktop. */
 section#tagger .tagger-table th:nth-child(6),
-section#tagger .tagger-table td:nth-child(6) { padding-left: 32px; }
+section#tagger .tagger-table td:nth-child(6) { padding-left: 16px; }
 /* Header text aligns to the cell padding edge, but the button text is
    offset further by the button's own border + horizontal padding. Pad
    the header right edge to match so "Enable"/"Delete" line up vertically
@@ -1593,6 +1615,12 @@ section#tagger .tagger-table th:nth-child(7) { padding-right: 17px; }
    font) so both labels render at the same size and the column lines
    up across rows. */
 section#tagger .tagger-table td:nth-child(6) .btn-sm { min-width: 6em; }
+/* When no taggers are installed the Delete cell is empty and the column
+   shrinks to the bare width:1%, clipping the right-aligned "Delete"
+   header behind the 17px padding into "Delet". Reserve enough room
+   for the label even when the column carries no button. */
+section#tagger .tagger-table th:nth-child(7),
+section#tagger .tagger-table td:nth-child(7) { min-width: 5em; }
 /* Inline summaries next to the Configure buttons (Thresholds, Galleries).
    The .field-hint is otherwise tuned for full-width form text; tighten
    it inside the table so the summary doesn't crowd the button. */
@@ -1648,6 +1676,11 @@ section#tagger .tagger-table tr.tagger-sep td { color: var(--fg-dim); font-size:
 /* See the matching note on .tagger-table headers: pad the action-column
    header right edge so the label sits directly above the button text. */
 .gallery-table th:nth-child(n+5) { padding-right: 17px; }
+/* When the action is N/A the cell holds a dim "-" placeholder instead of
+   a button; promote it to a centered block so it sits in the middle of
+   the column rather than hanging off the right edge inherited from the
+   action-column text-align. */
+.gallery-table td:nth-child(n+5) > .status-dim { display: block; text-align: center; }
 .gallery-switch-list { list-style: none; padding: 0; margin: 0 0 12px 0; }
 .gallery-switch-list li { padding: 4px 0; }
 .gallery-switch-current { color: var(--fg-dim); }
@@ -2173,11 +2206,26 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
   .detail-topbar-right { width: auto; }
 }
 
+/* Below the meta-column breakpoint, the 420px-wide button cluster on the
+   right still wins the flex split and squeezes .detail-filename to 0
+   width. Let the topbar wrap so the nav group (Back + filename) and the
+   action cluster sit on their own rows; min-width:0 on the nav group
+   keeps the ellipsis honest when a long name lands on its own line. */
+@media (max-width: 600px) {
+  .detail-topbar { flex-wrap: wrap; row-gap: 6px; gap: 12px; }
+  .detail-nav-group { flex-basis: 100%; }
+  .detail-topbar-right { flex-basis: 100%; justify-content: flex-start; }
+}
+
 @media (max-width: 768px) {
+  /* --topbar-h is set by main.js to the real topbar bounding-rect
+     height so the drawer clears the wrapped nav / topbar-right rows at
+     narrow widths instead of pinning to the wide-layout 42px and
+     occluding the second-row links. */
   #sidebar {
     display: none;
     position: fixed;
-    top: 42px;
+    top: var(--topbar-h, 42px);
     left: 0;
     bottom: 0;
     z-index: 200;
@@ -2197,6 +2245,12 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
   #topbar { flex-wrap: wrap; height: auto; padding: 4px 8px; gap: 8px; row-gap: 4px; }
   #nav { flex-basis: 100%; margin-left: 0; justify-content: flex-start; flex-wrap: wrap; }
   #topbar-right { margin-left: auto; }
+  /* Give the search input its own row so the sort/order/buttons wrap
+     below instead of squeezing the placeholder down to ~3 glyphs.
+     `div.search-input-wrap` lifts the selector above the wide-layout
+     `#search-form > div:first-child` rule's specificity so the wrap
+     actually picks up the 100% flex-basis. */
+  #search-form > div.search-input-wrap { flex-basis: 100%; }
 }
 
 #sidebar-toggle {
@@ -2407,7 +2461,12 @@ body.reader-body #main-layout > aside,
 body.reader-body #gallery-status { display: none; }
 #reader { display: flex; flex-direction: column; height: 100vh; }
 .reader-stage { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; position: relative; }
-.reader-img { max-width: 100%; max-height: 100vh; object-fit: contain; display: block; }
+/* Fill the stage box so sub-screen pages scale up to the available area
+   instead of pinning at their natural pixel size against a sea of black.
+   object-fit: contain still preserves aspect, and the stage's own
+   max-height keeps the page from forcing layout taller than the
+   viewport. */
+.reader-img { width: 100%; height: 100%; max-height: 100vh; object-fit: contain; display: block; }
 .reader-page-link { display: contents; }
 /* Side chevrons for click-to-prev/next. Pinned to the stage edges so
    they sit in the whitespace beside a portrait page without obscuring
@@ -2494,8 +2553,13 @@ body.reader-body #gallery-status { display: none; }
 }
 .lightbox-stage.grabbing { cursor: grabbing; }
 .lightbox-img {
-  max-width: 100%;
-  max-height: 100%;
+  /* Fill the stage box so a small fixture (icon, sprite) scales up to
+     fit instead of floating at natural pixel size in a viewport-wide
+     black canvas. object-fit: contain keeps the aspect ratio so the
+     image never stretches; the lightbox JS still reads the IMG's
+     bounding rect, which now agrees with the stage size. */
+  width: 100%;
+  height: 100%;
   object-fit: contain;
   display: block;
   transform-origin: center center;

@@ -108,10 +108,6 @@ type browseCard struct {
 	GroupID  int64   // group id for group kinds; 0 for chain / tree / pair rows
 	Members  []int64 // group members in id order; for version chains root-to-leaf order; for derivative trees BFS order; for not_related [a, b]
 	Original int64   // dup-group original; 0 for the other kinds
-	// Compare is the pair-shape comparison-table data for the two
-	// images in .Members. Populated only for the not_related kind; nil
-	// for chains / trees / group cards.
-	Compare *relationComparePair
 	// CreatedAt is the group / chain / tree / pair declaration date,
 	// formatted as "2006-01-02 15:04:05" to match the detail page. For
 	// chains and trees this is the newest edge's created_at so the
@@ -159,7 +155,7 @@ func (s *Server) relationsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ceiling := resolveCeiling(r, cx)
-	counts := loadRelationsCounts(s, cx, ceiling)
+	counts := loadRelationsCounts(s, cx, ceiling, nil)
 	s.renderTemplate(w, "relations.html", relationsPageData{
 		baseData:      s.base(r, "relations", "Relations - Monbooru"),
 		Counts:        counts,
@@ -191,6 +187,16 @@ func (s *Server) browseGroupsRedirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusMovedPermanently)
 }
 
+// relationsCountOverrides lets the caller skip the version_edges /
+// derivative_edges walk when it has already counted those rows for a
+// matching card build. A nil pointer field means "walk normally". Used
+// by /relations/browse?kind=version|derivative to avoid reading the
+// edge tables twice per render.
+type relationsCountOverrides struct {
+	VersionChains   *int
+	DerivativeTrees *int
+}
+
 // loadRelationsCounts runs the seven small count queries the header
 // renders. Errors during the rollup degrade to a zero count on that
 // row - the page still renders the rest. Every counter is ceiling-
@@ -199,8 +205,9 @@ func (s *Server) browseGroupsRedirect(w http.ResponseWriter, r *http.Request) {
 // any member is hidden, edge / pair counters drop a row when either
 // side is hidden, PhashMissing skips hidden rows. This keeps the
 // /relations hub consistent with /relations/browse, whose cards apply
-// the same filters.
-func loadRelationsCounts(s *Server, cx *galleryCtx, ceiling *Ceiling) relationsCounts {
+// the same filters. ov is optional precomputed counts; a nil pointer
+// field means "walk normally".
+func loadRelationsCounts(s *Server, cx *galleryCtx, ceiling *Ceiling, ov *relationsCountOverrides) relationsCounts {
 	var c relationsCounts
 	get := func(q string, dst *int, args ...any) {
 		if err := cx.DB.Read.QueryRow(q, args...).Scan(dst); err != nil {
@@ -231,12 +238,16 @@ func loadRelationsCounts(s *Server, cx *galleryCtx, ceiling *Ceiling) relationsC
 	} else {
 		get(`SELECT COUNT(*) FROM alt_groups`, &c.AltGroups)
 	}
-	if n, err := countVersionChains(cx, ceiling); err == nil {
+	if ov != nil && ov.VersionChains != nil {
+		c.VersionChains = *ov.VersionChains
+	} else if n, err := countVersionChains(cx, ceiling); err == nil {
 		c.VersionChains = n
 	} else {
 		logx.Debugf("relations counts version chains: %v", err)
 	}
-	if n, err := countDerivativeTrees(cx, ceiling); err == nil {
+	if ov != nil && ov.DerivativeTrees != nil {
+		c.DerivativeTrees = *ov.DerivativeTrees
+	} else if n, err := countDerivativeTrees(cx, ceiling); err == nil {
 		c.DerivativeTrees = n
 	} else {
 		logx.Debugf("relations counts derivative trees: %v", err)
@@ -255,8 +266,12 @@ func loadRelationsCounts(s *Server, cx *galleryCtx, ceiling *Ceiling) relationsC
 // the symmetric pair kind (not_related) emit a two-member slice in
 // canonical order. Cards whose members fall above the operator's
 // rating ceiling are filtered out via ceiling - an inactive ceiling
-// disables the filter.
-func loadBrowseCardsByKind(cx *galleryCtx, kind string, limit int, ceiling *Ceiling) ([]browseCard, error) {
+// disables the filter. The returned kindTotal is the post-ceiling
+// count of chains / trees for version / derivative kinds (regardless
+// of limit) so the caller can drive the matching hub counter without
+// re-walking the edges; 0 for kinds the count helpers can query
+// directly from SQL.
+func loadBrowseCardsByKind(cx *galleryCtx, kind string, limit int, ceiling *Ceiling) ([]browseCard, int, error) {
 	// groupCardsWhere wraps Ceiling.WhereGroupClean for the two
 	// group-card scans: the underlying SQL is "AND <not-exists>" when
 	// the predicate is non-empty, plain `1=1` filler otherwise so the
@@ -269,6 +284,7 @@ func loadBrowseCardsByKind(cx *galleryCtx, kind string, limit int, ceiling *Ceil
 		return " AND " + w, a
 	}
 	var cards []browseCard
+	var kindTotal int
 	switch kind {
 	case "duplicate":
 		where, args := groupCardsWhere("dup_group_members", "dup_groups.id")
@@ -277,23 +293,23 @@ func loadBrowseCardsByKind(cx *galleryCtx, kind string, limit int, ceiling *Ceil
 			append(args, limit)...,
 		)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		defer dupRows.Close()
 		for dupRows.Next() {
 			var id, original int64
 			var createdAt string
 			if err := dupRows.Scan(&id, &original, &createdAt); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			members, mErr := scanGroupMembers(cx, "dup_group_members", id)
 			if mErr != nil {
-				return nil, mErr
+				return nil, 0, mErr
 			}
 			cards = append(cards, browseCard{Kind: "duplicate", GroupID: id, Members: members, Original: original, CreatedAt: humanISOTime(createdAt)})
 		}
 		if err := dupRows.Err(); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	case "alternate":
 		where, args := groupCardsWhere("alt_group_members", "alt_groups.id")
@@ -302,36 +318,38 @@ func loadBrowseCardsByKind(cx *galleryCtx, kind string, limit int, ceiling *Ceil
 			append(args, limit)...,
 		)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		defer altRows.Close()
 		for altRows.Next() {
 			var id int64
 			var createdAt string
 			if err := altRows.Scan(&id, &createdAt); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			members, mErr := scanGroupMembers(cx, "alt_group_members", id)
 			if mErr != nil {
-				return nil, mErr
+				return nil, 0, mErr
 			}
 			cards = append(cards, browseCard{Kind: "alternate", GroupID: id, Members: members, CreatedAt: humanISOTime(createdAt)})
 		}
 		if err := altRows.Err(); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	case "version":
-		chains, cErr := loadVersionChainCards(cx, limit, ceiling)
+		chains, total, cErr := loadVersionChainCards(cx, limit, ceiling)
 		if cErr != nil {
-			return nil, cErr
+			return nil, 0, cErr
 		}
 		cards = append(cards, chains...)
+		kindTotal = total
 	case "derivative":
-		trees, tErr := loadDerivativeTreeCards(cx, limit, ceiling)
+		trees, total, tErr := loadDerivativeTreeCards(cx, limit, ceiling)
 		if tErr != nil {
-			return nil, tErr
+			return nil, 0, tErr
 		}
 		cards = append(cards, trees...)
+		kindTotal = total
 	case "not_related":
 		where, args := ceiling.WhereTwo("a_image_id", "b_image_id")
 		q := `SELECT a_image_id, b_image_id, created_at FROM not_related_pairs`
@@ -341,29 +359,29 @@ func loadBrowseCardsByKind(cx *galleryCtx, kind string, limit int, ceiling *Ceil
 		q += ` ORDER BY rowid DESC LIMIT ?`
 		nrRows, err := cx.DB.Read.Query(q, append(args, limit)...)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		defer nrRows.Close()
 		for nrRows.Next() {
 			var a, b int64
 			var createdAt string
 			if err := nrRows.Scan(&a, &b, &createdAt); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			cards = append(cards, browseCard{Kind: "not_related", Members: []int64{a, b}, CreatedAt: humanISOTime(createdAt)})
 		}
 		if err := nrRows.Err(); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	default:
-		return nil, nil
+		return nil, 0, nil
 	}
 	if err := annotateBrowseCardIngestedAt(cx, cards); err != nil {
 		// Log but keep rendering: dates are nice-to-have, the rest of
 		// the card carries the operator's primary signal.
 		logx.Warnf("browse cards ingest-dates %s: %v", kind, err)
 	}
-	return cards, nil
+	return cards, kindTotal, nil
 }
 
 // annotateBrowseCardIngestedAt populates the per-card MemberIngestedAt
@@ -431,6 +449,21 @@ func humanISOTime(s string) string {
 		return s
 	}
 	return t.UTC().Format("2006-01-02 15:04:05")
+}
+
+// humanISODate is humanISOTime's date-only sibling: the table-cell
+// formatter on the comparison view drops the time so the cell stays
+// short. Falls back to the substring split on a parse failure so the
+// stored timestamp still renders something sensible.
+func humanISODate(s string) string {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		if i := strings.IndexByte(s, 'T'); i > 0 {
+			return s[:i]
+		}
+		return s
+	}
+	return t.UTC().Format("2006-01-02")
 }
 
 // countVersionChains mirrors loadVersionChainCards but skips card
@@ -545,11 +578,14 @@ func collectDerivativeMembers(node int64, derivativesOf map[int64][]int64, membe
 // the same image ids regrouped one-per-depth so the template can
 // render each generation as a row separated by a down-arrow. Chains
 // whose member set carries any tag above the ceiling are dropped
-// whole so a ceiling-hidden image never surfaces a sibling.
-func loadVersionChainCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]browseCard, error) {
+// whole so a ceiling-hidden image never surfaces a sibling. The
+// returned total counts every surviving chain regardless of limit so
+// the caller can drive the matching counter without re-walking the
+// edges.
+func loadVersionChainCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]browseCard, int, error) {
 	rows, err := cx.DB.Read.Query(`SELECT child_image_id, parent_image_id, created_at FROM version_edges`)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	type edgeMeta struct {
@@ -562,16 +598,16 @@ func loadVersionChainCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]brows
 		var c, p int64
 		var ts string
 		if scanErr := rows.Scan(&c, &p, &ts); scanErr != nil {
-			return nil, scanErr
+			return nil, 0, scanErr
 		}
 		edges[c] = edgeMeta{parent: p, createdAt: ts}
 		childOf[p] = c
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if _, err := ceiling.TaintedImageIDs(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	rootSet := map[int64]bool{}
 	for _, em := range edges {
@@ -611,16 +647,17 @@ func loadVersionChainCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]brows
 			Generations: generations,
 			CreatedAt:   humanISOTime(latestTS),
 		})
-		if len(cards) >= limit {
-			break
-		}
 	}
+	total := len(cards)
 	// Order by the newest edge in each chain, descending, so freshly
 	// declared chains land at the top.
 	sort.SliceStable(cards, func(i, j int) bool {
 		return cards[i].CreatedAt > cards[j].CreatedAt
 	})
-	return cards, nil
+	if limit > 0 && len(cards) > limit {
+		cards = cards[:limit]
+	}
+	return cards, total, nil
 }
 
 // loadDerivativeTreeCards is the derivative-edge analogue of
@@ -629,11 +666,13 @@ func loadVersionChainCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]brows
 // (root first, then each subtree before its next sibling) so the
 // template can indent each row by its depth and the branching is
 // visible at a glance. Members keeps the same DFS order so per-member
-// metadata maps key against it.
-func loadDerivativeTreeCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]browseCard, error) {
+// metadata maps key against it. Returns the total tree count (every
+// surviving tree, regardless of limit) so the caller can drive the
+// matching counter without re-walking the edges.
+func loadDerivativeTreeCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]browseCard, int, error) {
 	rows, err := cx.DB.Read.Query(`SELECT derivative_image_id, source_image_id, created_at FROM derivative_edges`)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	derivativesOf := map[int64][]int64{} // source -> derivatives (sorted by id ASC)
@@ -643,14 +682,14 @@ func loadDerivativeTreeCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]bro
 		var d, src int64
 		var ts string
 		if scanErr := rows.Scan(&d, &src, &ts); scanErr != nil {
-			return nil, scanErr
+			return nil, 0, scanErr
 		}
 		derivativesOf[src] = append(derivativesOf[src], d)
 		sourceOf[d] = src
 		derivCreated[d] = ts
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	for src := range derivativesOf {
 		sort.Slice(derivativesOf[src], func(i, j int) bool {
@@ -658,7 +697,7 @@ func loadDerivativeTreeCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]bro
 		})
 	}
 	if _, err := ceiling.TaintedImageIDs(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	rootSet := map[int64]bool{}
 	for src := range derivativesOf {
@@ -686,14 +725,15 @@ func loadDerivativeTreeCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]bro
 			TreeRows:  treeRows,
 			CreatedAt: humanISOTime(latestTS),
 		})
-		if len(cards) >= limit {
-			break
-		}
 	}
+	total := len(cards)
 	sort.SliceStable(cards, func(i, j int) bool {
 		return cards[i].CreatedAt > cards[j].CreatedAt
 	})
-	return cards, nil
+	if limit > 0 && len(cards) > limit {
+		cards = cards[:limit]
+	}
+	return cards, total, nil
 }
 
 // dfsDerivativeTree appends each tree node and its subtree to members
@@ -803,28 +843,20 @@ func (s *Server) browseRelationsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ceiling := resolveCeiling(r, cx)
-	cards, err := loadBrowseCardsByKind(cx, kind, 60, ceiling)
+	cards, kindTotal, err := loadBrowseCardsByKind(cx, kind, 60, ceiling)
 	if err != nil {
 		logx.Warnf("browse cards %s: %v", kind, err)
 		http.Error(w, "load cards", http.StatusInternalServerError)
 		return
 	}
-	// Only not_related cards carry a pair-shape comparison table; group,
-	// chain, and tree cards lift N members and have no two-image slot
-	// to land it in.
-	if kind == "not_related" {
-		for i := range cards {
-			if len(cards[i].Members) != 2 {
-				continue
-			}
-			l, rg, cErr := loadCompareFacts(cx, cards[i].Members[0], cards[i].Members[1])
-			if cErr != nil {
-				continue
-			}
-			cards[i].Compare = &relationComparePair{Left: l, Right: rg}
-		}
+	var ov relationsCountOverrides
+	switch kind {
+	case "version":
+		ov.VersionChains = &kindTotal
+	case "derivative":
+		ov.DerivativeTrees = &kindTotal
 	}
-	counts := loadRelationsCounts(s, cx, ceiling)
+	counts := loadRelationsCounts(s, cx, ceiling, &ov)
 	s.renderTemplate(w, "relations_browse.html", browseRelationsData{
 		baseData:      s.base(r, "relations", "Browse relations - Monbooru"),
 		ActiveGallery: s.activeName,

@@ -11,8 +11,8 @@ import (
 	"github.com/leqwin/monbooru/internal/logx"
 )
 
-// validOrderModes enumerates the three session walk orders per
-// RELATIONS.md §6.1. Anything else collapses to the default.
+// validOrderModes enumerates the three session walk orders. Anything
+// else collapses to the default (smallest_distance_first).
 var validOrderModes = map[string]bool{
 	"smallest_distance_first": true,
 	"largest_file_first":      true,
@@ -302,13 +302,7 @@ func scanCompareFacts(cx *galleryCtx, id int64, dst *relationCompareFacts) error
 		dst.ResolutionH = h.Int64
 	}
 	if addedAt.Valid {
-		// Drop the time-of-day so the table reads "2026-04-29" not the full
-		// RFC3339 string the database emits.
-		if i := strings.IndexByte(addedAt.String, 'T'); i > 0 {
-			dst.AddedAt = addedAt.String[:i]
-		} else {
-			dst.AddedAt = addedAt.String
-		}
+		dst.AddedAt = humanISODate(addedAt.String)
 	}
 	if dot := strings.LastIndexByte(canonical, '.'); dot >= 0 {
 		dst.Format = strings.ToLower(canonical[dot:])

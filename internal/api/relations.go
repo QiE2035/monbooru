@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 
@@ -113,13 +112,15 @@ func (h *Handler) addRelation(w http.ResponseWriter, r *http.Request) {
 	case "duplicate":
 		err = g.RelationsSvc.AddDuplicate(left, right)
 	case "alternate":
-		err = g.RelationsSvc.AddAlternate(body.A, body.B)
+		err = g.RelationsSvc.AddAlternate(left, right)
 	case "version":
-		err = g.RelationsSvc.AddVersionEdge(right, left)
+		// left is the parent (older revision), right the child.
+		err = g.RelationsSvc.AddVersionEdge(left, right)
 	case "derivative":
+		// left is the source, right the derivative.
 		err = g.RelationsSvc.AddDerivativeEdge(left, right)
 	case "not_related":
-		err = g.RelationsSvc.AddNotRelated(body.A, body.B)
+		err = g.RelationsSvc.AddNotRelated(left, right)
 	default:
 		apiError(w, http.StatusBadRequest, "invalid_request", "unknown type")
 		return
@@ -198,20 +199,13 @@ func (h *Handler) removeRelation(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// writeRelationError surfaces relations.Service errors as API errors.
+// writeRelationError surfaces relations.Service errors as API errors,
+// using the shared FriendlyErrorFor mapping for typed sentinels and
+// falling back to a generic 500 for anything else.
 func writeRelationError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, relations.ErrSelfRelation):
-		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
-	case errors.Is(err, relations.ErrRelationConflict):
-		apiError(w, http.StatusConflict, "conflict", err.Error())
-	case errors.Is(err, relations.ErrVersionExists):
-		apiError(w, http.StatusConflict, "conflict", err.Error())
-	case errors.Is(err, relations.ErrDerivativeExists):
-		apiError(w, http.StatusConflict, "conflict", err.Error())
-	case errors.Is(err, relations.ErrNotInGroup):
-		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
-	default:
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	if fe := relations.FriendlyErrorFor(err); fe != nil {
+		apiError(w, fe.Status, fe.Code, fe.Message)
+		return
 	}
+	apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 }

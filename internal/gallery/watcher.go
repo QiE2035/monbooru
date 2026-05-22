@@ -63,7 +63,7 @@ func NewWatcher(galleryName, galleryPath, thumbnailsPath string, maxFileSizeMB i
 	// Walk and watch every subdirectory, stopping gracefully on inotify limits.
 	watchCount := 1
 	limitHit := false
-	filepath.WalkDir(galleryPath, func(path string, d os.DirEntry, err error) error {
+	if walkErr := filepath.WalkDir(galleryPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil || !d.IsDir() || path == galleryPath {
 			return nil
 		}
@@ -90,7 +90,14 @@ func NewWatcher(galleryName, galleryPath, thumbnailsPath string, maxFileSizeMB i
 			watchCount++
 		}
 		return nil
-	})
+	}); walkErr != nil {
+		// A WalkDir error here means the outer traversal could not
+		// finish - typically a permission denied at the gallery root or
+		// a vanished symlink. Surface it at warn so the operator can
+		// fix the access rights; the partially-built watcher still
+		// works for the dirs it did register.
+		logx.Warnf("watcher: walk %q: %v", galleryPath, walkErr)
+	}
 
 	return w, nil
 }

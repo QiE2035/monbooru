@@ -173,6 +173,7 @@ func TestMarkedWalkerDeleteAll_HonoursCeiling(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete-all expected 200, got %d: %s", w.Code, w.Body.String())
 	}
+	awaitJobsDrain(t, srv)
 
 	alive := func(id int64) int {
 		var n int

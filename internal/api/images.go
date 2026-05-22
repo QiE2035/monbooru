@@ -704,6 +704,7 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 			PageCount:     img.PageCount,
 			Series:        img.Series,
 			SeriesOrder:   img.SeriesOrder,
+			Phash:         phashHexPtr(img.Phash),
 			IngestedAt:    img.IngestedAt,
 			ThumbnailURL:  "/thumbnails/" + g.Name + "/" + strconv.FormatInt(img.ID, 10) + ".jpg",
 			Tags:          tags,
@@ -1058,6 +1059,9 @@ func (h *Handler) resolveImageTagID(g Gallery, imageID int64, tagName string) (i
 			return 0, err
 		}
 		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
 	}
 	switch len(ids) {
 	case 0:

@@ -114,6 +114,14 @@ func tokenize(query string) []token {
 			tokens = append(tokens, token{kind: tokOR, val: "OR"})
 			continue
 		}
+		// Literal `AND` is the implicit space-AND in long-hand form; some
+		// users paste in queries from booru engines that require the
+		// keyword. Drop the token so `a AND b` parses identically to
+		// `a b`. Otherwise it would lowercase into a tag named "and"
+		// and intersect a never-matching leaf into the expression.
+		if strings.EqualFold(term, "and") {
+			continue
+		}
 
 		// Any `key:value` is a filter token. Known filter keys get
 		// special handling in buildFilterExpr; unknown keys fall back

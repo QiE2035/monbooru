@@ -312,8 +312,10 @@
 <dialog id="delete-tags-search-dialog">
   {{if .HasFilter}}
   <p>Delete <strong>{{.DeletableTotal}}</strong> tag{{if ne .DeletableTotal 1}}s{{end}} in current search?</p>
-  {{else}}
+  {{else if eq .DeletableTotal .Total}}
   <p>Delete all <strong>{{.DeletableTotal}}</strong> tag{{if ne .DeletableTotal 1}}s{{end}} in this gallery?</p>
+  {{else}}
+  <p>Delete <strong>{{.DeletableTotal}}</strong> of <strong>{{.Total}}</strong> tags in this gallery?</p>
   {{end}}
   <p style="color:var(--error);font-size:12px">Tags are removed from every image they touch. This cannot be undone. Built-in rating tags are usage-stripped (the catalog row stays).</p>
   <div id="delete-tags-search-flash"></div>

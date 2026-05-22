@@ -17,10 +17,10 @@ import (
 
 // relatedTile is the small struct the relations partial reads from.
 // Each tile carries the image's id, thumbnail URL, and a single-letter
-// type marker as documented in RELATIONS.md §8.2. Collection siblings
-// (rows sharing images.series with the current image) reuse the same
-// shape but stash the series label and optional order so the template
-// can render a series-pill chip instead of the relation marker.
+// type marker. Collection siblings (rows sharing images.series with the
+// current image) reuse the same shape but stash the series label and
+// optional order so the template can render a series-pill chip instead
+// of the relation marker.
 type relatedTile struct {
 	ID          int64
 	Marker      string // O, D, A, V<-, V->, S, >; empty when the tile is a collection sibling
@@ -389,15 +389,6 @@ func dfsDerivativeChildren(cx *galleryCtx, parent int64, depth int, ancestorTrun
 	return nil
 }
 
-// relationComparePair carries the two sides of the comparison table
-// for a 1:1 relation slot (version parent/child or derivative
-// source/derivative) so the relations_image.html template can include
-// the comparison partial inline.
-type relationComparePair struct {
-	Left  relationCompareFacts
-	Right relationCompareFacts
-}
-
 // filterCollectionSiblings drops every sibling that is already named in
 // one of the declared relation slots so the see-all page can render the
 // collection strip alongside the relation sections without duplicating
@@ -492,6 +483,7 @@ func (s *Server) recomputePhashPost(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<div class="flash flash-err">phash recompute failed (is the thumbnail present?)</div>`))
 		return
 	}
+	cx.InvalidatePhashMissing()
 	w.Write([]byte(`<div class="flash flash-ok">phash recomputed.</div>`))
 }
 
@@ -859,9 +851,25 @@ func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
 	case "dup":
 		var keep int64
 		if raw := strings.TrimSpace(r.FormValue("keep_original_from")); raw != "" {
-			if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
-				keep = v
+			v, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`<div class="flash flash-err">Invalid keep_original_from.</div>`))
+				return
 			}
+			inSet := false
+			for _, id := range ids {
+				if id == v {
+					inSet = true
+					break
+				}
+			}
+			if !inSet {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`<div class="flash flash-err">keep_original_from must be one of the merging groups.</div>`))
+				return
+			}
+			keep = v
 		}
 		if err := cx.RelationsSvc.MergeDupGroups(ids, keep); err != nil {
 			writeRelationError(w, err)
@@ -951,23 +959,13 @@ func formInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool
 }
 
 // writeRelationError maps a relations.Service error to a friendly
-// flash. ErrRelationConflict and the type-specific Exists errors
-// surface so the operator knows to unlink first. The status stays 200
-// for HTMX callers so the in-dialog target swap actually paints the
-// message - 4xx responses don't swap by default.
+// flash through the shared FriendlyErrorFor mapping. The status stays
+// 200 for HTMX callers so the in-dialog target swap actually paints
+// the message - 4xx responses don't swap by default.
 func writeRelationError(w http.ResponseWriter, err error) {
 	msg := err.Error()
-	switch {
-	case errors.Is(err, relations.ErrRelationConflict):
-		msg = "Pair already has a different relation; remove the existing one first."
-	case errors.Is(err, relations.ErrVersionExists):
-		msg = "One of the images already has a version edge; remove it first."
-	case errors.Is(err, relations.ErrDerivativeExists):
-		msg = "The chosen derivative already has a source; remove it first."
-	case errors.Is(err, relations.ErrSelfRelation):
-		msg = "Cannot relate an image to itself."
-	case errors.Is(err, relations.ErrNotInGroup):
-		msg = "Image isn't a member of that group."
+	if fe := relations.FriendlyErrorFor(err); fe != nil {
+		msg = fe.Message
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)

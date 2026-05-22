@@ -421,7 +421,7 @@ func TestMergeTags(t *testing.T) {
 	}
 
 	// Image should now have canonical tag
-	imgTags, err := svc.GetImageTags(imgID)
+	_, imgTags, err := svc.GetImageTags(imgID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -857,7 +857,7 @@ func TestRemoveAllTagsFromImage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	imgTags, _ := svc.GetImageTags(imgID)
+	_, imgTags, _ := svc.GetImageTags(imgID)
 	if len(imgTags) != 0 {
 		t.Errorf("expected 0 tags after RemoveAllTagsFromImage, got %d", len(imgTags))
 	}
@@ -908,7 +908,7 @@ func TestMergeThenAddAliasName_LandsOnCanonical(t *testing.T) {
 	if err := svc.AddTagToImage(imgID, tag.ID, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	imgTags, _ := svc.GetImageTags(imgID)
+	_, imgTags, _ := svc.GetImageTags(imgID)
 	if len(imgTags) != 1 || imgTags[0].TagID != canon.ID {
 		t.Errorf("image tags = %+v, want single canonical tag %d", imgTags, canon.ID)
 	}
@@ -999,7 +999,7 @@ func TestMergeTags_CanonicalAlreadyOnImage(t *testing.T) {
 	}
 
 	// Image should have canonical, not alias
-	imgTags, _ := svc.GetImageTags(imgID)
+	_, imgTags, _ := svc.GetImageTags(imgID)
 	for _, it := range imgTags {
 		if it.TagID == tagAlias.ID {
 			t.Error("alias tag still on image")
@@ -1287,7 +1287,7 @@ func TestAddTagToImage_IsAuto(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	imgTags, err := svc.GetImageTags(imgID)
+	_, imgTags, err := svc.GetImageTags(imgID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1421,7 +1421,7 @@ func TestDeleteTag_RatingStripsUsageButKeepsRow(t *testing.T) {
 		t.Errorf("rating tag row should still exist, got err: %v", err)
 	}
 	// Every image_tags row for it is gone and usage_count is zeroed.
-	tags, err := svc.GetImageTags(imageID)
+	_, tags, err := svc.GetImageTags(imageID)
 	if err != nil {
 		t.Fatalf("GetImageTags: %v", err)
 	}
@@ -1509,7 +1509,7 @@ func TestMergeTags_RepointsImplicationsAndKeepsImpliedRowsCleanable(t *testing.T
 		t.Fatalf("RemoveTagFromImage: %v", err)
 	}
 
-	imgTags, err := svc.GetImageTags(imgID)
+	_, imgTags, err := svc.GetImageTags(imgID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1543,7 +1543,7 @@ func TestMergeTags_FansCanonicalImplicationsOntoMigratedRows(t *testing.T) {
 		t.Fatalf("MergeTags: %v", err)
 	}
 
-	imgTags, err := svc.GetImageTags(imgID)
+	_, imgTags, err := svc.GetImageTags(imgID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1658,7 +1658,7 @@ func TestDeleteTag_SweepsImpliedClosureOnCarrierImages(t *testing.T) {
 		t.Fatalf("DeleteTag: %v", err)
 	}
 
-	imgTags, err := svc.GetImageTags(imgID)
+	_, imgTags, err := svc.GetImageTags(imgID)
 	if err != nil {
 		t.Fatal(err)
 	}

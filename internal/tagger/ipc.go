@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/leqwin/monbooru/internal/logx"
@@ -221,7 +222,7 @@ func (b *ipcBackend) terminate() {
 		b.conn = nil
 	}
 	if b.cmd.Process != nil {
-		_ = b.cmd.Process.Signal(os.Interrupt)
+		_ = b.cmd.Process.Signal(syscall.SIGTERM)
 		// Give the child a moment to exit cleanly; if it doesn't,
 		// SIGKILL.
 		done := make(chan struct{})

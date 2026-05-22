@@ -2,10 +2,9 @@
 // duplicate groups, alternate groups, directed version chains, directed
 // derivative trees, and the "not related" rejection set.
 //
-// Merge invariants and the per-type teardown rules are documented in
-// project/RELATIONS.md §3 and §6.4. The Service is the only thing the
-// rest of the codebase calls to mutate the graph; each mutation runs
-// inside a single transaction so partial states never surface.
+// The Service is the only thing the rest of the codebase calls to mutate
+// the graph; each mutation runs inside a single transaction so partial
+// states never surface.
 package relations
 
 import (
@@ -40,6 +39,39 @@ var (
 	// image isn't currently a member of the target dup group.
 	ErrNotInGroup = errors.New("relations: image is not a member of the group")
 )
+
+// FriendlyError carries an operator-facing message and the HTTP status
+// code a transport-layer error writer should surface for one of the
+// Service's typed errors. Wraps the original so callers can still
+// errors.Is() against the sentinel.
+type FriendlyError struct {
+	Inner   error
+	Status  int    // HTTP status the caller should write (400, 409, ...)
+	Code    string // short identifier for JSON error envelopes
+	Message string // the line the operator sees
+}
+
+func (e *FriendlyError) Error() string { return e.Inner.Error() }
+func (e *FriendlyError) Unwrap() error { return e.Inner }
+
+// FriendlyErrorFor maps a Service error to the operator-facing message
+// shared by every transport. Returns nil when err is not one of the
+// recognised sentinels so the caller can fall back to a generic 500.
+func FriendlyErrorFor(err error) *FriendlyError {
+	switch {
+	case errors.Is(err, ErrSelfRelation):
+		return &FriendlyError{Inner: err, Status: 400, Code: "invalid_request", Message: "Cannot relate an image to itself."}
+	case errors.Is(err, ErrRelationConflict):
+		return &FriendlyError{Inner: err, Status: 409, Code: "conflict", Message: "Pair already has a different relation; remove the existing one first."}
+	case errors.Is(err, ErrVersionExists):
+		return &FriendlyError{Inner: err, Status: 409, Code: "conflict", Message: "One of the images already has a version edge; remove it first."}
+	case errors.Is(err, ErrDerivativeExists):
+		return &FriendlyError{Inner: err, Status: 409, Code: "conflict", Message: "The chosen derivative already has a source; remove it first."}
+	case errors.Is(err, ErrNotInGroup):
+		return &FriendlyError{Inner: err, Status: 400, Code: "invalid_request", Message: "Image isn't a member of that group."}
+	}
+	return nil
+}
 
 // Service is the transactional boundary for relations mutations.
 type Service struct {
@@ -556,18 +588,30 @@ func mergeDupGroupsTx(tx *sql.Tx, groupIDs []int64, keepOriginalFrom int64) erro
 	return nil
 }
 
-// RemoveVersionEdge deletes the parent -> child edge if it exists.
-// Idempotent.
-func (s *Service) RemoveVersionEdge(parent, child int64) error {
+// RemoveVersionEdge deletes the edge between parent and child if one
+// exists, regardless of which side is which. The schema stores a
+// directed (parent, child) row but the operator-facing UI labels both
+// "earlier" and "later" buttons with the same form, so a hand-crafted
+// post that swaps the sides still drops the edge the operator clicked
+// on. Idempotent on a missing edge.
+func (s *Service) RemoveVersionEdge(a, b int64) error {
 	_, err := s.db.Write.Exec(
-		`DELETE FROM version_edges WHERE parent_image_id = ? AND child_image_id = ?`, parent, child,
+		`DELETE FROM version_edges
+		 WHERE (parent_image_id = ? AND child_image_id = ?)
+		    OR (parent_image_id = ? AND child_image_id = ?)`,
+		a, b, b, a,
 	)
 	return err
 }
 
 // ReverseVersionEdge swaps the parent/child of the named edge in one
 // transaction so the chain points the other way. Idempotent on a
-// missing edge.
+// missing edge. The new (child=parent, parent=child) row must not
+// collide with the per-side uniqueness of an adjacent chain entry; if
+// it would (mid-chain reversal), the function returns ErrVersionExists
+// so writeRelationError surfaces the operator-facing "remove the
+// adjacent edge first" message rather than the raw SQLite constraint
+// error.
 func (s *Service) ReverseVersionEdge(parent, child int64) error {
 	if parent == child {
 		return ErrSelfRelation
@@ -586,6 +630,23 @@ func (s *Service) ReverseVersionEdge(parent, child int64) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return tx.Commit()
 	}
+	// After the delete, the swapped row (parent, child) -> (child, parent)
+	// must not clash with the schema's per-side UNIQUE constraints. Either
+	// side already standing on the new role means an adjacent edge would
+	// block the insert.
+	var blocked int
+	if err := tx.QueryRow(
+		`SELECT EXISTS (
+			SELECT 1 FROM version_edges WHERE child_image_id = ?
+			UNION ALL
+			SELECT 1 FROM version_edges WHERE parent_image_id = ?
+		)`, parent, child,
+	).Scan(&blocked); err != nil {
+		return err
+	}
+	if blocked != 0 {
+		return ErrVersionExists
+	}
 	if _, err := tx.Exec(
 		`INSERT INTO version_edges (child_image_id, parent_image_id, created_at) VALUES (?, ?, ?)`,
 		parent, child, nowISO(),
@@ -595,17 +656,25 @@ func (s *Service) ReverseVersionEdge(parent, child int64) error {
 	return tx.Commit()
 }
 
-// RemoveDerivativeEdge deletes the source -> derivative edge if it
-// exists. Idempotent.
-func (s *Service) RemoveDerivativeEdge(source, derivative int64) error {
+// RemoveDerivativeEdge deletes the edge between the two images if one
+// exists, regardless of which side is the source and which the
+// derivative. A hand-crafted post that swaps the sides still drops the
+// edge the operator clicked on. Idempotent on a missing edge.
+func (s *Service) RemoveDerivativeEdge(a, b int64) error {
 	_, err := s.db.Write.Exec(
-		`DELETE FROM derivative_edges WHERE source_image_id = ? AND derivative_image_id = ?`, source, derivative,
+		`DELETE FROM derivative_edges
+		 WHERE (source_image_id = ? AND derivative_image_id = ?)
+		    OR (source_image_id = ? AND derivative_image_id = ?)`,
+		a, b, b, a,
 	)
 	return err
 }
 
 // ReverseDerivativeEdge swaps the source and derivative sides of the
-// named edge in one transaction. Idempotent on a missing edge.
+// named edge in one transaction. Idempotent on a missing edge. If the
+// would-be new derivative side already has another source, the
+// function returns ErrDerivativeExists so writeRelationError surfaces
+// the operator-facing message.
 func (s *Service) ReverseDerivativeEdge(source, derivative int64) error {
 	if source == derivative {
 		return ErrSelfRelation
@@ -623,6 +692,18 @@ func (s *Service) ReverseDerivativeEdge(source, derivative int64) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return tx.Commit()
+	}
+	// The swapped row makes `source` the new derivative. PK on
+	// derivative_image_id makes that collide with any existing edge
+	// where source is already a derivative of another image.
+	var blocked int
+	if err := tx.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM derivative_edges WHERE derivative_image_id = ?)`, source,
+	).Scan(&blocked); err != nil {
+		return err
+	}
+	if blocked != 0 {
+		return ErrDerivativeExists
 	}
 	if _, err := tx.Exec(
 		`INSERT INTO derivative_edges (derivative_image_id, source_image_id, created_at) VALUES (?, ?, ?)`,
@@ -723,12 +804,8 @@ func (s *Service) ClearBetween(a, b int64) error {
 // excluded (the rating system has highest-wins semantics, so a copy
 // would silently bump the original's level). INSERT OR IGNORE makes
 // the operation idempotent. Returns the count of newly added rows
-// across the group.
-//
-// Used by the "Copy tags from duplicates to original" affordance on
-// the Relations page's duplicate-group card and at session-end
-// (RELATIONS.md §6.6). Runs in one transaction so the per-tag
-// usage_count refresh stays consistent.
+// across the group. Runs in one transaction so the per-tag usage_count
+// refresh stays consistent.
 func (s *Service) CopyTagsFromDuplicatesToOriginal(groupID int64) (int, error) {
 	tx, err := s.db.Write.Begin()
 	if err != nil {

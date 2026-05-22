@@ -13,15 +13,24 @@ import (
 // slice scan instead of a fresh cursor query.
 //
 // Sized for the home-LAN deployment: a small handful of concurrent
-// queries, each capped at adjacencyCacheMaxIDs so a popular tag's
-// 600 k-row set never lands here. Stale entries fall off via TTL; no
-// invalidation hook on writes - inserts/deletes that race a browse
-// session may surface a missing prev/next, which the detail handler
-// already tolerates.
+// queries, each capped at adjacencyCacheMaxIDs so the cache memory
+// budget stays bounded even on popular-tag queries. Stale entries fall
+// off via TTL; no invalidation hook on writes - inserts/deletes that
+// race a browse session may surface a missing prev/next, which the
+// detail handler already tolerates.
+//
+// Cap math: maxEntries * maxIDs * 8 bytes / entry = worst-case bytes.
+// 4 * 1 000 000 * 8 = ~32 MB. Average case is far lower because the
+// cache only seeds entries whose total fits the cap; sparse queries
+// land in single-digit KB. The home-box deployment is single-user
+// with a small handful of active tabs, so 4 hot entries cover the
+// realistic working set, and the 1 M cap is wide enough to seat
+// popular single-tag random-sort queries that would otherwise run
+// five parallel temp-sorts under c=5 contention.
 const (
 	adjacencyCacheTTL        = 5 * time.Minute
-	adjacencyCacheMaxEntries = 32
-	adjacencyCacheMaxIDs     = 20000
+	adjacencyCacheMaxEntries = 4
+	adjacencyCacheMaxIDs     = 1000000
 )
 
 type adjacencyCacheEntry struct {

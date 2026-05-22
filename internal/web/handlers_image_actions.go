@@ -1,6 +1,8 @@
 package web
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -41,7 +43,11 @@ func (s *Server) toggleBoolColumn(w http.ResponseWriter, r *http.Request, column
 	if err := s.db().Write.QueryRow(
 		`UPDATE images SET `+column+` = 1 - `+column+` WHERE id = ? RETURNING `+column, id,
 	).Scan(&newVal); err != nil {
-		http.NotFound(w, r)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// Cached match-id sets keyed off the toggled column (`?q=fav:true`,

@@ -105,6 +105,8 @@
               <input type="hidden" name="name" value="{{.Name}}">
               <button type="submit" class="btn-sm">Switch</button>
             </form>
+            {{else}}
+            <span class="status-dim">-</span>
             {{end}}
           </td>
           <td>
@@ -113,6 +115,8 @@
               <input type="hidden" name="_csrf" value="{{$csrf}}">
               <button type="submit" class="btn-sm btn-set-default">Set default</button>
             </form>
+            {{else}}
+            <span class="status-dim">-</span>
             {{end}}
           </td>
           <td>
@@ -129,6 +133,8 @@
           <td>
             {{if and (ne .Name $active) (ne .Name $cfg.DefaultGallery) (gt (len $galleries) 1)}}
             <button class="btn-sm btn-danger btn-gallery-delete" data-name="{{.Name}}">Delete</button>
+            {{else}}
+            <span class="status-dim">-</span>
             {{end}}
           </td>
         </tr>
@@ -601,9 +607,15 @@
     <dialog id="tagger-cmd-{{.Name}}">
       <p><strong>{{.Name}}</strong> - {{.Description}}</p>
       <p class="field-hint">Run one of the commands below on a host with internet access, then reload the Settings page.</p>
-      <p><strong>Direct host install</strong> <span class="field-hint">(run inside <code>{{$cfg.Paths.ModelPath}}</code>)</span></p>
+      <p class="code-block-label"><strong>Direct host install</strong> <span class="field-hint">(run inside <code>{{$cfg.Paths.ModelPath}}</code>)</span>
+        <button type="button" class="btn-sm code-block-copy" data-copy="{{.HostCommand}}" title="Copy command">Copy</button>
+        <span class="copy-flash" hidden>copied</span>
+      </p>
       <pre class="code-block"><code>{{.HostCommand}}</code></pre>
-      <p><strong>Docker (monbooru container)</strong></p>
+      <p class="code-block-label"><strong>Docker (monbooru container)</strong>
+        <button type="button" class="btn-sm code-block-copy" data-copy="{{.DockerCommand}}" title="Copy command">Copy</button>
+        <span class="copy-flash" hidden>copied</span>
+      </p>
       <pre class="code-block"><code>{{.DockerCommand}}</code></pre>
       <div class="dialog-actions">
         <button type="button" onclick="this.closest('dialog').close()">Close</button>
@@ -732,6 +744,7 @@
                   style="display:inline">
               <input type="hidden" name="_csrf" value="{{$csrf}}">
               <input type="hidden" name="replace" value="true">
+              <input type="hidden" name="confirm" value="REBUILD">
               <button type="submit" class="btn-sm btn-danger">Rebuild</button>
             </form>
           </td>

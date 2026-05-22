@@ -127,7 +127,35 @@ func buildSpec(baseURL string) map[string]any {
 						"collection_order": map[string]any{"type": "integer", "nullable": true, "description": "Operator-edited 1-based position within collection. Null when unset. Read-only via the API in this revision."},
 						"ingested_at":    map[string]any{"type": "string", "format": "date-time"},
 						"thumbnail_url":  map[string]any{"type": "string"},
+						"phash":          map[string]any{"type": "string", "nullable": true, "description": "16-char hex perceptual hash; null until the phash backfill or ingest has populated it."},
 						"tags":           map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/Tag"}},
+					},
+				},
+				"ImageRelations": map[string]any{
+					"type":        "object",
+					"description": "Declared relations centred on one image. duplicate_group / alternate_group are null when the image is not part of a group; the four edge slots are null when no edge exists.",
+					"properties": map[string]any{
+						"duplicate_group": map[string]any{
+							"type":     "object",
+							"nullable": true,
+							"properties": map[string]any{
+								"id":                map[string]any{"type": "integer"},
+								"original_image_id": map[string]any{"type": "integer"},
+								"member_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
+							},
+						},
+						"alternate_group": map[string]any{
+							"type":     "object",
+							"nullable": true,
+							"properties": map[string]any{
+								"id":         map[string]any{"type": "integer"},
+								"member_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
+							},
+						},
+						"version_parent":    map[string]any{"type": "integer", "nullable": true, "description": "id of the older revision; null when this image is the chain root."},
+						"version_child":     map[string]any{"type": "integer", "nullable": true, "description": "id of the newer revision; null when this image is the chain leaf."},
+						"derivative_source": map[string]any{"type": "integer", "nullable": true, "description": "id of the source image when this image is a derivative; null otherwise."},
+						"derivatives":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
 					},
 				},
 			},
@@ -317,6 +345,73 @@ func buildSpec(baseURL string) map[string]any {
 					},
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Updated tag list", "content": jsonContent("#/components/schemas/TagArray")},
+					},
+				},
+			},
+			"/images/{id}/relations": map[string]any{
+				"get": map[string]any{
+					"summary":     "Get declared relations for an image",
+					"operationId": "getImageRelations",
+					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Declared relations", "content": jsonContent("#/components/schemas/ImageRelations")},
+						"404": map[string]any{"description": "Image not found", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
+			"/relations": map[string]any{
+				"post": map[string]any{
+					"summary":     "Declare a relation",
+					"operationId": "addRelation",
+					"parameters":  []map[string]any{galleryParam()},
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"application/json": map[string]any{
+								"schema": map[string]any{
+									"type":     "object",
+									"required": []string{"type", "a", "b"},
+									"properties": map[string]any{
+										"type":      map[string]any{"type": "string", "description": "One of: duplicate, alternate, version, derivative, not_related"},
+										"a":         map[string]any{"type": "integer", "description": "Left image id. For directed types (version, derivative), `a` is the parent / source (older revision, derived-from)."},
+										"b":         map[string]any{"type": "integer", "description": "Right image id. For directed types, the child / derivative."},
+										"direction": map[string]any{"type": "string", "description": "Optional `ba` swaps left/right; default `ab` treats `a` as the parent/source side."},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"201": map[string]any{"description": "Relation created"},
+						"400": map[string]any{"description": "Invalid request (self-relation, unknown type, missing ids)", "content": jsonContent("#/components/schemas/Error")},
+						"409": map[string]any{"description": "Pair carries a conflicting relation already; remove it first.", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+				"delete": map[string]any{
+					"summary":     "Remove a declared relation",
+					"operationId": "removeRelation",
+					"parameters":  []map[string]any{galleryParam()},
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"application/json": map[string]any{
+								"schema": map[string]any{
+									"type":     "object",
+									"required": []string{"type"},
+									"properties": map[string]any{
+										"type":     map[string]any{"type": "string", "description": "One of: duplicate, alternate, version, derivative, not_related, dissolve_dup, dissolve_alt"},
+										"image_id": map[string]any{"type": "integer", "description": "Required for duplicate / alternate (the member to unlink)."},
+										"a":        map[string]any{"type": "integer", "description": "Required for version / derivative / not_related; either order is accepted."},
+										"b":        map[string]any{"type": "integer", "description": "Pair partner for a."},
+										"group_id": map[string]any{"type": "integer", "description": "Required for dissolve_dup / dissolve_alt."},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"204": map[string]any{"description": "Removed (idempotent)"},
+						"400": map[string]any{"description": "Invalid request", "content": jsonContent("#/components/schemas/Error")},
 					},
 				},
 			},

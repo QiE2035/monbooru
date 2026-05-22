@@ -745,6 +745,101 @@ func TestRemoveDerivativeEdge(t *testing.T) {
 	}
 }
 
+func TestRemoveVersionEdgeSwappedSides(t *testing.T) {
+	database, svc := setupTestDB(t)
+	p := insertImage(t, database, "p", 100)
+	c := insertImage(t, database, "c", 100)
+	if err := svc.AddVersionEdge(p, c); err != nil {
+		t.Fatal(err)
+	}
+	// Operator-typed form posts the sides reversed; the DELETE must
+	// still drop the edge so the click isn't a silent no-op.
+	if err := svc.RemoveVersionEdge(c, p); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM version_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("version_edges remaining after swapped-side remove = %d, want 0", n)
+	}
+}
+
+func TestRemoveDerivativeEdgeSwappedSides(t *testing.T) {
+	database, svc := setupTestDB(t)
+	s := insertImage(t, database, "s", 100)
+	d := insertImage(t, database, "d", 100)
+	if err := svc.AddDerivativeEdge(s, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RemoveDerivativeEdge(d, s); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM derivative_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("derivative_edges remaining after swapped-side remove = %d, want 0", n)
+	}
+}
+
+func TestReverseVersionEdgeMidChainRaisesTypedError(t *testing.T) {
+	database, svc := setupTestDB(t)
+	a := insertImage(t, database, "a", 100)
+	b := insertImage(t, database, "b", 100)
+	c := insertImage(t, database, "c", 100)
+	if err := svc.AddVersionEdge(a, b); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddVersionEdge(b, c); err != nil {
+		t.Fatal(err)
+	}
+	// Reversing the (a, b) edge in a > b > c chain would land (b, a)
+	// where b already has c as its child, violating the per-parent
+	// uniqueness. The function returns ErrVersionExists rather than the
+	// raw SQLite constraint error.
+	err := svc.ReverseVersionEdge(a, b)
+	if !errors.Is(err, ErrVersionExists) {
+		t.Fatalf("ReverseVersionEdge mid-chain expected ErrVersionExists, got %v", err)
+	}
+	// The original chain is intact (transaction rolled back).
+	var n int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM version_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("version_edges = %d after failed reverse, want 2", n)
+	}
+}
+
+func TestReverseDerivativeEdgeMidTreeRaisesTypedError(t *testing.T) {
+	database, svc := setupTestDB(t)
+	a := insertImage(t, database, "a", 100)
+	b := insertImage(t, database, "b", 100)
+	c := insertImage(t, database, "c", 100)
+	if err := svc.AddDerivativeEdge(a, b); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddDerivativeEdge(c, a); err != nil {
+		t.Fatal(err)
+	}
+	// Reversing (a, b) would land (b, a) where a is already a derivative
+	// of c (PK on derivative_image_id).
+	err := svc.ReverseDerivativeEdge(a, b)
+	if !errors.Is(err, ErrDerivativeExists) {
+		t.Fatalf("ReverseDerivativeEdge mid-tree expected ErrDerivativeExists, got %v", err)
+	}
+	var n int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM derivative_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("derivative_edges = %d after failed reverse, want 2", n)
+	}
+}
+
 func TestRemoveNotRelated(t *testing.T) {
 	database, svc := setupTestDB(t)
 	a := insertImage(t, database, "a", 100)

@@ -12,9 +12,14 @@
       <ul class="tag-list-sidebar">
         {{range .Tags}}
         {{$q := printf "%s:%s" .CategoryName .Name}}
+        {{$active := or (index $.ActiveTagTerms $q) (index $.ActiveTagTerms .Name)}}
         <li class="tag-entry" data-name="{{.Name}}">
           <a href="/?q={{$q}}" class="tag-link" data-tag="{{$q}}" style="color:{{.CategoryColor}}">{{.Name}}</a>
+          {{if $active}}
+          <button class="tag-add-btn btn-tag-add active" data-tag="{{$q}}" title="Remove from current search">-</button>
+          {{else}}
           <button class="tag-add-btn btn-tag-add" data-tag="{{$q}}" title="Add to current search">+</button>
+          {{end}}
           <span class="tag-count">{{.UsageCount}}</span>
         </li>
         {{end}}

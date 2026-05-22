@@ -402,7 +402,7 @@
         </a>
         {{else}}
         <a href="/images/{{.Image.ID}}/file" target="_blank"{{if not .Image.IsMissing}} class="detail-img-link" onclick="return openLightbox(event, this.href)"{{end}}>
-          <img src="/images/{{.Image.ID}}/file" alt="Image {{.Image.ID}}" class="detail-img"
+          <img src="/images/{{.Image.ID}}/file" alt="image {{.Image.ID}}" class="detail-img"
                onerror="if(!this.dataset.fallback){this.dataset.fallback='1';this.src='/thumbnails/{{.ActiveGallery}}/{{.Image.ID}}.jpg';}else{this.onerror=null;}">
         </a>
         {{end}}

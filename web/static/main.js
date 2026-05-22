@@ -295,10 +295,11 @@ function handlePagesGridKey(e) {
 }
 
 // Image viewer (lightbox). Triggered from the detail page by clicking
-// the still-image, the .btn-view button, or pressing 'b'. Uses a
-// <dialog> so the browser handles Esc / scroll lock natively; the
-// keymap below runs first in the global router so wheel-driven zoom
-// and pan keys don't leak into detail-page bindings.
+// the still-image, the .btn-view button, or pressing 'v'; from the
+// manga reader by clicking a page or pressing 'v'. Uses a <dialog> so
+// the browser handles Esc / scroll lock natively; the keymap below
+// runs first in the global router so wheel-driven zoom and pan keys
+// don't leak into detail-page bindings.
 var lightbox = (function () {
   var dlg = null, img = null, stage = null, zoomLbl = null, openLink = null;
   var scale = 1, tx = 0, ty = 0;
@@ -324,14 +325,33 @@ var lightbox = (function () {
     scale = ns;
     apply();
   }
+  // The IMG element fills the stage (CSS width/height: 100%) so a small
+  // image scales up; object-fit: contain letterboxes the natural-aspect
+  // content inside that box. Click-to-close and the 1:1 zoom math both
+  // need the visible content rect, not the element rect, otherwise the
+  // letterbox counts as "on the image".
+  function contentRect() {
+    if (!img) return null;
+    var r = img.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    var iw = img.naturalWidth, ih = img.naturalHeight;
+    if (!iw || !ih) return r;
+    var ia = iw / ih, ba = r.width / r.height;
+    var w, h;
+    if (ia > ba) { w = r.width; h = r.width / ia; }
+    else { h = r.height; w = r.height * ia; }
+    var left = r.left + (r.width - w) / 2;
+    var top = r.top + (r.height - h) / 2;
+    return { left: left, top: top, right: left + w, bottom: top + h, width: w, height: h };
+  }
   // 1:1 means one image pixel renders to one device pixel. The currently
   // displayed width is naturalWidth at scale=1 multiplied by the CSS fit,
   // so we invert through whatever scale is active right now to land on
   // naturalWidth without re-reading the un-transformed bounding box.
   function oneToOne() {
     if (!img || !img.naturalWidth) return;
-    var r = img.getBoundingClientRect();
-    if (!r.width) return;
+    var r = contentRect();
+    if (!r || !r.width) return;
     var ns = clamp(img.naturalWidth * scale / r.width, 0.5, 4);
     var k = ns / scale;
     tx = k * tx; ty = k * ty;
@@ -373,8 +393,8 @@ var lightbox = (function () {
     // Releases *on* the image fall through so dblclick still toggles
     // fit / 1:1 (the first click of a dblclick must not dismiss).
     if (pressMoved || !img) return;
-    var r = img.getBoundingClientRect();
-    if (!r.width || e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+    var r = contentRect();
+    if (!r || !r.width || e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
       dlg.close();
     }
   }
@@ -1082,7 +1102,9 @@ document.addEventListener('input', function(e) {
   if (err) err.remove();
 });
 
-// Sidebar tag-add-btn: append tag to current search query
+// Sidebar tag-add-btn: toggle tag in/out of the current search query.
+// The sidebar emits the term as "category:name"; the query may carry
+// either that form or the bare name, so we drop both on remove.
 document.addEventListener('click', function(e) {
   const btn = e.target.closest('.tag-add-btn');
   if (!btn) return;
@@ -1091,25 +1113,31 @@ document.addEventListener('click', function(e) {
   if (!tagName) return;
   const si = document.getElementById('search-input');
   if (!si) return;
+  const colon = tagName.indexOf(':');
+  const bare = colon >= 0 ? tagName.slice(colon + 1) : tagName;
   const terms = si.value.trim().split(/\s+/).filter(Boolean);
-  if (!terms.includes(tagName)) terms.push(tagName);
-  si.value = terms.join(' ');
+  const filtered = terms.filter(t => t !== tagName && t !== bare);
+  if (filtered.length === terms.length) filtered.push(tagName);
+  si.value = filtered.join(' ');
   const form = document.getElementById('search-form');
   if (form && window.htmx) window.htmx.trigger(form, 'submit');
   else if (form) form.submit();
 });
 
-// Category collapse in sidebar
+// Category collapse in sidebar. Listening on the whole header (not just
+// the ▾) keeps the click target away from the sidebar scrollbar at the
+// right edge.
 document.addEventListener('click', function(e) {
-  const btn = e.target.closest('.cat-collapse');
-  if (!btn) return;
-  const group = btn.closest('.tag-group');
+  const header = e.target.closest('.tag-group-header');
+  if (!header) return;
+  const group = header.closest('.tag-group');
   if (!group) return;
   const list = group.querySelector('.tag-list-sidebar');
   if (!list) return;
+  const indicator = group.querySelector('.cat-collapse');
   const collapsed = list.style.display === 'none';
   list.style.display = collapsed ? '' : 'none';
-  btn.textContent = collapsed ? '▾' : '▸';
+  if (indicator) indicator.textContent = collapsed ? '▾' : '▸';
 });
 
 // Batch selection: show/hide batch bar and keep checkboxes visible. The
@@ -2164,6 +2192,22 @@ document.addEventListener('DOMContentLoaded', function() {
   if (el) captureInitialTags(el);
 });
 
+
+// Mobile sidebar drawer: at narrow widths the topbar wraps to several
+// rows (nav + topbar-right + logo), so the drawer's hard-coded top:42px
+// would cover the wrapped nav links. Mirror the real topbar height into
+// a --topbar-h custom property so the drawer always slots in below it.
+(function () {
+  var root = document.documentElement;
+  function sync() {
+    var tb = document.getElementById('topbar');
+    if (!tb) return;
+    root.style.setProperty('--topbar-h', Math.round(tb.getBoundingClientRect().height) + 'px');
+  }
+  document.addEventListener('DOMContentLoaded', sync);
+  window.addEventListener('resize', sync);
+  window.addEventListener('load', sync);
+})();
 
 // Reader: clicking the page counter opens the page-jump dialog.
 document.addEventListener('DOMContentLoaded', function() {

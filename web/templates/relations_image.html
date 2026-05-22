@@ -12,7 +12,19 @@
   </div>
 
   {{if and (not .Relations.HasAny) (not .Collection)}}
-  <p class="field-hint">This image has no declared relations. <a href="/?q=phash:{{phashHex .Image.Phash}}~4">Find similar images via phash.</a></p>
+  <p class="field-hint">
+    This image has no declared relations.
+    {{if .Image.Phash}}
+      <a href="/?q=phash:{{phashHex .Image.Phash}}~4">Find similar images via phash.</a>
+    {{else}}
+      <span class="field-hint">(no phash computed)</span>
+      <form hx-post="/relations/phash/{{.Image.ID}}/recompute" hx-swap="none"
+            hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <button type="submit" class="btn-link-accent">[backfill phash]</button>
+      </form>
+    {{end}}
+  </p>
   {{end}}
 
   {{if .Relations.DupGroup}}

@@ -296,7 +296,7 @@ func (s *Server) runOrphanSweep(ctx context.Context, cx *galleryCtx) (removed, p
 	s.jobs.Update(0, total, fmt.Sprintf("[%s] pruning 0/%d…", cx.Name, total))
 	for i, e := range entries {
 		if ctx.Err() != nil {
-			return removed, i, total, nil
+			return removed, processed, total, nil
 		}
 		if e.IsDir() {
 			continue
@@ -315,6 +315,7 @@ func (s *Server) runOrphanSweep(ctx context.Context, cx *galleryCtx) (removed, p
 		if parseErr != nil {
 			continue
 		}
+		processed++
 		if _, ok := known[id]; ok {
 			continue
 		}
@@ -325,7 +326,7 @@ func (s *Server) runOrphanSweep(ctx context.Context, cx *galleryCtx) (removed, p
 			s.jobs.Update(i+1, total, fmt.Sprintf("[%s] pruning %d/%d…", cx.Name, i+1, total))
 		}
 	}
-	return removed, total, total, nil
+	return removed, processed, total, nil
 }
 
 func (s *Server) scheduledAutotag(cx *galleryCtx) error {

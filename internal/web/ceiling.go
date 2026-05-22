@@ -239,19 +239,28 @@ func (c *Ceiling) WhereGroupClean(membersTable, groupCol string) (string, []any)
 // when any member exceeds the ceiling. Lazy - the SELECT runs only on
 // first call, then is cached for the rest of the request. Returns nil
 // when the ceiling is inactive.
+//
+// The mutex is held only around the cache-slot read and the result
+// commit - the SELECT runs unlocked so a sidebar fan-out's six
+// goroutines don't serialise behind it on a cache miss. A race that
+// runs the SELECT twice is harmless (last writer wins, both reads
+// see the same DB state).
 func (c *Ceiling) TaintedImageIDs() (map[int64]bool, error) {
 	if c == nil || !c.IsActive() {
 		return nil, nil
 	}
-	// Resolve excluded ids outside the mutex - it has its own lock.
 	ids := c.ExcludedTagIDs()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.taintedLoaded {
-		return c.tainted, c.taintedErr
+		t, err := c.tainted, c.taintedErr
+		c.mu.Unlock()
+		return t, err
 	}
-	c.taintedLoaded = true
+	c.mu.Unlock()
 	if len(ids) == 0 || c.cx == nil || c.cx.DB == nil {
+		c.mu.Lock()
+		c.taintedLoaded = true
+		c.mu.Unlock()
 		return nil, nil
 	}
 	placeholders := make([]string, len(ids))
@@ -265,7 +274,10 @@ func (c *Ceiling) TaintedImageIDs() (map[int64]bool, error) {
 		args...,
 	)
 	if err != nil {
+		c.mu.Lock()
+		c.taintedLoaded = true
 		c.taintedErr = err
+		c.mu.Unlock()
 		return nil, err
 	}
 	defer rows.Close()
@@ -273,16 +285,25 @@ func (c *Ceiling) TaintedImageIDs() (map[int64]bool, error) {
 	for rows.Next() {
 		var id int64
 		if scanErr := rows.Scan(&id); scanErr != nil {
+			c.mu.Lock()
+			c.taintedLoaded = true
 			c.taintedErr = scanErr
+			c.mu.Unlock()
 			return nil, scanErr
 		}
 		tainted[id] = true
 	}
 	if iterErr := rows.Err(); iterErr != nil {
+		c.mu.Lock()
+		c.taintedLoaded = true
 		c.taintedErr = iterErr
+		c.mu.Unlock()
 		return nil, iterErr
 	}
+	c.mu.Lock()
 	c.tainted = tainted
+	c.taintedLoaded = true
+	c.mu.Unlock()
 	return tainted, nil
 }
 

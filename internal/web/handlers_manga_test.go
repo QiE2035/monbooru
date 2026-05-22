@@ -318,6 +318,30 @@ func TestCollectionSuggest_PrefixMatch(t *testing.T) {
 	}
 }
 
+// The matching `collection:` search filter is NOCASE; the suggest
+// must agree so a user typing a lowercase prefix sees a capitalised
+// label and vice versa.
+func TestCollectionSuggest_CaseInsensitivePrefix(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "a.png", 4, 4)
+	if _, err := srv.Active().DB.Write.Exec(
+		`UPDATE images SET series = 'Cat Series' WHERE id = ?`, id,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, prefix := range []string{"cat", "Cat", "CAT"} {
+		req := httptest.NewRequest("GET", "/internal/collection/suggest?prefix="+prefix, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("collection suggest prefix=%s: %d", prefix, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), `data-series="Cat Series"`) {
+			t.Errorf("prefix=%s should surface Cat Series, got %s", prefix, w.Body.String())
+		}
+	}
+}
+
 // batch-collection writes the same label across every image in the
 // selection in chunked transactions. The per-image order column
 // (series_order, kept by name for schema stability) is intentionally

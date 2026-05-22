@@ -1,5 +1,27 @@
 # Changelog
 
+## [v1.8.3] - 2026-05-22
+### Added
+- Sidebar category headers collapse on a click anywhere across the row.
+- Sidebar tag buttons show whether a tag is already in the active search; clicking removes the matching term instead of duplicating it.
+- Settings: Copy buttons next to the tagger install commands.
+
+### Changed
+- Search and navigation faster across `name:`, `folder:`, category-qualified tags, rating ceiling, `fav:`, `tagcount:`, `relation:none`, `type:`, `mime:`, and popular-tag random sort.
+- Steady-state memory drops after rebalancing the SQLite per-connection cache and mmap window.
+
+### Fixed
+- Search: `folder:`, `via:`, category-qualified tags, and folder/source/collection autocomplete match case-insensitively.
+- Search: boolean filters (`fav:`, `inbox:`, `missing:`, `tagged:`, `autotagged:`) accept yes/no, y/n, on/off, 1/0; unknown values surface as empty.
+- Search: `date:` accepts `=`; half-open `..X` and `X..` honour the inclusive bound.
+- Search: literal `AND` keyword parses as space-AND so `1girl AND scenery` matches `1girl scenery`.
+- Search: random sort actually shuffles on small libraries.
+- Search API: response carries the `phash` field to match the single-image surface.
+- Lightbox: close-on-background-click ignores empty area inside the element rect; small images scale up to fit the stage.
+- Settings: tagger Delete header stops clipping with no taggers installed; new-password input is marked required; inactive gallery action cells render a dash placeholder.
+- Relations: find-pairs `replace=true` requires `confirm=REBUILD`; remove-edge handlers behave symmetrically in either direction; find-similar link gated on a non-null phash; not-related browse cards drop the inline compare table.
+- API: REST version edge direction matches the session and web handlers.
+
 ## [v1.8.2] - 2026-05-20
 ### Added
 - Detail page: in-page zoomable image viewer with shortcut `v`, dimmed backdrop, click-outside-to-close, and 0.5x-4x zoom range.

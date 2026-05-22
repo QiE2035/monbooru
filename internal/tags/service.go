@@ -944,46 +944,88 @@ func (s *Service) AliasesForTagIDs(canonicalIDs []int64) (map[int64][]models.Tag
 	return out, nil
 }
 
-func (s *Service) GetImageTags(imageID int64) ([]models.ImageTag, error) {
+// GetImageTags returns the per-image tag list alongside the owning
+// image's folder_path. Both pieces are read in one round trip via a
+// LEFT JOIN over images so a freshly-uploaded image with no tags still
+// surfaces its folder. The folder is empty when the image id is unknown.
+func (s *Service) GetImageTags(imageID int64) (string, []models.ImageTag, error) {
 	rows, err := s.db.Read.Query(
-		`SELECT it.image_id, it.tag_id, t.name, tc.name, tc.color, t.usage_count,
+		`SELECT i.folder_path,
+		        it.image_id, it.tag_id, t.name, tc.name, tc.color, t.usage_count,
 		        it.is_auto, it.is_implied, it.confidence, it.tagger_name, it.created_at
-		 FROM image_tags it
-		 JOIN tags t ON t.id = it.tag_id
-		 JOIN tag_categories tc ON tc.id = t.category_id
-		 WHERE it.image_id = ?
+		 FROM images i
+		 LEFT JOIN image_tags it ON it.image_id = i.id
+		 LEFT JOIN tags t ON t.id = it.tag_id
+		 LEFT JOIN tag_categories tc ON tc.id = t.category_id
+		 WHERE i.id = ?
 		 ORDER BY tc.name, t.usage_count DESC, t.name`, imageID,
 	)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	defer rows.Close()
 
+	var folder string
 	var result []models.ImageTag
 	for rows.Next() {
-		var it models.ImageTag
-		var isAuto, isImplied int
-		var conf sql.NullFloat64
-		var taggerName sql.NullString
-		var createdAt string
+		var (
+			folderPath sql.NullString
+			imgID      sql.NullInt64
+			tagID      sql.NullInt64
+			tagName    sql.NullString
+			category  sql.NullString
+			color     sql.NullString
+			usage     sql.NullInt64
+			isAuto    sql.NullInt64
+			isImplied sql.NullInt64
+			conf      sql.NullFloat64
+			tagger    sql.NullString
+			createdAt sql.NullString
+		)
 		if err := rows.Scan(
-			&it.ImageID, &it.TagID, &it.TagName, &it.Category, &it.Color, &it.UsageCount,
-			&isAuto, &isImplied, &conf, &taggerName, &createdAt,
+			&folderPath,
+			&imgID, &tagID, &tagName, &category, &color, &usage,
+			&isAuto, &isImplied, &conf, &tagger, &createdAt,
 		); err != nil {
-			return nil, err
+			return "", nil, err
 		}
-		it.IsAuto = isAuto == 1
-		it.IsImplied = isImplied == 1
+		if folderPath.Valid {
+			folder = folderPath.String
+		}
+		if !imgID.Valid || !tagID.Valid {
+			// Untagged image - the LEFT JOIN emitted one row with NULL
+			// tag columns; skip it but keep the folder.
+			continue
+		}
+		it := models.ImageTag{
+			ImageID:    imgID.Int64,
+			TagID:      tagID.Int64,
+			TagName:    nullStringValue(tagName),
+			Category:   nullStringValue(category),
+			Color:      nullStringValue(color),
+			UsageCount: int(usage.Int64),
+			IsAuto:     isAuto.Int64 == 1,
+			IsImplied:  isImplied.Int64 == 1,
+		}
 		if conf.Valid {
 			it.Confidence = &conf.Float64
 		}
-		if taggerName.Valid {
-			it.TaggerName = taggerName.String
+		if tagger.Valid {
+			it.TaggerName = tagger.String
 		}
-		it.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		if createdAt.Valid {
+			it.CreatedAt, _ = time.Parse(time.RFC3339, createdAt.String)
+		}
 		result = append(result, it)
 	}
-	return result, rows.Err()
+	return folder, result, rows.Err()
+}
+
+func nullStringValue(s sql.NullString) string {
+	if s.Valid {
+		return s.String
+	}
+	return ""
 }
 
 func (s *Service) AddTagToImage(imageID, tagID int64, isAuto bool, confidence *float64) error {

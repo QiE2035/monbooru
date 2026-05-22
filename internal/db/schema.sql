@@ -303,6 +303,13 @@ CREATE INDEX IF NOT EXISTS idx_images_ingested_visible ON images(ingested_at DES
 CREATE INDEX IF NOT EXISTS idx_images_file_type_visible   ON images(file_type)   WHERE is_missing = 0;
 CREATE INDEX IF NOT EXISTS idx_images_source_type_visible ON images(source_type) WHERE is_missing = 0;
 CREATE INDEX IF NOT EXISTS idx_image_paths_image ON image_paths(image_id);
+-- Partial index over the non-canonical alias rows so the sha256 / file-
+-- duplicates walkers and the name: filter's alias-paths EXISTS ride a
+-- covering seek instead of scanning every image_paths row to filter
+-- for is_canonical = 0. A canonical image_paths row sits on every
+-- image; the non-canonical rows are typically a small subset (renames,
+-- sha-collisions, sync moves), so the partial index stays cheap.
+CREATE INDEX IF NOT EXISTS idx_image_paths_aliases ON image_paths(image_id) WHERE is_canonical = 0;
 CREATE INDEX IF NOT EXISTS idx_sd_metadata_genhash      ON sd_metadata(generation_hash)      WHERE generation_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_comfyui_metadata_genhash ON comfyui_metadata(generation_hash) WHERE generation_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sd_metadata_seed         ON sd_metadata(seed)                 WHERE seed IS NOT NULL;

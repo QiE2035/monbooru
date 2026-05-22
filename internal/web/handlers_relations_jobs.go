@@ -16,7 +16,7 @@ import (
 // the active gallery's BK-tree. Form-encoded knobs:
 //   - distance (int, 0..12, default 4) - Hamming distance cap.
 //   - replace ("true" / unset) - wipe potential_relation_pairs before
-//     re-scanning (RELATIONS.md §5.1).
+//     re-scanning.
 func (s *Server) findRelationPairsPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
@@ -39,6 +39,14 @@ func (s *Server) findRelationPairsPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	replace := r.FormValue("replace") == "true"
+	// replace=true wipes potential_relation_pairs; gate it behind an
+	// explicit confirm so a non-HTMX caller (curl, bookmarked URL, broken
+	// script) can't drop the queue with a single missing flag.
+	if replace && r.FormValue("confirm") != "REBUILD" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`<div class="flash flash-err">replace=true requires confirm=REBUILD.</div>`))
+		return
+	}
 
 	if err := s.jobs.Start(models.JobTypeRelations); err != nil {
 		w.WriteHeader(http.StatusConflict)

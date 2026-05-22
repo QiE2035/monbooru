@@ -8,6 +8,7 @@ import (
 
 	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/leqwin/monbooru/internal/models"
 )
 
 // sha256DuplicateRow is one alias path on the SHA-256 duplicates table:
@@ -298,16 +299,46 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(iterErr.Error()) + `</div>`))
 		return
 	}
-	removed := 0
-	for _, id := range victims {
-		if _, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), id, s.tagSvc().RemoveAllTagsFromImage, s.onImageDeleteCallback()); err != nil {
-			logx.Warnf("marked delete-all image %d: %v", id, err)
-			continue
-		}
-		removed++
+	if len(victims) == 0 {
+		w.Write([]byte(`<div class="flash flash-ok">Removed 0 marked duplicate(s).</div>`))
+		return
 	}
-	s.Active().InvalidateCaches()
-	w.Write([]byte(fmt.Sprintf(`<div class="flash flash-ok">Removed %d marked duplicate(s).</div>`, removed)))
+	// Reserve a job slot so the per-image unlinks don't race a concurrent
+	// autotag / rebuild-thumbs / vacuum; the response returns immediately
+	// and the status bar surfaces progress.
+	if err := s.jobs.Start(models.JobTypeDelete); err != nil {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+		return
+	}
+	galleryPath := s.galleryPath()
+	thumbnailsPath := s.thumbnailsPath()
+	tagSvc := s.tagSvc()
+	onDelete := s.onImageDeleteCallback()
+	go func() {
+		ctx := s.jobs.Context()
+		total := len(victims)
+		s.jobs.Update(0, total, fmt.Sprintf("removing 0/%d…", total))
+		removed := 0
+		for i, id := range victims {
+			if ctx.Err() != nil {
+				s.jobs.Complete(fmt.Sprintf("marked delete-all cancelled (%d/%d)", removed, total))
+				s.Active().InvalidateCaches()
+				return
+			}
+			if _, err := gallery.DeleteImage(s.db(), galleryPath, thumbnailsPath, id, tagSvc.RemoveAllTagsFromImage, onDelete); err != nil {
+				logx.Warnf("marked delete-all image %d: %v", id, err)
+				continue
+			}
+			removed++
+			if (i+1)%25 == 0 || i == total-1 {
+				s.jobs.Update(i+1, total, fmt.Sprintf("removing %d/%d…", i+1, total))
+			}
+		}
+		s.Active().InvalidateCaches()
+		s.jobs.Complete(fmt.Sprintf("Removed %d marked duplicate(s).", removed))
+	}()
+	w.Write([]byte(`<div class="flash flash-ok">Marked duplicate removal started.</div>`))
 }
 
 // redirectWalker writes an HX-Redirect (or 303) back to the walker

@@ -88,9 +88,6 @@
       {{else if eq .Kind "not_related"}}
         <strong>Not related</strong>
         (#{{index .Members 0}} ↔ #{{index .Members 1}})
-        {{if .Compare}}
-        <button type="button" class="btn-link-accent btn-relations-info" title="Show the comparison details">[info]</button>
-        {{end}}
         <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
               hx-confirm="Unlink this not-related pair? It can resurface in find-pairs."
               data-confirm-ok="Unlink"
@@ -104,9 +101,6 @@
       {{end}}
       {{if .CreatedAt}}
       <div class="relations-card-meta field-hint">declared <time>{{.CreatedAt}}</time></div>
-      {{end}}
-      {{if .Compare}}
-        <div class="relations-info-content" hidden>{{template "partials/relations_comparison.html" (dict "Left" .Compare.Left "Right" .Compare.Right)}}</div>
       {{end}}
       {{if eq .Kind "version"}}
       <div class="relations-card-chain">
@@ -197,14 +191,6 @@
       <button type="button" onclick="document.getElementById('merge-dup-dialog').close()">Cancel</button>
     </div>
   </form>
-</dialog>
-
-<dialog id="relations-info-dialog">
-  <h4>Comparison details</h4>
-  <div id="relations-info-body"></div>
-  <div class="dialog-actions">
-    <button type="button" onclick="document.getElementById('relations-info-dialog').close()">Close</button>
-  </div>
 </dialog>
 
 <script>
@@ -311,23 +297,6 @@
     });
   }
 })();
-
-// [info] per-card button lifts that row's hidden comparison block into
-// a shared dialog. The hidden node lives inside the card so we keep
-// the row-scoped data in DOM rather than serialising it through
-// dataset attributes.
-document.addEventListener('click', function(e) {
-  var btn = e.target.closest('.btn-relations-info');
-  if (!btn) return;
-  var card = btn.closest('.relations-card');
-  if (!card) return;
-  var content = card.querySelector('.relations-info-content');
-  var body = document.getElementById('relations-info-body');
-  var dlg = document.getElementById('relations-info-dialog');
-  if (!content || !body || !dlg) return;
-  body.innerHTML = content.innerHTML;
-  dlg.showModal();
-});
 
 document.addEventListener('keydown', function(e) {
   if (e.key !== 'Escape') return;

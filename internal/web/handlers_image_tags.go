@@ -323,7 +323,7 @@ func (s *Server) aliasesForImageTags(imageTags []models.ImageTag) []models.Tag {
 // errMsg / warnMsg / okMsg are shown as inline flashes if non-empty (red,
 // orange, green); clearInput resets the add-tag input.
 func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request, id int64, errMsg, warnMsg, okMsg string, clearInput bool) {
-	imageTags, _ := s.tagSvc().GetImageTags(id)
+	folderPath, imageTags, _ := s.tagSvc().GetImageTags(id)
 	hasUserTags := false
 	for _, t := range imageTags {
 		if !t.IsAuto {
@@ -331,8 +331,6 @@ func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request
 			break
 		}
 	}
-	var folderPath string
-	_ = s.db().Read.QueryRow(`SELECT folder_path FROM images WHERE id = ?`, id).Scan(&folderPath)
 	q := r.URL.Query()
 	s.renderTemplate(w, "partials/tag_list.html", map[string]any{
 		"ImageID":       id,

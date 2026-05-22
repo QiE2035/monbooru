@@ -229,8 +229,7 @@ func (s SavedSearch) HRef() string {
 
 // Background-job type identifiers. Use these constants instead of bare
 // strings at every jobs.Start / StartScheduled call site so a typo
-// surfaces at compile time and SPECIFICATIONS.md §1.3 stays in sync
-// with the code via the canonical JobTypes() list below.
+// surfaces at compile time.
 const (
 	JobTypeSync          = "sync"
 	JobTypeAutotag       = "autotag"

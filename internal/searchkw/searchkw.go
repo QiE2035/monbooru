@@ -76,7 +76,7 @@ var Expansions = map[string][]string{
 	"ai":         {"a1111", "comfyui", "none", "any", "sd"},
 	"width":      {">=", "<=", ">", "<", "="},
 	"height":     {">=", "<=", ">", "<", "="},
-	"date":       {">", "<", ">=", "<=", ".."},
+	"date":       {">", "<", ">=", "<=", "=", ".."},
 	"missing":    {"true", "false"},
 	"tagged":     {"true", "false"},
 	"autotagged": {"true", "false"},
@@ -142,6 +142,7 @@ var ExpansionDescriptions = map[string]map[string]string{
 		"<":  "before",
 		">=": "on or after",
 		"<=": "on or before",
+		"=":  "exactly",
 		"..": "range",
 	},
 	"width": {

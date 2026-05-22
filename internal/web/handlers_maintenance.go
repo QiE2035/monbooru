@@ -468,8 +468,8 @@ func (s *Server) startRebuildThumbsJob(cx *galleryCtx) error {
 }
 
 // computePhashesPost backfills images.phash for every visible row whose
-// hash is currently NULL. Wires the canonical compute path documented
-// in RELATIONS.md §4.5 to the Maintenance section button.
+// hash is currently NULL. Wires the canonical compute path to the
+// Maintenance section button.
 func (s *Server) computePhashesPost(w http.ResponseWriter, r *http.Request) {
 	if err := s.jobs.Start(models.JobTypePhash); err != nil {
 		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
@@ -477,7 +477,8 @@ func (s *Server) computePhashesPost(w http.ResponseWriter, r *http.Request) {
 	}
 	database := s.db()
 	thumbnailsPath := s.thumbnailsPath()
-	tree := s.Active().bkTree
+	active := s.Active()
+	tree := active.bkTree
 	go func() {
 		ctx := s.jobs.Context()
 		processed, updated, err := relations.BackfillPhashes(ctx, database, thumbnailsPath, func(p, total int, _ string) {
@@ -491,6 +492,7 @@ func (s *Server) computePhashesPost(w http.ResponseWriter, r *http.Request) {
 		if tree != nil {
 			tree.Reset()
 		}
+		active.InvalidatePhashMissing()
 		if err == context.Canceled || ctx.Err() != nil {
 			s.jobs.Complete(fmt.Sprintf("phash cancelled (%d processed, %d computed)", processed, updated))
 			return
@@ -661,6 +663,7 @@ func (s *Server) reExtractMetadataPost(w http.ResponseWriter, r *http.Request) {
 
 	database := s.db()
 	thumbnailsPath := s.thumbnailsPath()
+	active := s.Active()
 	go func() {
 		ctx := s.jobs.Context()
 		processed := 0
@@ -732,6 +735,7 @@ func (s *Server) reExtractMetadataPost(w http.ResponseWriter, r *http.Request) {
 			processed++
 			updated++
 		}
+		active.InvalidatePhashMissing()
 		s.jobs.Complete(fmt.Sprintf("Re-extracted metadata for %d image(s) (%d updated).", processed, updated))
 	}()
 
