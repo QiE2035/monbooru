@@ -28,8 +28,6 @@
     </select>
     {{if .RandomSeed}}<input type="hidden" name="seed" value="{{.RandomSeed}}">{{end}}
     <button type="submit">Search</button>
-    <button type="button" id="inbox-filter-btn" class="{{if hasInboxFilter .Query}}active{{end}}"
-            onclick="toggleInboxFilter()" title="Inbox{{if gt .InboxCount 0}} ({{.InboxCount}}){{end}} (I)">✱</button>
     <button type="button" id="fav-filter-btn" class="{{if hasFavFilter .Query}}active{{end}}"
             onclick="toggleFavFilter()" title="Show favorites (F)">♥</button>
     <button type="button" id="random-sort-btn" class="{{if eq .Sort "random"}}active{{end}}"
@@ -37,6 +35,8 @@
   </form>
   <div id="save-search-area">{{template "partials/save_search_area.html" .}}</div>
 </div>
+
+<div id="gallery-flash"></div>
 
 <div id="gallery-status" class="status-bar"><span id="result-count" class="result-count">{{.Result.Total}}</span> {{plural .Result.Total "match" "matches"}}</div>
 
@@ -1111,20 +1111,6 @@ function toggleFavFilter() {
     si.value = tokens.join(' ');
   } else {
     tokens.unshift('fav:true');
-    si.value = tokens.join(' ');
-  }
-  document.getElementById('search-form').dispatchEvent(new Event('submit', {bubbles:true}));
-}
-
-function toggleInboxFilter() {
-  var si = document.getElementById('search-input');
-  if (!si) return;
-  var tokens = si.value.split(/\s+/).filter(function(t) { return t && t.toLowerCase() !== 'inbox:true'; });
-  var hadInbox = tokens.length !== si.value.split(/\s+/).filter(Boolean).length;
-  if (hadInbox) {
-    si.value = tokens.join(' ');
-  } else {
-    tokens.unshift('inbox:true');
     si.value = tokens.join(' ');
   }
   document.getElementById('search-form').dispatchEvent(new Event('submit', {bubbles:true}));

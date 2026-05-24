@@ -114,7 +114,7 @@ func TestRemoveTagFromMissingImage_DoesNotDecrementUsage(t *testing.T) {
 	missing := insertTestImage(t, database, "remove-missing")
 	// Mark the second image missing before the add so the visible-only
 	// invariant holds at add time too. Mirrors the watcher's mark-missing
-	// → user-initiated remove sequence the audit reproduced.
+	// → user-initiated remove sequence.
 	if _, err := database.Write.Exec(`UPDATE images SET is_missing = 1 WHERE id = ?`, missing); err != nil {
 		t.Fatal(err)
 	}

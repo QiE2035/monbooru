@@ -128,32 +128,31 @@ func (cx *galleryCtx) InvalidateCaches() {
 	search.AdjacencyCacheDropForGallery(cx.Name)
 }
 
+// cachedValue is cachedCount for arbitrary types: load slot or run
+// query and store on success.
+func cachedValue[V any](slot *atomic.Pointer[V], query func() (V, error)) (V, error) {
+	if p := slot.Load(); p != nil {
+		return *p, nil
+	}
+	v, err := query()
+	if err != nil {
+		var zero V
+		return zero, err
+	}
+	slot.Store(&v)
+	return v, nil
+}
+
 // FolderTree returns the cached tree or builds one on demand. The cache is
 // invalidated by InvalidateCaches.
 func (cx *galleryCtx) FolderTree() ([]gallery.FolderNode, error) {
-	if p := cx.folderTree.Load(); p != nil {
-		return *p, nil
-	}
-	tree, err := gallery.FolderTree(cx.DB)
-	if err != nil {
-		return nil, err
-	}
-	cx.folderTree.Store(&tree)
-	return tree, nil
+	return cachedValue(&cx.folderTree, func() ([]gallery.FolderNode, error) { return gallery.FolderTree(cx.DB) })
 }
 
 // SourceCounts returns the cached source-tree counts or queries them on
 // demand. The cache is invalidated by InvalidateCaches.
 func (cx *galleryCtx) SourceCounts() (gallery.SourceCounts, error) {
-	if p := cx.sourceCounts.Load(); p != nil {
-		return *p, nil
-	}
-	sc, err := gallery.SourceCountsQuery(cx.DB)
-	if err != nil {
-		return gallery.SourceCounts{}, err
-	}
-	cx.sourceCounts.Store(&sc)
-	return sc, nil
+	return cachedValue(&cx.sourceCounts, func() (gallery.SourceCounts, error) { return gallery.SourceCountsQuery(cx.DB) })
 }
 
 // SeriesCounts returns the cached top-25 series labels for the
@@ -161,15 +160,7 @@ func (cx *galleryCtx) SourceCounts() (gallery.SourceCounts, error) {
 // series label - the sidebar partial gates rendering on the slice
 // being non-empty.
 func (cx *galleryCtx) SeriesCounts() ([]gallery.SeriesCount, error) {
-	if p := cx.seriesCounts.Load(); p != nil {
-		return *p, nil
-	}
-	sc, err := gallery.SeriesCountsQuery(cx.DB, 25)
-	if err != nil {
-		return nil, err
-	}
-	cx.seriesCounts.Store(&sc)
-	return sc, nil
+	return cachedValue(&cx.seriesCounts, func() ([]gallery.SeriesCount, error) { return gallery.SeriesCountsQuery(cx.DB, 25) })
 }
 
 // SourceLabelCounts returns the cached top-25 source labels for the
@@ -177,15 +168,7 @@ func (cx *galleryCtx) SeriesCounts() ([]gallery.SeriesCount, error) {
 // source label; the sidebar partial gates rendering on the slice
 // being non-empty.
 func (cx *galleryCtx) SourceLabelCounts() ([]gallery.SourceLabelCount, error) {
-	if p := cx.sourceLabelCounts.Load(); p != nil {
-		return *p, nil
-	}
-	sc, err := gallery.SourceLabelCountsQuery(cx.DB, 25)
-	if err != nil {
-		return nil, err
-	}
-	cx.sourceLabelCounts.Store(&sc)
-	return sc, nil
+	return cachedValue(&cx.sourceLabelCounts, func() ([]gallery.SourceLabelCount, error) { return gallery.SourceLabelCountsQuery(cx.DB, 25) })
 }
 
 // cachedCount lazy-loads and caches a scalar COUNT query. The atomic
@@ -272,54 +255,42 @@ func storeByCeiling[V any](slot *atomic.Pointer[map[string]V], level string, val
 	}
 }
 
+// ceilingCached routes cx.XUnder accessors through the shared "inactive
+// ceiling delegates to blind / cache / query / store" shape.
+func ceilingCached[V any](c *Ceiling, blind func() (V, error), slot *atomic.Pointer[map[string]V], query func() (V, error)) (V, error) {
+	if c == nil || !c.IsActive() {
+		return blind()
+	}
+	if v, ok := lookupByCeiling(slot, c.level); ok {
+		return v, nil
+	}
+	v, err := query()
+	if err != nil {
+		var zero V
+		return zero, err
+	}
+	storeByCeiling(slot, c.level, v)
+	return v, nil
+}
+
 // VisibleCountUnder returns the count of non-missing images excluding
 // any whose tag list intersects the ceiling's excluded rating ids. An
 // inactive ceiling delegates to the blind VisibleCount.
 func (cx *galleryCtx) VisibleCountUnder(c *Ceiling) (int, error) {
-	if c == nil || !c.IsActive() {
-		return cx.VisibleCount()
-	}
-	if v, ok := lookupByCeiling(&cx.visibleCountUnder, c.level); ok {
-		return v, nil
-	}
-	n, err := gallery.VisibleCountUnder(cx.DB, c.ExcludedTagIDs())
-	if err != nil {
-		return 0, err
-	}
-	storeByCeiling(&cx.visibleCountUnder, c.level, n)
-	return n, nil
+	return ceilingCached(c, cx.VisibleCount, &cx.visibleCountUnder,
+		func() (int, error) { return gallery.VisibleCountUnder(cx.DB, c.ExcludedTagIDs()) })
 }
 
 // InboxCountUnder is the inbox analogue of VisibleCountUnder.
 func (cx *galleryCtx) InboxCountUnder(c *Ceiling) (int, error) {
-	if c == nil || !c.IsActive() {
-		return cx.InboxCount()
-	}
-	if v, ok := lookupByCeiling(&cx.inboxCountUnder, c.level); ok {
-		return v, nil
-	}
-	n, err := gallery.InboxCountUnder(cx.DB, c.ExcludedTagIDs())
-	if err != nil {
-		return 0, err
-	}
-	storeByCeiling(&cx.inboxCountUnder, c.level, n)
-	return n, nil
+	return ceilingCached(c, cx.InboxCount, &cx.inboxCountUnder,
+		func() (int, error) { return gallery.InboxCountUnder(cx.DB, c.ExcludedTagIDs()) })
 }
 
 // FavoritedCountUnder is the favourited analogue.
 func (cx *galleryCtx) FavoritedCountUnder(c *Ceiling) (int, error) {
-	if c == nil || !c.IsActive() {
-		return cx.FavoritedCount()
-	}
-	if v, ok := lookupByCeiling(&cx.favoritedCountUnder, c.level); ok {
-		return v, nil
-	}
-	n, err := gallery.FavoritedCountUnder(cx.DB, c.ExcludedTagIDs())
-	if err != nil {
-		return 0, err
-	}
-	storeByCeiling(&cx.favoritedCountUnder, c.level, n)
-	return n, nil
+	return ceilingCached(c, cx.FavoritedCount, &cx.favoritedCountUnder,
+		func() (int, error) { return gallery.FavoritedCountUnder(cx.DB, c.ExcludedTagIDs()) })
 }
 
 // PhashMissingUnder returns the relations-hub "PhashMissing" count
@@ -330,19 +301,13 @@ func (cx *galleryCtx) FavoritedCountUnder(c *Ceiling) (int, error) {
 // dropped on any ingest / delete (InvalidateCaches) and on every
 // phash write (InvalidatePhashMissing).
 func (cx *galleryCtx) PhashMissingUnder(c *Ceiling) (int, error) {
-	if c == nil || !c.IsActive() {
-		return cx.cachedCount(&cx.phashMissing,
-			`SELECT COUNT(*) FROM images WHERE phash IS NULL AND is_missing = 0`)
-	}
-	if v, ok := lookupByCeiling(&cx.phashMissingUnder, c.level); ok {
-		return v, nil
-	}
-	n, err := gallery.PhashMissingUnder(cx.DB, c.ExcludedTagIDs())
-	if err != nil {
-		return 0, err
-	}
-	storeByCeiling(&cx.phashMissingUnder, c.level, n)
-	return n, nil
+	return ceilingCached(c,
+		func() (int, error) {
+			return cx.cachedCount(&cx.phashMissing,
+				`SELECT COUNT(*) FROM images WHERE phash IS NULL AND is_missing = 0`)
+		},
+		&cx.phashMissingUnder,
+		func() (int, error) { return gallery.PhashMissingUnder(cx.DB, c.ExcludedTagIDs()) })
 }
 
 // InvalidatePhashMissing drops the cached PhashMissing counts. Call
@@ -360,66 +325,26 @@ func (cx *galleryCtx) InvalidatePhashMissing() {
 // FolderTreeUnder returns the ceiling-aware folder tree. An inactive
 // ceiling delegates to the blind FolderTree cache.
 func (cx *galleryCtx) FolderTreeUnder(c *Ceiling) ([]gallery.FolderNode, error) {
-	if c == nil || !c.IsActive() {
-		return cx.FolderTree()
-	}
-	if v, ok := lookupByCeiling(&cx.folderTreeUnder, c.level); ok {
-		return v, nil
-	}
-	tree, err := gallery.FolderTreeUnder(cx.DB, c.ExcludedTagIDs())
-	if err != nil {
-		return nil, err
-	}
-	storeByCeiling(&cx.folderTreeUnder, c.level, tree)
-	return tree, nil
+	return ceilingCached(c, cx.FolderTree, &cx.folderTreeUnder,
+		func() ([]gallery.FolderNode, error) { return gallery.FolderTreeUnder(cx.DB, c.ExcludedTagIDs()) })
 }
 
 // SourceCountsUnder returns the ceiling-aware AI source breakdown.
 func (cx *galleryCtx) SourceCountsUnder(c *Ceiling) (gallery.SourceCounts, error) {
-	if c == nil || !c.IsActive() {
-		return cx.SourceCounts()
-	}
-	if v, ok := lookupByCeiling(&cx.sourceCountsUnder, c.level); ok {
-		return v, nil
-	}
-	sc, err := gallery.SourceCountsUnderQuery(cx.DB, c.ExcludedTagIDs())
-	if err != nil {
-		return gallery.SourceCounts{}, err
-	}
-	storeByCeiling(&cx.sourceCountsUnder, c.level, sc)
-	return sc, nil
+	return ceilingCached(c, cx.SourceCounts, &cx.sourceCountsUnder,
+		func() (gallery.SourceCounts, error) { return gallery.SourceCountsUnderQuery(cx.DB, c.ExcludedTagIDs()) })
 }
 
 // SeriesCountsUnder returns the ceiling-aware top-25 collection labels.
 func (cx *galleryCtx) SeriesCountsUnder(c *Ceiling) ([]gallery.SeriesCount, error) {
-	if c == nil || !c.IsActive() {
-		return cx.SeriesCounts()
-	}
-	if v, ok := lookupByCeiling(&cx.seriesCountsUnder, c.level); ok {
-		return v, nil
-	}
-	sc, err := gallery.SeriesCountsUnderQuery(cx.DB, 25, c.ExcludedTagIDs())
-	if err != nil {
-		return nil, err
-	}
-	storeByCeiling(&cx.seriesCountsUnder, c.level, sc)
-	return sc, nil
+	return ceilingCached(c, cx.SeriesCounts, &cx.seriesCountsUnder,
+		func() ([]gallery.SeriesCount, error) { return gallery.SeriesCountsUnderQuery(cx.DB, 25, c.ExcludedTagIDs()) })
 }
 
 // SourceLabelCountsUnder returns the ceiling-aware top-25 source labels.
 func (cx *galleryCtx) SourceLabelCountsUnder(c *Ceiling) ([]gallery.SourceLabelCount, error) {
-	if c == nil || !c.IsActive() {
-		return cx.SourceLabelCounts()
-	}
-	if v, ok := lookupByCeiling(&cx.sourceLabelCountsUnder, c.level); ok {
-		return v, nil
-	}
-	sc, err := gallery.SourceLabelCountsUnderQuery(cx.DB, 25, c.ExcludedTagIDs())
-	if err != nil {
-		return nil, err
-	}
-	storeByCeiling(&cx.sourceLabelCountsUnder, c.level, sc)
-	return sc, nil
+	return ceilingCached(c, cx.SourceLabelCounts, &cx.sourceLabelCountsUnder,
+		func() ([]gallery.SourceLabelCount, error) { return gallery.SourceLabelCountsUnderQuery(cx.DB, 25, c.ExcludedTagIDs()) })
 }
 
 // warmCaches primes the per-gallery aggregations so the first user-facing

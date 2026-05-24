@@ -45,6 +45,15 @@ type ServerConfig struct {
 	// /custom.css and linked from the layout after the bundled main.css
 	// so :root overrides win the cascade.
 	CustomCSS string `toml:"custom_css"`
+	// BooruName overrides the brand shown in every page <title>, the
+	// topbar wordmark, and the login screen. Empty resolves to "Monbooru"
+	// at render time so existing libraries upgrade without a config edit.
+	BooruName string `toml:"name"`
+	// BooruLogo is an optional absolute path to a logo / favicon image
+	// served at /custom.logo. When set, it replaces both the favicon link
+	// and the topbar logo on every page. Path scope is gated at config
+	// load against the same trusted-roots check as CustomCSS.
+	BooruLogo string `toml:"logo"`
 }
 
 // PathsConfig holds process-wide paths. Per-gallery DB and thumbnails

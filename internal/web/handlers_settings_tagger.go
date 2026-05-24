@@ -112,33 +112,7 @@ func (s *Server) settingsTaggerPost(w http.ResponseWriter, r *http.Request) {
 // settingsTaggerEnablePost flips one tagger's enabled flag to true without
 // going through the full tagger form. Mirrors settingsTaggerDisablePost.
 func (s *Server) settingsTaggerEnablePost(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.PathValue("name"))
-	if err := tagger.ValidateTaggerName(name); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	s.cfgMu.Lock()
-	found := false
-	for i, t := range s.cfg.Tagger.Taggers {
-		if t.Name == name {
-			s.cfg.Tagger.Taggers[i].Enabled = true
-			found = true
-			break
-		}
-	}
-	if !found {
-		catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
-		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers,
-			tagger.SeedTaggerInstance(name, true, catalog))
-	}
-	s.cfgMu.Unlock()
-	if err := s.saveConfig(); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
-		return
-	}
-	logx.Infof("settings: tagger %q enabled", name)
-	w.Header().Set("HX-Refresh", "true")
-	w.Write([]byte(`<div class="flash flash-ok">Tagger ` + html.EscapeString(name) + ` enabled.</div>`))
+	s.applyTaggerEnabled(w, strings.TrimSpace(r.PathValue("name")), true)
 }
 
 // settingsTaggerDisablePost flips one tagger's enabled flag to false without
@@ -146,7 +120,13 @@ func (s *Server) settingsTaggerEnablePost(w http.ResponseWriter, r *http.Request
 // settings page so the row's enabled state and Actions column reflect the
 // new state.
 func (s *Server) settingsTaggerDisablePost(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.PathValue("name"))
+	s.applyTaggerEnabled(w, strings.TrimSpace(r.PathValue("name")), false)
+}
+
+// applyTaggerEnabled flips a tagger's Enabled flag, seeding a TOML
+// entry from the on-disk catalog when one doesn't exist yet so the
+// preference persists across disable/enable round trips.
+func (s *Server) applyTaggerEnabled(w http.ResponseWriter, name string, enabled bool) {
 	if err := tagger.ValidateTaggerName(name); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -155,28 +135,28 @@ func (s *Server) settingsTaggerDisablePost(w http.ResponseWriter, r *http.Reques
 	found := false
 	for i, t := range s.cfg.Tagger.Taggers {
 		if t.Name == name {
-			s.cfg.Tagger.Taggers[i].Enabled = false
+			s.cfg.Tagger.Taggers[i].Enabled = enabled
 			found = true
 			break
 		}
 	}
 	if !found {
-		// Tagger existed on disk but had no TOML entry yet - add a disabled
-		// one so the preference persists. Catalog defaults still seed in
-		// (they don't fire until the row is enabled, but persisting them
-		// here keeps the disable→enable round-trip stable).
 		catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
 		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers,
-			tagger.SeedTaggerInstance(name, false, catalog))
+			tagger.SeedTaggerInstance(name, enabled, catalog))
 	}
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
 		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
 		return
 	}
-	logx.Infof("settings: tagger %q disabled", name)
+	verb := "enabled"
+	if !enabled {
+		verb = "disabled"
+	}
+	logx.Infof("settings: tagger %q %s", name, verb)
 	w.Header().Set("HX-Refresh", "true")
-	w.Write([]byte(`<div class="flash flash-ok">Tagger ` + html.EscapeString(name) + ` disabled.</div>`))
+	w.Write([]byte(`<div class="flash flash-ok">Tagger ` + html.EscapeString(name) + ` ` + verb + `.</div>`))
 }
 
 // settingsTaggerThresholdsGet renders the dialog body for one tagger's
@@ -416,7 +396,10 @@ func (s *Server) thresholdDialogData(name string) (rows []thresholdRow, global f
 	colors := s.categoryColors()
 
 	seen := map[string]bool{}
-	for _, cat := range emit {
+	appendRow := func(cat string) {
+		if seen[cat] {
+			return
+		}
 		seen[cat] = true
 		rows = append(rows, thresholdRow{
 			Category:   cat,
@@ -425,35 +408,18 @@ func (s *Server) thresholdDialogData(name string) (rows []thresholdRow, global f
 			MaxDefault: tagger.ResolveTopK(nil, cat),
 			Color:      colors[cat],
 		})
+	}
+	for _, cat := range emit {
+		appendRow(cat)
 	}
 	// Extra overrides (threshold or top-K) not in the profile's emitted
 	// set still render so the operator can edit / clear them (dispatch
 	// rules can land a label in any category).
 	for cat := range inst.CategoryThresholds {
-		if seen[cat] {
-			continue
-		}
-		seen[cat] = true
-		rows = append(rows, thresholdRow{
-			Category:   cat,
-			Override:   formatOverride(inst.CategoryThresholds, cat),
-			MaxTags:    formatTopKOverride(inst.PerCategoryTopK, cat),
-			MaxDefault: tagger.ResolveTopK(nil, cat),
-			Color:      colors[cat],
-		})
+		appendRow(cat)
 	}
 	for cat := range inst.PerCategoryTopK {
-		if seen[cat] {
-			continue
-		}
-		seen[cat] = true
-		rows = append(rows, thresholdRow{
-			Category:   cat,
-			Override:   formatOverride(inst.CategoryThresholds, cat),
-			MaxTags:    formatTopKOverride(inst.PerCategoryTopK, cat),
-			MaxDefault: tagger.ResolveTopK(nil, cat),
-			Color:      colors[cat],
-		})
+		appendRow(cat)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Category < rows[j].Category })
 	return rows, global, true

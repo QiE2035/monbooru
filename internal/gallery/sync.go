@@ -70,26 +70,7 @@ type SourceLabelCount struct {
 // it directly. Sorted Count desc, then alphabetical to make the
 // sidebar deterministic.
 func SeriesCountsQuery(database *db.DB, limit int) ([]SeriesCount, error) {
-	if limit <= 0 {
-		limit = 25
-	}
-	rows, err := database.Read.Query(
-		`SELECT series, COUNT(*) c FROM images
-		 WHERE is_missing = 0 AND series != ''
-		 GROUP BY series ORDER BY c DESC, series ASC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []SeriesCount
-	for rows.Next() {
-		var sc SeriesCount
-		if err := rows.Scan(&sc.Series, &sc.Count); err != nil {
-			return out, err
-		}
-		out = append(out, sc)
-	}
-	return out, rows.Err()
+	return SeriesCountsUnderQuery(database, limit, nil)
 }
 
 // SourceLabelCountsQuery returns the top source labels (by row count
@@ -98,60 +79,12 @@ func SeriesCountsQuery(database *db.DB, limit int) ([]SeriesCount, error) {
 // untouched rows. Sorted Count desc, then alphabetical for a
 // deterministic sidebar.
 func SourceLabelCountsQuery(database *db.DB, limit int) ([]SourceLabelCount, error) {
-	if limit <= 0 {
-		limit = 25
-	}
-	rows, err := database.Read.Query(
-		`SELECT source, COUNT(*) c FROM images
-		 WHERE is_missing = 0 AND source != ''
-		 GROUP BY source ORDER BY c DESC, source ASC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []SourceLabelCount
-	for rows.Next() {
-		var sc SourceLabelCount
-		if err := rows.Scan(&sc.Source, &sc.Count); err != nil {
-			return out, err
-		}
-		out = append(out, sc)
-	}
-	return out, rows.Err()
+	return SourceLabelCountsUnderQuery(database, limit, nil)
 }
 
 // SourceCountsQuery returns the source-tree counts for the given database.
 func SourceCountsQuery(database *db.DB) (SourceCounts, error) {
-	var out SourceCounts
-	rows, err := database.Read.Query(
-		`SELECT source_type, COUNT(*) FROM images WHERE is_missing = 0 GROUP BY source_type`,
-	)
-	if err != nil {
-		return out, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var src string
-		var n int
-		if err := rows.Scan(&src, &n); err != nil {
-			return out, err
-		}
-		switch src {
-		case "a1111":
-			out.A1111 += n
-			out.AI += n
-		case "comfyui":
-			out.Comfyui += n
-			out.AI += n
-		case "a1111,comfyui":
-			out.A1111 += n
-			out.Comfyui += n
-			out.AI += n
-		case "none", "":
-			out.None += n
-		}
-	}
-	return out, rows.Err()
+	return SourceCountsUnderQuery(database, nil)
 }
 
 // syncFileInfo is one walk-result entry: the on-disk path plus the SHA

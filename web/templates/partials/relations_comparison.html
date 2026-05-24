@@ -56,6 +56,14 @@
       <td>{{if $R.Format}}{{$R.Format}}{{else}}—{{end}}</td>
     </tr>
     {{end}}
+    {{if or $L.Collection $R.Collection}}
+    {{- $same := and (ne $L.Collection "") (eq $L.Collection $R.Collection) -}}
+    <tr>
+      <th>Collection</th>
+      <td{{if $same}} class="cmp-match" title="Same collection"{{end}}>{{if $L.Collection}}{{$L.Collection}}{{else}}—{{end}}</td>
+      <td{{if $same}} class="cmp-match" title="Same collection"{{end}}>{{if $R.Collection}}{{$R.Collection}}{{else}}—{{end}}</td>
+    </tr>
+    {{end}}
   </tbody>
 </table>
 {{end}}

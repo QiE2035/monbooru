@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Title}}</title>
   <meta name="csrf-token" content="{{.CSRFToken}}">
-  <link rel="icon" type="image/png" href="/static/favicon.png">
+  <link rel="icon" type="image/png" href="{{.BooruLogo}}">
   <link rel="stylesheet" href="/static/main.css">
   {{if .CustomCSS}}<link rel="stylesheet" href="/custom.css">{{end}}
   <script src="/static/htmx.min.js" defer></script>
@@ -16,12 +16,12 @@
   <div id="topbar">
     <button id="sidebar-toggle" aria-label="Toggle sidebar">☰</button>
     <a href="/" id="logo">
-      <img src="/static/logo.png" alt="" class="topbar-logo">
-      <span>MONBOORU</span>
+      <img src="{{.BooruLogo}}" alt="" class="topbar-logo">
+      <span>{{.BooruName}}</span>
     </a>
     <nav id="nav">
-      <a href="/"        {{if eq .ActiveNav "gallery"}} class="active"{{end}}>Images</a>
-      <a href="/upload"  {{if eq .ActiveNav "upload"}}  class="active"{{end}}>Upload</a>
+      <a href="/"        {{if and (eq .ActiveNav "gallery") (not .InboxNavActive)}} class="active"{{end}}>Images</a>
+      <a href="/?q=inbox:true" {{if .InboxNavActive}} class="active"{{end}}>Inbox{{if gt .InboxCount 0}} ({{.InboxCount}}){{end}}</a>
       <a href="/categories" {{if eq .ActiveNav "categories"}} class="active"{{end}}>Categories</a>
       <a href="/tags"    {{if eq .ActiveNav "tags"}}    class="active"{{end}}>Tags</a>
       <a href="/relations" {{if eq .ActiveNav "relations"}} class="active"{{end}}>Relations</a>
@@ -118,7 +118,7 @@
             <tr><td><kbd>s</kbd> / <kbd>/</kbd></td><td>Focus search</td></tr>
             <tr><td><kbd>Esc</kbd></td><td>Close dialog · back</td></tr>
             <tr><td><kbd>g g</kbd></td><td>Gallery</td></tr>
-            <tr><td><kbd>g u</kbd></td><td>Upload</td></tr>
+            <tr><td><kbd>g i</kbd></td><td>Inbox</td></tr>
             <tr><td><kbd>g c</kbd></td><td>Categories</td></tr>
             <tr><td><kbd>g t</kbd></td><td>Tags</td></tr>
             <tr><td><kbd>g s</kbd></td><td>Settings</td></tr>
@@ -140,7 +140,7 @@
             <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>Previous / next page</td></tr>
             <tr><td><kbd>g g</kbd> / <kbd>G</kbd></td><td>First / last page</td></tr>
             <tr><td><kbd>p</kbd></td><td>Page-jump dialog</td></tr>
-            <tr><td><kbd>F</kbd> / <kbd>I</kbd></td><td>Toggle favorites / inbox filter</td></tr>
+            <tr><td><kbd>F</kbd></td><td>Toggle favorites filter</td></tr>
             <tr><td><kbd>R</kbd></td><td>Random sort</td></tr>
             <tr><td><kbd>O</kbd> / <kbd>D</kbd></td><td>Cycle sort / flip direction</td></tr>
             <tr><td><kbd>a</kbd></td><td>Actions chooser</td></tr>
@@ -238,6 +238,17 @@
             <tr><td><kbd>o</kbd></td><td>Open page in new tab</td></tr>
             <tr><td>Click page / <kbd>v</kbd></td><td>Zoom page in viewer</td></tr>
             <tr><td><kbd>Esc</kbd> / <kbd>Backspace</kbd></td><td>Back</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section data-surface="pages">
+        <h4>Archive pages grid</h4>
+        <table>
+          <tbody>
+            <tr><td><kbd>↑ ↓ ← →</kbd></td><td>Move grid cursor</td></tr>
+            <tr><td><kbd>Enter</kbd></td><td>Open focused page in the reader</td></tr>
+            <tr><td><kbd>Home</kbd> / <kbd>End</kbd></td><td>First / last cell</td></tr>
+            <tr><td><kbd>Esc</kbd> / <kbd>Backspace</kbd></td><td>Back to detail</td></tr>
           </tbody>
         </table>
       </section>

@@ -335,30 +335,6 @@
 </dialog>
 
 <script>
-// Cross-navigation flash slot: tag mutations that reload or redirect set
-// sessionStorage.tagsFlash via the HX-Trigger `tagsFlash` event; the next
-// /tags load drains the value into #tag-flash. Same-page mutations
-// (category change) still swap straight into #tag-flash via HTMX.
-(function () {
-  var slot = document.getElementById('tag-flash');
-  if (!slot) return;
-  var msg = sessionStorage.getItem('tagsFlash');
-  if (!msg) return;
-  sessionStorage.removeItem('tagsFlash');
-  var div = document.createElement('div');
-  div.className = 'flash flash-ok';
-  div.textContent = msg;
-  slot.appendChild(div);
-})();
-document.body.addEventListener('tagsFlash', function (e) {
-  // htmx 1.9 surfaces the JSON string value on detail.value; fall back to
-  // detail when the header used the bare-string form.
-  var val = e.detail && typeof e.detail === 'object' ? e.detail.value : e.detail;
-  if (typeof val === 'string' && val !== '') {
-    sessionStorage.setItem('tagsFlash', val);
-  }
-});
-
 document.querySelectorAll('.btn-rename-trigger').forEach(function(btn) {
   btn.addEventListener('click', function() {
     var id = this.dataset.id;
@@ -397,9 +373,12 @@ document.querySelectorAll('.btn-delete-tag').forEach(function(btn) {
       }).then(function(r) {
         if (r.ok) {
           // The DELETE returns 204; raw fetch doesn't process HX-Trigger,
-          // so seed the tagsFlash slot directly before the reload.
-          sessionStorage.setItem('tagsFlash',
-            isRating ? 'Stripped "' + name + '" from every image.' : 'Tag "' + name + '" deleted.');
+          // so seed the shared stash directly before the reload.
+          var msgText = isRating
+            ? 'Stripped "' + name + '" from every image.'
+            : 'Tag "' + name + '" deleted.';
+          sessionStorage.setItem('monbooru_action_flash',
+            JSON.stringify({h: msgText, k: 'ok', t: Date.now()}));
           window.location.reload();
         } else {
           r.text().then(function(t) {
@@ -459,8 +438,9 @@ function handleMergeResult(event) {
 
 function handleAliasCreateResult(event) {
   // The success path returns 204 + HX-Redirect; htmx navigates and the
-  // tagsFlash event seeds the #tag-flash slot on the destination page.
-  // Errors stay in the dialog as flash-err so the user can correct input.
+  // shared monbooru:flash listener seeds the #tag-flash slot on the
+  // destination page. Errors stay in the dialog as flash-err so the
+  // user can correct input.
   var elt = event.detail.elt;
   if (elt && elt.querySelector && elt.querySelector('.flash-err')) return;
 }
@@ -478,10 +458,11 @@ function handleAliasCreateResult(event) {
 
 function handleTagCreateResult(event) {
   // The success path returns 204 + HX-Redirect to /tags?q=<name>; htmx
-  // navigates and the tagsFlash event seeds the destination's #tag-flash
-  // slot. A trailing window.location.reload() here would race and reload
-  // the current URL (without the q=), undoing the redirect. Errors stay
-  // in the dialog as flash-err so the user can correct input.
+  // navigates and the shared monbooru:flash listener seeds the
+  // destination's #tag-flash slot. A trailing window.location.reload()
+  // here would race and reload the current URL (without the q=),
+  // undoing the redirect. Errors stay in the dialog as flash-err so the
+  // user can correct input.
   var elt = event.detail.elt;
   if (elt && elt.querySelector && elt.querySelector('.flash-err')) return;
 }
@@ -508,7 +489,8 @@ function handleImplicationAdded(event) {
   // flash body. Either way, re-fetch the dialog body so new rows render
   // without a full page refresh, and clear the input so the user can
   // type the next batch. The header carries a JSON object since the
-  // tagsFlash event piggybacks on the same trigger, so match by substring.
+  // monbooru:flash event piggybacks on the same trigger, so match by
+  // substring.
   var hdr = event.detail.xhr.getResponseHeader('HX-Trigger') || '';
   var added = hdr.indexOf('implication-added') !== -1;
   if (added) {

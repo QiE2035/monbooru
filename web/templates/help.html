@@ -45,7 +45,7 @@
         <tr><td><code>cat:character</code></td><td>Images with any tag in the given category.</td></tr>
         <tr><td><code>tagged:true</code></td><td>Only images with at least one tag. <code>tagged:false</code> restricts to images with no tags.</td></tr>
         <tr><td><code>autotagged:true</code></td><td>Only images with at least one auto-tag. <code>autotagged:false</code> restricts to images with no auto-tags.</td></tr>
-        <tr><td><code>tagcount:&gt;=10</code></td><td>Number of tags on the image (counts every row, including implied tags fanned out from an implication).</td></tr>
+        <tr><td><code>tagcount:&gt;=10</code></td><td>Number of tags on the image (counts every row, including implied tags fanned out from an implication). Also accepts the <code>X..Y</code> range shape (e.g. <code>tagcount:5..20</code>) and the half-open <code>..Y</code> / <code>X..</code> forms.</td></tr>
         <tr><td><code>rating:explicit</code></td><td>Filter by rating (<code>general</code>/<code>sensitive</code>/<code>questionable</code>/<code>explicit</code>). When an image carries more than one rating tag the highest wins. The footer's <code>sfw</code> level corresponds to <code>rating:general</code>.</td></tr>
       </tbody>
     </table>
@@ -63,6 +63,7 @@
         <tr><td><code>ratio:&gt;=1.5</code></td><td>Aspect ratio (width / height) comparison.</td></tr>
         <tr><td><code>duration:&gt;=30</code></td><td>Video duration in seconds. Non-video rows never match.</td></tr>
         <tr><td><code>pages:&gt;=100</code></td><td>Comparison filter on a archive's page count. Non-archive rows count as 0 pages.</td></tr>
+        <tr><td><code>X..Y</code></td><td>Every numeric filter above (<code>size</code>, <code>width</code>, <code>height</code>, <code>ratio</code>, <code>duration</code>, <code>pages</code>) accepts the inclusive range shape <code>X..Y</code>, and the half-open <code>..Y</code> / <code>X..</code> forms - same syntax as <code>date:</code>.</td></tr>
         <tr><td><code>hash:abcd…</code></td><td>Exact-match on the image's SHA-256 (case-insensitive).</td></tr>
         <tr><td><code>id:123</code></td><td>Exact match on the image id.</td></tr>
         <tr><td><code>missing:true</code></td><td>Show images whose files are missing from disk.</td></tr>
@@ -106,6 +107,7 @@
         <tr><td><code>date:&gt;2024-01-01</code></td><td>Images ingested after a date.</td></tr>
         <tr><td><code>date:2024-01..2024-06</code></td><td>Images ingested within a date range.</td></tr>
         <tr><td><code>date:2024-03-15</code></td><td>Images ingested on an exact date.</td></tr>
+        <tr><td><code>date:2024-03-15T19:23..2024-03-15T19:30</code></td><td>Same shape with minute (or <code>:SS</code> second) precision; what the inbox time-cluster headers link to.</td></tr>
         <tr><td><code>via:upload</code></td><td>Filter by how the image was added: <code>ingest</code> (watcher / sync) or <code>upload</code> (web form). API uploads carry the caller-supplied string.</td></tr>
       </tbody>
     </table>
@@ -145,13 +147,8 @@
 
   <section id="upload">
     <h3>Uploading Images</h3>
-    <p>Use the <a href="/upload">Upload</a> page to add images directly through your browser.</p>
-    <ul>
-      <li>Select one or more files (JPEG, PNG, WebP, GIF, MP4, WebM, or a supported archive format : cbz or zip).</li>
-      <li>Optionally add tags that will be applied to all uploaded files.</li>
-      <li>Choose a destination folder (e.g. <code>2026/april</code>) to place the files under; leave blank to save at the gallery root. Missing folders are created automatically.</li>
-    </ul>
-    <p>From the gallery, open the <strong>Actions</strong> chooser (button next to the search bar, or press <kbd>a</kbd>) to save the search, add/remove tags, auto-tag, move, or delete every image in the current search. To scope an action to a few images, check their thumbnails and use the corresponding button in the batch bar.</p>
+    <p>Open the <a href="/?q=inbox:true">Inbox</a> from the top menu. The drop zone at the top of the grid accepts files (JPEG, PNG, WebP, GIF, MP4, WebM, or a supported archive format: cbz or zip) : drag them in or pick them through the <strong>Choose files</strong> button.</p>
+    <p>From the gallery, open the <strong>Actions</strong> chooser (button next to the search bar) to save the search, add/remove tags, auto-tag, move, or delete every image in the current search. To scope an action to a few images, check their thumbnails and use the corresponding button in the batch bar.</p>
   </section>
 
   <hr class="help-sep">
@@ -191,9 +188,10 @@
     <h3>Inbox</h3>
     <p>Every newly ingested or uploaded image lands in the <strong>inbox</strong>. Flip it to <strong>archived</strong> (curated) once you've reviewed the tags.</p>
     <ul>
-      <li>Gallery toolbar: the <kbd>✱</kbd> button left of the favorites toggle filters to the inbox.</li>
-      <li>Image detail: the <kbd>✱</kbd> button left of the favorite toggles the current image between inbox and archived.</li>
+      <li>Top menu: the <a href="/?q=inbox:true">Inbox (N)</a> entry jumps to the inbox view. The parenthesised count tracks the post-ceiling match count.</li>
+      <li>Image detail: the <strong>In inbox</strong> / <strong>Archived</strong> button left of the favorite toggles the current image between inbox and archived.</li>
       <li>Batch surface: the gallery's Actions chooser and the selection batch bar each carry a single <strong>Toggle inbox</strong> entry that flips every targeted row (inbox rows become archived; archived become inbox).</li>
+      <li>Time clusters: while the gallery is sorted newest-first on an <code>inbox:true</code> search, contiguous ingests are grouped together.</li>
     </ul>
   </section>
 
@@ -209,7 +207,7 @@
 
   <section id="manga">
     <h3>Manga, Comics &amp; Archives</h3>
-    <p>CBZ and ZIP files containing images ingests as one library row, like an image. The cover thumbnail is page 1 (natural-sorted across the archive).</p>
+    <p>CBZ and ZIP files containing images ingest as one library row, like an image. The cover thumbnail is page 1 (natural-sorted across the archive).</p>
     <p>The detail page for an archive gains:</p>
     <ul>
       <li><strong>Open in reader</strong> - opens the reader at page 1.</li>
@@ -230,9 +228,8 @@
       <li><strong>Derivative</strong> - directed source &rarr; derivative edge. A derivative has exactly one source it is based on; a source can carry many derivatives.</li>
       <li><strong>Not related</strong> - a rejected pair recorded so the find-pairs queue never resurfaces it.</li>
     </ul>
-    <p>Open the <a href="/relations">Relations</a> page to start a session to walk candidate pairs, and cleanup duplicates. </p>
-    <p>Two duplicates walkers cover the cleanup:</p>
-    <p>From any image's detail page, <strong>Add a relation</strong> opens a dialog for declaring an edge against another image directly without going through a session.</p>
+    <p>Open the <a href="/relations">Relations</a> page to start a session to walk candidate pairs, and cleanup duplicates.</p>
+    <p>From any image's detail page, <strong>Add a relation</strong> opens a dialog for declaring an edge against another image directly without going through a session. If the chosen pair already carries a different relation, the dialog surfaces an <strong>Overwrite existing relation</strong> button that replaces the conflicting edge in one transaction.</p>
   </section>
 
   <hr class="help-sep">

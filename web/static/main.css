@@ -91,6 +91,7 @@ button:disabled:hover, button[disabled]:hover { border-color: var(--border); }
   align-items: center;
   gap: 6px;
 }
+#logo span { text-transform: uppercase; }
 #logo:hover { color: var(--accent); text-decoration: none; }
 .topbar-logo {
   height: 40px;
@@ -472,6 +473,24 @@ button.footer-rating-link:hover { color: var(--fg); }
   gap: 8px;
 }
 
+.thumb-cluster-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px 2px 4px;
+  color: var(--fg-dim);
+}
+.thumb-cluster-rule {
+  flex: 1;
+  height: 0;
+  border-top: 1px dashed var(--border);
+}
+.thumb-cluster-label { white-space: nowrap; }
+.thumb-cluster-range { color: var(--fg-dim); text-decoration: none; border-bottom: 1px dotted var(--fg-dim); }
+.thumb-cluster-range:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.thumb-cluster-select { white-space: nowrap; }
+
 .thumb-card {
   position: relative;
   background: var(--bg-surface);
@@ -558,7 +577,7 @@ button.footer-rating-link:hover { color: var(--fg); }
   height: 12px;
   fill: currentColor;
 }
-.badge-inbox { color: var(--accent); }
+.badge-inbox { font-size: 10px; line-height: 1; width: auto; }
 .fav-heart { color: var(--error); }
 .badge-missing { color: var(--warning); }
 /* The play badge is rendered as a CSS triangle: a 9x12 right-pointing
@@ -967,7 +986,7 @@ kbd {
   border: 1px solid var(--border);
   padding: 32px;
 }
-.login-box h1 { margin-bottom: 24px; font-size: 18px; letter-spacing: 2px; }
+.login-box h1 { margin-bottom: 24px; font-size: 18px; letter-spacing: 2px; text-transform: uppercase; }
 .login-box input { width: 100%; margin-bottom: 12px; }
 .login-box button { width: 100%; padding: 8px; }
 .login-error { color: var(--error); font-size: 12px; margin-bottom: 12px; }
@@ -1239,12 +1258,12 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .btn-sm {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  color: var(--fg-dim);
+  color: var(--fg);
   padding: 2px 8px;
   font-size: 12px;
   cursor: pointer;
 }
-.btn-sm:hover { color: var(--fg); border-color: var(--fg-dim); }
+.btn-sm:hover { border-color: var(--fg-dim); }
 /* The metadata-table edit markers (Source / URL / Series) read as inline
    links sitting next to the value, not buttons. Strip the .btn-sm chrome
    on these specific buttons and lean on the accent-coloured underline-on-
@@ -1731,6 +1750,13 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
   .upload-actions { flex-direction: row; }
 }
 .upload-drop-zone.drag-over { border-color: var(--fg); background: var(--bg); }
+/* Inline inbox upload: full-width drop zone that renders above the
+   thumbnail clusters on /?q=inbox:true. The footer rule reuses the
+   cluster-header shape so the [Upload] chip lines up with [Select]/
+   [Unselect] on the cluster headers below. */
+.inbox-upload { margin: 0 0 12px; }
+.inbox-upload .upload-drop-zone { min-height: 120px; }
+.inbox-upload-footer { padding: 4px 4px 6px 4px; }
 .upload-drop-hint { color: var(--fg-dim); font-size: 12px; }
 .upload-file-list { list-style: none; margin: 6px 0 0; padding: 0; font-size: 12px; color: var(--fg-dim); }
 .upload-file-list li { padding: 1px 0; }
@@ -1849,6 +1875,14 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 .merge-dup-choice label:hover { border-color: var(--accent); }
 .merge-dup-thumb { width: 48px; height: 48px; object-fit: cover; border: 1px solid var(--border); }
 .merge-dup-meta { color: var(--fg-dim); font-size: 12px; }
+.relations-card-expand { margin-top: 8px; }
+.relations-card-summary { cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 4px 0; list-style: none; }
+.relations-card-summary::-webkit-details-marker { display: none; }
+.relations-card-summary::before { content: "▸"; color: var(--fg-dim); display: inline-block; width: 1em; }
+details[open] > .relations-card-summary::before { content: "▾"; }
+.relations-card-summary-thumb { width: 64px; aspect-ratio: 1 / 1; }
+.relations-card-summary-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.relations-card-summary-meta { color: var(--fg-dim); margin-left: 4px; }
 .relations-card-thumbs { display: flex; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
 .relations-card-thumbs-pair { align-items: center; flex-wrap: nowrap; justify-content: center; }
 .relations-card-arrow { color: var(--fg-dim); font-size: 20px; padding: 0 4px; }
@@ -1856,8 +1890,12 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 /* Version chain cards read left to right: oldest revision at the
    left, each newer step separated by a -> arrow. Wraps onto a second
    row when the chain is long enough that 180px thumbs don't fit. */
-.relations-card-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 8px; }
-.relations-chain-arrow { color: var(--fg-dim); font-size: 20px; line-height: 1; }
+.relations-card-chain { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; margin-top: 8px; }
+.relations-chain-arrow { color: var(--fg-dim); font-size: 20px; line-height: 1; align-self: center; }
+/* Each chain entry stacks the thumb above its per-thumb action
+   (or "^ This image" label) so the operator reads the action right
+   under the revision it targets. */
+.relations-chain-cell { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 /* Derivative tree cards stack one row per node in DFS order. The
    .relations-tree-prefix block before each thumb carries one
    .relations-tree-trunk span per indent column, each painting a
@@ -1867,7 +1905,19 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
    the thumb, "elbow" stops the vertical at the row centre. Adjacent
    rows have no gap so the verticals form continuous trunks. */
 .relations-card-tree { display: flex; flex-direction: column; margin-top: 8px; }
+/* The trunk-line spans (.relations-tree-trunk) rely on align-items:
+   stretch to draw vertical guides spanning the full row height; their
+   ::before pseudo-elements anchor top:0 / bottom:0 to the trunk box.
+   align-items:center would collapse the prefix div to its content
+   height and break the verticals. The inline label / action elements
+   self-center via align-self instead. */
 .relations-tree-row { display: flex; align-items: stretch; min-height: 180px; }
+/* Inline action / "this image" marker sits to the right of the row's
+   thumb in the derivative tree so the unlink target reads "thumb +
+   action" on one line; in dup / alt / version cells the same class
+   labels the current image below its thumb. */
+.relations-inline-label { font-size: 12px; color: var(--fg-dim); padding: 0 8px; align-self: center; }
+.relations-inline-action { padding: 0 8px; display: inline-flex; align-self: center; }
 .relations-tree-prefix { display: flex; align-items: stretch; flex-shrink: 0; }
 .relations-tree-trunk { width: 32px; align-self: stretch; position: relative; }
 .relations-tree-trunk[data-style="line"]::before,
@@ -1888,9 +1938,10 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
   width: 16px; border-top: 1px solid var(--fg-dim);
 }
 /* On the per-image relations page the chain / tree centres around the
-   image whose page the operator is on; thicken the border so the
-   reader's eye lands on it before scanning out to neighbours. */
-.relations-tree-current { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+   image whose page the operator is on; an outline (negative offset)
+   paints uniformly over both the image and the caption strip, so the
+   accent ring looks the same thickness on every side of the cell. */
+.relations-tree-current { border-color: var(--accent); outline: 3px solid var(--accent); outline-offset: -3px; }
 .relations-card-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .relations-card-thumb:hover { border-color: var(--accent); }
 .relations-card-id { position: absolute; bottom: 2px; right: 2px; font-size: 10px; background: rgba(0,0,0,0.6); color: #fff; padding: 0 3px; }
@@ -1949,8 +2000,8 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 }
 .session-cell-img {
   display: block;
-  max-width: 100%;
-  max-height: 65vh;
+  width: 100%;
+  height: 65vh;
   object-fit: contain;
   background: #000;
   border: 1px solid var(--border);
@@ -2085,6 +2136,7 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 .relations-compare-table thead th:nth-child(3) { width: 41%; }
 .relations-compare-table tbody th { color: var(--fg-dim); font-weight: normal; width: 18%; }
 .relations-compare-table .cmp-win { background: color-mix(in srgb, var(--success) 12%, transparent); color: var(--fg); }
+.relations-compare-table .cmp-match { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--fg); }
 .relations-compare-table .cmp-tag-cell { word-break: break-word; }
 .session-empty { padding: 16px; }
 @media (max-width: 720px) {
@@ -2124,10 +2176,12 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
    Tab matches .filter-btn so the toolbar reads consistent with the
    rest of the app. */
 #relations-browse-page h2 { font-size: 14px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
-.browse-tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
+.browse-tabs { display: flex; align-items: center; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
 .browse-tab { font-size: 12px; padding: 4px 10px; border: 1px solid var(--border); background: var(--bg-input); color: var(--fg-dim); text-decoration: none; }
 .browse-tab:hover { color: var(--fg); border-color: var(--fg-dim); }
 .browse-tab-active { color: var(--accent); border-color: var(--accent); }
+.browse-tabs .browse-sort { margin: 0 0 0 auto; padding: 0; }
+.browse-tabs .browse-sort .filter-label { flex-basis: auto; }
 .browse-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .browse-table th, .browse-table td { padding: 6px 8px; border: 1px solid var(--border); text-align: left; vertical-align: middle; }
 .browse-table th { color: var(--fg-dim); background: var(--bg-surface); }
@@ -2441,7 +2495,32 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
   flex-direction: column;
   line-height: 1.1;
 }
+/* Related-images panel pins the series chip to the top-right (opposite
+   the bottom-right "Same collection" marker), so the operator reads
+   "what collection" up top and "why this card is here" down at the
+   bottom. Text right-aligns inside the chip so the order number and
+   series name sit flush with the chip's right edge - reading naturally
+   along the same axis as the chip's pinned corner. left: 4px (paired
+   with right: 4px) caps the chip's width at the card's inner width so
+   the name span has a real box to ellipsis inside; left: auto would
+   let the chip grow off the card's left edge as the name lengthens.
+   The gallery grid keeps the default bottom-left position to stay out
+   of the cbz manga-pill corner. */
+.related-entries .related-entry-card .series-pill {
+  top: 4px;
+  right: 4px;
+  bottom: auto;
+  left: 4px;
+  max-width: none;
+  text-align: right;
+  align-items: flex-end;
+  pointer-events: auto;
+}
 .series-pill-name {
+  /* max-width: 100% pins the span to the chip's width so the ellipsis
+     actually clips; without it the nowrap text grows past the chip
+     box and overflows the card. */
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

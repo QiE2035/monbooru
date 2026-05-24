@@ -18,7 +18,7 @@ var chordTimeoutMs = 500;
 var chordMap = {
   g: {
     g: '/',
-    u: '/upload',
+    i: '/?q=inbox:true',
     c: '/categories',
     t: '/tags',
     s: '/settings',
@@ -813,10 +813,6 @@ document.addEventListener('keydown', function(e) {
       var fbtn = document.getElementById('fav-filter-btn');
       if (fbtn) { e.preventDefault(); fbtn.click(); return; }
     }
-    if (e.key === 'I') {
-      var ibtn = document.getElementById('inbox-filter-btn');
-      if (ibtn) { e.preventDefault(); ibtn.click(); return; }
-    }
     if (e.key === 'R') {
       var rbtn = document.getElementById('random-sort-btn');
       if (rbtn) { e.preventDefault(); rbtn.click(); return; }
@@ -1150,6 +1146,27 @@ document.addEventListener('change', function(e) {
   e.target.blur();
 });
 
+// Inbox cluster [Select] / [Unselect] buttons: walk forward through
+// the grid's children, ticking or unticking every thumbnail checkbox
+// until the next cluster header (or the end). Both share the same
+// sibling walk; the only difference is the target checked state.
+document.addEventListener('click', function(e) {
+  var sel = e.target.closest('[data-cluster-select]');
+  var uns = e.target.closest('[data-cluster-unselect]');
+  if (!sel && !uns) return;
+  e.preventDefault();
+  var header = (sel || uns).closest('.thumb-cluster-header');
+  if (!header) return;
+  var target = !!sel;
+  var node = header.nextElementSibling;
+  while (node && !node.classList.contains('thumb-cluster-header')) {
+    var cb = node.querySelector ? node.querySelector('.thumb-checkbox') : null;
+    if (cb) cb.checked = target;
+    node = node.nextElementSibling;
+  }
+  updateBatchBar();
+});
+
 // While the batch bar is up, a plain left-click on a thumbnail toggles
 // its checkbox instead of opening the detail page. Modifier-clicks
 // (middle, ctrl/cmd, shift) keep the link's default so "open in tab"
@@ -1367,50 +1384,114 @@ document.addEventListener('click', function(e) {
 
 // Handles the response of the detail-page external-field dialogs
 // (Source / URL / Collection / Order). On 204 the server sends back
-// HX-Refresh so the page reloads with the new value; the field label is
-// stashed in sessionStorage so the post-reload handler below can drop a
-// top-of-page flash. Validation errors land 200 OK with a flash-err
-// body the dialog already targets, so the dialog stays open and the
-// operator can correct the input.
+// HX-Refresh so the page reloads with the new value; the post-reload
+// flash is delivered via the shared monbooru:flash HX-Trigger / picker.
+// Validation errors land 200 OK with a flash-err body the dialog already
+// targets, so the dialog stays open and the operator can correct the
+// input.
 //
 // HTMX events bubble: the input inside the form fires hx-get against
 // the collection / source suggest endpoints, and those return 204 when
 // no matches exist. Without the FORM gate below, every empty suggest
 // response would slip past the status check and close the dialog
 // mid-typing.
-function onExternalEditResponse(event, dialogID, label) {
+function onExternalEditResponse(event, dialogID) {
   if (!event || !event.detail || !event.detail.xhr) return;
   if (!event.detail.elt || event.detail.elt.tagName !== 'FORM') return;
   if (event.detail.xhr.status !== 204) return;
-  try { sessionStorage.setItem('monbooru_external_flash', label); } catch (e) {}
   var dlg = document.getElementById(dialogID);
   if (dlg) dlg.close();
 }
 
-// Picks up the stashed external-edit flash after a save-triggered reload
-// and surfaces it in #external-edit-flash. Cleared after 5 s so the
-// notice doesn't hang around forever.
-document.addEventListener('DOMContentLoaded', function() {
-  var slot = document.getElementById('external-edit-flash');
-  if (!slot) return;
-  var label;
-  try { label = sessionStorage.getItem('monbooru_external_flash'); } catch (e) { return; }
-  if (!label) return;
-  try { sessionStorage.removeItem('monbooru_external_flash'); } catch (e) {}
-  var div = document.createElement('div');
-  div.className = 'flash flash-ok';
-  div.textContent = label + ' updated.';
-  slot.appendChild(div);
+// actionFlashSlots is the ordered list of per-page slot ids the shared
+// flash helpers fall through. Each page that wants action feedback ships
+// one of these slots in its template; the page only ever has one of them.
+var actionFlashSlots = ['gallery-flash', 'detail-flash', 'tag-flash', 'cat-flash'];
+
+function findActionFlashSlot() {
+  for (var i = 0; i < actionFlashSlots.length; i++) {
+    var el = document.getElementById(actionFlashSlots[i]);
+    if (el) return el;
+  }
+  return null;
+}
+
+// showActionFlash writes html into the first available flash slot and
+// auto-clears after 5 s. Stale content is replaced on every call so
+// back-to-back actions don't pile up. kind picks the flash-ok / flash-err
+// palette; html is inserted as-is when wrapped in a .flash element,
+// otherwise wrapped.
+function showActionFlash(html, kind) {
+  var slot = findActionFlashSlot();
+  if (!slot || !html) return;
+  var cls = kind === 'err' ? 'flash-err' : 'flash-ok';
+  if (/class\s*=\s*"[^"]*flash\b/.test(html)) {
+    slot.innerHTML = html;
+  } else {
+    slot.innerHTML = '<div class="flash ' + cls + '">' + html + '</div>';
+  }
+  var token = String(Date.now()) + Math.random();
+  slot.dataset.token = token;
   setTimeout(function() {
-    if (slot.contains(div)) slot.removeChild(div);
+    if (slot.dataset.token === token) slot.innerHTML = '';
   }, 5000);
+}
+
+// stashActionFlash queues a flash for the next page load - used when an
+// action triggers a full reload / redirect and the in-place showActionFlash
+// would be wiped before the user could read it. The timestamp lets the
+// picker reject stashes older than the staleness window so a non-navigating
+// action's stash doesn't poison a later, unrelated navigation.
+function stashActionFlash(html, kind) {
+  if (!html) return;
+  try {
+    sessionStorage.setItem('monbooru_action_flash',
+      JSON.stringify({h: html, k: kind || 'ok', t: Date.now()}));
+  } catch (e) {}
+}
+
+var showGalleryFlash = showActionFlash;
+var stashGalleryFlash = stashActionFlash;
+
+// stashStalenessMs caps how long a stashed flash survives before the picker
+// drops it. Long enough to cover a normal action+navigation round-trip,
+// short enough that a stash left behind by a non-navigating action doesn't
+// pop on the next page the user visits five minutes later.
+var stashStalenessMs = 10000;
+
+document.addEventListener('DOMContentLoaded', function() {
+  if (!findActionFlashSlot()) return;
+  var raw;
+  try { raw = sessionStorage.getItem('monbooru_action_flash'); } catch (e) { return; }
+  if (!raw) return;
+  try { sessionStorage.removeItem('monbooru_action_flash'); } catch (e) {}
+  var stash;
+  try { stash = JSON.parse(raw); } catch (e) { return; }
+  if (!stash || !stash.h) return;
+  if (stash.t && Date.now() - stash.t > stashStalenessMs) return;
+  showActionFlash(stash.h, stash.k);
 });
 
-// Handles the dialog response for /relations/add. On a 2xx that drops a
-// `.flash-ok` body into the in-dialog target, lifts the flash to the
-// detail page's top-of-page slot, closes the dialog, and pings the
-// related-entries panel to reload. Error responses leave the dialog
-// open with the inline flash so the operator can correct the input.
+// HX-Trigger bridge: every handler that wants a success flash emits
+// `{"monbooru:flash": {"text": "...", "kind": "ok"}}` on the response.
+// Dual-mode: show on the current page (covers non-navigating actions like
+// relation-add) and stash for the next page (covers HX-Redirect / HX-Refresh
+// flows like delete / move / categories / tags / external-edit). The
+// stash carries a timestamp so a non-consumed stash doesn't outlive the
+// staleness window.
+document.body.addEventListener('monbooru:flash', function(e) {
+  if (!e || !e.detail) return;
+  var text = e.detail.text || '';
+  var kind = e.detail.kind || 'ok';
+  showActionFlash(text, kind);
+  stashActionFlash(text, kind);
+});
+
+// Handles the dialog response for /relations/add. The success-side flash
+// rides the shared monbooru:flash HX-Trigger so it lands in the page
+// slot via the common listener; this handler only owns the conflict
+// affordance (Overwrite button label / visibility) and the dialog-close
+// + related-entries refresh on success.
 function onRelationEditResponse(event) {
   var src = document.getElementById('relation-edit-error');
   if (!src) return;
@@ -1448,14 +1529,6 @@ function onRelationEditResponse(event) {
   if (overwrite) {
     overwrite.hidden = true;
     overwrite.textContent = 'Overwrite existing relation';
-  }
-  var dst = document.getElementById('relation-flash');
-  if (dst) {
-    dst.innerHTML = src.innerHTML;
-    setTimeout(function() {
-      var d = document.getElementById('relation-flash');
-      if (d) d.innerHTML = '';
-    }, 5000);
   }
   src.innerHTML = '';
   var dlg = document.getElementById('relation-edit-dialog');
@@ -1824,6 +1897,7 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
   if (el && el.id === 'gallery-grid') {
     clearSelection();
     restoreGalleryFocusFromHash();
+    initInboxUpload();
     return;
   }
 
@@ -1926,6 +2000,8 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
     _pendingGalleryReload = false;
     if (finishedAt) _lastReloadedFinishedAt = finishedAt;
     if (document.getElementById('gallery-grid') || document.getElementById('tags-page')) {
+      var pendingDone = el.querySelector('.job-done');
+      if (pendingDone) stashGalleryFlash(pendingDone.textContent || '', 'ok');
       window.location.reload();
       return;
     }
@@ -1939,38 +2015,27 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
     _lastReloadedFinishedAt = finishedAt;
     if (firstSettle) return;
 
-    // Gallery page: reload grid
+    // Gallery page: reload grid + lift the job summary into the inline
+    // flash slot so the user sees the result without having to scan the
+    // top-right job-status widget.
     var grid = document.getElementById('gallery-grid');
     if (grid) {
+      var doneEl = el.querySelector('.job-done');
+      if (doneEl) showGalleryFlash(doneEl.textContent || '', 'ok');
       var url = new URL(window.location.href);
       if (window.htmx) {
         window.htmx.ajax('GET', url.pathname + url.search, {target: '#gallery-grid', swap: 'innerHTML'});
       }
     }
 
-    // Detail page: reload tag list and clear autotag status message. The
-    // clear is guarded by the detail-page min-visible window (see
-    // _autotagFlashShownAt in detail.html) so a sub-2s auto-tag doesn't wipe
-    // the "started" flash before the user can read it.
+    // Detail page: reload the tag list so freshly added auto-tags show up.
+    // The "Auto-tagger started..." / completion flash rides the shared
+    // monbooru:flash slot which self-dismisses after 5 s.
     var imageTags = document.getElementById('image-tags');
     if (imageTags) {
       var imageId = imageTags.dataset.imageId;
       if (imageId && window.htmx) {
         window.htmx.ajax('GET', '/images/' + imageId + '/tags', {target: '#image-tags', swap: 'outerHTML'});
-      }
-      var ar = document.getElementById('autotag-result');
-      if (ar && ar.innerHTML.trim() !== '') {
-        var shown = window._autotagFlashShownAt || 0;
-        var elapsed = Date.now() - shown;
-        var minMs = 3000;
-        if (elapsed >= minMs) {
-          ar.innerHTML = '';
-        } else {
-          setTimeout(function() {
-            var ar2 = document.getElementById('autotag-result');
-            if (ar2) ar2.innerHTML = '';
-          }, minMs - elapsed);
-        }
       }
     }
   }
@@ -2239,3 +2304,100 @@ document.addEventListener('DOMContentLoaded', function() {
   target.classList.add('focused');
   target.scrollIntoView({ block: 'center' });
 });
+
+// initInboxUpload wires the inline drop zone the gallery renders at the
+// top of the grid whenever the query positively asserts inbox:true.
+// Idempotent via a data-wired latch on the drop zone so repeat calls
+// (htmx grid swaps) don't pile up listeners. The drop zone reuses the
+// upload page's CSS hooks; the post-submit reload uses htmx.ajax against
+// the current URL so the new inbox rows show up without a full reload.
+function initInboxUpload() {
+  var dz = document.getElementById('inbox-upload-drop');
+  var input = document.getElementById('inbox-upload-file-input');
+  var list = document.getElementById('inbox-upload-file-list');
+  var pickBtn = document.getElementById('inbox-upload-pick-btn');
+  var form = document.getElementById('inbox-upload-form');
+  var submitBtn = document.getElementById('inbox-upload-submit-btn');
+  var resetBtn = document.getElementById('inbox-upload-reset-btn');
+  var result = document.getElementById('inbox-upload-result');
+  if (!dz || !input || !list || !form || dz.dataset.wired === '1') return;
+  dz.dataset.wired = '1';
+
+  // _pending owns the staged FileList. The browser's native file
+  // picker overwrites input.files on every change, so we mirror the
+  // accumulating set here and copy it back onto input before submit.
+  var _pending = new DataTransfer();
+
+  function renderList() {
+    list.innerHTML = '';
+    var files = _pending.files;
+    for (var i = 0; i < files.length; i++) {
+      var li = document.createElement('li');
+      var kib = Math.round(files[i].size / 1024);
+      var sizeText = kib > 0 ? (kib + ' KiB') : '<1 KiB';
+      li.textContent = files[i].name + ' (' + sizeText + ')';
+      list.appendChild(li);
+    }
+    input.files = _pending.files;
+  }
+
+  function appendFiles(incoming) {
+    for (var i = 0; i < incoming.length; i++) _pending.items.add(incoming[i]);
+    renderList();
+  }
+
+  function clearPending() {
+    _pending = new DataTransfer();
+    renderList();
+    if (result) result.innerHTML = '';
+  }
+
+  input.addEventListener('change', function() {
+    // Browser picker returned a fresh selection; append onto the
+    // pending set rather than replace it. The renderList sync at the
+    // end of appendFiles writes _pending.files back over input.files
+    // so the form submit carries the full accumulated set.
+    if (input.files && input.files.length) appendFiles(input.files);
+  });
+  if (pickBtn) {
+    pickBtn.addEventListener('click', function(e) { e.preventDefault(); input.click(); });
+  }
+  if (resetBtn) {
+    resetBtn.addEventListener('click', function(e) { e.preventDefault(); clearPending(); });
+  }
+  ['dragenter', 'dragover'].forEach(function(ev) {
+    dz.addEventListener(ev, function(e) { e.preventDefault(); dz.classList.add('drag-over'); });
+  });
+  ['dragleave', 'drop'].forEach(function(ev) {
+    dz.addEventListener(ev, function(e) { e.preventDefault(); dz.classList.remove('drag-over'); });
+  });
+  dz.addEventListener('drop', function(e) {
+    if (!e.dataTransfer || !e.dataTransfer.files) return;
+    appendFiles(e.dataTransfer.files);
+  });
+
+  form.addEventListener('htmx:beforeRequest', function() {
+    if (submitBtn) submitBtn.disabled = true;
+    if (result) result.innerHTML = '<div class="field-hint">Uploading...</div>';
+  });
+  form.addEventListener('htmx:afterRequest', function(e) {
+    if (submitBtn) submitBtn.disabled = false;
+    if (!e.detail.successful) return;
+    // The upload handler renders the summary flash into #inbox-upload-result;
+    // that slot lives inside #gallery-grid and the upcoming refresh would
+    // wipe it. Lift the text into the gallery-level slot before the swap.
+    if (result && result.innerHTML.trim() !== '') {
+      showGalleryFlash(result.innerHTML, /flash-err/.test(result.innerHTML) ? 'err' : 'ok');
+    }
+    clearPending();
+    // Refresh the grid so the freshly ingested rows surface at the top
+    // of the inbox. Same idiom the job-status auto-refresh uses.
+    var grid = document.getElementById('gallery-grid');
+    if (grid && window.htmx) {
+      var u = new URL(window.location.href);
+      window.htmx.ajax('GET', u.pathname + u.search, {target: '#gallery-grid', swap: 'innerHTML'});
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', initInboxUpload);

@@ -24,6 +24,11 @@ import (
 // second slow pass when the first already ate the search budget.
 const galleryHiddenIndicatorBudget = 300 * time.Millisecond
 
+// batchGapMinutes is the inter-file inactivity threshold that closes
+// one inbox cluster and opens the next. Hardcoded for v1 - retune by
+// recompile if 15 minutes turns out wrong in practice.
+const batchGapMinutes = 15
+
 type galleryData struct {
 	baseData
 	Query             string
@@ -45,6 +50,35 @@ type galleryData struct {
 	SidebarURL        string                // populated on full-page renders so the placeholder can lazy-load the sidebar
 	EnabledTaggers    []tagger.TaggerStatus // gates the gallery's Auto-tag controls; mirrors detailData.EnabledTaggers
 	ActiveTagTerms    map[string]bool       // top-level AND-positive terms in the current query, keyed by both "category:name" and bare "name"; drives the sidebar + / - toggle
+	// InboxClusterAtIdx is the parallel-to-Result.Results slice that
+	// pins a cluster header in front of the cards that start a fresh
+	// time cluster; nil entries are the in-cluster rows that don't
+	// emit a header. Populated only when the inbox-cluster activation
+	// gate triggers (q carries a positive inbox:true leaf and the
+	// sort is newest-DESC); nil slice otherwise.
+	InboxClusterAtIdx []*inboxCluster
+	// InboxUploadActive lights the inline drop zone that renders at
+	// the top of the gallery grid whenever the query positively
+	// asserts inbox:true at the top level. Independent of sort/order
+	// so changing sort doesn't make the upload affordance disappear
+	// while the operator is still triaging the inbox.
+	InboxUploadActive bool
+	AcceptFileTypes   string // upload-zone accept= attribute; mirrors the value /upload uses
+}
+
+// inboxCluster describes one batch of time-adjacent inbox entries
+// the gallery groups visually so the operator can act on the whole
+// batch via a single [Select] click. The struct rides parallel to
+// the result slice; rendering happens in partials/thumbnail_grid.html.
+type inboxCluster struct {
+	Count      int
+	DateLabel  string // "2026-05-22"
+	RangeLabel string // "14:32 -> 14:36" (or just "14:32" for a singleton)
+	// RangeLink resolves to a /?q=... URL that the cluster header's
+	// date range doubles as so a cluster whose tail spans into the
+	// next page can still be acted on as a whole via the batch bar's
+	// scope=search path.
+	RangeLink string
 }
 
 func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +270,7 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := galleryData{
-		baseData:          s.base(r, "gallery", "Images - Monbooru"),
+		baseData:          s.base(r, "gallery", "Images - "+s.booruName()),
 		Query:             queryStr,
 		Sort:              sortStr,
 		Order:             orderStr,
@@ -256,17 +290,14 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		EnabledTaggers:    tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
 		ActiveTagTerms:    computeActiveTagTerms(queryStr),
 	}
-	data.HiddenByCeiling = hiddenByCeiling
-	// The footer InboxCount stays ceiling-blind (it's a true gallery
-	// shape number), but the toolbar tooltip "Inbox (N)" promises the
-	// post-click match count - the operator clicks and lands on the
-	// ceiling-filtered list. Patch data.InboxCount with the
-	// ceiling-aware cached count so the parenthesised number matches.
-	if cx := s.Active(); cx != nil {
-		if n, err := cx.InboxCountUnder(ceiling); err == nil {
-			data.InboxCount = n
-		}
+	if inboxClustersActive(sortStr, orderStr, expr) {
+		data.InboxClusterAtIdx = computeInboxClusters(result.Results, queryStr)
 	}
+	if inboxFilterActive(expr) {
+		data.InboxUploadActive = true
+		data.AcceptFileTypes = gallery.SupportedMIMETypes
+	}
+	data.HiddenByCeiling = hiddenByCeiling
 
 	if htmxGridTarget {
 		s.renderTemplate(w, "partials/gallery_htmx.html", data)
@@ -599,6 +630,111 @@ func computeActiveTagTerms(query string) map[string]bool {
 	}
 	walk(expr)
 	return set
+}
+
+// inboxFilterActive reports whether the parsed query positively
+// asserts inbox:true at the top level. The walk descends into
+// top-level AndExpr only, so `-inbox:true` (a NotExpr wrap) and
+// inbox:true buried under OR don't trigger. Shared gate for both
+// the inbox-cluster headers and the inline upload drop zone.
+func inboxFilterActive(expr search.Expr) bool {
+	if expr == nil {
+		return false
+	}
+	var found bool
+	var walk func(search.Expr)
+	walk = func(e search.Expr) {
+		switch v := e.(type) {
+		case search.AndExpr:
+			walk(v.Left)
+			walk(v.Right)
+		case search.FilterExpr:
+			if v.Key == "inbox" && strings.ToLower(v.Val) == "true" {
+				found = true
+			}
+		}
+	}
+	walk(expr)
+	return found
+}
+
+// inboxClustersActive narrows inboxFilterActive to the only sort
+// shape time-cluster headers make sense for: newest-DESC. Wildcarded
+// sorts (filesize, random) still light the upload drop zone, but
+// the time-cluster geometry only reads correctly in newest-DESC.
+func inboxClustersActive(sort, order string, expr search.Expr) bool {
+	if sort != "newest" || order != "desc" {
+		return false
+	}
+	return inboxFilterActive(expr)
+}
+
+// computeInboxClusters walks the page's images in newest-DESC order
+// and emits a header marker at every cluster boundary - the first
+// row in any batch where the previous row sits more than
+// batchGapMinutes ahead in time. The returned slice is parallel to
+// images; nil entries are the in-cluster rows that don't emit a
+// header. queryStr is the operator's current search; the cluster
+// header's date-range link extends it with a date:T1..T2 leaf so
+// the batch bar's scope=search path can act on the whole cluster
+// even when the tail crosses a page boundary.
+func computeInboxClusters(images []models.Image, queryStr string) []*inboxCluster {
+	if len(images) == 0 {
+		return nil
+	}
+	markers := make([]*inboxCluster, len(images))
+	gap := time.Duration(batchGapMinutes) * time.Minute
+	start := 0
+	for i := 1; i <= len(images); i++ {
+		// Close the open cluster at i (one past its last row) when
+		// the next row sits more than gap minutes before the previous
+		// one (newest-DESC, so "older than" is the boundary).
+		closeCluster := i == len(images)
+		if !closeCluster {
+			prev := images[i-1].IngestedAt
+			next := images[i].IngestedAt
+			if prev.Sub(next) > gap {
+				closeCluster = true
+			}
+		}
+		if closeCluster {
+			markers[start] = buildInboxCluster(images[start:i], queryStr)
+			start = i
+		}
+	}
+	return markers
+}
+
+func buildInboxCluster(rows []models.Image, queryStr string) *inboxCluster {
+	if len(rows) == 0 {
+		return nil
+	}
+	// rows[0] is the newest entry (DESC), rows[len-1] the oldest.
+	// Format the header label oldest -> newest so the visible time
+	// arrow reads left-to-right.
+	newest := rows[0].IngestedAt.UTC()
+	oldest := rows[len(rows)-1].IngestedAt.UTC()
+	dateLabel := newest.Format("2006-01-02")
+	rangeLabel := oldest.Format("15:04")
+	if len(rows) > 1 && !oldest.Equal(newest) {
+		rangeLabel = oldest.Format("15:04") + " -> " + newest.Format("15:04")
+	}
+	// Minute-precise bounds so a cluster spanning 19:23 -> 19:30 lands
+	// on exactly the rows whose ingest minute falls in that window;
+	// day-precise bounds would widen the link to the whole day.
+	clusterQ := "inbox:true date:" + oldest.Format("2006-01-02T15:04") + ".." + newest.Format("2006-01-02T15:04")
+	if queryStr != "" && queryStr != "inbox:true" {
+		// Preserve any extra leaves the operator added while still
+		// scoping to the cluster's date range; the search merges as
+		// an implicit AND.
+		clusterQ = queryStr + " date:" + oldest.Format("2006-01-02T15:04") + ".." + newest.Format("2006-01-02T15:04")
+	}
+	return &inboxCluster{
+		Count:      len(rows),
+		DateLabel:  dateLabel,
+		RangeLabel: rangeLabel,
+		RangeLink:  "/?" + url.Values{"q": []string{clusterQ}, "sort": []string{"newest"}, "order": []string{"desc"}}.Encode(),
+	}
 }
 
 // buildGalleryURL constructs a properly URL-encoded gallery redirect URL.

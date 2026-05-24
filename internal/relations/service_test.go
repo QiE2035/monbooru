@@ -1224,6 +1224,82 @@ func TestMergeDupGroupsKeepOriginalFromNonSurvivor(t *testing.T) {
 	}
 }
 
+// DissolveVersionChain drops every edge in the chain, regardless of
+// which member id the operator clicked from - the walker locates the
+// root from either side.
+func TestDissolveVersionChain(t *testing.T) {
+	database, svc := setupTestDB(t)
+	a := insertImage(t, database, "a", 100)
+	b := insertImage(t, database, "b", 200)
+	c := insertImage(t, database, "c", 300)
+	if err := svc.AddVersionEdge(a, b); err != nil {
+		t.Fatalf("a->b: %v", err)
+	}
+	if err := svc.AddVersionEdge(b, c); err != nil {
+		t.Fatalf("b->c: %v", err)
+	}
+	// Dissolve from a middle node to prove the walker reaches the root.
+	if err := svc.DissolveVersionChain(b); err != nil {
+		t.Fatalf("DissolveVersionChain: %v", err)
+	}
+	var n int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM version_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("version_edges remaining = %d, want 0", n)
+	}
+}
+
+// DissolveVersionChain on an image with no version edges must be a
+// silent no-op (matching the other Dissolve* idempotence contract).
+func TestDissolveVersionChainNoEdges(t *testing.T) {
+	_, svc := setupTestDB(t)
+	if err := svc.DissolveVersionChain(42); err != nil {
+		t.Fatalf("DissolveVersionChain on missing chain: %v", err)
+	}
+}
+
+// DissolveDerivativeTree drops every edge in the tree, including the
+// branches that fan out from non-root nodes. The walker reaches the
+// root from any member; the DFS-down catches every descendant.
+func TestDissolveDerivativeTree(t *testing.T) {
+	database, svc := setupTestDB(t)
+	src := insertImage(t, database, "src", 100)
+	d1 := insertImage(t, database, "d1", 110)
+	d2 := insertImage(t, database, "d2", 120)
+	d1a := insertImage(t, database, "d1a", 130)
+	if err := svc.AddDerivativeEdge(src, d1); err != nil {
+		t.Fatalf("src->d1: %v", err)
+	}
+	if err := svc.AddDerivativeEdge(src, d2); err != nil {
+		t.Fatalf("src->d2: %v", err)
+	}
+	if err := svc.AddDerivativeEdge(d1, d1a); err != nil {
+		t.Fatalf("d1->d1a: %v", err)
+	}
+	// Dissolve from a deep leaf to prove the up-walk finds the root.
+	if err := svc.DissolveDerivativeTree(d1a); err != nil {
+		t.Fatalf("DissolveDerivativeTree: %v", err)
+	}
+	var n int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM derivative_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("derivative_edges remaining = %d, want 0", n)
+	}
+}
+
+// DissolveDerivativeTree on an image with no derivative edges must be
+// a silent no-op.
+func TestDissolveDerivativeTreeNoEdges(t *testing.T) {
+	_, svc := setupTestDB(t)
+	if err := svc.DissolveDerivativeTree(42); err != nil {
+		t.Fatalf("DissolveDerivativeTree on missing tree: %v", err)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(sub) == 0 || (len(s) >= len(sub) && find(s, sub))
 }

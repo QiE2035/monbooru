@@ -15,7 +15,7 @@ import (
 )
 
 func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
-	base := s.base(r, "settings", "Settings - Monbooru")
+	base := s.base(r, "settings", "Settings - "+s.booruName())
 	s.disableUnavailableTaggers()
 	s.persistNewlyDiscoveredTaggers()
 	taggers := tagger.AvailableTaggers(s.cfg)
@@ -93,9 +93,13 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		"RepoURL":          base.RepoURL,
 		"Variant":          base.Variant,
 		"CustomCSS":        base.CustomCSS,
+		"BooruName":        base.BooruName,
+		"BooruLogo":        base.BooruLogo,
 		"ActiveGallery":    base.ActiveGallery,
 		"Galleries":        s.galleryRowsWithSnapshot(s.activeName, base.VisibleCount, base.TagCount),
 		"VisibleCount":     base.VisibleCount,
+		"InboxCount":       base.InboxCount,
+		"InboxNavActive":   base.InboxNavActive,
 		"TagCount":         base.TagCount,
 		"CollectionsCount": base.CollectionsCount,
 		"RatingLevels":     base.RatingLevels,

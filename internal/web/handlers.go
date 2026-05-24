@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -11,8 +12,29 @@ import (
 	"github.com/leqwin/monbooru/internal/models"
 )
 
+// setFlashHeader merges a `monbooru:flash` HX-Trigger event into the
+// response so a post-redirect / post-reload page can surface the
+// summary via the shared #gallery-flash / #detail-flash slot. extras
+// carries other triggers the handler also wants to fire (e.g. the
+// delete handler's delete-go-back). kind picks the flash-ok / flash-err
+// palette; pass "" for ok.
+func setFlashHeader(w http.ResponseWriter, text, kind string, extras map[string]any) {
+	if kind == "" {
+		kind = "ok"
+	}
+	triggers := map[string]any{
+		"monbooru:flash": map[string]any{"text": text, "kind": kind},
+	}
+	for k, v := range extras {
+		triggers[k] = v
+	}
+	if b, err := json.Marshal(triggers); err == nil {
+		w.Header().Set("HX-Trigger", string(b))
+	}
+}
+
 func (s *Server) helpHandler(w http.ResponseWriter, r *http.Request) {
-	base := s.base(r, "help", "Help - Monbooru")
+	base := s.base(r, "help", "Help - "+s.booruName())
 	data := map[string]any{
 		"Title":         base.Title,
 		"ActiveNav":     base.ActiveNav,
@@ -23,9 +45,13 @@ func (s *Server) helpHandler(w http.ResponseWriter, r *http.Request) {
 		"RepoURL":       base.RepoURL,
 		"Variant":       base.Variant,
 		"CustomCSS":     base.CustomCSS,
+		"BooruName":     base.BooruName,
+		"BooruLogo":     base.BooruLogo,
 		"ActiveGallery": base.ActiveGallery,
 		"Galleries":     base.Galleries,
 		"VisibleCount":     base.VisibleCount,
+		"InboxCount":       base.InboxCount,
+		"InboxNavActive":   base.InboxNavActive,
 		"TagCount":         base.TagCount,
 		"CollectionsCount": base.CollectionsCount,
 		"RatingLevels":  base.RatingLevels,
@@ -41,7 +67,7 @@ func (s *Server) helpHandler(w http.ResponseWriter, r *http.Request) {
 // the app with a back link.
 func (s *Server) notFoundHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotFound)
-	s.renderTemplate(w, "notfound.html", s.base(r, "", "Not found - Monbooru"))
+	s.renderTemplate(w, "notfound.html", s.base(r, "", "Not found - "+s.booruName()))
 }
 
 func loadImage(ctx context.Context, database *db.DB, id int64) (*models.Image, error) {

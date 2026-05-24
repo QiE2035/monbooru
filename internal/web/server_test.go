@@ -162,7 +162,7 @@ func TestCustomCSS_LinkRenderedWhenConfigured(t *testing.T) {
 	srv := newTestServer(t)
 	srv.cfg.Server.CustomCSS = "/some/path/custom.css"
 
-	pages := []string{"/", "/tags", "/categories", "/settings", "/help", "/upload"}
+	pages := []string{"/", "/tags", "/categories", "/settings", "/help"}
 	for _, page := range pages {
 		req := httptest.NewRequest("GET", page, nil)
 		w := httptest.NewRecorder()
@@ -255,7 +255,7 @@ func TestGatherStats_MountLabelsAreCompact(t *testing.T) {
 func TestPageLoadIndicator_RenderedOnFullLayoutPages(t *testing.T) {
 	srv := newTestServer(t)
 
-	pages := []string{"/", "/tags", "/categories", "/settings", "/help", "/upload"}
+	pages := []string{"/", "/tags", "/categories", "/settings", "/help"}
 	for _, page := range pages {
 		req := httptest.NewRequest("GET", page, nil)
 		w := httptest.NewRecorder()
@@ -280,6 +280,176 @@ func TestCustomCSS_LinkOmittedByDefault(t *testing.T) {
 
 	if strings.Contains(w.Body.String(), `href="/custom.css"`) {
 		t.Error("layout should not include /custom.css link when CustomCSS is unset")
+	}
+}
+
+func TestBooruLogo_NotFoundWhenUnset(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/custom.logo", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("default config: GET /custom.logo expected 404, got %d", w.Code)
+	}
+}
+
+func TestBooruLogo_ServesConfiguredFile(t *testing.T) {
+	srv := newTestServer(t)
+	logoPath := filepath.Join(t.TempDir(), "logo.png")
+	body := "PNGBYTES"
+	if err := os.WriteFile(logoPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.Server.BooruLogo = logoPath
+
+	req := httptest.NewRequest("GET", "/custom.logo", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /custom.logo expected 200, got %d", w.Code)
+	}
+	if got := w.Body.String(); got != body {
+		t.Errorf("body = %q, want %q", got, body)
+	}
+}
+
+// Walks every full-layout page so a handler that hand-copies baseData
+// fields into a map and forgets BooruLogo/BooruName fails loudly here,
+// mirroring the CustomCSS coverage.
+func TestBooruLogo_LinkRoutedToOverrideWhenConfigured(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.Server.BooruLogo = "/some/path/logo.png"
+
+	pages := []string{"/", "/tags", "/categories", "/settings", "/help", "/login"}
+	for _, page := range pages {
+		req := httptest.NewRequest("GET", page, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("GET %s expected 200, got %d", page, w.Code)
+			continue
+		}
+		body := w.Body.String()
+		if !strings.Contains(body, `href="/custom.logo"`) {
+			t.Errorf("%s: favicon link should point at /custom.logo when BooruLogo configured", page)
+		}
+		if strings.Contains(body, `href="/static/favicon.png"`) {
+			t.Errorf("%s: bundled favicon link should be replaced when BooruLogo configured", page)
+		}
+	}
+}
+
+func TestBooruLogo_DefaultsToBundledFavicon(t *testing.T) {
+	srv := newTestServer(t)
+
+	pages := []string{"/", "/tags", "/categories", "/settings", "/help", "/login"}
+	for _, page := range pages {
+		req := httptest.NewRequest("GET", page, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+
+		body := w.Body.String()
+		if !strings.Contains(body, `href="/static/favicon.png"`) {
+			t.Errorf("%s: default favicon link missing", page)
+		}
+		if strings.Contains(body, `href="/custom.logo"`) {
+			t.Errorf("%s: layout should not link /custom.logo when BooruLogo unset", page)
+		}
+	}
+}
+
+func TestBooruName_DefaultsToMonbooru(t *testing.T) {
+	srv := newTestServer(t)
+
+	cases := []struct {
+		page  string
+		title string
+	}{
+		{"/", "Images - Monbooru"},
+		{"/tags", "Tags - Monbooru"},
+		{"/categories", "Categories - Monbooru"},
+		{"/settings", "Settings - Monbooru"},
+		{"/help", "Help - Monbooru"},
+		{"/login", "Login - Monbooru"},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest("GET", tc.page, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if !strings.Contains(w.Body.String(), "<title>"+tc.title+"</title>") {
+			t.Errorf("%s: title should default to %q", tc.page, tc.title)
+		}
+	}
+	// Topbar wordmark and login h1 carry the bare brand string.
+	for _, page := range []string{"/", "/tags"} {
+		req := httptest.NewRequest("GET", page, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if !strings.Contains(w.Body.String(), `<span>Monbooru</span>`) {
+			t.Errorf("%s: topbar wordmark should default to Monbooru", page)
+		}
+	}
+	req := httptest.NewRequest("GET", "/login", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if !strings.Contains(w.Body.String(), `<h1>Monbooru</h1>`) {
+		t.Errorf("/login: h1 should default to Monbooru, got body:\n%s", w.Body.String())
+	}
+}
+
+// Setting server.name must reach every <title> across the full-layout
+// pages, the topbar wordmark, AND the login screen - the login surface
+// is the regression that motivates threading BooruName through its
+// data map separately from s.base().
+func TestBooruName_OverridesTitleAndWordmark(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.Server.BooruName = "Privbooru"
+
+	cases := []struct {
+		page  string
+		title string
+	}{
+		{"/", "Images - Privbooru"},
+		{"/tags", "Tags - Privbooru"},
+		{"/categories", "Categories - Privbooru"},
+		{"/settings", "Settings - Privbooru"},
+		{"/help", "Help - Privbooru"},
+		{"/login", "Login - Privbooru"},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest("GET", tc.page, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if !strings.Contains(w.Body.String(), "<title>"+tc.title+"</title>") {
+			t.Errorf("%s: title should resolve to %q, body=\n%s", tc.page, tc.title, w.Body.String())
+		}
+	}
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if !strings.Contains(w.Body.String(), `<span>Privbooru</span>`) {
+		t.Errorf("topbar wordmark should resolve to configured name")
+	}
+	req = httptest.NewRequest("GET", "/login", nil)
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if !strings.Contains(w.Body.String(), `<h1>Privbooru</h1>`) {
+		t.Errorf("/login h1 should resolve to configured name")
+	}
+}
+
+// The same trusted-roots gate used for custom_css must suppress a
+// server.logo path outside the safe set.
+func TestBooruLogo_PathTrustedRootGate(t *testing.T) {
+	if !customCSSPathAllowed("/config/logo.png", "/config/monbooru.toml") {
+		t.Fatal("sanity: /config path should pass the gate")
+	}
+	if customCSSPathAllowed("/etc/passwd", "/config/monbooru.toml") {
+		t.Fatal("/etc/passwd must not pass the gate")
 	}
 }
 
@@ -328,7 +498,7 @@ func TestGalleryContainsExpectedElements(t *testing.T) {
 		`id="search-input"`,
 		`id="gallery-grid"`,
 		`id="batch-bar"`,
-		`MONBOORU`,
+		`<span>Monbooru</span>`,
 		`/static/main.css`,
 		`/static/htmx.min.js`,
 	}
@@ -825,7 +995,7 @@ func TestToggleInboxReturnsButtonAndInvalidatesCount(t *testing.T) {
 	}
 	// After archive the label names the new state ("Archived"); the
 	// title still names the click action ("Send to inbox").
-	if !strings.Contains(body, "✱ Archived") {
+	if !strings.Contains(body, ">Archived</button>") {
 		t.Errorf("toggle inbox response should label the new state, got: %s", body)
 	}
 	if !strings.Contains(body, `title="Send to inbox (i)"`) {
@@ -936,22 +1106,6 @@ func TestDeleteImage_FallsBackToGalleryOnLastImage(t *testing.T) {
 	got := w.Header().Get("HX-Redirect")
 	if strings.HasPrefix(got, "/images/") {
 		t.Errorf("last-image redirect = %q, want gallery URL", got)
-	}
-}
-
-func TestUploadPageReturns200(t *testing.T) {
-	srv := newTestServer(t)
-	h := srv.Handler()
-
-	req := httptest.NewRequest("GET", "/upload", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("GET /upload expected 200, got %d", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "Upload Images") {
-		t.Error("upload page missing expected heading")
 	}
 }
 
@@ -1240,7 +1394,7 @@ func TestGallerySwitcherButtonShownWithMultipleGalleries(t *testing.T) {
 	srv := newMultiGalleryServer(t)
 	h := srv.Handler()
 
-	for _, path := range []string{"/", "/upload", "/categories"} {
+	for _, path := range []string{"/", "/categories", "/tags"} {
 		req := httptest.NewRequest("GET", path, nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)

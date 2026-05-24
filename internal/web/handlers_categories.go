@@ -10,14 +10,6 @@ import (
 	"github.com/leqwin/monbooru/internal/logx"
 )
 
-// setCategoriesFlash queues msg to surface above the /categories table
-// on the next render. Mirrors setTagsFlash: a JSON-encoded `HX-Trigger`
-// event the client catches and stashes into sessionStorage before the
-// HX-Redirect navigation fires.
-func setCategoriesFlash(w http.ResponseWriter, msg string) {
-	w.Header().Set("HX-Trigger", `{"categoriesFlash":`+strconv.Quote(msg)+`}`)
-}
-
 func (s *Server) categoriesHandler(w http.ResponseWriter, r *http.Request) {
 	cats, err := s.tagSvc().ListCategories()
 	if err != nil {
@@ -25,7 +17,7 @@ func (s *Server) categoriesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	base := s.base(r, "categories", "Categories - Monbooru")
+	base := s.base(r, "categories", "Categories - "+s.booruName())
 	data := map[string]any{
 		"Title":         base.Title,
 		"ActiveNav":     base.ActiveNav,
@@ -36,9 +28,13 @@ func (s *Server) categoriesHandler(w http.ResponseWriter, r *http.Request) {
 		"RepoURL":       base.RepoURL,
 		"Variant":       base.Variant,
 		"CustomCSS":     base.CustomCSS,
+		"BooruName":     base.BooruName,
+		"BooruLogo":     base.BooruLogo,
 		"ActiveGallery": base.ActiveGallery,
 		"Galleries":     s.galleryList(),
 		"VisibleCount":     base.VisibleCount,
+		"InboxCount":       base.InboxCount,
+		"InboxNavActive":   base.InboxNavActive,
 		"TagCount":         base.TagCount,
 		"CollectionsCount": base.CollectionsCount,
 		"RatingLevels":  base.RatingLevels,
@@ -108,7 +104,7 @@ func (s *Server) createCategoryPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isHTMXRequest(r) {
-		setCategoriesFlash(w, "Category "+name+" created.")
+		setFlashHeader(w, "Category "+name+" created.", "ok", nil)
 		w.Header().Set("HX-Redirect", "/categories")
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -133,7 +129,7 @@ func (s *Server) updateCategoryPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isHTMXRequest(r) {
-		setCategoriesFlash(w, "Category color updated.")
+		setFlashHeader(w, "Category color updated.", "ok", nil)
 		w.Header().Set("HX-Redirect", "/categories")
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -164,9 +160,10 @@ func (s *Server) deleteCategoryDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Surface on /tags (the redirect target), not /categories - the
-	// flash key the destination drains comes from the tags page slot.
+	// flash rides the shared monbooru:flash channel which lands in
+	// whichever flash slot the destination page exposes.
 	if isHTMXRequest(r) {
-		setTagsFlash(w, "Category deleted.")
+		setFlashHeader(w, "Category deleted.", "ok", nil)
 		w.Header().Set("HX-Redirect", "/tags")
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -202,7 +199,7 @@ func (s *Server) renameCategoryPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isHTMXRequest(r) {
-		setCategoriesFlash(w, "Category renamed to "+newName+".")
+		setFlashHeader(w, "Category renamed to "+newName+".", "ok", nil)
 		w.Header().Set("HX-Redirect", "/categories")
 		w.WriteHeader(http.StatusNoContent)
 		return

@@ -36,6 +36,25 @@ is served at `/custom.css` and linked from the layout after the bundled
 `main.css`, so a `:root` block in there wins the cascade and you can
 retheme without rebuilding.
 
+## Change booru name and logo
+
+You can use these optional keys under `[server]` :
+
+```toml
+[server]
+name = "monbooru"
+logo = "/config/logo.png"
+```
+
+`name` replaces the wordmark, every page `<title>`, and the login
+heading. The CSS uppercases the wordmark and login heading regardless of
+case, so `monbooru` renders as `MONBOORU` in the topbar. Missing or
+empty falls back to `Monbooru`.
+
+`logo` is an absolute path to an image file (PNG works; any format the
+browser handles is fine). When set, the file is served at `/custom.logo`
+and used for both the favicon and the topbar logo. Missing or empty falls back to the bundled favicon.
+
 ## Environment variables
 
 All override the TOML config. Pattern: `MONBOORU_{SECTION}_{KEY}`.

@@ -106,28 +106,6 @@
 </dialog>
 
 <script>
-// Cross-navigation flash slot: category mutations that reload or redirect
-// set sessionStorage.categoriesFlash via the HX-Trigger `categoriesFlash`
-// event; the next /categories load drains the value into #cat-flash.
-(function () {
-  var slot = document.getElementById('cat-flash');
-  if (!slot) return;
-  var msg = sessionStorage.getItem('categoriesFlash');
-  if (!msg) return;
-  sessionStorage.removeItem('categoriesFlash');
-  var div = document.createElement('div');
-  div.className = 'flash flash-ok';
-  div.textContent = msg;
-  slot.appendChild(div);
-  setTimeout(function () { if (slot.contains(div)) slot.removeChild(div); }, 5000);
-})();
-document.body.addEventListener('categoriesFlash', function (e) {
-  var val = e.detail && typeof e.detail === 'object' ? e.detail.value : e.detail;
-  if (typeof val === 'string' && val !== '') {
-    sessionStorage.setItem('categoriesFlash', val);
-  }
-});
-
 document.querySelectorAll('.btn-cat-rename-trigger').forEach(function(btn) {
   btn.addEventListener('click', function() {
     var id = this.dataset.id;
@@ -227,9 +205,10 @@ function doDeleteCategory(catId, csrf, action, targetCatId) {
   }).then(function(r) {
     if (r.ok) {
       // The handler also writes HX-Trigger for the htmx path, but raw
-      // fetch doesn't process it; seed sessionStorage directly so the
+      // fetch doesn't process it; seed the shared stash directly so the
       // /categories reload picks up the flash.
-      sessionStorage.setItem('categoriesFlash', 'Category deleted.');
+      sessionStorage.setItem('monbooru_action_flash',
+        JSON.stringify({h: 'Category deleted.', k: 'ok', t: Date.now()}));
       document.getElementById('delete-cat-dialog').close();
       window.location.href = window.location.pathname + window.location.search;
     } else {

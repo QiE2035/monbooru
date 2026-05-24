@@ -170,70 +170,42 @@ func Open(path string) (*DB, error) {
 // SQLite has no ADD COLUMN IF NOT EXISTS, so each migration gates itself
 // on pragma_table_info.
 func Bootstrap(db *DB) error {
-	if _, err := db.Write.Exec(schemaSQL); err != nil {
-		return fmt.Errorf("bootstrapping schema: %w", err)
-	}
-	if err := ensureColumn(db, "images", "origin", `ALTER TABLE images ADD COLUMN origin TEXT NOT NULL DEFAULT 'ingest'`); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "image_tags", "is_implied", `ALTER TABLE image_tags ADD COLUMN is_implied INTEGER NOT NULL DEFAULT 0`); err != nil {
-		return err
-	}
+	b := &bootstrapper{db: db}
+	b.exec("bootstrapping schema", schemaSQL)
+	b.ensureColumn("images", "origin", `ALTER TABLE images ADD COLUMN origin TEXT NOT NULL DEFAULT 'ingest'`)
+	b.ensureColumn("image_tags", "is_implied", `ALTER TABLE image_tags ADD COLUMN is_implied INTEGER NOT NULL DEFAULT 0`)
 	// is_inbox: pre-feature libraries upgrade as fully curated. The column
 	// default is 1 (new ingests land in the inbox), but existing rows added
 	// before the column existed would all flip to "needs triage" without
 	// this one-shot - which would dump the operator's whole library into
-	// the inbox view on first boot. Detect the just-added case by counting
-	// the column before the ALTER and only run the UPDATE then.
-	var inboxPre int
-	if err := db.Write.QueryRow(
-		`SELECT COUNT(*) FROM pragma_table_info('images') WHERE name = 'is_inbox'`,
-	).Scan(&inboxPre); err != nil {
-		return fmt.Errorf("inspect images.is_inbox: %w", err)
-	}
-	if err := ensureColumn(db, "images", "is_inbox", `ALTER TABLE images ADD COLUMN is_inbox INTEGER NOT NULL DEFAULT 1`); err != nil {
-		return err
-	}
-	if inboxPre == 0 {
-		if _, err := db.Write.Exec(`UPDATE images SET is_inbox = 0`); err != nil {
-			return fmt.Errorf("backfill is_inbox=0 on upgrade: %w", err)
-		}
-	}
+	// the inbox view on first boot. The pre-count gate in
+	// backfillIfFreshColumn detects the just-added case so the UPDATE
+	// only runs then.
+	b.backfillIfFreshColumn("images", "is_inbox",
+		`ALTER TABLE images ADD COLUMN is_inbox INTEGER NOT NULL DEFAULT 1`,
+		`UPDATE images SET is_inbox = 0`,
+		"backfill is_inbox=0 on upgrade")
 	// Partial seek index for the inbox-count cache and the inbox: filter's
 	// fastCountInbox path. Created here rather than in schema.sql because
 	// the column is added by ensureColumn above on existing libraries; an
 	// index in schema.sql would run before the ALTER and reference a
 	// missing column.
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_inbox_visible ON images(is_inbox) WHERE is_missing = 0`); err != nil {
-		return fmt.Errorf("create idx_images_inbox_visible: %w", err)
-	}
+	b.exec("create idx_images_inbox_visible", `CREATE INDEX IF NOT EXISTS idx_images_inbox_visible ON images(is_inbox) WHERE is_missing = 0`)
 	// idx_image_tags_tag(tag_id) is superseded by
 	// idx_image_tags_tag_image(tag_id, image_id) - same leading column,
 	// same seek selectivity, plus image_id is now covering. Drop on
 	// upgrade so existing libraries don't pay disk and write overhead
 	// on a redundant index.
-	if _, err := db.Write.Exec(`DROP INDEX IF EXISTS idx_image_tags_tag`); err != nil {
-		return fmt.Errorf("drop superseded idx_image_tags_tag: %w", err)
-	}
-	if err := ensureColumn(db, "images", "source", `ALTER TABLE images ADD COLUMN source TEXT NOT NULL DEFAULT ''`); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "images", "url", `ALTER TABLE images ADD COLUMN url TEXT NOT NULL DEFAULT ''`); err != nil {
-		return err
-	}
+	b.exec("drop superseded idx_image_tags_tag", `DROP INDEX IF EXISTS idx_image_tags_tag`)
+	b.ensureColumn("images", "source", `ALTER TABLE images ADD COLUMN source TEXT NOT NULL DEFAULT ''`)
+	b.ensureColumn("images", "url", `ALTER TABLE images ADD COLUMN url TEXT NOT NULL DEFAULT ''`)
 	// The historical idx_images_source pointed at images(source_type); the
 	// name now belongs to the new images(source) column. Drop the old
 	// shape unconditionally and let schema.sql / the recreate below
 	// rebuild it under both names.
-	if _, err := db.Write.Exec(`DROP INDEX IF EXISTS idx_images_source`); err != nil {
-		return fmt.Errorf("drop legacy idx_images_source: %w", err)
-	}
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_source_type ON images(source_type)`); err != nil {
-		return fmt.Errorf("create idx_images_source_type: %w", err)
-	}
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_source ON images(source)`); err != nil {
-		return fmt.Errorf("create idx_images_source: %w", err)
-	}
+	b.exec("drop legacy idx_images_source", `DROP INDEX IF EXISTS idx_images_source`)
+	b.exec("create idx_images_source_type", `CREATE INDEX IF NOT EXISTS idx_images_source_type ON images(source_type)`)
+	b.exec("create idx_images_source", `CREATE INDEX IF NOT EXISTS idx_images_source ON images(source)`)
 	// Partial visible source index for the source: filter. The NOCASE-
 	// collated variant is what the source: filter equality
 	// (`source = ? COLLATE NOCASE`) seeks against; the BINARY-collated
@@ -243,23 +215,13 @@ func Bootstrap(db *DB) error {
 	// against any source: filter query (a `source != ''` clause in the
 	// partial would force the query to also include it, which the
 	// executor doesn't emit).
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_source_visible ON images(source) WHERE is_missing = 0`); err != nil {
-		return fmt.Errorf("create idx_images_source_visible: %w", err)
-	}
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_source_nocase_visible ON images(source COLLATE NOCASE) WHERE is_missing = 0`); err != nil {
-		return fmt.Errorf("create idx_images_source_nocase_visible: %w", err)
-	}
-	if err := ensureColumn(db, "images", "page_count", `ALTER TABLE images ADD COLUMN page_count INTEGER`); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "images", "duration_seconds", `ALTER TABLE images ADD COLUMN duration_seconds REAL`); err != nil {
-		return err
-	}
+	b.exec("create idx_images_source_visible", `CREATE INDEX IF NOT EXISTS idx_images_source_visible ON images(source) WHERE is_missing = 0`)
+	b.exec("create idx_images_source_nocase_visible", `CREATE INDEX IF NOT EXISTS idx_images_source_nocase_visible ON images(source COLLATE NOCASE) WHERE is_missing = 0`)
+	b.ensureColumn("images", "page_count", `ALTER TABLE images ADD COLUMN page_count INTEGER`)
+	b.ensureColumn("images", "duration_seconds", `ALTER TABLE images ADD COLUMN duration_seconds REAL`)
 	// Partial visible duration index for the duration: filter. Excludes
 	// NULL so non-video rows don't carry an entry.
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_duration_visible ON images(duration_seconds) WHERE is_missing = 0 AND duration_seconds IS NOT NULL`); err != nil {
-		return fmt.Errorf("create idx_images_duration_visible: %w", err)
-	}
+	b.exec("create idx_images_duration_visible", `CREATE INDEX IF NOT EXISTS idx_images_duration_visible ON images(duration_seconds) WHERE is_missing = 0 AND duration_seconds IS NOT NULL`)
 	// VIRTUAL generated column over the lowercased filename basename so
 	// the name: filter and the system:name autocomplete seek a single
 	// indexed string instead of running lower(basename(canonical_path))
@@ -267,14 +229,9 @@ func Bootstrap(db *DB) error {
 	// ALTER TABLE; VIRTUAL keeps the value computed on read but lets the
 	// matching index materialise it once per row at index-write time, so
 	// the seek is the same cost as a real column.
-	if err := ensureColumn(db, "images", "basename_lower",
-		`ALTER TABLE images ADD COLUMN basename_lower TEXT GENERATED ALWAYS AS (lower(basename(canonical_path))) VIRTUAL`,
-	); err != nil {
-		return err
-	}
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_basename_lower_visible ON images(basename_lower) WHERE is_missing = 0 AND basename_lower != ''`); err != nil {
-		return fmt.Errorf("create idx_images_basename_lower_visible: %w", err)
-	}
+	b.ensureColumn("images", "basename_lower",
+		`ALTER TABLE images ADD COLUMN basename_lower TEXT GENERATED ALWAYS AS (lower(basename(canonical_path))) VIRTUAL`)
+	b.exec("create idx_images_basename_lower_visible", `CREATE INDEX IF NOT EXISTS idx_images_basename_lower_visible ON images(basename_lower) WHERE is_missing = 0 AND basename_lower != ''`)
 	// Mirror of images.basename_lower for alias paths so the name:
 	// filter's EXISTS over image_paths reads `ip.basename_lower`
 	// directly instead of running lower(basename(ip.path)) per alias
@@ -282,114 +239,71 @@ func Bootstrap(db *DB) error {
 	// subquery rides idx_image_paths_aliases (image_id WHERE
 	// is_canonical = 0) to skip every canonical row, which is the
 	// other half of the per-row cost.
-	if err := ensureColumn(db, "image_paths", "basename_lower",
-		`ALTER TABLE image_paths ADD COLUMN basename_lower TEXT GENERATED ALWAYS AS (lower(basename(path))) VIRTUAL`,
-	); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "images", "series", `ALTER TABLE images ADD COLUMN series TEXT NOT NULL DEFAULT ''`); err != nil {
-		return err
-	}
+	b.ensureColumn("image_paths", "basename_lower",
+		`ALTER TABLE image_paths ADD COLUMN basename_lower TEXT GENERATED ALWAYS AS (lower(basename(path))) VIRTUAL`)
+	b.ensureColumn("images", "series", `ALTER TABLE images ADD COLUMN series TEXT NOT NULL DEFAULT ''`)
 	// Operator-edited per-image position within its series. NULL means
 	// "no specific order" - the search executor sorts those after rows
 	// with a numeric position when a series: filter pins the result set.
-	if err := ensureColumn(db, "images", "series_order", `ALTER TABLE images ADD COLUMN series_order INTEGER`); err != nil {
-		return err
-	}
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_series ON images(series) WHERE series != ''`); err != nil {
-		return fmt.Errorf("create idx_images_series: %w", err)
-	}
+	b.ensureColumn("images", "series_order", `ALTER TABLE images ADD COLUMN series_order INTEGER`)
+	b.exec("create idx_images_series", `CREATE INDEX IF NOT EXISTS idx_images_series ON images(series) WHERE series != ''`)
 	// NOCASE-collated companion for the collection: filter equality
 	// (`series = ? COLLATE NOCASE`); the BINARY index above stays for
 	// the collection-autocomplete prefix-range query that needs binary
 	// ordering. The NOCASE partial is gated only on the visibility
 	// filter the executor emits (no `series != ''` clause), so SQLite
 	// can match the partial WHERE against any collection: query.
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_series_nocase ON images(series COLLATE NOCASE)`); err != nil {
-		return fmt.Errorf("create idx_images_series_nocase: %w", err)
-	}
+	b.exec("create idx_images_series_nocase", `CREATE INDEX IF NOT EXISTS idx_images_series_nocase ON images(series COLLATE NOCASE)`)
 	// NOCASE-collated companion for folder: equality - same shape as
 	// idx_images_folder_visible (already partial WHERE is_missing = 0)
 	// but with the COLLATE NOCASE that the folder: filter uses, so the
 	// equality leg of the (path = ? COLLATE NOCASE OR path LIKE ...)
 	// composite predicate can ride an indexed seek instead of falling
 	// back to idx_images_missing + TEMP B-TREE FOR ORDER BY.
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_folder_nocase_visible ON images(folder_path COLLATE NOCASE) WHERE is_missing = 0`); err != nil {
-		return fmt.Errorf("create idx_images_folder_nocase_visible: %w", err)
-	}
+	b.exec("create idx_images_folder_nocase_visible", `CREATE INDEX IF NOT EXISTS idx_images_folder_nocase_visible ON images(folder_path COLLATE NOCASE) WHERE is_missing = 0`)
 	// Saved-search reproduces the URL the operator was looking at; the
 	// seed bit lets a `random` save reopen at the same shuffle. `sort_order`
 	// is the URL's `order` value - column name is suffixed because `order`
 	// is a SQLite reserved word that breaks plain UPDATE/INSERT statements
 	// even with quoting in some driver paths.
-	if err := ensureColumn(db, "saved_searches", "sort", `ALTER TABLE saved_searches ADD COLUMN sort TEXT NOT NULL DEFAULT ''`); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "saved_searches", "sort_order", `ALTER TABLE saved_searches ADD COLUMN sort_order TEXT NOT NULL DEFAULT ''`); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "saved_searches", "seed", `ALTER TABLE saved_searches ADD COLUMN seed TEXT NOT NULL DEFAULT ''`); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "image_paths", "mtime_unix", `ALTER TABLE image_paths ADD COLUMN mtime_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "images", "phash", `ALTER TABLE images ADD COLUMN phash INTEGER`); err != nil {
-		return err
-	}
+	b.ensureColumn("saved_searches", "sort", `ALTER TABLE saved_searches ADD COLUMN sort TEXT NOT NULL DEFAULT ''`)
+	b.ensureColumn("saved_searches", "sort_order", `ALTER TABLE saved_searches ADD COLUMN sort_order TEXT NOT NULL DEFAULT ''`)
+	b.ensureColumn("saved_searches", "seed", `ALTER TABLE saved_searches ADD COLUMN seed TEXT NOT NULL DEFAULT ''`)
+	b.ensureColumn("image_paths", "mtime_unix", `ALTER TABLE image_paths ADD COLUMN mtime_unix INTEGER NOT NULL DEFAULT 0`)
+	b.ensureColumn("images", "phash", `ALTER TABLE images ADD COLUMN phash INTEGER`)
 	// Partial phash index: drives `phash:<hex>` exact-match seeks and
 	// the cold-path SELECT that loads the BK-tree at first relations
 	// query. Skips NULL rows (the BK-tree only carries computed phashes)
 	// so a half-backfilled library doesn't pay the storage for unhashed
 	// entries.
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_phash ON images(phash) WHERE phash IS NOT NULL`); err != nil {
-		return fmt.Errorf("create idx_images_phash: %w", err)
-	}
+	b.exec("create idx_images_phash", `CREATE INDEX IF NOT EXISTS idx_images_phash ON images(phash) WHERE phash IS NOT NULL`)
 	// Stored tag_count column maintained by triggers on image_tags so
 	// the tagcount: filter rides an indexed range seek instead of a
 	// correlated `SELECT COUNT(*) FROM image_tags WHERE image_id = i.id`
 	// per visible row. Backfilled once on first boot after the column
 	// is added; the triggers below keep it in lockstep with every
-	// image_tags insert/delete. tagPre = 0 means the column was just
-	// added by this ensureColumn call, so the backfill runs exactly
-	// once per library upgrade.
-	var tagCountPre int
-	if err := db.Write.QueryRow(
-		`SELECT COUNT(*) FROM pragma_table_info('images') WHERE name = 'tag_count'`,
-	).Scan(&tagCountPre); err != nil {
-		return fmt.Errorf("inspect images.tag_count: %w", err)
-	}
-	if err := ensureColumn(db, "images", "tag_count", `ALTER TABLE images ADD COLUMN tag_count INTEGER NOT NULL DEFAULT 0`); err != nil {
-		return err
-	}
-	if tagCountPre == 0 {
-		if _, err := db.Write.Exec(`UPDATE images SET tag_count = (SELECT COUNT(*) FROM image_tags WHERE image_id = images.id)`); err != nil {
-			return fmt.Errorf("backfill images.tag_count: %w", err)
-		}
-	}
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_tag_count_visible ON images(tag_count) WHERE is_missing = 0`); err != nil {
-		return fmt.Errorf("create idx_images_tag_count_visible: %w", err)
-	}
+	// image_tags insert/delete.
+	b.backfillIfFreshColumn("images", "tag_count",
+		`ALTER TABLE images ADD COLUMN tag_count INTEGER NOT NULL DEFAULT 0`,
+		`UPDATE images SET tag_count = (SELECT COUNT(*) FROM image_tags WHERE image_id = images.id)`,
+		"backfill images.tag_count")
+	b.exec("create idx_images_tag_count_visible", `CREATE INDEX IF NOT EXISTS idx_images_tag_count_visible ON images(tag_count) WHERE is_missing = 0`)
 	// Maintain images.tag_count with row-level triggers. MAX(0, ...) on
 	// the delete trigger guards against the impossible-but-cheap case of
 	// a negative count from a torn upgrade. The triggers are FOR EACH
 	// ROW (SQLite's only mode) so a batch INSERT/DELETE on image_tags
 	// fires one UPDATE per affected image; the per-row cost is a primary-
 	// key seek on images plus an indexed update.
-	if _, err := db.Write.Exec(`CREATE TRIGGER IF NOT EXISTS trg_image_tags_count_ai
+	b.exec("create trg_image_tags_count_ai", `CREATE TRIGGER IF NOT EXISTS trg_image_tags_count_ai
 		AFTER INSERT ON image_tags
 		BEGIN
 			UPDATE images SET tag_count = tag_count + 1 WHERE id = NEW.image_id;
-		END`); err != nil {
-		return fmt.Errorf("create trg_image_tags_count_ai: %w", err)
-	}
-	if _, err := db.Write.Exec(`CREATE TRIGGER IF NOT EXISTS trg_image_tags_count_ad
+		END`)
+	b.exec("create trg_image_tags_count_ad", `CREATE TRIGGER IF NOT EXISTS trg_image_tags_count_ad
 		AFTER DELETE ON image_tags
 		BEGIN
 			UPDATE images SET tag_count = MAX(0, tag_count - 1) WHERE id = OLD.image_id;
-		END`); err != nil {
-		return fmt.Errorf("create trg_image_tags_count_ad: %w", err)
-	}
+		END`)
 	// Stored rating_rank column maintained by triggers on image_tags. The
 	// SFW cookie ceiling AND-chains three NOT EXISTS subqueries (one per
 	// excluded rating tag) onto every search expression, which the deep-
@@ -404,44 +318,29 @@ func Bootstrap(db *DB) error {
 	// rank that survived; pre-existing rows with multiple ratings get
 	// the MAX during backfill, matching the search engine's "highest-
 	// wins" semantics.
-	var ratingRankPre int
-	if err := db.Write.QueryRow(
-		`SELECT COUNT(*) FROM pragma_table_info('images') WHERE name = 'rating_rank'`,
-	).Scan(&ratingRankPre); err != nil {
-		return fmt.Errorf("inspect images.rating_rank: %w", err)
-	}
-	if err := ensureColumn(db, "images", "rating_rank", `ALTER TABLE images ADD COLUMN rating_rank INTEGER NOT NULL DEFAULT -1`); err != nil {
-		return err
-	}
-	if ratingRankPre == 0 {
-		if _, err := db.Write.Exec(`
-			UPDATE images SET rating_rank = COALESCE((
-				SELECT MAX(CASE t.name
-					WHEN 'general' THEN 0
-					WHEN 'sensitive' THEN 1
-					WHEN 'questionable' THEN 2
-					WHEN 'explicit' THEN 3
-					ELSE -1 END)
-				FROM image_tags it
-				JOIN tags t ON t.id = it.tag_id
-				JOIN tag_categories tc ON tc.id = t.category_id
-				WHERE it.image_id = images.id AND tc.name = 'rating'
-			), -1)
-		`); err != nil {
-			return fmt.Errorf("backfill images.rating_rank: %w", err)
-		}
-	}
+	b.backfillIfFreshColumn("images", "rating_rank",
+		`ALTER TABLE images ADD COLUMN rating_rank INTEGER NOT NULL DEFAULT -1`,
+		`UPDATE images SET rating_rank = COALESCE((
+			SELECT MAX(CASE t.name
+				WHEN 'general' THEN 0
+				WHEN 'sensitive' THEN 1
+				WHEN 'questionable' THEN 2
+				WHEN 'explicit' THEN 3
+				ELSE -1 END)
+			FROM image_tags it
+			JOIN tags t ON t.id = it.tag_id
+			JOIN tag_categories tc ON tc.id = t.category_id
+			WHERE it.image_id = images.id AND tc.name = 'rating'
+		), -1)`,
+		"backfill images.rating_rank")
 	// Partial covering index for `fav:true` searches. The bare
 	// idx_images_favorited (CREATE in schema.sql) covers both polarities
 	// but isn't partial; the planner under c=5 sometimes prefers
 	// idx_images_missing and pays a TEMP B-TREE for the cursor sort.
-	// The favorited subset is small (under-100 images on the audit
-	// fixture, low single-percent on a typical library) so the
-	// composite (ingested_at, id) tail lets the data SELECT walk
-	// favorited matches in sort order with no temp sort.
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_favorited_visible ON images(ingested_at DESC, id DESC) WHERE is_missing = 0 AND is_favorited = 1`); err != nil {
-		return fmt.Errorf("create idx_images_favorited_visible: %w", err)
-	}
+	// The favorited subset is small (low single-percent on a typical
+	// library) so the composite (ingested_at, id) tail lets the data
+	// SELECT walk favorited matches in sort order with no temp sort.
+	b.exec("create idx_images_favorited_visible", `CREATE INDEX IF NOT EXISTS idx_images_favorited_visible ON images(ingested_at DESC, id DESC) WHERE is_missing = 0 AND is_favorited = 1`)
 	// Covering partial sort indexes that include rating_rank as a tail
 	// key. The ceiling chain rewrite emits `i.rating_rank <= ?` as the
 	// only non-cursor predicate; with rating_rank inlined in the index
@@ -450,12 +349,8 @@ func Bootstrap(db *DB) error {
 	// matching filesize-sort companion covers `back_sort=filesize` on
 	// the same ceiling path. Both are partial WHERE is_missing = 0 so
 	// the entries match the gallery's visible-only filter.
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_ingested_rating_visible ON images(ingested_at DESC, id DESC, rating_rank) WHERE is_missing = 0`); err != nil {
-		return fmt.Errorf("create idx_images_ingested_rating_visible: %w", err)
-	}
-	if _, err := db.Write.Exec(`CREATE INDEX IF NOT EXISTS idx_images_filesize_rating_visible ON images(file_size DESC, id DESC, rating_rank) WHERE is_missing = 0`); err != nil {
-		return fmt.Errorf("create idx_images_filesize_rating_visible: %w", err)
-	}
+	b.exec("create idx_images_ingested_rating_visible", `CREATE INDEX IF NOT EXISTS idx_images_ingested_rating_visible ON images(ingested_at DESC, id DESC, rating_rank) WHERE is_missing = 0`)
+	b.exec("create idx_images_filesize_rating_visible", `CREATE INDEX IF NOT EXISTS idx_images_filesize_rating_visible ON images(file_size DESC, id DESC, rating_rank) WHERE is_missing = 0`)
 	// Maintain images.rating_rank with row-level triggers. The WHEN
 	// subquery short-circuits the trigger to rating-category writes only
 	// so per-image_tags inserts and deletes for non-rating tags stay free.
@@ -463,7 +358,7 @@ func Bootstrap(db *DB) error {
 	// on the insert side that includes the just-added row, on the delete
 	// side it excludes the just-deleted row, mirroring the highest-wins
 	// invariant PruneLowerRatingsTx enforces at write time.
-	if _, err := db.Write.Exec(`CREATE TRIGGER IF NOT EXISTS trg_image_tags_rating_rank_ai
+	b.exec("create trg_image_tags_rating_rank_ai", `CREATE TRIGGER IF NOT EXISTS trg_image_tags_rating_rank_ai
 		AFTER INSERT ON image_tags
 		WHEN NEW.tag_id IN (SELECT t.id FROM tags t JOIN tag_categories tc ON tc.id = t.category_id WHERE tc.name = 'rating')
 		BEGIN
@@ -479,10 +374,8 @@ func Bootstrap(db *DB) error {
 				JOIN tag_categories tc ON tc.id = t.category_id
 				WHERE it.image_id = NEW.image_id AND tc.name = 'rating'
 			), -1) WHERE id = NEW.image_id;
-		END`); err != nil {
-		return fmt.Errorf("create trg_image_tags_rating_rank_ai: %w", err)
-	}
-	if _, err := db.Write.Exec(`CREATE TRIGGER IF NOT EXISTS trg_image_tags_rating_rank_ad
+		END`)
+	b.exec("create trg_image_tags_rating_rank_ad", `CREATE TRIGGER IF NOT EXISTS trg_image_tags_rating_rank_ad
 		AFTER DELETE ON image_tags
 		WHEN OLD.tag_id IN (SELECT t.id FROM tags t JOIN tag_categories tc ON tc.id = t.category_id WHERE tc.name = 'rating')
 		BEGIN
@@ -498,9 +391,7 @@ func Bootstrap(db *DB) error {
 				JOIN tag_categories tc ON tc.id = t.category_id
 				WHERE it.image_id = OLD.image_id AND tc.name = 'rating'
 			), -1) WHERE id = OLD.image_id;
-		END`); err != nil {
-		return fmt.Errorf("create trg_image_tags_rating_rank_ad: %w", err)
-	}
+		END`)
 	// FTS5 trigram virtual tables for the name: filter. The outer leg's
 	// `i.basename_lower LIKE '%val%'` cannot ride the existing
 	// idx_images_basename_lower_visible index because of the leading
@@ -509,36 +400,28 @@ func Bootstrap(db *DB) error {
 	// lookup (rowid = the canonical or alias path id). Queries shorter
 	// than 3 characters still fall back to the LIKE shape because the
 	// trigram tokenizer needs at least 3 characters of overlap to seek.
-	if _, err := db.Write.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS image_basename_canonical_fts USING fts5(basename, tokenize='trigram', content='', contentless_delete=1)`); err != nil {
-		return fmt.Errorf("create image_basename_canonical_fts: %w", err)
-	}
-	if _, err := db.Write.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS image_basename_alias_fts USING fts5(basename, image_id UNINDEXED, tokenize='trigram', content='', contentless_delete=1)`); err != nil {
-		return fmt.Errorf("create image_basename_alias_fts: %w", err)
-	}
+	b.exec("create image_basename_canonical_fts", `CREATE VIRTUAL TABLE IF NOT EXISTS image_basename_canonical_fts USING fts5(basename, tokenize='trigram', content='', contentless_delete=1)`)
+	b.exec("create image_basename_alias_fts", `CREATE VIRTUAL TABLE IF NOT EXISTS image_basename_alias_fts USING fts5(basename, image_id UNINDEXED, tokenize='trigram', content='', contentless_delete=1)`)
 	// Backfill on the same version-gate as ANALYZE so a partial backfill
 	// from a torn upgrade gets retried until the marker advances. The
-	// trigram FTS is contentless so re-inserting a (rowid, basename) pair
-	// after a DELETE FROM ... where rowid is the natural primary key
-	// stays cheap; we just clear any stale entries first.
+	// trigram FTS is contentless so re-inserting a (rowid, basename)
+	// pair after a DELETE FROM stays cheap; clear stale entries first.
+	// Resolve b.err before reading user_version so a failed earlier
+	// exec doesn't query against a half-bootstrapped DB.
+	if b.err != nil {
+		return b.err
+	}
 	var ratingRankUserVersion int
 	if err := db.Write.QueryRow(`PRAGMA user_version`).Scan(&ratingRankUserVersion); err != nil {
 		return fmt.Errorf("read user_version (fts5 backfill): %w", err)
 	}
 	if ratingRankUserVersion < bootstrapSchemaVersion {
-		if _, err := db.Write.Exec(`DELETE FROM image_basename_canonical_fts`); err != nil {
-			return fmt.Errorf("clear image_basename_canonical_fts: %w", err)
-		}
-		if _, err := db.Write.Exec(`INSERT INTO image_basename_canonical_fts (rowid, basename)
-			SELECT id, basename_lower FROM images WHERE basename_lower != ''`); err != nil {
-			return fmt.Errorf("backfill image_basename_canonical_fts: %w", err)
-		}
-		if _, err := db.Write.Exec(`DELETE FROM image_basename_alias_fts`); err != nil {
-			return fmt.Errorf("clear image_basename_alias_fts: %w", err)
-		}
-		if _, err := db.Write.Exec(`INSERT INTO image_basename_alias_fts (rowid, basename, image_id)
-			SELECT id, basename_lower, image_id FROM image_paths WHERE is_canonical = 0 AND basename_lower != ''`); err != nil {
-			return fmt.Errorf("backfill image_basename_alias_fts: %w", err)
-		}
+		b.exec("clear image_basename_canonical_fts", `DELETE FROM image_basename_canonical_fts`)
+		b.exec("backfill image_basename_canonical_fts", `INSERT INTO image_basename_canonical_fts (rowid, basename)
+			SELECT id, basename_lower FROM images WHERE basename_lower != ''`)
+		b.exec("clear image_basename_alias_fts", `DELETE FROM image_basename_alias_fts`)
+		b.exec("backfill image_basename_alias_fts", `INSERT INTO image_basename_alias_fts (rowid, basename, image_id)
+			SELECT id, basename_lower, image_id FROM image_paths WHERE is_canonical = 0 AND basename_lower != ''`)
 	}
 	// Triggers maintain the FTS5 tables in lockstep with the source rows.
 	// canonical_path's basename_lower is a VIRTUAL generated column;
@@ -548,54 +431,42 @@ func Bootstrap(db *DB) error {
 	// `INSERT OR REPLACE` collapses the (rowid) primary-key conflict on
 	// ALTER-style updates that don't change the column but do retrigger
 	// the OF clause (rare; defensive).
-	if _, err := db.Write.Exec(`CREATE TRIGGER IF NOT EXISTS trg_image_basename_canonical_fts_ai
+	b.exec("create trg_image_basename_canonical_fts_ai", `CREATE TRIGGER IF NOT EXISTS trg_image_basename_canonical_fts_ai
 		AFTER INSERT ON images
 		WHEN NEW.basename_lower != ''
 		BEGIN
 			INSERT OR REPLACE INTO image_basename_canonical_fts (rowid, basename) VALUES (NEW.id, NEW.basename_lower);
-		END`); err != nil {
-		return fmt.Errorf("create trg_image_basename_canonical_fts_ai: %w", err)
-	}
-	if _, err := db.Write.Exec(`CREATE TRIGGER IF NOT EXISTS trg_image_basename_canonical_fts_au
+		END`)
+	b.exec("create trg_image_basename_canonical_fts_au", `CREATE TRIGGER IF NOT EXISTS trg_image_basename_canonical_fts_au
 		AFTER UPDATE OF canonical_path ON images
 		BEGIN
 			DELETE FROM image_basename_canonical_fts WHERE rowid = OLD.id;
 			INSERT INTO image_basename_canonical_fts (rowid, basename) SELECT NEW.id, NEW.basename_lower WHERE NEW.basename_lower != '';
-		END`); err != nil {
-		return fmt.Errorf("create trg_image_basename_canonical_fts_au: %w", err)
-	}
-	if _, err := db.Write.Exec(`CREATE TRIGGER IF NOT EXISTS trg_image_basename_canonical_fts_ad
+		END`)
+	b.exec("create trg_image_basename_canonical_fts_ad", `CREATE TRIGGER IF NOT EXISTS trg_image_basename_canonical_fts_ad
 		AFTER DELETE ON images
 		BEGIN
 			DELETE FROM image_basename_canonical_fts WHERE rowid = OLD.id;
-		END`); err != nil {
-		return fmt.Errorf("create trg_image_basename_canonical_fts_ad: %w", err)
-	}
-	if _, err := db.Write.Exec(`CREATE TRIGGER IF NOT EXISTS trg_image_basename_alias_fts_ai
+		END`)
+	b.exec("create trg_image_basename_alias_fts_ai", `CREATE TRIGGER IF NOT EXISTS trg_image_basename_alias_fts_ai
 		AFTER INSERT ON image_paths
 		WHEN NEW.is_canonical = 0 AND NEW.basename_lower != ''
 		BEGIN
 			INSERT OR REPLACE INTO image_basename_alias_fts (rowid, basename, image_id) VALUES (NEW.id, NEW.basename_lower, NEW.image_id);
-		END`); err != nil {
-		return fmt.Errorf("create trg_image_basename_alias_fts_ai: %w", err)
-	}
-	if _, err := db.Write.Exec(`CREATE TRIGGER IF NOT EXISTS trg_image_basename_alias_fts_au
+		END`)
+	b.exec("create trg_image_basename_alias_fts_au", `CREATE TRIGGER IF NOT EXISTS trg_image_basename_alias_fts_au
 		AFTER UPDATE OF path, is_canonical ON image_paths
 		BEGIN
 			DELETE FROM image_basename_alias_fts WHERE rowid = OLD.id;
 			INSERT INTO image_basename_alias_fts (rowid, basename, image_id)
 				SELECT NEW.id, NEW.basename_lower, NEW.image_id
 				WHERE NEW.is_canonical = 0 AND NEW.basename_lower != '';
-		END`); err != nil {
-		return fmt.Errorf("create trg_image_basename_alias_fts_au: %w", err)
-	}
-	if _, err := db.Write.Exec(`CREATE TRIGGER IF NOT EXISTS trg_image_basename_alias_fts_ad
+		END`)
+	b.exec("create trg_image_basename_alias_fts_ad", `CREATE TRIGGER IF NOT EXISTS trg_image_basename_alias_fts_ad
 		AFTER DELETE ON image_paths
 		BEGIN
 			DELETE FROM image_basename_alias_fts WHERE rowid = OLD.id;
-		END`); err != nil {
-		return fmt.Errorf("create trg_image_basename_alias_fts_ad: %w", err)
-	}
+		END`)
 	// ANALYZE only when the schema marker says this version's migrations
 	// haven't been analyzed yet. PRAGMA optimize then handles row-count
 	// drift on steady-state restarts. Without the gate, ANALYZE on the
@@ -607,26 +478,77 @@ func Bootstrap(db *DB) error {
 	// analysis_limit=400 is the SQLite-recommended sample cap; the
 	// resulting stats are accurate enough for plan choice and keep the
 	// one-time pass under a second when the DB is warm.
+	if b.err != nil {
+		return b.err
+	}
 	var userVersion int
 	if err := db.Write.QueryRow(`PRAGMA user_version`).Scan(&userVersion); err != nil {
 		return fmt.Errorf("read user_version: %w", err)
 	}
 	if userVersion < bootstrapSchemaVersion {
-		if _, err := db.Write.Exec(`PRAGMA analysis_limit = 400`); err != nil {
-			return fmt.Errorf("set analysis_limit: %w", err)
-		}
-		if _, err := db.Write.Exec(`ANALYZE images`); err != nil {
-			return fmt.Errorf("analyze images: %w", err)
-		}
-		if _, err := db.Write.Exec(`ANALYZE image_tags`); err != nil {
-			return fmt.Errorf("analyze image_tags: %w", err)
-		}
-		if _, err := db.Write.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, bootstrapSchemaVersion)); err != nil {
-			return fmt.Errorf("set user_version: %w", err)
-		}
+		b.exec("set analysis_limit", `PRAGMA analysis_limit = 400`)
+		b.exec("analyze images", `ANALYZE images`)
+		b.exec("analyze image_tags", `ANALYZE image_tags`)
+		b.exec("set user_version", fmt.Sprintf(`PRAGMA user_version = %d`, bootstrapSchemaVersion))
 	}
-	if _, err := db.Write.Exec(`PRAGMA optimize`); err != nil {
-		return fmt.Errorf("pragma optimize: %w", err)
+	b.exec("pragma optimize", `PRAGMA optimize`)
+	return b.err
+}
+
+func exec(db *DB, label, sql string) error {
+	if _, err := db.Write.Exec(sql); err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	return nil
+}
+
+// bootstrapper threads the first migration error through a long
+// sequence of calls so each migration step lands as one statement.
+// Same shape as jsonWriter in internal/web/gallery_io.go.
+type bootstrapper struct {
+	db  *DB
+	err error
+}
+
+func (b *bootstrapper) exec(label, sql string) {
+	if b.err != nil {
+		return
+	}
+	b.err = exec(b.db, label, sql)
+}
+
+func (b *bootstrapper) ensureColumn(table, column, alterSQL string) {
+	if b.err != nil {
+		return
+	}
+	b.err = ensureColumn(b.db, table, column, alterSQL)
+}
+
+func (b *bootstrapper) backfillIfFreshColumn(table, column, alterSQL, backfillSQL, backfillLabel string) {
+	if b.err != nil {
+		return
+	}
+	b.err = backfillIfFreshColumn(b.db, table, column, alterSQL, backfillSQL, backfillLabel)
+}
+
+// backfillIfFreshColumn runs backfillSQL only when the ALTER actually
+// added the column - re-bootstraps of an in-use library must not
+// overwrite values the triggers have since maintained.
+func backfillIfFreshColumn(db *DB, table, column, alterSQL, backfillSQL, backfillLabel string) error {
+	var pre int
+	if err := db.Write.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column,
+	).Scan(&pre); err != nil {
+		return fmt.Errorf("inspect %s.%s: %w", table, column, err)
+	}
+	if err := ensureColumn(db, table, column, alterSQL); err != nil {
+		return err
+	}
+	if pre > 0 {
+		return nil
+	}
+	if _, err := db.Write.Exec(backfillSQL); err != nil {
+		return fmt.Errorf("%s: %w", backfillLabel, err)
 	}
 	return nil
 }
@@ -652,24 +574,30 @@ func ensureColumn(db *DB, table, column, alterSQL string) error {
 	return nil
 }
 
+// cachedCount returns the cached value or runs sql once. Errors return
+// (0, false) so the fastCount* callers can fall back to the slow path
+// without per-call error handling.
+func (db *DB) cachedCount(cache *atomic.Pointer[int], sql string) (int, bool) {
+	if p := cache.Load(); p != nil {
+		return *p, true
+	}
+	var n int
+	if err := db.Read.QueryRow(sql).Scan(&n); err != nil {
+		return 0, false
+	}
+	cache.Store(&n)
+	return n, true
+}
+
 // UntaggedVisibleCount returns the cached count of visible images that
 // carry no image_tags row, or queries it on demand. fastCountTagged
 // subtracts this from the visible total to derive an exact tagged:true
 // partition without re-walking image_tags on every search.
 func (db *DB) UntaggedVisibleCount() (int, bool) {
-	if p := db.untaggedVisible.Load(); p != nil {
-		return *p, true
-	}
-	var n int
-	if err := db.Read.QueryRow(
+	return db.cachedCount(&db.untaggedVisible,
 		`SELECT COUNT(*) FROM images i
 		 WHERE is_missing = 0
-		   AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = i.id)`,
-	).Scan(&n); err != nil {
-		return 0, false
-	}
-	db.untaggedVisible.Store(&n)
-	return n, true
+		   AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = i.id)`)
 }
 
 // AutoUntaggedVisibleCount is UntaggedVisibleCount restricted to
@@ -677,22 +605,13 @@ func (db *DB) UntaggedVisibleCount() (int, bool) {
 // autotagged:true. There is no covering (image_id, is_auto) index, so
 // the NOT-EXISTS walk is heavier than the bare-untagged one above.
 func (db *DB) AutoUntaggedVisibleCount() (int, bool) {
-	if p := db.autoUntaggedVisible.Load(); p != nil {
-		return *p, true
-	}
-	var n int
-	if err := db.Read.QueryRow(
+	return db.cachedCount(&db.autoUntaggedVisible,
 		`SELECT COUNT(*) FROM images i
 		 WHERE is_missing = 0
 		   AND NOT EXISTS (
 		         SELECT 1 FROM image_tags it
 		         WHERE it.image_id = i.id AND it.is_auto = 1
-		       )`,
-	).Scan(&n); err != nil {
-		return 0, false
-	}
-	db.autoUntaggedVisible.Store(&n)
-	return n, true
+		       )`)
 }
 
 // InvalidateCachedCounts drops every per-DB count cache. Call after a

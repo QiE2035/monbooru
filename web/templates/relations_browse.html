@@ -20,6 +20,15 @@
     <a href="/relations/browse?kind=version"     class="browse-tab{{if eq .Kind "version"}}     browse-tab-active{{end}}">Revision history <span class="field-hint">({{.Counts.VersionChains}})</span></a>
     <a href="/relations/browse?kind=derivative"  class="browse-tab{{if eq .Kind "derivative"}}  browse-tab-active{{end}}">Based on <span class="field-hint">({{.Counts.DerivativeTrees}})</span></a>
     <a href="/relations/browse?kind=not_related" class="browse-tab{{if eq .Kind "not_related"}} browse-tab-active{{end}}">Not related <span class="field-hint">({{.Counts.NotRelatedPairs}})</span></a>
+    {{if gt (len .SortOptions) 1}}
+    <div class="filter-group browse-sort">
+      <span class="filter-label">Sort</span>
+      {{range .SortOptions}}
+      <a class="filter-btn{{if eq . $.Sort}} active{{end}}"
+         href="/relations/browse?kind={{$.Kind}}&sort={{.}}">{{browseSortLabel .}}</a>
+      {{end}}
+    </div>
+    {{end}}
   </nav>
 
   {{if not .Cards}}
@@ -35,6 +44,7 @@
     <button type="button" class="btn-sm btn-purple" id="merge-selected-btn" disabled>Merge selected</button>
   </div>
   {{end}}
+  {{$pageBase := printf "/relations/browse?kind=%s&sort=%s" .Kind .Sort}}
   <ul class="relations-cards">
     {{range .Cards}}
     {{$card := .}}
@@ -62,6 +72,18 @@
           <input type="hidden" name="group_id" value="{{.GroupID}}">
           <button type="submit" class="btn-link-accent">[dissolve]</button>
         </form>
+        {{if eq (len .Members) 2}}
+        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-confirm="Dissolve this group and queue the pair for the session?"
+              data-confirm-ok="Review again"
+              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.href='/relations/session'},800)}" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <input type="hidden" name="type" value="review-again">
+          <input type="hidden" name="kind" value="duplicate">
+          <input type="hidden" name="group_id" value="{{.GroupID}}">
+          <button type="submit" class="btn-link-accent">[review again]</button>
+        </form>
+        {{end}}
       {{else if eq .Kind "alternate"}}
         <label class="merge-select" title="Select this group for merging">
           <input type="checkbox" name="group_id" value="{{.GroupID}}" class="merge-checkbox">
@@ -77,14 +99,55 @@
           <input type="hidden" name="group_id" value="{{.GroupID}}">
           <button type="submit" class="btn-link-accent">[dissolve]</button>
         </form>
+        {{if eq (len .Members) 2}}
+        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-confirm="Dissolve this group and queue the pair for the session?"
+              data-confirm-ok="Review again"
+              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.href='/relations/session'},800)}" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <input type="hidden" name="type" value="review-again">
+          <input type="hidden" name="kind" value="alternate">
+          <input type="hidden" name="group_id" value="{{.GroupID}}">
+          <button type="submit" class="btn-link-accent">[review again]</button>
+        </form>
+        {{end}}
       {{else if eq .Kind "version"}}
         <strong>Version chain #{{index .Members 0}}</strong>
         ({{len .Members}} image(s), oldest #{{index .Members 0}} → newest #{{index .Members (sub (len .Members) 1)}})
-        <a class="btn-link-accent" href="/images/{{index .Members 0}}/relations" title="Open the root image's relations page to reverse or unlink any edge in this chain">[edit chain]</a>
+        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-confirm="Dissolve this version chain? Every edge between the {{len .Members}} images is dropped."
+              data-confirm-ok="Dissolve"
+              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <input type="hidden" name="type" value="dissolve-version">
+          <input type="hidden" name="root_id" value="{{index .Members 0}}">
+          <button type="submit" class="btn-link-accent">[dissolve]</button>
+        </form>
+        {{if eq (len .Members) 2}}
+        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-confirm="Unlink this revision edge and queue the pair for the session?"
+              data-confirm-ok="Review again"
+              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.href='/relations/session'},800)}" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <input type="hidden" name="type" value="review-again">
+          <input type="hidden" name="kind" value="version">
+          <input type="hidden" name="a" value="{{index .Members 0}}">
+          <input type="hidden" name="b" value="{{index .Members 1}}">
+          <button type="submit" class="btn-link-accent">[review again]</button>
+        </form>
+        {{end}}
       {{else if eq .Kind "derivative"}}
         <strong>Derivative tree</strong>
         ({{len .Members}} image(s), source #{{index .Members 0}})
-        <a class="btn-link-accent" href="/images/{{index .Members 0}}/relations" title="Open the source image's relations page to reverse or unlink any edge in this tree">[edit tree]</a>
+        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-confirm="Dissolve this derivative tree? Every edge between the {{len .Members}} images is dropped."
+              data-confirm-ok="Dissolve"
+              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <input type="hidden" name="type" value="dissolve-derivative">
+          <input type="hidden" name="root_id" value="{{index .Members 0}}">
+          <button type="submit" class="btn-link-accent">[dissolve]</button>
+        </form>
       {{else if eq .Kind "not_related"}}
         <strong>Not related</strong>
         (#{{index .Members 0}} ↔ #{{index .Members 1}})
@@ -98,44 +161,80 @@
           <input type="hidden" name="b" value="{{index .Members 1}}">
           <button type="submit" class="btn-link-accent">[unlink]</button>
         </form>
+        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-confirm="Unlink this pair and queue it back into the session?"
+              data-confirm-ok="Review again"
+              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.href='/relations/session'},800)}" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <input type="hidden" name="type" value="review-again">
+          <input type="hidden" name="kind" value="not_related">
+          <input type="hidden" name="a" value="{{index .Members 0}}">
+          <input type="hidden" name="b" value="{{index .Members 1}}">
+          <button type="submit" class="btn-link-accent">[review again]</button>
+        </form>
       {{end}}
       {{if .CreatedAt}}
       <div class="relations-card-meta field-hint">declared <time>{{.CreatedAt}}</time></div>
       {{end}}
       {{if eq .Kind "version"}}
-      <div class="relations-card-chain">
-        {{range $i, $id := .Members}}
-        {{if $i}}<span class="relations-chain-arrow" aria-hidden="true">→</span>{{end}}
-        <a href="/images/{{$id}}" class="relations-card-thumb" title="Image {{$id}} - added {{index $card.MemberIngestedAt $id}}">
-          <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy">
-          <span class="relations-card-id">#{{$id}}</span>
-          <span class="relations-card-date">{{index $card.MemberIngestedAt $id}}</span>
-        </a>
-        {{end}}
-      </div>
+      {{$first := index .Members 0}}{{$last := index .Members (sub (len .Members) 1)}}
+      <details class="relations-card-expand">
+        <summary class="relations-card-summary">
+          <a href="/images/{{$first}}/relations" class="relations-card-thumb relations-card-summary-thumb" title="Image {{$first}} - added {{index $card.MemberIngestedAt $first}}">
+            <img src="/thumbnails/{{$.ActiveGallery}}/{{$first}}.jpg" alt="image {{$first}}" loading="lazy">
+            <span class="relations-card-id">#{{$first}}</span>
+          </a>
+          <span class="relations-chain-arrow" aria-hidden="true">→</span>
+          <a href="/images/{{$last}}/relations" class="relations-card-thumb relations-card-summary-thumb" title="Image {{$last}} - added {{index $card.MemberIngestedAt $last}}">
+            <img src="/thumbnails/{{$.ActiveGallery}}/{{$last}}.jpg" alt="image {{$last}}" loading="lazy">
+            <span class="relations-card-id">#{{$last}}</span>
+          </a>
+          <span class="relations-card-summary-meta">{{len .Members}} images</span>
+        </summary>
+        <div class="relations-card-chain">
+          {{range $i, $id := .Members}}
+          {{if $i}}<span class="relations-chain-arrow" aria-hidden="true">→</span>{{end}}
+          <a href="/images/{{$id}}/relations" class="relations-card-thumb" title="Image {{$id}} - added {{index $card.MemberIngestedAt $id}}">
+            <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy">
+            <span class="relations-card-id">#{{$id}}</span>
+            <span class="relations-card-date">{{index $card.MemberIngestedAt $id}}</span>
+          </a>
+          {{end}}
+        </div>
+      </details>
       {{else if eq .Kind "derivative"}}
-      <div class="relations-card-tree">
-        {{range .TreeRows}}
-        {{$row := .}}
-        <div class="relations-tree-row" data-depth="{{.Depth}}">
-          {{if .Trunks}}
-          <div class="relations-tree-prefix" aria-hidden="true">
-            {{range $row.Trunks}}<span class="relations-tree-trunk" data-style="{{.}}"></span>{{end}}
+      {{$source := index .Members 0}}
+      <details class="relations-card-expand">
+        <summary class="relations-card-summary">
+          <a href="/images/{{$source}}/relations" class="relations-card-thumb relations-card-summary-thumb" title="Image {{$source}} - added {{index $card.MemberIngestedAt $source}}">
+            <img src="/thumbnails/{{$.ActiveGallery}}/{{$source}}.jpg" alt="image {{$source}}" loading="lazy">
+            <span class="relations-card-id">#{{$source}}</span>
+          </a>
+          <span class="relations-card-summary-meta">tree, {{len .Members}} images</span>
+        </summary>
+        <div class="relations-card-tree">
+          {{range .TreeRows}}
+          {{$row := .}}
+          <div class="relations-tree-row" data-depth="{{.Depth}}">
+            {{if .Trunks}}
+            <div class="relations-tree-prefix" aria-hidden="true">
+              {{range $row.Trunks}}<span class="relations-tree-trunk" data-style="{{.}}"></span>{{end}}
+            </div>
+            {{end}}
+            <a href="/images/{{.ID}}/relations" class="relations-card-thumb" title="Image {{.ID}} - added {{index $card.MemberIngestedAt .ID}}">
+              <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy">
+              <span class="relations-card-id">#{{.ID}}</span>
+              <span class="relations-card-date">{{index $card.MemberIngestedAt .ID}}</span>
+            </a>
           </div>
           {{end}}
-          <a href="/images/{{.ID}}" class="relations-card-thumb" title="Image {{.ID}} - added {{index $card.MemberIngestedAt .ID}}">
-            <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy">
-            <span class="relations-card-id">#{{.ID}}</span>
-            <span class="relations-card-date">{{index $card.MemberIngestedAt .ID}}</span>
-          </a>
         </div>
-        {{end}}
-      </div>
+      </details>
       {{else}}
       <div class="relations-card-thumbs{{if eq .Kind "not_related"}} relations-card-thumbs-pair{{end}}">
         {{if and (eq .Kind "duplicate") .Original}}
         {{$orig := .Original}}
-        <a href="/images/{{$orig}}" class="relations-card-thumb relations-card-original" title="Original {{$orig}} - added {{index $card.MemberIngestedAt $orig}}">
+        <a href="/images/{{$orig}}/relations" class="relations-card-thumb relations-card-original" title="Original {{$orig}} - added {{index $card.MemberIngestedAt $orig}}">
           <img src="/thumbnails/{{$.ActiveGallery}}/{{$orig}}.jpg" alt="image {{$orig}}" loading="lazy">
           <span class="relations-card-id">#{{$orig}}</span>
           <span class="relations-card-tag">original</span>
@@ -143,7 +242,7 @@
         </a>
         {{range $id := .Members}}
           {{if ne $id $orig}}
-          <a href="/images/{{$id}}" class="relations-card-thumb" title="Image {{$id}} - added {{index $card.MemberIngestedAt $id}}">
+          <a href="/images/{{$id}}/relations" class="relations-card-thumb" title="Image {{$id}} - added {{index $card.MemberIngestedAt $id}}">
             <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy">
             <span class="relations-card-id">#{{$id}}</span>
             <span class="relations-card-date">{{index $card.MemberIngestedAt $id}}</span>
@@ -152,20 +251,20 @@
         {{end}}
         {{else if eq .Kind "not_related"}}
         {{$left := index .Members 0}}{{$right := index .Members 1}}
-        <a href="/images/{{$left}}" class="relations-card-thumb" title="Image {{$left}} - added {{index $card.MemberIngestedAt $left}}">
+        <a href="/images/{{$left}}/relations" class="relations-card-thumb" title="Image {{$left}} - added {{index $card.MemberIngestedAt $left}}">
           <img src="/thumbnails/{{$.ActiveGallery}}/{{$left}}.jpg" alt="image {{$left}}" loading="lazy">
           <span class="relations-card-id">#{{$left}}</span>
           <span class="relations-card-date">{{index $card.MemberIngestedAt $left}}</span>
         </a>
         <span class="relations-card-arrow" aria-hidden="true">↔</span>
-        <a href="/images/{{$right}}" class="relations-card-thumb" title="Image {{$right}} - added {{index $card.MemberIngestedAt $right}}">
+        <a href="/images/{{$right}}/relations" class="relations-card-thumb" title="Image {{$right}} - added {{index $card.MemberIngestedAt $right}}">
           <img src="/thumbnails/{{$.ActiveGallery}}/{{$right}}.jpg" alt="image {{$right}}" loading="lazy">
           <span class="relations-card-id">#{{$right}}</span>
           <span class="relations-card-date">{{index $card.MemberIngestedAt $right}}</span>
         </a>
         {{else}}
         {{range $id := .Members}}
-        <a href="/images/{{$id}}" class="relations-card-thumb" title="Image {{$id}} - added {{index $card.MemberIngestedAt $id}}">
+        <a href="/images/{{$id}}/relations" class="relations-card-thumb" title="Image {{$id}} - added {{index $card.MemberIngestedAt $id}}">
           <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy">
           <span class="relations-card-id">#{{$id}}</span>
           <span class="relations-card-date">{{index $card.MemberIngestedAt $id}}</span>
@@ -177,6 +276,24 @@
     </li>
     {{end}}
   </ul>
+
+  {{if gt .TotalPages 1}}
+  <div class="pagination">
+    {{if and (gt .Page 2) (gt .TotalPages 2)}}
+    <a href="{{$pageBase}}&page=1">« First</a>
+    {{end}}
+    {{if gt .Page 1}}
+    <a href="{{$pageBase}}&page={{sub .Page 1}}">← Prev</a>
+    {{end}}
+    <button type="button" class="page-jump current" data-current="{{.Page}}" data-total="{{.TotalPages}}" title="Go to page…">Page {{.Page}} / {{.TotalPages}}</button>
+    {{if lt .Page .TotalPages}}
+    <a href="{{$pageBase}}&page={{add .Page 1}}">Next →</a>
+    {{end}}
+    {{if and (lt .Page .TotalPages) (gt .TotalPages 2)}}
+    <a href="{{$pageBase}}&page={{.TotalPages}}">Last »</a>
+    {{end}}
+  </div>
+  {{end}}
   {{end}}
 </div>
 

@@ -100,7 +100,7 @@ func (s *Server) readerHandler(w http.ResponseWriter, r *http.Request) {
 	backQS, backKVQS := buildReaderBackQS(backQ, backSort, backOrder, backPage, backSeed, backToPages)
 
 	data := readerData{
-		baseData:    s.base(r, "gallery", filepath.Base(img.CanonicalPath)+" - Reader - Monbooru"),
+		baseData:    s.base(r, "gallery", filepath.Base(img.CanonicalPath)+" - Reader - "+s.booruName()),
 		Image:       *img,
 		Filename:    filepath.Base(img.CanonicalPath),
 		Page:        page,
@@ -138,7 +138,7 @@ func (s *Server) pagesGridHandler(w http.ResponseWriter, r *http.Request) {
 	backQS, backKVQS := buildReaderBackQS(backQ, backSort, backOrder, backPage, backSeed, false)
 	_, imageTags, _ := s.tagSvc().GetImageTags(id)
 	data := pagesGridData{
-		baseData:  s.base(r, "gallery", filepath.Base(img.CanonicalPath)+" - Pages - Monbooru"),
+		baseData:  s.base(r, "gallery", filepath.Base(img.CanonicalPath)+" - Pages - "+s.booruName()),
 		Image:     *img,
 		Filename:  filepath.Base(img.CanonicalPath),
 		PageCount: *img.PageCount,

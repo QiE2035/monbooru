@@ -149,6 +149,51 @@ func TestParse_NOT_Keyword(t *testing.T) {
 	_ = not
 }
 
+func TestParse_QuotedTag(t *testing.T) {
+	cases := []struct {
+		in  string
+		tag string
+	}{
+		{`"long_hair"`, "long_hair"},
+		{`"long hair"`, "long_hair"},
+		{`"Red Hair"`, "red_hair"},
+	}
+	for _, c := range cases {
+		e, _ := Parse(c.in)
+		tag, ok := e.(TagExpr)
+		if !ok {
+			t.Errorf("%q: expected TagExpr, got %T", c.in, e)
+			continue
+		}
+		if tag.Tag != c.tag {
+			t.Errorf("%q: tag = %q, want %q", c.in, tag.Tag, c.tag)
+		}
+	}
+}
+
+func TestParse_NegatedQuotedTag(t *testing.T) {
+	cases := []string{
+		`-"long_hair"`,
+		`-"long hair"`,
+	}
+	for _, in := range cases {
+		e, _ := Parse(in)
+		not, ok := e.(NotExpr)
+		if !ok {
+			t.Errorf("%q: expected NotExpr, got %T", in, e)
+			continue
+		}
+		tag, ok := not.Expr.(TagExpr)
+		if !ok {
+			t.Errorf("%q: NotExpr child = %T, want TagExpr", in, not.Expr)
+			continue
+		}
+		if tag.Tag != "long_hair" {
+			t.Errorf("%q: inner tag = %q, want long_hair", in, tag.Tag)
+		}
+	}
+}
+
 func TestParse_Filter_Fav(t *testing.T) {
 	e, _ := Parse("fav:true")
 	f, ok := e.(FilterExpr)
@@ -650,6 +695,36 @@ func TestExecute_PagesComparison(t *testing.T) {
 	}
 	if res.Total != 1 {
 		t.Errorf("pages:>=10 total = %d, want 1 (only the 100-page manga)", res.Total)
+	}
+}
+
+func TestExecute_NumericRange(t *testing.T) {
+	database, env := setupSearchDB(t)
+	mid := ingestTestManga(t, database, env, "mid.cbz", "")
+	if _, err := database.Write.Exec(`UPDATE images SET page_count = 100 WHERE id = ?`, mid); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		val   string
+		total int
+	}{
+		{"50..200", 1},  // closed BETWEEN
+		{"..50", 0},     // open-hi <= 50
+		{"150..", 0},    // open-lo >= 150
+		{"100..100", 1}, // exact match via degenerate range
+	}
+	for _, c := range cases {
+		res, err := Execute(database, Query{
+			Expr:  FilterExpr{Key: "pages", Val: c.val},
+			Page:  1, Limit: 40,
+		})
+		if err != nil {
+			t.Fatalf("%q: %v", c.val, err)
+		}
+		if res.Total != c.total {
+			t.Errorf("pages:%s total = %d, want %d", c.val, res.Total, c.total)
+		}
 	}
 }
 
@@ -4825,6 +4900,50 @@ func TestBuildWhere_DateFilter_AcceptsYearMonth(t *testing.T) {
 			t.Errorf("good date %q rejected: %q", in, where)
 		}
 	}
+}
+
+// Time-precise date filter values let the inbox-cluster header build a
+// `date:T1..T2` link whose lower bound starts at the cluster's earliest
+// minute and whose upper bound extends to the end of the latest
+// minute. Without this, a 19:23 -> 19:30 cluster widens to the whole
+// day. Minute precision rides the same lexicographic sort that powers
+// the bare-date contract.
+func TestBuildWhere_DateFilter_AcceptsMinutePrecision(t *testing.T) {
+	t.Run("range upper bound extends to end of minute", func(t *testing.T) {
+		where, args, _ := buildWhere(FilterExpr{Key: "date", Val: "2026-05-22T19:23..2026-05-22T19:30"})
+		if !strings.Contains(where, "BETWEEN") {
+			t.Errorf("expected BETWEEN form, got %q", where)
+		}
+		if len(args) != 2 || args[0] != "2026-05-22T19:23" || args[1] != "2026-05-22T19:30:59Z" {
+			t.Errorf("BETWEEN args = %v, want [\"2026-05-22T19:23\" \"2026-05-22T19:30:59Z\"]", args)
+		}
+	})
+	t.Run("inclusive upper operator extends to end of minute", func(t *testing.T) {
+		_, args, _ := buildWhere(FilterExpr{Key: "date", Val: "<=2026-05-22T19:23"})
+		if len(args) != 1 || args[0] != "2026-05-22T19:23:59Z" {
+			t.Errorf("`<= minute` args = %v, want [\"2026-05-22T19:23:59Z\"]", args)
+		}
+	})
+	t.Run("inclusive lower operator keeps the bare minute", func(t *testing.T) {
+		_, args, _ := buildWhere(FilterExpr{Key: "date", Val: ">=2026-05-22T19:23"})
+		if len(args) != 1 || args[0] != "2026-05-22T19:23" {
+			t.Errorf("`>= minute` args = %v, want [\"2026-05-22T19:23\"]", args)
+		}
+	})
+	t.Run("second precision is an exact-second BETWEEN", func(t *testing.T) {
+		_, args, _ := buildWhere(FilterExpr{Key: "date", Val: "=2026-05-22T19:23:42"})
+		if len(args) != 2 || args[0] != "2026-05-22T19:23:42" || args[1] != "2026-05-22T19:23:42Z" {
+			t.Errorf("`= second` args = %v, want [\"2026-05-22T19:23:42\" \"2026-05-22T19:23:42Z\"]", args)
+		}
+	})
+	t.Run("malformed time precision still rejected", func(t *testing.T) {
+		for _, in := range []string{"2026-05-22T19", "2026-05-22T19:", "2026-05-22T", "T19:23"} {
+			where, _, _ := buildWhere(FilterExpr{Key: "date", Val: in})
+			if !strings.Contains(where, "1=0") {
+				t.Errorf("bad %q: expected 1=0, got %q", in, where)
+			}
+		}
+	})
 }
 
 func TestExecute_WithAutoTaggedAt(t *testing.T) {

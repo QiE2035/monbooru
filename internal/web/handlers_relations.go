@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -123,11 +125,13 @@ func loadCollectionSiblings(cx *galleryCtx, imageID int64) ([]collectionSibling,
 }
 
 // flattenRelationsForPanel produces an ordered tile list (max 6) for
-// the compact Relations panel: dup-group siblings (original first),
-// alt-group siblings, version neighbours, derivative neighbours, and
-// collection siblings sharing images.series with the current row. A
-// declared relation outranks a collection link so a duplicate already
-// listed is not re-added as a collection sibling.
+// the compact Relations panel: collection siblings sharing
+// images.series with the current row land first so the operator's
+// most concrete "what else belongs with this image" cue is visible
+// without scrolling; declared relations (dup-group, alt-group,
+// version neighbours, derivative neighbours) follow in declaration
+// order. The seen set still de-duplicates so a relation that also
+// shares the collection isn't surfaced twice.
 func flattenRelationsForPanel(rels *relations.ImageRelations, self int64, siblings []collectionSibling) []relatedTile {
 	const cap = 6
 	var tiles []relatedTile
@@ -138,6 +142,9 @@ func flattenRelationsForPanel(rels *relations.ImageRelations, self int64, siblin
 		}
 		seen[t.ID] = true
 		tiles = append(tiles, t)
+	}
+	for _, sib := range siblings {
+		add(relatedTile{ID: sib.ID, Label: "collection", Series: sib.Series, SeriesOrder: sib.Order})
 	}
 	if rels.DupGroup != nil {
 		for _, m := range rels.DupGroup.Members {
@@ -167,9 +174,6 @@ func flattenRelationsForPanel(rels *relations.ImageRelations, self int64, siblin
 	}
 	for _, m := range rels.Derivatives {
 		add(relatedTile{ID: m, Marker: "Derivative", Label: "derivative"})
-	}
-	for _, sib := range siblings {
-		add(relatedTile{ID: sib.ID, Label: "collection", Series: sib.Series, SeriesOrder: sib.Order})
 	}
 	return tiles
 }
@@ -205,6 +209,11 @@ func (s *Server) imageRelationsPage(w http.ResponseWriter, r *http.Request) {
 	// Strip declared-relation neighbours from the collection strip so
 	// the same row never appears twice on the page.
 	siblings = filterCollectionSiblings(siblings, rels)
+	// Splice the current image into the collection so the operator sees
+	// the same "here is this image among its siblings" framing every
+	// other section uses. Only when at least one sibling remains; a
+	// collection-of-one wouldn't surface here in the first place.
+	collection := collectionWithSelf(siblings, *img)
 	// When the operator is about to unlink the current original from a
 	// group with 3+ members, the post-step promotes a new original.
 	// Surface that id so the confirm prompt can name it.
@@ -217,12 +226,18 @@ func (s *Server) imageRelationsPage(w http.ResponseWriter, r *http.Request) {
 		nextOriginal = next
 	}
 	thumbURL := fmt.Sprintf("/thumbnails/%s/%d.jpg", s.activeName, id)
+	// Mirror the detail page's parent/basename title shape so a tab
+	// strip with several /relations tabs open stays distinguishable.
+	titleName := filepath.Base(img.CanonicalPath)
+	if parent := filepath.Base(filepath.Dir(img.CanonicalPath)); parent != "" && parent != "." && parent != "/" {
+		titleName = parent + "/" + titleName
+	}
 	pageData := relationsImagePageData{
-		baseData:                       s.base(r, "gallery", fmt.Sprintf("Relations - %d", id)),
+		baseData:                       s.base(r, "gallery", fmt.Sprintf("Relations - %s - %s", titleName, s.booruName())),
 		Image:                          *img,
 		Relations:                      rels,
 		Self:                           id,
-		Collection:                     siblings,
+		Collection:                     collection,
 		ThumbnailURL:                   thumbURL,
 		NextOriginalIfOriginalUnlinked: nextOriginal,
 		AltGroupMembersOrdered:         reorderSelfFirst(rels.AltGroupMembers, id),
@@ -241,6 +256,7 @@ func (s *Server) imageRelationsPage(w http.ResponseWriter, r *http.Request) {
 			logx.Warnf("relations page version chain %d: %v", id, vErr)
 		}
 		pageData.VersionChainGens = gens
+		pageData.VersionActions = versionActionMap(id, rels)
 	}
 	if rels.DerivativeSource != nil || len(rels.Derivatives) > 0 {
 		treeRows, tErr := derivativeTreeRowsForImage(cx, id)
@@ -248,6 +264,7 @@ func (s *Server) imageRelationsPage(w http.ResponseWriter, r *http.Request) {
 			logx.Warnf("relations page derivative tree %d: %v", id, tErr)
 		}
 		pageData.DerivativeTreeRows = treeRows
+		pageData.DerivativeActions = derivativeActionMap(id, rels)
 	}
 	s.renderTemplate(w, "relations_image.html", pageData)
 }
@@ -276,6 +293,25 @@ func reorderSelfFirst(members []int64, self int64) []int64 {
 	return out
 }
 
+// walkRelationToRoot walks the parentCol -> childCol edge upward from
+// start, bounded by MaxVersionChainDepth so a corrupt cycle can't
+// loop. Shared by the version chain and derivative tree builders.
+func walkRelationToRoot(cx *galleryCtx, table, parentCol, childCol string, start int64) (int64, error) {
+	cur := start
+	for i := 0; i < relations.MaxVersionChainDepth; i++ {
+		var next int64
+		err := cx.DB.Read.QueryRow(`SELECT `+parentCol+` FROM `+table+` WHERE `+childCol+` = ?`, cur).Scan(&next)
+		if errors.Is(err, sql.ErrNoRows) {
+			return cur, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+		cur = next
+	}
+	return cur, nil
+}
+
 // versionChainGensForImage walks the version chain that contains
 // imageID and returns the BFS generations (one image per generation
 // because the chain is strictly linear). Walks up via child_image_id
@@ -283,17 +319,9 @@ func reorderSelfFirst(members []int64, self int64) []int64 {
 // descendant. Capped at MaxVersionChainDepth steps in each direction
 // so a corrupt cycle can't loop indefinitely.
 func versionChainGensForImage(cx *galleryCtx, imageID int64) ([][]int64, error) {
-	root := imageID
-	for i := 0; i < relations.MaxVersionChainDepth; i++ {
-		var p int64
-		err := cx.DB.Read.QueryRow(`SELECT parent_image_id FROM version_edges WHERE child_image_id = ?`, root).Scan(&p)
-		if errors.Is(err, sql.ErrNoRows) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		root = p
+	root, err := walkRelationToRoot(cx, "version_edges", "parent_image_id", "child_image_id", imageID)
+	if err != nil {
+		return nil, err
 	}
 	members := []int64{root}
 	cur := root
@@ -325,17 +353,9 @@ func versionChainGensForImage(cx *galleryCtx, imageID int64) ([][]int64, error) 
 // renders as CSS-drawn branch lines. Same depth budget as the version
 // chain walk for safety.
 func derivativeTreeRowsForImage(cx *galleryCtx, imageID int64) ([]treeRow, error) {
-	root := imageID
-	for i := 0; i < relations.MaxVersionChainDepth; i++ {
-		var s int64
-		err := cx.DB.Read.QueryRow(`SELECT source_image_id FROM derivative_edges WHERE derivative_image_id = ?`, root).Scan(&s)
-		if errors.Is(err, sql.ErrNoRows) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		root = s
+	root, err := walkRelationToRoot(cx, "derivative_edges", "source_image_id", "derivative_image_id", imageID)
+	if err != nil {
+		return nil, err
 	}
 	rows := []treeRow{{ID: root, Depth: 0}}
 	if err := dfsDerivativeChildren(cx, root, 1, nil, &rows); err != nil {
@@ -387,6 +407,40 @@ func dfsDerivativeChildren(cx *galleryCtx, parent int64, depth int, ancestorTrun
 		}
 	}
 	return nil
+}
+
+// collectionWithSelf splices the anchor image into the sibling list at
+// its sorted position so the rendered strip surfaces "this image among
+// its peers" - the same lead-with-self framing the dup, alt, version
+// chain, and derivative tree sections already apply via
+// .relations-tree-current. Sort key matches loadCollectionSiblings's
+// SQL: series_order IS NULL last, then series_order ascending, then id.
+// Returns the input unchanged when there are no siblings - a single-
+// member collection isn't worth a section.
+func collectionWithSelf(siblings []collectionSibling, self models.Image) []collectionSibling {
+	if len(siblings) == 0 {
+		return siblings
+	}
+	var order *int64
+	if self.SeriesOrder != nil {
+		v := int64(*self.SeriesOrder)
+		order = &v
+	}
+	merged := make([]collectionSibling, 0, len(siblings)+1)
+	merged = append(merged, siblings...)
+	merged = append(merged, collectionSibling{ID: self.ID, Series: self.Series, Order: order})
+	sort.SliceStable(merged, func(i, j int) bool {
+		a, b := merged[i], merged[j]
+		aNull, bNull := a.Order == nil, b.Order == nil
+		if aNull != bNull {
+			return !aNull
+		}
+		if !aNull && !bNull && *a.Order != *b.Order {
+			return *a.Order < *b.Order
+		}
+		return a.ID < b.ID
+	})
+	return merged
 }
 
 // filterCollectionSiblings drops every sibling that is already named in
@@ -455,11 +509,57 @@ type relationsImagePageData struct {
 	// branching is visible. Nil when the image has no derivative
 	// edges.
 	DerivativeTreeRows []treeRow
-	BackQ              string
-	BackSort           string
-	BackOrder          string
-	BackSeed           string
-	BackPage           string
+	// DerivativeActions maps a tree node id to the inline-action label
+	// the template should paint next to its thumb: "this" for the
+	// current image, "source" for the current image's declared source,
+	// "derivative" for each direct derivative of the current image.
+	// Tree nodes that are neither (ancestors past the source, siblings,
+	// or descendants past the direct derivatives) are absent so the
+	// template's `index` lookup yields the empty string and no inline
+	// action renders.
+	DerivativeActions map[int64]string
+	// VersionActions maps a chain node id to "this" / "earlier" / "newer"
+	// so the template can drop the right per-thumb button under the
+	// current image and its two neighbours; chain nodes further away
+	// (non-adjacent) carry no inline button.
+	VersionActions map[int64]string
+	BackQ             string
+	BackSort          string
+	BackOrder         string
+	BackSeed          string
+	BackPage          string
+}
+
+// derivativeActionMap returns the per-row inline-action label for the
+// derivative-section of /images/{id}/relations: "this" for the current
+// image, "source" for its declared source, "derivative" for each direct
+// derivative. Tree nodes the operator can't act on from the current
+// image's vantage are absent from the map.
+func derivativeActionMap(self int64, rels *relations.ImageRelations) map[int64]string {
+	m := map[int64]string{self: "this"}
+	if rels.DerivativeSource != nil {
+		m[*rels.DerivativeSource] = "source"
+	}
+	for _, d := range rels.Derivatives {
+		m[d] = "derivative"
+	}
+	return m
+}
+
+// versionActionMap returns the per-thumb inline-action label for the
+// version-chain section: "this" for the current image, "earlier" for
+// its immediate parent (the edge whose [unlink earlier revision] now
+// sits under that thumb), "newer" for its immediate child. Chain
+// neighbours further away carry no inline button.
+func versionActionMap(self int64, rels *relations.ImageRelations) map[int64]string {
+	m := map[int64]string{self: "this"}
+	if rels.VersionParent != nil {
+		m[*rels.VersionParent] = "earlier"
+	}
+	if rels.VersionChild != nil {
+		m[*rels.VersionChild] = "newer"
+	}
+	return m
 }
 
 // recomputePhashPost recomputes phash for the named image. Hooked from
@@ -484,6 +584,7 @@ func (s *Server) recomputePhashPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cx.InvalidatePhashMissing()
+	setFlashHeader(w, "phash recomputed.", "ok", nil)
 	w.Write([]byte(`<div class="flash flash-ok">phash recomputed.</div>`))
 }
 
@@ -560,14 +661,17 @@ func (s *Server) addRelationPost(w http.ResponseWriter, r *http.Request) {
 		writeRelationError(w, err)
 		return
 	}
+	setFlashHeader(w, "Relation added.", "ok", nil)
 	w.Write([]byte(`<div class="flash flash-ok">Relation added.</div>`))
 }
 
 // removeRelationPost / removeRelationDelete unlinks a relation. Form
 // fields:
 //   - type: duplicate | alternate | version | derivative | not_related |
-//           promote-original | dissolve-dup | dissolve-alt
-//   - a, b: image ids (most types); group_id for dissolve and promote
+//           promote-original | dissolve-dup | dissolve-alt |
+//           dissolve-version | dissolve-derivative
+//   - a, b: image ids (most types); group_id for dup / alt dissolve and
+//     promote; root_id for version / derivative dissolve
 //   - image_id for promote-original (the new original)
 func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
@@ -646,6 +750,24 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 			writeRelationError(w, err)
 			return
 		}
+	case "dissolve-version":
+		rootID, ok := formInt64(w, r, "root_id")
+		if !ok {
+			return
+		}
+		if err := cx.RelationsSvc.DissolveVersionChain(rootID); err != nil {
+			writeRelationError(w, err)
+			return
+		}
+	case "dissolve-derivative":
+		rootID, ok := formInt64(w, r, "root_id")
+		if !ok {
+			return
+		}
+		if err := cx.RelationsSvc.DissolveDerivativeTree(rootID); err != nil {
+			writeRelationError(w, err)
+			return
+		}
 	case "promote-original":
 		gid, ok := formInt64(w, r, "group_id")
 		if !ok {
@@ -659,12 +781,128 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 			writeRelationError(w, err)
 			return
 		}
+	case "review-again":
+		// "review-again" undoes a 2-member relation and pushes the
+		// same pair back into the session queue so the operator can
+		// reclassify. The `kind` field disambiguates which relation
+		// the dissolve targets (dup / alt / version / not_related);
+		// for dup / alt we accept a group_id and dissolve the whole
+		// 2-member group (the template only shows review-again on
+		// such groups), for version / not_related we accept a, b.
+		if !reviewAgainPost(w, r, cx) {
+			return
+		}
 	default:
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(`<div class="flash flash-err">Unknown relation type.</div>`))
 		return
 	}
+	setFlashHeader(w, "Relation removed.", "ok", nil)
 	w.Write([]byte(`<div class="flash flash-ok">Relation removed.</div>`))
+}
+
+// reviewAgainPost dissolves a 2-member relation, clears any matching
+// not_related_pairs row so the find-pairs job stops skipping it, and
+// pushes the pair onto potential_relation_pairs with distance=0 so it
+// lands at the top of the session queue. Returns true on success;
+// returns false after writing an error response so the caller can
+// abort the outer switch.
+func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) bool {
+	subkind := r.FormValue("kind")
+	var a, b int64
+	switch subkind {
+	case "duplicate", "alternate":
+		gid, ok := formInt64(w, r, "group_id")
+		if !ok {
+			return false
+		}
+		var ar, br int64
+		err := cx.DB.Read.QueryRow(
+			`SELECT MIN(image_id), MAX(image_id) FROM `+groupMembersTable(subkind)+` WHERE group_id = ?`, gid,
+		).Scan(&ar, &br)
+		if err != nil {
+			writeRelationError(w, err)
+			return false
+		}
+		if ar == 0 || br == 0 || ar == br {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`<div class="flash flash-err">Group must have exactly two members.</div>`))
+			return false
+		}
+		a, b = ar, br
+		if subkind == "duplicate" {
+			if err := cx.RelationsSvc.DissolveDupGroup(gid); err != nil {
+				writeRelationError(w, err)
+				return false
+			}
+		} else {
+			if err := cx.RelationsSvc.DissolveAltGroup(gid); err != nil {
+				writeRelationError(w, err)
+				return false
+			}
+		}
+	case "version":
+		ar, br, ok := parseRelationPair(w, r)
+		if !ok {
+			return false
+		}
+		if err := cx.RelationsSvc.RemoveVersionEdge(ar, br); err != nil {
+			writeRelationError(w, err)
+			return false
+		}
+		a, b = ar, br
+	case "not_related":
+		ar, br, ok := parseRelationPair(w, r)
+		if !ok {
+			return false
+		}
+		if err := cx.RelationsSvc.RemoveNotRelated(ar, br); err != nil {
+			writeRelationError(w, err)
+			return false
+		}
+		a, b = ar, br
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`<div class="flash flash-err">Unknown review-again kind.</div>`))
+		return false
+	}
+	// not_related_pairs is keyed (a,b) without canonical ordering;
+	// the existing AddNotRelated normalises before insert but the
+	// row could carry either orientation. Sweep both directions to
+	// avoid leaving a skipper row alive that would keep the pair
+	// out of the queue after find-pairs runs.
+	if _, err := cx.DB.Write.Exec(
+		`DELETE FROM not_related_pairs WHERE (a_image_id = ? AND b_image_id = ?) OR (a_image_id = ? AND b_image_id = ?)`,
+		a, b, b, a,
+	); err != nil {
+		writeRelationError(w, err)
+		return false
+	}
+	// potential_relation_pairs canonicalises (min, max). INSERT OR
+	// IGNORE keeps any pre-existing queue row alive at its real
+	// distance - the spec accepts the first-wins ordering here.
+	lo, hi := a, b
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	if _, err := cx.DB.Write.Exec(
+		`INSERT OR IGNORE INTO potential_relation_pairs (a_image_id, b_image_id, distance, created_at) VALUES (?, ?, 0, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`,
+		lo, hi,
+	); err != nil {
+		writeRelationError(w, err)
+		return false
+	}
+	return true
+}
+
+// groupMembersTable returns the per-kind members-table name for
+// dup / alt 2-member groups. Hardcoded list - the only callers are
+// reviewAgainPost and any future symmetric mutation.
+func groupMembersTable(subkind string) string {
+	if subkind == "alternate" {
+		return "alt_group_members"
+	}
+	return "dup_group_members"
 }
 
 // copyTagsPreviewGroup is one category bucket of new tag names the

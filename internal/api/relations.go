@@ -139,6 +139,7 @@ type relationsRemoveBody struct {
 	B       int64  `json:"b"`
 	ImageID int64  `json:"image_id"`
 	GroupID int64  `json:"group_id"`
+	RootID  int64  `json:"root_id"`
 }
 
 // removeRelation serves DELETE /api/v1/relations.
@@ -188,6 +189,18 @@ func (h *Handler) removeRelation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		err = g.RelationsSvc.DissolveAltGroup(body.GroupID)
+	case "dissolve_version":
+		if body.RootID == 0 {
+			apiError(w, http.StatusBadRequest, "invalid_request", "root_id required")
+			return
+		}
+		err = g.RelationsSvc.DissolveVersionChain(body.RootID)
+	case "dissolve_derivative":
+		if body.RootID == 0 {
+			apiError(w, http.StatusBadRequest, "invalid_request", "root_id required")
+			return
+		}
+		err = g.RelationsSvc.DissolveDerivativeTree(body.RootID)
 	default:
 		apiError(w, http.StatusBadRequest, "invalid_request", "unknown type")
 		return

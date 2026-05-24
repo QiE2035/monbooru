@@ -76,8 +76,8 @@ func (s *Server) toggleFavorite(w http.ResponseWriter, r *http.Request) {
 // as "this is what it is" with the action surfaced on hover.
 func (s *Server) toggleInbox(w http.ResponseWriter, r *http.Request) {
 	s.toggleBoolColumn(w, r, "is_inbox",
-		`<button type="submit" id="inbox-btn" class="btn-inbox active" title="Archive (i)">✱ In inbox</button>`,
-		`<button type="submit" id="inbox-btn" class="btn-inbox" title="Send to inbox (i)">✱ Archived</button>`,
+		`<button type="submit" id="inbox-btn" class="btn-inbox active" title="Archive (i)">In inbox</button>`,
+		`<button type="submit" id="inbox-btn" class="btn-inbox" title="Send to inbox (i)">Archived</button>`,
 	)
 }
 
@@ -150,6 +150,7 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 		redirectURL = buildGalleryURL(backQ, backSort, backOrder, backPage, backSeed)
 	}
 
+	flashText := fmt.Sprintf("Deleted image #%d.", id)
 	if isHTMXRequest(r) {
 		// Ref case: the user arrived here via a Similar-images click, which
 		// itself may be any depth into a chain. Redirecting to the source
@@ -161,10 +162,13 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 		// walkable. The fallback URL handles the cold-load case where the
 		// browser has no predecessor (direct link, bookmarked tab).
 		if refID != nil {
-			w.Header().Set("HX-Trigger", fmt.Sprintf(`{"delete-go-back":{"fallback":%q}}`, redirectURL))
+			setFlashHeader(w, flashText, "ok", map[string]any{
+				"delete-go-back": map[string]any{"fallback": redirectURL},
+			})
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		setFlashHeader(w, flashText, "ok", nil)
 		w.Header().Set("HX-Redirect", redirectURL)
 		w.WriteHeader(http.StatusOK)
 		return
@@ -393,6 +397,22 @@ func (s *Server) updateExternal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isHTMXRequest(r) {
+		// The detail dialogs each ship one field per submit; the first one
+		// present names the flash. Order matches the dialog list order.
+		label := ""
+		switch {
+		case r.Form.Has("source"):
+			label = "Source"
+		case r.Form.Has("url"):
+			label = "URL"
+		case r.Form.Has("collection"):
+			label = "Collection"
+		case r.Form.Has("collection_order"):
+			label = "Order"
+		}
+		if label != "" {
+			setFlashHeader(w, label+" updated.", "ok", nil)
+		}
 		w.Header().Set("HX-Refresh", "true")
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -525,6 +545,11 @@ func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
 	s.jobs.Complete("Moved image.")
 
 	if isHTMXRequest(r) {
+		dest := targetFolder
+		if dest == "" {
+			dest = "gallery root"
+		}
+		setFlashHeader(w, fmt.Sprintf("Moved image to %s.", dest), "ok", nil)
 		w.Header().Set("HX-Redirect", "/images/"+idStr)
 		w.WriteHeader(http.StatusOK)
 		return

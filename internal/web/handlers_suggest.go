@@ -80,15 +80,7 @@ func (s *Server) foldersSuggest(w http.ResponseWriter, r *http.Request) {
 // underlying column is still named `series` (kept for schema
 // stability); only the user-facing vocabulary moved.
 func (s *Server) collectionSuggest(w http.ResponseWriter, r *http.Request) {
-	prefix := strings.TrimSpace(r.URL.Query().Get("prefix"))
-	collections := s.queryCollectionLabels(prefix, 10)
-	if len(collections) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	s.renderTemplate(w, "partials/series_suggest.html", map[string]any{
-		"Series": collections,
-	})
+	s.renderLabelSuggest(w, r, s.queryCollectionLabels)
 }
 
 // sourceSuggest mirrors collectionSuggest for the detail-page source
@@ -97,8 +89,14 @@ func (s *Server) collectionSuggest(w http.ResponseWriter, r *http.Request) {
 // applySeriesSuggest in main.js is generic on the dropdown's nearest
 // text input, so the same client handler covers both dialogs.
 func (s *Server) sourceSuggest(w http.ResponseWriter, r *http.Request) {
-	prefix := strings.TrimSpace(r.URL.Query().Get("prefix"))
-	labels := s.querySourceLabels(prefix, 10)
+	s.renderLabelSuggest(w, r, s.querySourceLabels)
+}
+
+// renderLabelSuggest reads the typed prefix, runs query for up to 10
+// rows, and renders the shared series_suggest.html partial (204 on
+// no matches).
+func (s *Server) renderLabelSuggest(w http.ResponseWriter, r *http.Request, query func(string, int) []string) {
+	labels := query(strings.TrimSpace(r.URL.Query().Get("prefix")), 10)
 	if len(labels) == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -115,41 +113,10 @@ func (s *Server) sourceSuggest(w http.ResponseWriter, r *http.Request) {
 // idx_images_source_nocase_visible keeps the suggest case-insensitive
 // to match the `source:` search filter.
 func (s *Server) querySourceLabels(prefix string, limit int) []string {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if prefix == "" {
-		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT source FROM images INDEXED BY idx_images_source_nocase_visible
-			 WHERE source != '' AND is_missing = 0
-			 ORDER BY source COLLATE NOCASE LIMIT ?`,
-			limit,
-		)
-	} else {
-		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT source FROM images INDEXED BY idx_images_source_nocase_visible
-			 WHERE source != '' AND is_missing = 0
-			   AND source >= ? COLLATE NOCASE
-			   AND source < ? COLLATE NOCASE
-			 ORDER BY source COLLATE NOCASE LIMIT ?`,
-			prefix, nextPrefix(prefix), limit,
-		)
-	}
-	if err != nil {
-		logx.Warnf("source suggest: %v", err)
-		return nil
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var sv string
-		if err := rows.Scan(&sv); err != nil {
-			continue
-		}
-		out = append(out, sv)
-	}
-	return out
+	return s.pagedDistinctIndexedLabels(
+		"source", "idx_images_source_nocase_visible",
+		"source != '' AND is_missing = 0",
+		prefix, limit, "source suggest")
 }
 
 // queryCollectionLabels lifts the SQL out of collectionSuggest so the
@@ -158,29 +125,40 @@ func (s *Server) querySourceLabels(prefix string, limit int) []string {
 // NOCASE on the bounds + idx_images_series_nocase keeps the suggest in
 // step with the case-insensitive `collection:` search filter.
 func (s *Server) queryCollectionLabels(prefix string, limit int) []string {
+	return s.pagedDistinctIndexedLabels(
+		"series", "idx_images_series_nocase",
+		"series != ''",
+		prefix, limit, "collection suggest")
+}
+
+// pagedDistinctIndexedLabels emits the shared SELECT DISTINCT col
+// shape for the source / collection autocompletes. Empty prefix
+// returns the alphabetically first values; non-empty narrows to a
+// half-open NOCASE range.
+func (s *Server) pagedDistinctIndexedLabels(col, index, where, prefix string, limit int, logLabel string) []string {
 	var (
 		rows *sql.Rows
 		err  error
 	)
 	if prefix == "" {
 		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT series FROM images INDEXED BY idx_images_series_nocase
-			 WHERE series != ''
-			 ORDER BY series COLLATE NOCASE LIMIT ?`,
+			`SELECT DISTINCT `+col+` FROM images INDEXED BY `+index+`
+			 WHERE `+where+`
+			 ORDER BY `+col+` COLLATE NOCASE LIMIT ?`,
 			limit,
 		)
 	} else {
 		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT series FROM images INDEXED BY idx_images_series_nocase
-			 WHERE series != ''
-			   AND series >= ? COLLATE NOCASE
-			   AND series < ? COLLATE NOCASE
-			 ORDER BY series COLLATE NOCASE LIMIT ?`,
+			`SELECT DISTINCT `+col+` FROM images INDEXED BY `+index+`
+			 WHERE `+where+`
+			   AND `+col+` >= ? COLLATE NOCASE
+			   AND `+col+` < ? COLLATE NOCASE
+			 ORDER BY `+col+` COLLATE NOCASE LIMIT ?`,
 			prefix, nextPrefix(prefix), limit,
 		)
 	}
 	if err != nil {
-		logx.Warnf("collection suggest: %v", err)
+		logx.Warnf("%s: %v", logLabel, err)
 		return nil
 	}
 	defer rows.Close()
@@ -561,6 +539,19 @@ func (s *Server) systemSuggestLevel1(prefix string) []searchSuggestRow {
 	return rows
 }
 
+// quotedSDLabelRows wraps each label as `<key>:"<label>"` so multi-
+// word model / sampler / prompt values stay one parser token.
+func quotedSDLabelRows(key string, labels []string) []searchSuggestRow {
+	rows := make([]searchSuggestRow, 0, len(labels))
+	for _, lbl := range labels {
+		rows = append(rows, searchSuggestRow{
+			Name:     key + `:"` + lbl + `"`,
+			Category: "system",
+		})
+	}
+	return rows
+}
+
 func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
 	if key == "cat" {
 		var rows []searchSuggestRow
@@ -632,26 +623,10 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
 	// metadata tables that prefix-match the typed text. Quote the value
 	// so multi-word sampler names like `Euler a` survive the parser.
 	if key == "model" {
-		labels := s.querySDStringField("model", "model_checkpoint", valPrefix, 10, false)
-		rows := make([]searchSuggestRow, 0, len(labels))
-		for _, lbl := range labels {
-			rows = append(rows, searchSuggestRow{
-				Name:     `model:"` + lbl + `"`,
-				Category: "system",
-			})
-		}
-		return rows
+		return quotedSDLabelRows("model", s.querySDStringField("model", "model_checkpoint", valPrefix, 10, false))
 	}
 	if key == "sampler" {
-		labels := s.querySDStringField("sampler", "sampler", valPrefix, 10, false)
-		rows := make([]searchSuggestRow, 0, len(labels))
-		for _, lbl := range labels {
-			rows = append(rows, searchSuggestRow{
-				Name:     `sampler:"` + lbl + `"`,
-				Category: "system",
-			})
-		}
-		return rows
+		return quotedSDLabelRows("sampler", s.querySDStringField("sampler", "sampler", valPrefix, 10, false))
 	}
 	// prompt: stores free-text sentences, so substring-match the prefix
 	// against existing prompts. Empty prefix returns nothing - listing
@@ -663,15 +638,7 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
 		if valPrefix == "" {
 			return nil
 		}
-		labels := s.querySDStringField("prompt", "prompt", valPrefix, 10, true)
-		rows := make([]searchSuggestRow, 0, len(labels))
-		for _, lbl := range labels {
-			rows = append(rows, searchSuggestRow{
-				Name:     `prompt:"` + lbl + `"`,
-				Category: "system",
-			})
-		}
-		return rows
+		return quotedSDLabelRows("prompt", s.querySDStringField("prompt", "prompt", valPrefix, 10, true))
 	}
 	if expansions, ok := searchkw.Expansions[key]; ok {
 		descs := searchkw.ExpansionDescriptions[key]

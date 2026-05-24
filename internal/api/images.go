@@ -454,31 +454,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Each initial tag is either a plain name (general category) or
-	// "category:name". Resolve every token's tag id first; failures land
-	// in tagWarnings rather than aborting the request. The remaining ids
-	// flow through AddTagsToOneImage so the whole batch shares one
-	// writer transaction instead of N.
-	var tagWarnings []string
-	tagIDs := make([]int64, 0, len(initialTags))
-	for _, tagName := range initialTags {
-		catID, bareName, err := h.resolveCategoryTag(g, tagName)
-		if err != nil {
-			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
-			continue
-		}
-		tag, err := g.TagSvc.GetOrCreateTag(bareName, catID)
-		if err != nil {
-			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
-			continue
-		}
-		tagIDs = append(tagIDs, tag.ID)
-	}
-	if len(tagIDs) > 0 {
-		if _, err := g.TagSvc.AddTagsToOneImage(img.ID, tagIDs, via); err != nil {
-			tagWarnings = append(tagWarnings, "apply tags: "+err.Error())
-		}
-	}
+	tagWarnings := h.applyInitialTags(g, img.ID, initialTags, via)
 
 	var autotagNote string
 	if autotag {
@@ -863,26 +839,7 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var tagWarnings []string
-	tagIDs := make([]int64, 0, len(body.Tags))
-	for _, tagName := range body.Tags {
-		catID, bareName, err := h.resolveCategoryTag(g, tagName)
-		if err != nil {
-			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
-			continue
-		}
-		tag, err := g.TagSvc.GetOrCreateTag(bareName, catID)
-		if err != nil {
-			tagWarnings = append(tagWarnings, "tag "+tagName+": "+err.Error())
-			continue
-		}
-		tagIDs = append(tagIDs, tag.ID)
-	}
-	if len(tagIDs) > 0 {
-		if _, err := g.TagSvc.AddTagsToOneImage(id, tagIDs, via); err != nil {
-			tagWarnings = append(tagWarnings, "apply tags: "+err.Error())
-		}
-	}
+	tagWarnings := h.applyInitialTags(g, id, body.Tags, via)
 	if g.InvalidateCaches != nil {
 		g.InvalidateCaches()
 	}
@@ -911,6 +868,34 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 func imageExists(g Gallery, id int64) bool {
 	var n int
 	return g.DB.Read.QueryRow(`SELECT 1 FROM images WHERE id = ?`, id).Scan(&n) == nil
+}
+
+// applyInitialTags resolves each raw token (`bare` or `category:bare`)
+// to a tag id (creating missing rows), then fans the batch through
+// AddTagsToOneImage in one writer tx. Per-tag failures land in
+// warnings without aborting; the apply call's own failure does too.
+func (h *Handler) applyInitialTags(g Gallery, imgID int64, rawTags []string, via string) []string {
+	var warnings []string
+	tagIDs := make([]int64, 0, len(rawTags))
+	for _, tagName := range rawTags {
+		catID, bareName, err := h.resolveCategoryTag(g, tagName)
+		if err != nil {
+			warnings = append(warnings, "tag "+tagName+": "+err.Error())
+			continue
+		}
+		tag, err := g.TagSvc.GetOrCreateTag(bareName, catID)
+		if err != nil {
+			warnings = append(warnings, "tag "+tagName+": "+err.Error())
+			continue
+		}
+		tagIDs = append(tagIDs, tag.ID)
+	}
+	if len(tagIDs) > 0 {
+		if _, err := g.TagSvc.AddTagsToOneImage(imgID, tagIDs, via); err != nil {
+			warnings = append(warnings, "apply tags: "+err.Error())
+		}
+	}
+	return warnings
 }
 
 // resolveCategoryTag splits "artist:foo" into (artist_id, "foo") when

@@ -227,7 +227,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		titleName = parent + "/" + baseName
 	}
 	data := detailData{
-		baseData:       s.base(r, "gallery", fmt.Sprintf("%s - Monbooru", titleName)),
+		baseData:       s.base(r, "gallery", fmt.Sprintf("%s - %s", titleName, s.booruName())),
 		Image:          *img,
 		Filename:       baseName,
 		ImageTags:      imageTags,

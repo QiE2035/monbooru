@@ -51,9 +51,7 @@
   </div>
   {{end}}
 
-  <div id="autotag-result"></div>
-  <div id="relation-flash"></div>
-  <div id="external-edit-flash"></div>
+  <div id="detail-flash"></div>
 
   {{/* Top bar: back link | prev/next + download/fav (mirrors body column layout) */}}
   <div class="detail-topbar">
@@ -91,7 +89,7 @@
               hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}' style="display:inline">
           <button type="submit" id="inbox-btn" class="btn-inbox{{if .Image.IsInbox}} active{{end}}"
                   title="{{if .Image.IsInbox}}Archive (i){{else}}Send to inbox (i){{end}}">
-            {{if .Image.IsInbox}}✱ In inbox{{else}}✱ Archived{{end}}
+            {{if .Image.IsInbox}}In inbox{{else}}Archived{{end}}
           </button>
         </form>
         <form id="fav-form" hx-post="/images/{{.Image.ID}}/favorite"
@@ -115,7 +113,7 @@
     <form hx-post="/images/{{.Image.ID}}/external"
           hx-target="#external-source-error"
           hx-swap="innerHTML"
-          hx-on::after-request="onExternalEditResponse(event, 'external-source-dialog', 'Source')">
+          hx-on::after-request="onExternalEditResponse(event, 'external-source-dialog')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <p>Edit <strong>Source</strong></p>
       <div class="field">
@@ -143,7 +141,7 @@
     <form hx-post="/images/{{.Image.ID}}/external"
           hx-target="#external-url-error"
           hx-swap="innerHTML"
-          hx-on::after-request="onExternalEditResponse(event, 'external-url-dialog', 'URL')">
+          hx-on::after-request="onExternalEditResponse(event, 'external-url-dialog')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <p>Edit <strong>URL</strong></p>
       <div class="field">
@@ -162,7 +160,7 @@
     <form hx-post="/images/{{.Image.ID}}/external"
           hx-target="#external-collection-error"
           hx-swap="innerHTML"
-          hx-on::after-request="onExternalEditResponse(event, 'external-collection-dialog', 'Collection')">
+          hx-on::after-request="onExternalEditResponse(event, 'external-collection-dialog')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <p>Edit <strong>Collection</strong></p>
       <div class="field">
@@ -190,7 +188,7 @@
     <form hx-post="/images/{{.Image.ID}}/external"
           hx-target="#external-order-error"
           hx-swap="innerHTML"
-          hx-on::after-request="onExternalEditResponse(event, 'external-order-dialog', 'Order')">
+          hx-on::after-request="onExternalEditResponse(event, 'external-order-dialog')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <p>Edit <strong>Order within collection</strong></p>
       <div class="field">
@@ -208,8 +206,7 @@
   {{if .EnabledTaggers}}
   <dialog id="autotag-dialog">
     <form hx-post="/images/{{.Image.ID}}/autotag"
-          hx-target="#autotag-result"
-          hx-swap="innerHTML"
+          hx-swap="none"
           hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
           hx-on::after-request="if(event.detail.successful)document.getElementById('autotag-dialog').close()">
       <p>Auto-tag this image. Pick which tagger to run.</p>
@@ -749,36 +746,6 @@
     </div>{{/* end detail-meta-col */}}
   </div>
 </div>
-
-<script>
-// Clear autotag-result message once job finishes, but guarantee a minimum
-// display time so the "Auto-tagger started…" flash is always readable even
-// when the job finishes inside one poll interval.
-var _autotagFlashShownAt = 0;
-var _autotagMinVisibleMs = 3000;
-document.body.addEventListener('htmx:afterSettle', function(e) {
-  var el = e.detail ? e.detail.elt : null;
-  if (el && el.id === 'autotag-result' && el.innerHTML.trim() !== '') {
-    _autotagFlashShownAt = Date.now();
-    window._autotagFlashShownAt = _autotagFlashShownAt;
-    return;
-  }
-  if (!el || el.id !== 'job-status') return;
-  if (el.querySelector('.job-done') || (!el.querySelector('.job-running') && !el.querySelector('.job-done') && !el.querySelector('.job-error'))) {
-    var ar = document.getElementById('autotag-result');
-    if (!ar || ar.innerHTML.trim() === '') return;
-    var elapsed = Date.now() - _autotagFlashShownAt;
-    if (elapsed >= _autotagMinVisibleMs) {
-      ar.innerHTML = '';
-    } else {
-      setTimeout(function() {
-        var ar2 = document.getElementById('autotag-result');
-        if (ar2) ar2.innerHTML = '';
-      }, _autotagMinVisibleMs - elapsed);
-    }
-  }
-});
-</script>
 
 {{template "layout_end" .}}
 {{end}}

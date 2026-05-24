@@ -153,7 +153,7 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 	hasFilter := prefix != "" || catIDStr != "" || originStr != "" || zeroParam == "0" || zeroOnly
 
 	data := tagsPageData{
-		baseData:       s.base(r, "tags", "Tags - Monbooru"),
+		baseData:       s.base(r, "tags", "Tags - "+s.booruName()),
 		Tags:           tagList,
 		Categories:     cats,
 		Implications:   imps,
@@ -247,7 +247,7 @@ func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
 		if canon != nil && canon.Name != "" {
 			canonName = canon.Name
 		}
-		setTagsFlash(w, "Aliased to "+canonName+".")
+		setFlashHeader(w, "Aliased to "+canonName+".", "ok", nil)
 		// Land on the alias-only filtered listing so the freshly-created
 		// alias row is the only thing on screen, mirroring the create-
 		// alias dialog's post-submit redirect. Falls back to /tags if
@@ -261,15 +261,6 @@ func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/tags", http.StatusSeeOther)
-}
-
-// setTagsFlash queues msg to surface above the /tags table on the next
-// render. The header rides HX-Trigger with the `tagsFlash` event name;
-// the tags.html script handles it and seeds sessionStorage before the
-// HX-Redirect / HX-Refresh navigation fires. JSON-escaped via Go's
-// strconv.Quote so the message can carry quotes safely.
-func setTagsFlash(w http.ResponseWriter, msg string) {
-	w.Header().Set("HX-Trigger", `{"tagsFlash":`+strconv.Quote(msg)+`}`)
 }
 
 // resolveOrCreateCanonicalTag is the alias-side variant of
@@ -368,7 +359,7 @@ func (s *Server) createTagPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Active().InvalidateCaches()
 	if isHTMXRequest(r) {
-		setTagsFlash(w, "Tag "+name+" created.")
+		setFlashHeader(w, "Tag "+name+" created.", "ok", nil)
 		w.Header().Set("HX-Redirect", "/tags?q="+url.QueryEscape(name))
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -410,7 +401,7 @@ func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
 	s.Active().InvalidateCaches()
 
 	if isHTMXRequest(r) {
-		setTagsFlash(w, "Alias "+name+" created.")
+		setFlashHeader(w, "Alias "+name+" created.", "ok", nil)
 		w.Header().Set("HX-Redirect", "/tags?origin=alias&q="+url.QueryEscape(name))
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -536,7 +527,7 @@ func (s *Server) renameTagPost(w http.ResponseWriter, r *http.Request) {
 		// Refresh the current URL instead of redirecting to /tags so the
 		// user's active filter - q, sort, origin, page - survives the
 		// rename and the renamed row stays in scope.
-		setTagsFlash(w, "Renamed to "+newName+".")
+		setFlashHeader(w, "Renamed to "+newName+".", "ok", nil)
 		w.Header().Set("HX-Refresh", "true")
 		w.WriteHeader(http.StatusNoContent)
 		return

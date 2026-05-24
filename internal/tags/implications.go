@@ -307,7 +307,7 @@ func ApplyImpliedFanoutTx(tx *sql.Tx, imageID, parentID, ratingCatID int64, isAu
 
 // fanOutImpliedTxImpl is the package-internal twin shared between the
 // service's addTagToImageTxReportingDup and the public ApplyImpliedFanoutTx
-// entrypoint. Kept private so the call shape stays a single audit point.
+// entrypoint. Kept private so the fan-out logic lives in one place.
 func fanOutImpliedTxImpl(tx *sql.Tx, imageID, parentID, ratingCatID int64, isAutoInt int) error {
 	implied, err := transitiveImpliedTx(tx, []int64{parentID})
 	if err != nil {

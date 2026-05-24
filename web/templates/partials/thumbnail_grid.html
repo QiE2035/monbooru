@@ -1,6 +1,44 @@
 {{define "partials/thumbnail_grid.html"}}
+{{if .InboxUploadActive}}
+<div id="inbox-upload" class="inbox-upload">
+  {{if .Degraded}}
+  <p class="field-hint">Upload is disabled for this gallery because its path is unreadable. Fix the configuration or switch to another gallery.</p>
+  {{else}}
+  <form id="inbox-upload-form"
+        hx-post="/upload"
+        hx-target="#inbox-upload-result"
+        hx-swap="innerHTML"
+        hx-encoding="multipart/form-data">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <div id="inbox-upload-drop" class="upload-drop-zone">
+      <div class="upload-drop-prompt">
+        <span class="upload-drop-hint">Drop files here or use the button.</span>
+        <button type="button" id="inbox-upload-pick-btn" class="btn-sm">Choose files</button>
+      </div>
+      <input type="file" name="files" id="inbox-upload-file-input" multiple accept="{{.AcceptFileTypes}}" hidden>
+      <ul id="inbox-upload-file-list" class="upload-file-list"></ul>
+    </div>
+    <div class="thumb-cluster-header inbox-upload-footer">
+      <span class="thumb-cluster-rule" aria-hidden="true"></span>
+      <button type="button" id="inbox-upload-reset-btn" class="btn-sm thumb-cluster-select">[Reset]</button>
+      <button type="submit" id="inbox-upload-submit-btn" class="btn-sm thumb-cluster-select">[Upload]</button>
+    </div>
+    <div id="inbox-upload-result"></div>
+  </form>
+  {{end}}
+</div>
+{{end}}
 <div class="thumb-grid">
-  {{range .Result.Results}}
+  {{range $i, $_ := .Result.Results}}
+  {{if $.InboxClusterAtIdx}}{{with index $.InboxClusterAtIdx $i}}
+  <div class="thumb-cluster-header" data-cluster-start="{{$i}}">
+    <span class="thumb-cluster-rule" aria-hidden="true"></span>
+    <span class="thumb-cluster-label mono-small">{{.DateLabel}} · <a class="thumb-cluster-range" href="{{.RangeLink}}">{{.RangeLabel}}</a> · {{.Count}} item{{if ne .Count 1}}s{{end}}</span>
+    <span class="thumb-cluster-rule" aria-hidden="true"></span>
+    <button type="button" class="btn-sm thumb-cluster-select" data-cluster-unselect>[Unselect]</button>
+    <button type="button" class="btn-sm thumb-cluster-select" data-cluster-select>[Select]</button>
+  </div>
+  {{end}}{{end}}
   <div class="thumb-card" data-id="{{.ID}}"
        {{if or (eq .FileType "mp4") (eq .FileType "webm") (eq .FileType "gif")}}data-hover="/thumbnails/{{$.ActiveGallery}}/{{.ID}}_hover.webp"{{end}}>
     <input type="checkbox" class="thumb-checkbox" name="ids" value="{{.ID}}">
@@ -16,7 +54,7 @@
           <span class="badge fav-heart" title="Favorited"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 11 L1.2 6.4 a2.6 2.6 0 0 1 3.7 -3.7 L6 3.7 l1.1 -1 a2.6 2.6 0 0 1 3.7 3.7 Z"/></svg></span>
         {{end}}
         {{if .IsInbox}}
-          <span class="badge badge-inbox" title="Inbox"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1 v10 M1 6 h10 M2.4 2.4 l7.2 7.2 M9.6 2.4 l-7.2 7.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg></span>
+          <span class="badge badge-inbox" title="In inbox">Inbox</span>
         {{end}}
         {{if .IsMissing}}
           <span class="badge badge-missing" title="Missing from disk"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></span>

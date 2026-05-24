@@ -248,34 +248,28 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 	bw.field("gallery_name", cx.Name)
 	bw.field("gallery_path", cx.GalleryPath)
 
-	if err := streamRows(bw, "tag_categories", cx.DB,
+	streamRows(bw, "tag_categories", cx.DB,
 		`SELECT id, name, color, is_builtin FROM tag_categories ORDER BY id`,
 		func(rows *sql.Rows) (any, error) {
 			var r tagCategoryRow
 			err := rows.Scan(&r.ID, &r.Name, &r.Color, &r.IsBuiltin)
 			return r, err
-		}); err != nil {
-		return err
-	}
-	if err := streamRows(bw, "tags", cx.DB,
+		})
+	streamRows(bw, "tags", cx.DB,
 		`SELECT id, name, category_id, usage_count, is_alias, canonical_tag_id, created_at FROM tags ORDER BY id`,
 		func(rows *sql.Rows) (any, error) {
 			var r tagRow
 			err := rows.Scan(&r.ID, &r.Name, &r.CategoryID, &r.UsageCount, &r.IsAlias, &r.CanonicalTagID, &r.CreatedAt)
 			return r, err
-		}); err != nil {
-		return err
-	}
-	if err := streamRows(bw, "tag_implications", cx.DB,
+		})
+	streamRows(bw, "tag_implications", cx.DB,
 		`SELECT parent_tag_id, implied_tag_id, created_at FROM tag_implications ORDER BY parent_tag_id, implied_tag_id`,
 		func(rows *sql.Rows) (any, error) {
 			var r tagImplicationRow
 			err := rows.Scan(&r.ParentTagID, &r.ImpliedTagID, &r.CreatedAt)
 			return r, err
-		}); err != nil {
-		return err
-	}
-	if err := streamRows(bw, "images", cx.DB,
+		})
+	streamRows(bw, "images", cx.DB,
 		`SELECT id, sha256, canonical_path, folder_path, file_type, width, height,
 		        file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, ingested_at
 		 FROM images ORDER BY id`,
@@ -285,48 +279,38 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 				&r.Width, &r.Height, &r.FileSize, &r.IsMissing, &r.IsFavorited, &r.IsInbox,
 				&r.AutoTaggedAt, &r.SourceType, &r.Origin, &r.Source, &r.URL, &r.PageCount, &r.DurationSeconds, &r.Series, &r.SeriesOrder, &r.IngestedAt)
 			return r, err
-		}); err != nil {
-		return err
-	}
-	if err := streamRows(bw, "image_paths", cx.DB,
+		})
+	streamRows(bw, "image_paths", cx.DB,
 		`SELECT id, image_id, path, is_canonical FROM image_paths ORDER BY id`,
 		func(rows *sql.Rows) (any, error) {
 			var r imagePathRow
 			err := rows.Scan(&r.ID, &r.ImageID, &r.Path, &r.IsCanonical)
 			return r, err
-		}); err != nil {
-		return err
-	}
-	if err := streamRows(bw, "image_tags", cx.DB,
+		})
+	streamRows(bw, "image_tags", cx.DB,
 		`SELECT image_id, tag_id, is_auto, is_implied, confidence, tagger_name, created_at FROM image_tags`,
 		func(rows *sql.Rows) (any, error) {
 			var r imageTagRow
 			err := rows.Scan(&r.ImageID, &r.TagID, &r.IsAuto, &r.IsImplied, &r.Confidence, &r.TaggerName, &r.CreatedAt)
 			return r, err
-		}); err != nil {
-		return err
-	}
-	if err := streamRows(bw, "sd_metadata", cx.DB,
+		})
+	streamRows(bw, "sd_metadata", cx.DB,
 		`SELECT image_id, prompt, negative_prompt, model, seed, sampler, steps, cfg_scale, raw_params, generation_hash FROM sd_metadata`,
 		func(rows *sql.Rows) (any, error) {
 			var r sdMetadataRow
 			err := rows.Scan(&r.ImageID, &r.Prompt, &r.NegativePrompt, &r.Model, &r.Seed,
 				&r.Sampler, &r.Steps, &r.CFGScale, &r.RawParams, &r.GenerationHash)
 			return r, err
-		}); err != nil {
-		return err
-	}
-	if err := streamRows(bw, "comfyui_metadata", cx.DB,
+		})
+	streamRows(bw, "comfyui_metadata", cx.DB,
 		`SELECT image_id, prompt, model_checkpoint, seed, sampler, steps, cfg_scale, raw_workflow, generation_hash FROM comfyui_metadata`,
 		func(rows *sql.Rows) (any, error) {
 			var r comfyMetadataRow
 			err := rows.Scan(&r.ImageID, &r.Prompt, &r.ModelCheckpoint, &r.Seed,
 				&r.Sampler, &r.Steps, &r.CFGScale, &r.RawWorkflow, &r.GenerationHash)
 			return r, err
-		}); err != nil {
-		return err
-	}
-	if err := streamRows(bw, "manga_metadata", cx.DB,
+		})
+	streamRows(bw, "manga_metadata", cx.DB,
 		`SELECT image_id, title, series, number, volume, count, summary, notes,
 		        year, month, day, writer, penciller, inker, colorist, letterer, cover_artist, editor, publisher,
 		        imprint, genre, web, language_iso, format, manga, age_rating, community_rating, xml_page_count, raw_xml
@@ -338,18 +322,14 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 				&r.Editor, &r.Publisher, &r.Imprint, &r.Genre, &r.Web, &r.LanguageISO, &r.Format, &r.Manga, &r.AgeRating,
 				&r.CommunityRating, &r.XMLPageCount, &r.RawXML)
 			return r, err
-		}); err != nil {
-		return err
-	}
-	if err := streamRows(bw, "saved_searches", cx.DB,
+		})
+	streamRows(bw, "saved_searches", cx.DB,
 		`SELECT id, name, query, sort, sort_order, seed, created_at FROM saved_searches ORDER BY id`,
 		func(rows *sql.Rows) (any, error) {
 			var r savedSearchRow
 			err := rows.Scan(&r.ID, &r.Name, &r.Query, &r.Sort, &r.Order, &r.Seed, &r.CreatedAt)
 			return r, err
-		}); err != nil {
-		return err
-	}
+		})
 	bw.objEnd()
 	return bw.err
 }
@@ -1285,35 +1265,38 @@ func (j *jsonWriter) marshalAndWrite(value any) {
 
 // streamRows runs query and emits each row as one element of a JSON array
 // named `key`. scan builds the per-row value that will be JSON-marshaled.
-func streamRows(j *jsonWriter, key string, database *db.DB, query string, scan func(*sql.Rows) (any, error)) error {
+func streamRows(j *jsonWriter, key string, database *db.DB, query string, scan func(*sql.Rows) (any, error)) {
+	if j.err != nil {
+		return
+	}
 	j.arrayStart(key)
 	first := true
 	rows, err := database.Read.Query(query)
 	if err != nil {
 		j.arrayEnd()
-		return err
+		j.err = err
+		return
 	}
 	for rows.Next() {
 		v, err := scan(rows)
 		if err != nil {
 			rows.Close()
 			j.arrayEnd()
-			return err
+			j.err = err
+			return
 		}
 		j.arrayItem(&first, v)
 		if j.err != nil {
 			rows.Close()
 			j.arrayEnd()
-			return j.err
+			return
 		}
 	}
-	err = rows.Err()
+	if err := rows.Err(); err != nil && j.err == nil {
+		j.err = err
+	}
 	rows.Close()
 	j.arrayEnd()
-	if err != nil {
-		return err
-	}
-	return j.err
 }
 
 // settingsGalleryExport serves GET /settings/galleries/{name}/export?format=&with_images=.

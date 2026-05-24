@@ -1041,8 +1041,8 @@ func TestAddTagToImage_ColonFallbackLiteral(t *testing.T) {
 // TestGalleryHandler_RandomSeedFitsInt32 pins the auto-generated random
 // seed range. SQLite's `(i.id * seed) & 2147483647` ordering coerces to
 // REAL when the product overflows int64, and the low bits then track id
-// monotonically; the audit reproduced this with 19-digit auto-seeds. A
-// 32-bit seed keeps the product in int64 for any plausible image id.
+// monotonically; reproducible with 19-digit auto-seeds. A 32-bit seed
+// keeps the product in int64 for any plausible image id.
 func TestGalleryHandler_RandomSeedFitsInt32(t *testing.T) {
 	srv := newTestServer(t)
 	req := httptest.NewRequest("GET", "/?sort=random", nil)
@@ -1609,6 +1609,66 @@ func TestServeImageFile_RejectsTraversal(t *testing.T) {
 	}
 }
 
+// TestServeThumbnail_InvalidatesOnIDReuse pins that a thumbnail re-served
+// at the same URL after the prior image was deleted and a new one ingested
+// at the reused INTEGER PRIMARY KEY id no longer rides a cached If-None-
+// Match response. The handler sets Cache-Control: no-cache + an mtime-
+// bearing ETag, so the conditional GET sees a fresh tag and returns 200.
+func TestServeThumbnail_InvalidatesOnIDReuse(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "first.png", 8, 8)
+
+	thumbURL := fmt.Sprintf("/thumbnails/%s/%d.jpg", srv.activeName, id)
+
+	req := httptest.NewRequest("GET", thumbURL, nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("initial thumbnail serve expected 200, got %d", w.Code)
+	}
+	if cc := w.Header().Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
+		t.Errorf("Cache-Control = %q, want it to include no-cache", cc)
+	}
+	firstETag := w.Header().Get("ETag")
+	if firstETag == "" {
+		t.Fatal("ETag missing on initial thumbnail serve")
+	}
+
+	// Delete the image (this also unlinks the thumbnail file) then re-ingest
+	// a new image with different content. SQLite hands back the same id (no
+	// AUTOINCREMENT on images.id), so the URL is identical but the bytes
+	// behind it must not be served from a If-None-Match=304 fast path.
+	cx := srv.Active()
+	if _, err := gallery.DeleteImage(cx.DB, cx.GalleryPath, cx.ThumbnailsPath, id,
+		func(int64) error { return nil }, nil,
+	); err != nil {
+		t.Fatalf("DeleteImage: %v", err)
+	}
+	// Sleep one second so the second thumbnail's mtime differs from the
+	// first (the ETag is keyed on info.ModTime().Unix(), one-second
+	// resolution; without this the rewrite could land within the same
+	// integer second and the ETags would collide).
+	time.Sleep(1100 * time.Millisecond)
+	newID := seedImage(t, srv, "second.png", 12, 12)
+	if newID != id {
+		t.Skipf("id was not reused (got %d, expected %d); SQLite reuse rule did not fire", newID, id)
+	}
+
+	req2 := httptest.NewRequest("GET", thumbURL, nil)
+	req2.Header.Set("If-None-Match", firstETag)
+	w2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w2, req2)
+	if w2.Code == http.StatusNotModified {
+		t.Fatalf("re-ingest at reused id should not 304; the cached ETag must be stale")
+	}
+	if w2.Code != http.StatusOK {
+		t.Fatalf("re-served thumbnail expected 200, got %d", w2.Code)
+	}
+	if newETag := w2.Header().Get("ETag"); newETag == "" || newETag == firstETag {
+		t.Errorf("ETag must change on id-reuse rewrite: old=%q new=%q", firstETag, newETag)
+	}
+}
+
 // TestUpdateExternal_AbsentFieldsLeaveOthersAlone pins the UI-F023
 // contract: each detail-page dialog ships only its own field, so a
 // caller that posts only `source=foo` (no series, no url) must leave
@@ -1770,61 +1830,6 @@ func TestUpdateExternal_RejectsZeroOrNegativeOrder(t *testing.T) {
 	}
 }
 
-// TestUploadInboxLink_CeilingAwareCount pins the View inbox (N) link
-// on /upload. The cached InboxCount is ceiling-blind, so the handler
-// recomputes against the active rating ceiling. The parenthesised count
-// must always render when > 0 and must match what a click on the link
-// would surface.
-func TestUploadInboxLink_CeilingAwareCount(t *testing.T) {
-	srv := newTestServer(t)
-	cx := srv.Active()
-	safeID := seedImage(t, srv, "safe.png", 10, 10)
-	explicitID := seedImage(t, srv, "explicit.png", 11, 11)
-	generalTagID := ratingTagIDWeb(t, cx.DB, "general")
-	explicitTagID := ratingTagIDWeb(t, cx.DB, "explicit")
-	if err := cx.TagSvc.AddTagToImage(safeID, generalTagID, false, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := cx.TagSvc.AddTagToImage(explicitID, explicitTagID, false, nil); err != nil {
-		t.Fatal(err)
-	}
-	cx.InvalidateCaches()
-
-	// No ceiling cookie → both inbox rows are visible.
-	req := httptest.NewRequest("GET", "/upload", nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET /upload expected 200, got %d", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, `>✱ View inbox (2)</a>`) {
-		t.Errorf("no-ceiling link should show full count; body slice: %s", uploadInboxLink(t, body))
-	}
-
-	// ceiling=sensitive hides the explicit row; the count drops to 1.
-	req = httptest.NewRequest("GET", "/upload", nil)
-	req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: "sensitive"})
-	w = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	body = w.Body.String()
-	if !strings.Contains(body, `>✱ View inbox (1)</a>`) {
-		t.Errorf("ceiling-active link should show ceiling-aware count; body slice: %s", uploadInboxLink(t, body))
-	}
-
-	// ceiling=general hides both inbox rows; the parens drop entirely.
-	req = httptest.NewRequest("GET", "/upload", nil)
-	req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: "general"})
-	w = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	body = w.Body.String()
-	// Only the explicit-rated row exists; general-only rows would survive.
-	// safe.png has rating:general which is at ceiling, so it stays.
-	if !strings.Contains(body, `>✱ View inbox (1)</a>`) {
-		t.Errorf("ceiling=general link should include the general-rated inbox row; body slice: %s", uploadInboxLink(t, body))
-	}
-}
-
 // ratingTagIDWeb is the web-package mirror of search.ratingTagID. The
 // rating rows are seeded by the schema bootstrap so the lookup always
 // succeeds.
@@ -1838,57 +1843,6 @@ func ratingTagIDWeb(t *testing.T, database *db.DB, name string) int64 {
 		t.Fatalf("rating tag %q not seeded: %v", name, err)
 	}
 	return id
-}
-
-func uploadInboxLink(t *testing.T, body string) string {
-	t.Helper()
-	idx := strings.Index(body, `id="upload-inbox-link"`)
-	if idx < 0 {
-		return "(no upload-inbox-link)"
-	}
-	end := strings.Index(body[idx:], "</a>")
-	if end < 0 {
-		return body[idx:min(len(body), idx+200)]
-	}
-	return body[idx : idx+end+4]
-}
-
-// The inbox tooltip always carries the count when > 0, regardless of
-// the active rating ceiling. The cached count is ceiling-blind, but
-// a stale-leaning number is more useful than a missing one for the
-// triage-backlog read.
-func TestGalleryInboxTooltip_AlwaysShowsCount(t *testing.T) {
-	srv := newTestServer(t)
-	seedImage(t, srv, "in.png", 10, 10)
-
-	for _, ceiling := range []string{"", "sensitive", "questionable", "explicit"} {
-		req := httptest.NewRequest("GET", "/", nil)
-		if ceiling != "" {
-			req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: ceiling})
-		}
-		w := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("ceiling=%q expected 200, got %d", ceiling, w.Code)
-		}
-		body := w.Body.String()
-		if !strings.Contains(body, `title="Inbox (1) (I)"`) {
-			t.Errorf("ceiling=%q tooltip should keep the count; body slice: %s", ceiling, inboxTooltip(t, body))
-		}
-	}
-}
-
-func inboxTooltip(t *testing.T, body string) string {
-	t.Helper()
-	idx := strings.Index(body, `id="inbox-filter-btn"`)
-	if idx < 0 {
-		return "(no inbox-filter-btn)"
-	}
-	end := strings.Index(body[idx:], ">")
-	if end < 0 {
-		return body[idx:min(len(body), idx+200)]
-	}
-	return body[idx : idx+end+1]
 }
 
 // TestAddTagToImage_CategoryPrefixOnlyRejected pins parseTagInput's

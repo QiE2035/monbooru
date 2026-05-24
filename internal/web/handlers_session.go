@@ -106,7 +106,7 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.renderTemplate(w, "relations_session.html", sessionPageData{
-		baseData:        s.base(r, "relations", "Session - Monbooru"),
+		baseData:        s.base(r, "relations", "Session - "+s.booruName()),
 		Pair:            pair,
 		Remaining:       remaining,
 		HiddenByCeiling: rawRemaining - remaining,
@@ -250,6 +250,7 @@ type relationCompareFacts struct {
 	UniqueTags       []string
 	UniqueTagsTotal  int
 	Format           string
+	Collection       string
 }
 
 // loadCompareFacts loads the comparison table data for two image ids.
@@ -287,12 +288,12 @@ func loadCompareFacts(cx *galleryCtx, leftID, rightID int64) (relationCompareFac
 
 func scanCompareFacts(cx *galleryCtx, id int64, dst *relationCompareFacts) error {
 	var w, h sql.NullInt64
-	var addedAt sql.NullString
+	var addedAt, series sql.NullString
 	var canonical, fileType string
 	if err := cx.DB.Read.QueryRow(
-		`SELECT COALESCE(width, 0), COALESCE(height, 0), file_size, ingested_at, canonical_path, file_type
+		`SELECT COALESCE(width, 0), COALESCE(height, 0), file_size, ingested_at, canonical_path, file_type, series
 		 FROM images WHERE id = ?`, id,
-	).Scan(&w, &h, &dst.FileSize, &addedAt, &canonical, &fileType); err != nil {
+	).Scan(&w, &h, &dst.FileSize, &addedAt, &canonical, &fileType, &series); err != nil {
 		return err
 	}
 	if w.Valid {
@@ -306,6 +307,9 @@ func scanCompareFacts(cx *galleryCtx, id int64, dst *relationCompareFacts) error
 	}
 	if dot := strings.LastIndexByte(canonical, '.'); dot >= 0 {
 		dst.Format = strings.ToLower(canonical[dot:])
+	}
+	if series.Valid {
+		dst.Collection = series.String
 	}
 	dst.TagCount = countTags(cx, id)
 	return nil

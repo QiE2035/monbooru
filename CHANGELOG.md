@@ -1,5 +1,38 @@
 # Changelog
 
+## [v1.9.0] - 2026-05-24
+### Added
+- Server `name` and `logo` configurable in `monbooru.toml`, swapping the title, topbar wordmark, login screen, and favicon at render.
+- Inbox groups newly ingested rows under time-bucketed cluster headers with [Select] / [Unselect] and a `date:T1..T2` time-range link.
+- Search `date:` accepts `T HH[:MM]` precision; inbox-cluster links emit the minute form.
+- Relations: [dissolve] action on version chains and derivative trees.
+- Relations: [original] action under the self cell in dup-group sections.
+- Relations: [unlink earlier/newer revision] under the matching chain thumb.
+- Relations: [review again] on a 2-member group requeues the pair at the front of the session.
+- Relations: Same Collection section includes the current image and numbers every card by position.
+- Relations: current-image cell carries a thicker outline and "^ This image" label across dup, alt, and derivative sections.
+- Relations browse: per-kind sort pills, 60-cards-per-page pagination, and chain / tree summaries wrapped in collapsed `<details>`.
+- Relations session: compare table grows a Collection row that highlights when both sides share the same collection.
+
+### Changed
+- Inbox replaces the standalone Upload page: a new "Inbox (N)" menu entry leads to the inbox view with an inline drop zone, the toolbar inbox toggle is gone, the keyboard chord moves from `g u` to `g i`, and the thumbnail badge reads "Inbox" instead of an asterisk.
+- Detail page: Related panel reorders to lead with collection siblings and renames its mini-list to "Images with similar tags".
+- Detail page: collection chip floats top-right of the image and "Same collection" sits bottom-right.
+- Per-image relations page leads with Same Collection, matching the detail-panel ordering.
+- Small buttons across cluster headers, inbox actions, and drop-zone footers render at full contrast.
+
+### Fixed
+- Thumbnails: reusing an image id sets a new ETag so the browser refreshes its cache instead of serving the stale bytes under heuristic freshness.
+- Search: `size:`, `width:`, `height:`, `ratio:`, `tagcount:`, `duration:`, and `pages:` accept the `X..Y` range and the open-ended `..Y` / `X..` forms (previously matched nothing silently).
+- Search: `-"tag with spaces"` parses as a negated quoted tag; quoted tokens collapse internal whitespace to underscores.
+- Relations: long collection names clip on the Related-images series chip; Same Collection cards show the real `series_order`.
+- Relations session: thumbnails scale to fill the cell instead of rendering at natural pixel size.
+- `/images/{id}/relations` browser tab title includes the filename so two tabs are distinguishable.
+
+### Removed
+- BREAKING: Upload page (folded into the inbox view) and the `g u` chord (use `g i` instead).
+- `/relations/browse` [edit chain] / [edit tree] links (use the per-image relations page).
+
 ## [v1.8.3] - 2026-05-22
 ### Added
 - Sidebar category headers collapse on a click anywhere across the row.

@@ -92,20 +92,32 @@ func tokenize(query string) []token {
 		}
 
 		// Read a term up to whitespace, supporting quoted filter values
-		// like `folder:"my set 1"`.
+		// like `folder:"my set 1"` and bare quoted tag tokens like
+		// `"red hair"` whose internal spaces are collapsed to
+		// underscores in parseTerm.
 		j := i
-		for j < len(query) && query[j] != ' ' && query[j] != '\t' {
-			if query[j] == ':' && j+1 < len(query) && query[j+1] == '"' {
-				j += 2 // skip :"
-				for j < len(query) && query[j] != '"' {
-					j++
-				}
-				if j < len(query) {
-					j++ // skip closing "
-				}
-				break
-			}
+		if query[j] == '"' {
 			j++
+			for j < len(query) && query[j] != '"' {
+				j++
+			}
+			if j < len(query) {
+				j++ // skip closing "
+			}
+		} else {
+			for j < len(query) && query[j] != ' ' && query[j] != '\t' {
+				if query[j] == ':' && j+1 < len(query) && query[j+1] == '"' {
+					j += 2 // skip :"
+					for j < len(query) && query[j] != '"' {
+						j++
+					}
+					if j < len(query) {
+						j++ // skip closing "
+					}
+					break
+				}
+				j++
+			}
 		}
 		term := query[i:j]
 		i = j
@@ -240,6 +252,14 @@ func (p *parser) parseTerm() Expr {
 
 	case tokTag:
 		tag := strings.ToLower(t.val)
+		// Bare quoted tokens like `"red hair"` and `"red_hair"` are the
+		// documented multi-word tag-input form. Strip the wrapping
+		// quotes and collapse internal whitespace to underscores so
+		// they compose with `-` and `NOT` like any other tag literal.
+		if len(tag) >= 2 && tag[0] == '"' && tag[len(tag)-1] == '"' {
+			tag = tag[1 : len(tag)-1]
+			tag = strings.Join(strings.Fields(tag), "_")
+		}
 		// All-asterisks tokens (`*`, `**`, `***`...) would otherwise
 		// build a `LIKE '%' ESCAPE '\'` and match every tag - a
 		// "select all" alias the documented syntax doesn't expose.

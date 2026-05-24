@@ -25,6 +25,7 @@ import (
 	"github.com/leqwin/monbooru/internal/jobs"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
+	"github.com/leqwin/monbooru/internal/search"
 	"github.com/leqwin/monbooru/internal/tagger"
 	webFS "github.com/leqwin/monbooru/web"
 )
@@ -325,6 +326,21 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 			return "Stop"
 		},
 		"humanBytes": humanBytesFmt,
+		"browseSortLabel": func(s string) string {
+			switch s {
+			case "recent":
+				return "Recent"
+			case "size":
+				return "Size"
+			case "original_added":
+				return "Original added"
+			case "length":
+				return "Length"
+			case "newest_member":
+				return "Newest member"
+			}
+			return s
+		},
 		"isLongValue": func(s string) bool {
 			return len(s) > 200 || strings.ContainsAny(s, "\n\r")
 		},
@@ -375,17 +391,6 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 		"hasFavFilter": func(query string) bool {
 			for _, tok := range strings.Fields(query) {
 				if strings.EqualFold(tok, "fav:true") {
-					return true
-				}
-			}
-			return false
-		},
-		// hasInboxFilter mirrors hasFavFilter for the inbox toggle next to
-		// the favorite button. Active only on `inbox:true` (the triage
-		// view); `inbox:false` stays inactive because the toggle is one-way.
-		"hasInboxFilter": func(query string) bool {
-			for _, tok := range strings.Fields(query) {
-				if strings.EqualFold(tok, "inbox:true") {
 					return true
 				}
 			}
@@ -444,6 +449,12 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 		if !customCSSPathAllowed(cfg.Server.CustomCSS, configPath) {
 			logx.Warnf("server.custom_css %q lives outside the trusted dirs (configdir, /config, /data); the link is suppressed", cfg.Server.CustomCSS)
 			s.cfg.Server.CustomCSS = ""
+		}
+	}
+	if cfg.Server.BooruLogo != "" {
+		if !customCSSPathAllowed(cfg.Server.BooruLogo, configPath) {
+			logx.Warnf("server.logo %q lives outside the trusted dirs (configdir, /config, /data); the override is suppressed", cfg.Server.BooruLogo)
+			s.cfg.Server.BooruLogo = ""
 		}
 	}
 
@@ -551,6 +562,9 @@ func contextMiddlewareBypass(path string) bool {
 	if path == "/custom.css" {
 		return true
 	}
+	if path == "/custom.logo" {
+		return true
+	}
 	return strings.HasPrefix(path, "/static/") ||
 		strings.HasPrefix(path, "/thumbnails/") ||
 		strings.HasPrefix(path, "/settings/galleries")
@@ -581,6 +595,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.staticFS))))
 	mux.HandleFunc("GET /custom.css", s.serveCustomCSS)
+	mux.HandleFunc("GET /custom.logo", s.serveCustomLogo)
 	mux.HandleFunc("GET /thumbnails/{gallery}/{file}", s.serveThumbnail)
 	// Browsers request /favicon.ico unconditionally on first paint;
 	// without this alias every fresh tab logged a 404 in the console.
@@ -599,7 +614,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /login", s.loginPost)
 	mux.HandleFunc("POST /logout", s.logoutPost)
 
-	mux.HandleFunc("GET /upload", s.uploadPage)
 	mux.HandleFunc("POST /upload", s.uploadPost)
 
 	// Root only; `GET /` below is the catch-all for unmatched paths. The
@@ -854,6 +868,16 @@ type baseData struct {
 	RepoURL       string
 	Variant       string
 	CustomCSS     bool
+	// BooruName is the operator's brand override (or "Monbooru" by
+	// default). Rendered into every page <title>, the topbar wordmark,
+	// and the login screen so a deployment that wants a different name
+	// only edits monbooru.toml.
+	BooruName string
+	// BooruLogo is the resolved URL for the favicon link + topbar logo:
+	// "/custom.logo" when server.logo is set, the bundled favicon
+	// otherwise. Both surfaces ride the same key so a configured logo
+	// replaces the topbar mark in lockstep with the tab icon.
+	BooruLogo     string
 	ActiveGallery string
 	Galleries     []config.Gallery
 	// Counts surfaced on the footer status bar. Populated per-request;
@@ -862,6 +886,11 @@ type baseData struct {
 	InboxCount       int
 	TagCount         int
 	CollectionsCount int
+	// InboxNavActive marks the top-nav "Inbox" entry as the active
+	// page when the current URL's `q` parameter positively asserts
+	// inbox:true at the top level. Same parser-based gate the inline
+	// upload drop zone uses.
+	InboxNavActive bool
 	// HiddenByCeiling drives the "N hidden images in the current search"
 	// footer cell. Only the gallery handler populates it; on every other
 	// page the field stays at 0 and the cell renders empty.
@@ -886,9 +915,16 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 	if cx != nil {
 		degraded = cx.Degraded
 		visible, _ = cx.VisibleCount()
-		inbox, _ = cx.InboxCount()
+		// Inbox count is ceiling-aware here because every surface that
+		// renders it (top-nav "Inbox (N)" link, inline drop zone, search
+		// suggestions) promises the post-click match count.
+		inbox, _ = cx.InboxCountUnder(resolveCeiling(r, cx))
 		tagCount, _ = cx.TagCount()
 		collectionsCount, _ = cx.CollectionsCount()
+	}
+	inboxNavActive := false
+	if expr, parseErr := search.Parse(r.URL.Query().Get("q")); parseErr == nil {
+		inboxNavActive = inboxFilterActive(expr)
 	}
 	// Copy the gallery list so template rendering never dereferences the map
 	// under a concurrent mutation (the middleware lock is scoped to the
@@ -909,12 +945,15 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 		RepoURL:       RepoURL,
 		Variant:       Variant,
 		CustomCSS:     s.cfg.Server.CustomCSS != "",
+		BooruName:     s.booruName(),
+		BooruLogo:     s.booruLogoURL(),
 		ActiveGallery: s.activeName,
 		Galleries:     galleries,
 		VisibleCount:     visible,
 		InboxCount:       inbox,
 		TagCount:         tagCount,
 		CollectionsCount: collectionsCount,
+		InboxNavActive:   inboxNavActive,
 		RatingLevels:  ratingFooterLevels,
 		ActiveRating:  active,
 		RequestStart:  requestStartFromContext(r.Context()),
@@ -970,6 +1009,13 @@ func (s *Server) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// SQLite reuses the highest deleted INTEGER PRIMARY KEY id, so a
+	// deleted image's URL can be reborn the next ingest with brand-new
+	// thumbnail bytes at the same path. Without revalidation the browser
+	// keeps serving the prior bytes from cache (heuristic freshness on a
+	// bare Last-Modified). The ETag includes the file mtime so a rewrite
+	// invalidates the cached response; same trick serveImageFile uses.
+	setGalleryScopedCache(w, r.PathValue("gallery"), file, fullPath)
 	http.ServeFile(w, r, fullPath)
 }
 
@@ -984,6 +1030,36 @@ func (s *Server) serveCustomCSS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFile(w, r, s.cfg.Server.CustomCSS)
+}
+
+// serveCustomLogo serves the operator-supplied logo/favicon pointed at by
+// server.logo. Same shape and trust gate as serveCustomCSS - an empty
+// config 404s so the layout falls back to the bundled favicon.
+func (s *Server) serveCustomLogo(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Server.BooruLogo == "" {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, s.cfg.Server.BooruLogo)
+}
+
+// booruName resolves server.name with a "Monbooru" fallback so every
+// title-suffix callsite reads a single source of truth instead of
+// repeating the default.
+func (s *Server) booruName() string {
+	if name := s.cfg.Server.BooruName; name != "" {
+		return name
+	}
+	return "Monbooru"
+}
+
+// booruLogoURL points the favicon link and topbar logo at /custom.logo
+// when an override is configured, the bundled favicon otherwise.
+func (s *Server) booruLogoURL() string {
+	if s.cfg.Server.BooruLogo != "" {
+		return "/custom.logo"
+	}
+	return "/static/favicon.png"
 }
 
 // uppercasePercentEscapes rewrites every %XX hex pair in s to use
@@ -1092,37 +1168,24 @@ func (s *Server) resolveMangaImage(idStr string) (string, bool) {
 // behavior under prefetch / back-button so the same page isn't refetched
 // constantly during reader navigation.
 func (s *Server) serveMangaPage(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	n, err := strconv.Atoi(r.PathValue("n"))
-	if err != nil || n < 1 {
-		http.NotFound(w, r)
-		return
-	}
-	canonPath, ok := s.resolveMangaImage(idStr)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	page, err := gallery.EnsureMangaPage(s.thumbnailsPath(), canonPath, id, n)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	// Scope the cached page bytes to the active gallery so a gallery
-	// switch invalidates them; see serveImageFile for the same trick.
-	setGalleryScopedCache(w, s.activeName, fmt.Sprintf("%s-%d", idStr, n), page)
-	http.ServeFile(w, r, page)
+	s.serveMangaPagePath(w, r, gallery.EnsureMangaPage, "")
 }
 
 // serveMangaPageThumb serves the n-th page's thumbnail (300px-longest-
 // side JPEG) used by the pages-grid view. Same lazy-extract +
 // idle-evict path as serveMangaPage.
 func (s *Server) serveMangaPageThumb(w http.ResponseWriter, r *http.Request) {
+	s.serveMangaPagePath(w, r, gallery.EnsureMangaPageThumb, "-thumb")
+}
+
+// serveMangaPagePath is the shared body behind serveMangaPage and
+// serveMangaPageThumb. cacheSuffix keeps the thumb-vs-bytes cache keys
+// disjoint so a gallery switch invalidates each independently.
+func (s *Server) serveMangaPagePath(
+	w http.ResponseWriter, r *http.Request,
+	ensure func(thumbnailsPath, canonPath string, imageID int64, n int) (string, error),
+	cacheSuffix string,
+) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
@@ -1139,13 +1202,15 @@ func (s *Server) serveMangaPageThumb(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	thumb, err := gallery.EnsureMangaPageThumb(s.thumbnailsPath(), canonPath, id, n)
+	page, err := ensure(s.thumbnailsPath(), canonPath, id, n)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	setGalleryScopedCache(w, s.activeName, fmt.Sprintf("%s-%d-thumb", idStr, n), thumb)
-	http.ServeFile(w, r, thumb)
+	// Scope the cached bytes to the active gallery so a gallery switch
+	// invalidates them; see serveImageFile for the same trick.
+	setGalleryScopedCache(w, s.activeName, fmt.Sprintf("%s-%d%s", idStr, n, cacheSuffix), page)
+	http.ServeFile(w, r, page)
 }
 
 // serveImageFile serves the raw image/video file.

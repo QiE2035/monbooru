@@ -157,7 +157,7 @@ func (s *Server) relationsPage(w http.ResponseWriter, r *http.Request) {
 	ceiling := resolveCeiling(r, cx)
 	counts := loadRelationsCounts(s, cx, ceiling, nil)
 	s.renderTemplate(w, "relations.html", relationsPageData{
-		baseData:      s.base(r, "relations", "Relations - Monbooru"),
+		baseData:      s.base(r, "relations", "Relations - "+s.booruName()),
 		Counts:        counts,
 		ActiveGallery: s.activeName,
 	})
@@ -271,7 +271,7 @@ func loadRelationsCounts(s *Server, cx *galleryCtx, ceiling *Ceiling, ov *relati
 // of limit) so the caller can drive the matching hub counter without
 // re-walking the edges; 0 for kinds the count helpers can query
 // directly from SQL.
-func loadBrowseCardsByKind(cx *galleryCtx, kind string, limit int, ceiling *Ceiling) ([]browseCard, int, error) {
+func loadBrowseCardsByKind(cx *galleryCtx, kind, sort string, limit, offset int, ceiling *Ceiling) ([]browseCard, int, error) {
 	// groupCardsWhere wraps Ceiling.WhereGroupClean for the two
 	// group-card scans: the underlying SQL is "AND <not-exists>" when
 	// the predicate is non-empty, plain `1=1` filler otherwise so the
@@ -284,13 +284,14 @@ func loadBrowseCardsByKind(cx *galleryCtx, kind string, limit int, ceiling *Ceil
 		return " AND " + w, a
 	}
 	var cards []browseCard
-	var kindTotal int
+	var walkedTotal int
 	switch kind {
 	case "duplicate":
 		where, args := groupCardsWhere("dup_group_members", "dup_groups.id")
+		orderBy := dupSortClause(sort)
 		dupRows, err := cx.DB.Read.Query(
-			`SELECT id, original_image_id, created_at FROM dup_groups WHERE 1=1`+where+` ORDER BY id DESC LIMIT ?`,
-			append(args, limit)...,
+			`SELECT dup_groups.id, dup_groups.original_image_id, dup_groups.created_at FROM dup_groups WHERE 1=1`+where+` `+orderBy+` LIMIT ? OFFSET ?`,
+			append(args, limit, offset)...,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -313,9 +314,10 @@ func loadBrowseCardsByKind(cx *galleryCtx, kind string, limit int, ceiling *Ceil
 		}
 	case "alternate":
 		where, args := groupCardsWhere("alt_group_members", "alt_groups.id")
+		orderBy := altSortClause(sort)
 		altRows, err := cx.DB.Read.Query(
-			`SELECT id, created_at FROM alt_groups WHERE 1=1`+where+` ORDER BY id DESC LIMIT ?`,
-			append(args, limit)...,
+			`SELECT alt_groups.id, alt_groups.created_at FROM alt_groups WHERE 1=1`+where+` `+orderBy+` LIMIT ? OFFSET ?`,
+			append(args, limit, offset)...,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -337,27 +339,38 @@ func loadBrowseCardsByKind(cx *galleryCtx, kind string, limit int, ceiling *Ceil
 			return nil, 0, err
 		}
 	case "version":
-		chains, total, cErr := loadVersionChainCards(cx, limit, ceiling)
+		// loadVersionChainCards always returns the full sorted set
+		// and its post-ceiling total. The annotate-then-sort order
+		// matters when sort=newest_member - that pass reads each
+		// member's ingested_at, populated by annotateBrowseCardIngestedAt.
+		chains, total, cErr := loadVersionChainCards(cx, 0, ceiling)
 		if cErr != nil {
 			return nil, 0, cErr
 		}
-		cards = append(cards, chains...)
-		kindTotal = total
+		if sort == "newest_member" {
+			if aErr := annotateBrowseCardIngestedAt(cx, chains); aErr != nil {
+				logx.Warnf("browse cards ingest-dates version: %v", aErr)
+			}
+		}
+		sortVersionCards(chains, sort)
+		cards = append(cards, sliceWindow(chains, offset, limit)...)
+		walkedTotal = total
 	case "derivative":
-		trees, total, tErr := loadDerivativeTreeCards(cx, limit, ceiling)
+		trees, total, tErr := loadDerivativeTreeCards(cx, 0, ceiling)
 		if tErr != nil {
 			return nil, 0, tErr
 		}
-		cards = append(cards, trees...)
-		kindTotal = total
+		sortDerivativeCards(trees, sort)
+		cards = append(cards, sliceWindow(trees, offset, limit)...)
+		walkedTotal = total
 	case "not_related":
 		where, args := ceiling.WhereTwo("a_image_id", "b_image_id")
 		q := `SELECT a_image_id, b_image_id, created_at FROM not_related_pairs`
 		if where != "" {
 			q += ` WHERE ` + where
 		}
-		q += ` ORDER BY rowid DESC LIMIT ?`
-		nrRows, err := cx.DB.Read.Query(q, append(args, limit)...)
+		q += ` ORDER BY rowid DESC LIMIT ? OFFSET ?`
+		nrRows, err := cx.DB.Read.Query(q, append(args, limit, offset)...)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -381,7 +394,69 @@ func loadBrowseCardsByKind(cx *galleryCtx, kind string, limit int, ceiling *Ceil
 		// the card carries the operator's primary signal.
 		logx.Warnf("browse cards ingest-dates %s: %v", kind, err)
 	}
-	return cards, kindTotal, nil
+	return cards, walkedTotal, nil
+}
+
+// dupSortClause maps the per-kind whitelist value to a static
+// ORDER BY tail. The sort value is already resolved through
+// resolveBrowseSort so it's safe to splice directly.
+func dupSortClause(sort string) string {
+	switch sort {
+	case "size":
+		return `ORDER BY (SELECT COUNT(*) FROM dup_group_members WHERE group_id = dup_groups.id) DESC, dup_groups.id DESC`
+	case "original_added":
+		return `ORDER BY (SELECT ingested_at FROM images WHERE id = dup_groups.original_image_id) DESC, dup_groups.id DESC`
+	}
+	return `ORDER BY dup_groups.id DESC`
+}
+
+func altSortClause(sort string) string {
+	if sort == "size" {
+		return `ORDER BY (SELECT COUNT(*) FROM alt_group_members WHERE group_id = alt_groups.id) DESC, alt_groups.id DESC`
+	}
+	return `ORDER BY alt_groups.id DESC`
+}
+
+func sortVersionCards(cards []browseCard, sortKey string) {
+	switch sortKey {
+	case "length":
+		sort.SliceStable(cards, func(i, j int) bool {
+			return len(cards[i].Members) > len(cards[j].Members)
+		})
+	case "newest_member":
+		newest := func(c browseCard) string {
+			var best string
+			for _, m := range c.Members {
+				if d, ok := c.MemberIngestedAt[m]; ok && d > best {
+					best = d
+				}
+			}
+			return best
+		}
+		sort.SliceStable(cards, func(i, j int) bool {
+			return newest(cards[i]) > newest(cards[j])
+		})
+	}
+	// "recent" is the loader's default order; nothing to do.
+}
+
+func sortDerivativeCards(cards []browseCard, sortKey string) {
+	if sortKey == "size" {
+		sort.SliceStable(cards, func(i, j int) bool {
+			return len(cards[i].Members) > len(cards[j].Members)
+		})
+	}
+}
+
+func sliceWindow(cards []browseCard, offset, limit int) []browseCard {
+	if offset >= len(cards) {
+		return nil
+	}
+	end := offset + limit
+	if limit <= 0 || end > len(cards) {
+		end = len(cards)
+	}
+	return cards[offset:end]
 }
 
 // annotateBrowseCardIngestedAt populates the per-card MemberIngestedAt
@@ -823,6 +898,36 @@ var validBrowseKinds = map[string]bool{
 	"not_related": true,
 }
 
+// browseSortsByKind whitelists the ?sort= values each kind tab accepts.
+// The first entry in every slice is the default; anything off the list
+// silently collapses to that default so a typo never executes against
+// an interpolated SQL fragment.
+var browseSortsByKind = map[string][]string{
+	"duplicate":   {"recent", "size", "original_added"},
+	"alternate":   {"recent", "size"},
+	"version":     {"recent", "length", "newest_member"},
+	"derivative":  {"recent", "size"},
+	"not_related": {"recent"},
+}
+
+func resolveBrowseSort(kind, requested string) string {
+	allowed := browseSortsByKind[kind]
+	if len(allowed) == 0 {
+		return "recent"
+	}
+	for _, s := range allowed {
+		if s == requested {
+			return s
+		}
+	}
+	return allowed[0]
+}
+
+// browseRelationsPageSize caps each /relations/browse page; matches
+// /tags's 100-row cap shape but tuned smaller because each card lifts
+// a thumb strip whose vertical footprint is far denser.
+const browseRelationsPageSize = 60
+
 // browseRelationsPage renders /relations/browse with one tab per
 // relation kind. The card layout adapts per kind: group cards lift a
 // thumb strip plus dissolve / merge controls; edge cards render two
@@ -842,28 +947,70 @@ func (s *Server) browseRelationsPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	page := 1
+	if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && p > 0 {
+		page = p
+	}
+	sort := resolveBrowseSort(kind, r.URL.Query().Get("sort"))
 	ceiling := resolveCeiling(r, cx)
-	cards, kindTotal, err := loadBrowseCardsByKind(cx, kind, 60, ceiling)
+	// Counts drive both the kind-tab labels and the page divisor.
+	// Compute them first so a past-end ?page= can clamp to the last
+	// valid page before the loader does its slice. For
+	// version/derivative kinds the kind-total override lands after
+	// the loader finishes its in-Go walk (the same walk drives the
+	// card list, so the count rides the same data).
+	counts := loadRelationsCounts(s, cx, ceiling, nil)
+	total := kindTotal(counts, kind)
+	totalPages := 1
+	if total > 0 {
+		totalPages = (total + browseRelationsPageSize - 1) / browseRelationsPageSize
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	offset := (page - 1) * browseRelationsPageSize
+	cards, walkedTotal, err := loadBrowseCardsByKind(cx, kind, sort, browseRelationsPageSize, offset, ceiling)
 	if err != nil {
 		logx.Warnf("browse cards %s: %v", kind, err)
 		http.Error(w, "load cards", http.StatusInternalServerError)
 		return
 	}
-	var ov relationsCountOverrides
-	switch kind {
-	case "version":
-		ov.VersionChains = &kindTotal
-	case "derivative":
-		ov.DerivativeTrees = &kindTotal
+	if walkedTotal > 0 {
+		switch kind {
+		case "version":
+			counts.VersionChains = walkedTotal
+		case "derivative":
+			counts.DerivativeTrees = walkedTotal
+		}
 	}
-	counts := loadRelationsCounts(s, cx, ceiling, &ov)
 	s.renderTemplate(w, "relations_browse.html", browseRelationsData{
-		baseData:      s.base(r, "relations", "Browse relations - Monbooru"),
+		baseData:      s.base(r, "relations", "Browse relations - "+s.booruName()),
 		ActiveGallery: s.activeName,
 		Kind:          kind,
 		Cards:         cards,
 		Counts:        counts,
+		Page:          page,
+		TotalPages:    totalPages,
+		Sort:          sort,
+		SortOptions:   browseSortsByKind[kind],
 	})
+}
+
+// kindTotal returns the per-kind count from a relationsCounts bundle.
+func kindTotal(c relationsCounts, kind string) int {
+	switch kind {
+	case "duplicate":
+		return c.DupGroups
+	case "alternate":
+		return c.AltGroups
+	case "version":
+		return c.VersionChains
+	case "derivative":
+		return c.DerivativeTrees
+	case "not_related":
+		return c.NotRelatedPairs
+	}
+	return 0
 }
 
 type browseRelationsData struct {
@@ -872,4 +1019,8 @@ type browseRelationsData struct {
 	Kind          string
 	Cards         []browseCard
 	Counts        relationsCounts
+	Page          int
+	TotalPages    int
+	Sort          string
+	SortOptions   []string
 }

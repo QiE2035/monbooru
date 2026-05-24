@@ -88,14 +88,15 @@ func (s *Server) addImplicationPost(w http.ResponseWriter, r *http.Request) {
 		// so the cached tag count is stale until next render.
 		s.Active().InvalidateCaches()
 		// implication-added drives the dialog's after-request hook (re-fetch
-		// body without closing the modal); tagsFlash seeds sessionStorage so
-		// the next /tags reload surfaces the green message above the table.
+		// body without closing the modal); monbooru:flash rides the shared
+		// helper so the next /tags reload surfaces the green message above
+		// the table.
 		noun := "implication"
 		if added != 1 {
 			noun = "implications"
 		}
-		w.Header().Set("HX-Trigger",
-			`{"implication-added":"","tagsFlash":`+strconv.Quote(strconv.Itoa(added)+" "+noun+" added.")+`}`)
+		setFlashHeader(w, strconv.Itoa(added)+" "+noun+" added.", "ok",
+			map[string]any{"implication-added": ""})
 	}
 	switch {
 	case len(failures) == 0 && added > 0:
@@ -130,7 +131,7 @@ func (s *Server) removeImplicationDelete(w http.ResponseWriter, r *http.Request)
 	s.startImplicationPropagation(parentID, impliedID, "remove")
 	// Seed the cross-navigation flash slot; the dialog stays open and the
 	// /tags reload on close surfaces this above the table.
-	w.Header().Set("HX-Trigger", `{"tagsFlash":"Implication removed."}`)
+	setFlashHeader(w, "Implication removed.", "ok", nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 

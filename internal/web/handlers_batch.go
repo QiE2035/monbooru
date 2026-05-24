@@ -682,26 +682,7 @@ func (s *Server) runBatchStrip(ids []int64, mode, taggerName string) {
 // become archived, archived become inbox. Mirrors batchTag's scope
 // dispatch and runBulkDelete's chunked-tx shape.
 func (s *Server) batchInbox(w http.ResponseWriter, r *http.Request) {
-	if !parseFormOK(w, r) {
-		return
-	}
-
-	ids, ok := s.resolveBatchScope(w, r, "batch-inbox")
-	if !ok {
-		return
-	}
-
-	if len(ids) == 0 {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	if err := s.jobs.Start(models.JobTypeTag); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
-		return
-	}
-	go s.runBatchInbox(ids)
-	w.WriteHeader(http.StatusAccepted)
+	s.startBatchToggleJob(w, r, "batch-inbox", s.runBatchInbox)
 }
 
 // runBatchInbox processes ids in chunks of 500 with one transaction per
@@ -709,73 +690,31 @@ func (s *Server) batchInbox(w http.ResponseWriter, r *http.Request) {
 // per-row toggle in a single UPDATE so a mixed selection (some inbox,
 // some archived) ends up cleanly inverted.
 func (s *Server) runBatchInbox(ids []int64) {
-	ctx := s.jobs.Context()
-	const chunkSize = 500
-	total := len(ids)
-	processed := 0
-	cancelled := false
-
-	s.jobs.Update(0, total, fmt.Sprintf("toggling inbox state 0/%d…", total))
-
-	for start := 0; start < total; start += chunkSize {
-		if ctx.Err() != nil {
-			cancelled = true
-			break
-		}
-		end := start + chunkSize
-		if end > total {
-			end = total
-		}
-		chunk := ids[start:end]
-		placeholders := strings.Repeat("?,", len(chunk))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, len(chunk))
-		for i, id := range chunk {
-			args[i] = id
-		}
-
-		tx, err := s.db().Write.Begin()
-		if err != nil {
-			s.jobs.Fail(err.Error())
-			return
-		}
-		if _, err := tx.Exec(
-			`UPDATE images SET is_inbox = 1 - is_inbox WHERE id IN (`+placeholders+`)`, args...,
-		); err != nil {
-			tx.Rollback()
-			s.jobs.Fail(err.Error())
-			return
-		}
-		if err := tx.Commit(); err != nil {
-			s.jobs.Fail(err.Error())
-			return
-		}
-		processed = end
-		s.jobs.Update(processed, total, fmt.Sprintf("toggling inbox state %d/%d…", processed, total))
-	}
-
-	s.Active().InvalidateCaches()
-
-	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("inbox toggle cancelled (%d/%d toggled)", processed, total))
-		return
-	}
-	s.jobs.Complete(fmt.Sprintf("Toggled inbox state for %d image(s).", processed))
+	s.runBulkToggle(ids, "is_inbox", "inbox state", "inbox toggle", "Toggled inbox state")
 }
 
 // batchFavorite mirrors batchInbox for the is_favorited column: a
 // per-row toggle that flips favorited rows to unfavorited and vice
 // versa across the resolved scope.
 func (s *Server) batchFavorite(w http.ResponseWriter, r *http.Request) {
+	s.startBatchToggleJob(w, r, "batch-favorite", s.runBatchFavorite)
+}
+
+func (s *Server) runBatchFavorite(ids []int64) {
+	s.runBulkToggle(ids, "is_favorited", "favorite state", "favorite toggle", "Toggled favorite state")
+}
+
+// startBatchToggleJob is the HTTP shell behind the per-row toggle
+// handlers: parse form, resolve scope, claim the jobs lane, spawn,
+// 202.
+func (s *Server) startBatchToggleJob(w http.ResponseWriter, r *http.Request, scopeLabel string, run func([]int64)) {
 	if !parseFormOK(w, r) {
 		return
 	}
-
-	ids, ok := s.resolveBatchScope(w, r, "batch-favorite")
+	ids, ok := s.resolveBatchScope(w, r, scopeLabel)
 	if !ok {
 		return
 	}
-
 	if len(ids) == 0 {
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -785,18 +724,22 @@ func (s *Server) batchFavorite(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
 		return
 	}
-	go s.runBatchFavorite(ids)
+	go run(ids)
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *Server) runBatchFavorite(ids []int64) {
+// runBulkToggle flips the named INTEGER column on every id via
+// SQLite's `1 - col` toggle, chunked at 500 ids per write tx.
+// progress/cancel/successNoun fill the per-chunk and completion
+// summaries.
+func (s *Server) runBulkToggle(ids []int64, column, progressNoun, cancelNoun, successNoun string) {
 	ctx := s.jobs.Context()
 	const chunkSize = 500
 	total := len(ids)
 	processed := 0
 	cancelled := false
 
-	s.jobs.Update(0, total, fmt.Sprintf("toggling favorite state 0/%d…", total))
+	s.jobs.Update(0, total, fmt.Sprintf("toggling %s 0/%d…", progressNoun, total))
 
 	for start := 0; start < total; start += chunkSize {
 		if ctx.Err() != nil {
@@ -821,7 +764,7 @@ func (s *Server) runBatchFavorite(ids []int64) {
 			return
 		}
 		if _, err := tx.Exec(
-			`UPDATE images SET is_favorited = 1 - is_favorited WHERE id IN (`+placeholders+`)`, args...,
+			`UPDATE images SET `+column+` = 1 - `+column+` WHERE id IN (`+placeholders+`)`, args...,
 		); err != nil {
 			tx.Rollback()
 			s.jobs.Fail(err.Error())
@@ -832,16 +775,16 @@ func (s *Server) runBatchFavorite(ids []int64) {
 			return
 		}
 		processed = end
-		s.jobs.Update(processed, total, fmt.Sprintf("toggling favorite state %d/%d…", processed, total))
+		s.jobs.Update(processed, total, fmt.Sprintf("toggling %s %d/%d…", progressNoun, processed, total))
 	}
 
 	s.Active().InvalidateCaches()
 
 	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("favorite toggle cancelled (%d/%d toggled)", processed, total))
+		s.jobs.Complete(fmt.Sprintf("%s cancelled (%d/%d toggled)", cancelNoun, processed, total))
 		return
 	}
-	s.jobs.Complete(fmt.Sprintf("Toggled favorite state for %d image(s).", processed))
+	s.jobs.Complete(fmt.Sprintf("%s for %d image(s).", successNoun, processed))
 }
 
 // batchCollection assigns a collection label to every image in

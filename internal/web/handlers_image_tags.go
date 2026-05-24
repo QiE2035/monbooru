@@ -381,28 +381,24 @@ func (s *Server) removeAutoTagsFromImageHandler(w http.ResponseWriter, r *http.R
 }
 
 func (s *Server) removeUserTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	if err := s.tagSvc().RemoveUserTagsFromImage(id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	s.Active().InvalidateCaches()
-	s.renderTagListWithSidebar(w, r, id, "", "", "", false)
+	s.removeImageTagsHandler(w, r, s.tagSvc().RemoveUserTagsFromImage)
 }
 
 func (s *Server) removeAllTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
+	s.removeImageTagsHandler(w, r, s.tagSvc().RemoveAllTagsFromImage)
+}
+
+// removeImageTagsHandler is the parse-id / call-remove / refresh body
+// shared by the bulk-remove tag handlers; remove names the underlying
+// service method.
+func (s *Server) removeImageTagsHandler(w http.ResponseWriter, r *http.Request, remove func(int64) error) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	if err := s.tagSvc().RemoveAllTagsFromImage(id); err != nil {
+	if err := remove(id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

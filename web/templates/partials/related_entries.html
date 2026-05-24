@@ -34,7 +34,7 @@
 
 <div class="related-images related-entries">
   <div class="related-entries-header">
-    <h3>Related entries</h3>
+    <h3>Related images</h3>
     <div class="related-entries-actions">
       {{if .Tiles}}<a class="btn-link-accent" href="/images/{{.ImageID}}/relations?back_q={{.BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}">[See all]</a>{{end}}
       <button type="button" class="btn-link-accent" data-relations-add="{{.ImageID}}">[Add a relation]</button>
@@ -52,6 +52,7 @@
           {{if .SeriesOrder}}<span class="series-pill-order">#{{deref64 .SeriesOrder}}</span>{{end}}
           <span class="series-pill-name">{{.Series}}</span>
         </span>
+        <span class="relation-marker" title="Same collection">Same collection</span>
       {{else}}
         <span class="relation-marker" title="{{.Label}}">{{.Marker}}</span>
       {{end}}

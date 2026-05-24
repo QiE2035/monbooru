@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/leqwin/monbooru/internal/db"
@@ -97,6 +98,21 @@ func canonicalPair(a, b int64) (int64, int64) {
 	return b, a
 }
 
+// inWriteTx runs work inside a write transaction, committing on
+// success and rolling back via defer on any error path. work's first
+// error short-circuits the commit.
+func (s *Service) inWriteTx(work func(*sql.Tx) error) error {
+	tx, err := s.db.Write.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := work(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // AddDuplicate marks images a and b as duplicates. Handles the five
 // cases from §6.4 in a single transaction: both singletons, one
 // existing member, the other existing member, same group already, and
@@ -107,29 +123,23 @@ func (s *Service) AddDuplicate(a, b int64) error {
 	if a == b {
 		return ErrSelfRelation
 	}
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if conflict, err := pairHasOtherRelationTx(tx, a, b, "duplicate"); err != nil {
-		return err
-	} else if conflict {
-		return ErrRelationConflict
-	}
-	if err := mergeIntoDupGroupTx(tx, a, b); err != nil {
-		return err
-	}
-	if err := propagateAltOnDuplicateTx(tx, a, b); err != nil {
-		return err
-	}
-	if err := pruneQueueForGroupTx(tx, "dup_group_members", a); err != nil {
-		return err
-	}
-	if err := pruneQueueForGroupTx(tx, "alt_group_members", a); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		if conflict, err := pairHasOtherRelationTx(tx, a, b, "duplicate"); err != nil {
+			return err
+		} else if conflict {
+			return ErrRelationConflict
+		}
+		if err := mergeIntoDupGroupTx(tx, a, b); err != nil {
+			return err
+		}
+		if err := propagateAltOnDuplicateTx(tx, a, b); err != nil {
+			return err
+		}
+		if err := pruneQueueForGroupTx(tx, "dup_group_members", a); err != nil {
+			return err
+		}
+		return pruneQueueForGroupTx(tx, "alt_group_members", a)
+	})
 }
 
 // AddAlternate marks images a and b as alternates.
@@ -137,23 +147,17 @@ func (s *Service) AddAlternate(a, b int64) error {
 	if a == b {
 		return ErrSelfRelation
 	}
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if conflict, err := pairHasOtherRelationTx(tx, a, b, "alternate"); err != nil {
-		return err
-	} else if conflict {
-		return ErrRelationConflict
-	}
-	if err := mergeIntoAltGroupTx(tx, a, b); err != nil {
-		return err
-	}
-	if err := pruneQueueForGroupTx(tx, "alt_group_members", a); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		if conflict, err := pairHasOtherRelationTx(tx, a, b, "alternate"); err != nil {
+			return err
+		} else if conflict {
+			return ErrRelationConflict
+		}
+		if err := mergeIntoAltGroupTx(tx, a, b); err != nil {
+			return err
+		}
+		return pruneQueueForGroupTx(tx, "alt_group_members", a)
+	})
 }
 
 // MaxVersionChainDepth caps how far AddVersionEdge walks the existing
@@ -171,50 +175,45 @@ func (s *Service) AddVersionEdge(parent, child int64) error {
 	if parent == child {
 		return ErrSelfRelation
 	}
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if conflict, err := pairHasOtherRelationTx(tx, parent, child, "version"); err != nil {
-		return err
-	} else if conflict {
-		return ErrRelationConflict
-	}
-	var n int
-	if err := tx.QueryRow(
-		`SELECT COUNT(*) FROM version_edges WHERE child_image_id = ? OR parent_image_id = ?`,
-		child, parent,
-	).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return ErrVersionExists
-	}
-	// Walk parent's ancestors; if child is anywhere up that chain, the
-	// new edge would close a cycle.
-	cur := parent
-	for i := 0; i < MaxVersionChainDepth; i++ {
-		var ancestor int64
-		err := tx.QueryRow(`SELECT parent_image_id FROM version_edges WHERE child_image_id = ?`, cur).Scan(&ancestor)
-		if errors.Is(err, sql.ErrNoRows) {
-			break
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		if conflict, err := pairHasOtherRelationTx(tx, parent, child, "version"); err != nil {
+			return err
+		} else if conflict {
+			return ErrRelationConflict
 		}
-		if err != nil {
+		var n int
+		if err := tx.QueryRow(
+			`SELECT COUNT(*) FROM version_edges WHERE child_image_id = ? OR parent_image_id = ?`,
+			child, parent,
+		).Scan(&n); err != nil {
 			return err
 		}
-		if ancestor == child {
+		if n > 0 {
 			return ErrVersionExists
 		}
-		cur = ancestor
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO version_edges (child_image_id, parent_image_id, created_at) VALUES (?, ?, ?)`,
-		child, parent, nowISO(),
-	); err != nil {
+		// Walk parent's ancestors; if child is anywhere up that chain, the
+		// new edge would close a cycle.
+		cur := parent
+		for i := 0; i < MaxVersionChainDepth; i++ {
+			var ancestor int64
+			err := tx.QueryRow(`SELECT parent_image_id FROM version_edges WHERE child_image_id = ?`, cur).Scan(&ancestor)
+			if errors.Is(err, sql.ErrNoRows) {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if ancestor == child {
+				return ErrVersionExists
+			}
+			cur = ancestor
+		}
+		_, err := tx.Exec(
+			`INSERT INTO version_edges (child_image_id, parent_image_id, created_at) VALUES (?, ?, ?)`,
+			child, parent, nowISO(),
+		)
 		return err
-	}
-	return tx.Commit()
+	})
 }
 
 // AddDerivativeEdge declares derivative was made from source. A source
@@ -225,50 +224,45 @@ func (s *Service) AddDerivativeEdge(source, derivative int64) error {
 	if source == derivative {
 		return ErrSelfRelation
 	}
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if conflict, err := pairHasOtherRelationTx(tx, source, derivative, "derivative"); err != nil {
-		return err
-	} else if conflict {
-		return ErrRelationConflict
-	}
-	var n int
-	if err := tx.QueryRow(
-		`SELECT COUNT(*) FROM derivative_edges WHERE derivative_image_id = ?`, derivative,
-	).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return ErrDerivativeExists
-	}
-	// Walk source's source-chain; if derivative is anywhere up that
-	// chain, the new edge would close a cycle. Same depth budget as
-	// the version chain so a pathological tree can't loop indefinitely.
-	cur := source
-	for i := 0; i < MaxVersionChainDepth; i++ {
-		var ancestor int64
-		err := tx.QueryRow(`SELECT source_image_id FROM derivative_edges WHERE derivative_image_id = ?`, cur).Scan(&ancestor)
-		if errors.Is(err, sql.ErrNoRows) {
-			break
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		if conflict, err := pairHasOtherRelationTx(tx, source, derivative, "derivative"); err != nil {
+			return err
+		} else if conflict {
+			return ErrRelationConflict
 		}
-		if err != nil {
+		var n int
+		if err := tx.QueryRow(
+			`SELECT COUNT(*) FROM derivative_edges WHERE derivative_image_id = ?`, derivative,
+		).Scan(&n); err != nil {
 			return err
 		}
-		if ancestor == derivative {
+		if n > 0 {
 			return ErrDerivativeExists
 		}
-		cur = ancestor
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO derivative_edges (derivative_image_id, source_image_id, created_at) VALUES (?, ?, ?)`,
-		derivative, source, nowISO(),
-	); err != nil {
+		// Walk source's source-chain; if derivative is anywhere up that
+		// chain, the new edge would close a cycle. Same depth budget as
+		// the version chain so a pathological tree can't loop indefinitely.
+		cur := source
+		for i := 0; i < MaxVersionChainDepth; i++ {
+			var ancestor int64
+			err := tx.QueryRow(`SELECT source_image_id FROM derivative_edges WHERE derivative_image_id = ?`, cur).Scan(&ancestor)
+			if errors.Is(err, sql.ErrNoRows) {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if ancestor == derivative {
+				return ErrDerivativeExists
+			}
+			cur = ancestor
+		}
+		_, err := tx.Exec(
+			`INSERT INTO derivative_edges (derivative_image_id, source_image_id, created_at) VALUES (?, ?, ?)`,
+			derivative, source, nowISO(),
+		)
 		return err
-	}
-	return tx.Commit()
+	})
 }
 
 // AddNotRelated records the canonicalised pair so it never surfaces in
@@ -277,24 +271,19 @@ func (s *Service) AddNotRelated(a, b int64) error {
 	if a == b {
 		return ErrSelfRelation
 	}
-	tx, err := s.db.Write.Begin()
-	if err != nil {
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		if conflict, err := pairHasOtherRelationTx(tx, a, b, "not_related"); err != nil {
+			return err
+		} else if conflict {
+			return ErrRelationConflict
+		}
+		lo, hi := canonicalPair(a, b)
+		_, err := tx.Exec(
+			`INSERT OR IGNORE INTO not_related_pairs (a_image_id, b_image_id, created_at) VALUES (?, ?, ?)`,
+			lo, hi, nowISO(),
+		)
 		return err
-	}
-	defer tx.Rollback()
-	if conflict, err := pairHasOtherRelationTx(tx, a, b, "not_related"); err != nil {
-		return err
-	} else if conflict {
-		return ErrRelationConflict
-	}
-	lo, hi := canonicalPair(a, b)
-	if _, err := tx.Exec(
-		`INSERT OR IGNORE INTO not_related_pairs (a_image_id, b_image_id, created_at) VALUES (?, ?, ?)`,
-		lo, hi, nowISO(),
-	); err != nil {
-		return err
-	}
-	return tx.Commit()
+	})
 }
 
 // RemoveDupMember unlinks one image from its duplicate group. Idempotent:
@@ -302,15 +291,7 @@ func (s *Service) AddNotRelated(a, b int64) error {
 // the group with a single member, the group is dissolved. If the removed
 // image was the original, the largest remaining member is promoted.
 func (s *Service) RemoveDupMember(imageID int64) error {
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := removeDupMemberTx(tx, imageID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.inWriteTx(func(tx *sql.Tx) error { return removeDupMemberTx(tx, imageID) })
 }
 
 func removeDupMemberTx(tx *sql.Tx, imageID int64) error {
@@ -393,38 +374,25 @@ func (s *Service) NextOriginalIfRemoved(groupID, removeID int64) (int64, error) 
 // PromoteToOriginal sets imageID as the original of groupID. Errors
 // with ErrNotInGroup when imageID isn't a member of the group.
 func (s *Service) PromoteToOriginal(groupID, imageID int64) error {
-	tx, err := s.db.Write.Begin()
-	if err != nil {
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		var n int
+		if err := tx.QueryRow(
+			`SELECT COUNT(*) FROM dup_group_members WHERE group_id = ? AND image_id = ?`, groupID, imageID,
+		).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrNotInGroup
+		}
+		_, err := tx.Exec(`UPDATE dup_groups SET original_image_id = ? WHERE id = ?`, imageID, groupID)
 		return err
-	}
-	defer tx.Rollback()
-	var n int
-	if err := tx.QueryRow(
-		`SELECT COUNT(*) FROM dup_group_members WHERE group_id = ? AND image_id = ?`, groupID, imageID,
-	).Scan(&n); err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrNotInGroup
-	}
-	if _, err := tx.Exec(`UPDATE dup_groups SET original_image_id = ? WHERE id = ?`, imageID, groupID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	})
 }
 
 // RemoveAltMember unlinks one image from its alternate group.
 // Idempotent. Dissolves the group when reduced to a singleton.
 func (s *Service) RemoveAltMember(imageID int64) error {
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := removeAltMemberTx(tx, imageID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.inWriteTx(func(tx *sql.Tx) error { return removeAltMemberTx(tx, imageID) })
 }
 
 func removeAltMemberTx(tx *sql.Tx, imageID int64) error {
@@ -463,15 +431,7 @@ func (s *Service) MergeAltGroups(groupIDs []int64) error {
 	if len(groupIDs) <= 1 {
 		return nil
 	}
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := mergeAltGroupsTx(tx, groupIDs); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.inWriteTx(func(tx *sql.Tx) error { return mergeAltGroupsTx(tx, groupIDs) })
 }
 
 // MergeDupGroups consolidates N dup groups into one. The lowest id is
@@ -484,15 +444,7 @@ func (s *Service) MergeDupGroups(groupIDs []int64, keepOriginalFrom int64) error
 	if len(groupIDs) <= 1 {
 		return nil
 	}
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := mergeDupGroupsTx(tx, groupIDs, keepOriginalFrom); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.inWriteTx(func(tx *sql.Tx) error { return mergeDupGroupsTx(tx, groupIDs, keepOriginalFrom) })
 }
 
 // dedupAndSortInt64 returns the input sorted ascending with duplicates
@@ -616,44 +568,39 @@ func (s *Service) ReverseVersionEdge(parent, child int64) error {
 	if parent == child {
 		return ErrSelfRelation
 	}
-	tx, err := s.db.Write.Begin()
-	if err != nil {
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(
+			`DELETE FROM version_edges WHERE parent_image_id = ? AND child_image_id = ?`, parent, child,
+		)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
+		}
+		// After the delete, the swapped row (parent, child) -> (child, parent)
+		// must not clash with the schema's per-side UNIQUE constraints. Either
+		// side already standing on the new role means an adjacent edge would
+		// block the insert.
+		var blocked int
+		if err := tx.QueryRow(
+			`SELECT EXISTS (
+				SELECT 1 FROM version_edges WHERE child_image_id = ?
+				UNION ALL
+				SELECT 1 FROM version_edges WHERE parent_image_id = ?
+			)`, parent, child,
+		).Scan(&blocked); err != nil {
+			return err
+		}
+		if blocked != 0 {
+			return ErrVersionExists
+		}
+		_, err = tx.Exec(
+			`INSERT INTO version_edges (child_image_id, parent_image_id, created_at) VALUES (?, ?, ?)`,
+			parent, child, nowISO(),
+		)
 		return err
-	}
-	defer tx.Rollback()
-	res, err := tx.Exec(
-		`DELETE FROM version_edges WHERE parent_image_id = ? AND child_image_id = ?`, parent, child,
-	)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return tx.Commit()
-	}
-	// After the delete, the swapped row (parent, child) -> (child, parent)
-	// must not clash with the schema's per-side UNIQUE constraints. Either
-	// side already standing on the new role means an adjacent edge would
-	// block the insert.
-	var blocked int
-	if err := tx.QueryRow(
-		`SELECT EXISTS (
-			SELECT 1 FROM version_edges WHERE child_image_id = ?
-			UNION ALL
-			SELECT 1 FROM version_edges WHERE parent_image_id = ?
-		)`, parent, child,
-	).Scan(&blocked); err != nil {
-		return err
-	}
-	if blocked != 0 {
-		return ErrVersionExists
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO version_edges (child_image_id, parent_image_id, created_at) VALUES (?, ?, ?)`,
-		parent, child, nowISO(),
-	); err != nil {
-		return err
-	}
-	return tx.Commit()
+	})
 }
 
 // RemoveDerivativeEdge deletes the edge between the two images if one
@@ -670,6 +617,168 @@ func (s *Service) RemoveDerivativeEdge(a, b int64) error {
 	return err
 }
 
+// DissolveVersionChain drops every version_edge in the chain that
+// contains anyMember. Walks up via child_image_id to the root, then
+// down via parent_image_id collecting every member, then DELETEs in
+// one statement using `parent_image_id IN (...) OR child_image_id IN
+// (...)`. Idempotent on an image with no edges. Depth-capped at
+// MaxVersionChainDepth on each side so a malformed cycle can't loop.
+func (s *Service) DissolveVersionChain(anyMember int64) error {
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		members, err := collectVersionChainMembersTx(tx, anyMember)
+		if err != nil {
+			return err
+		}
+		if len(members) == 0 {
+			return nil
+		}
+		return deleteEdgesByEndpointsTx(tx, "version_edges", "parent_image_id", "child_image_id", members)
+	})
+}
+
+// DissolveDerivativeTree drops every derivative_edge in the tree that
+// contains anyMember. Walks up via derivative_image_id to the root,
+// then DFSes down via source_image_id collecting every member, then
+// DELETEs in one statement using `source_image_id IN (...) OR
+// derivative_image_id IN (...)`. Idempotent on an image with no edges.
+func (s *Service) DissolveDerivativeTree(anyMember int64) error {
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		members, err := collectDerivativeTreeMembersTx(tx, anyMember)
+		if err != nil {
+			return err
+		}
+		if len(members) == 0 {
+			return nil
+		}
+		return deleteEdgesByEndpointsTx(tx, "derivative_edges", "source_image_id", "derivative_image_id", members)
+	})
+}
+
+// collectVersionChainMembersTx walks the chain containing anyMember
+// and returns every member id, or nil when anyMember sits on no
+// version edge. Up-walk and down-walk each run at most
+// MaxVersionChainDepth steps so a malformed cycle in the data can't
+// spin indefinitely.
+func collectVersionChainMembersTx(tx *sql.Tx, anyMember int64) ([]int64, error) {
+	var has int
+	if err := tx.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM version_edges WHERE parent_image_id = ? OR child_image_id = ?)`,
+		anyMember, anyMember,
+	).Scan(&has); err != nil {
+		return nil, err
+	}
+	if has == 0 {
+		return nil, nil
+	}
+	root := anyMember
+	for i := 0; i < MaxVersionChainDepth; i++ {
+		var parent int64
+		err := tx.QueryRow(`SELECT parent_image_id FROM version_edges WHERE child_image_id = ?`, root).Scan(&parent)
+		if errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		root = parent
+	}
+	members := []int64{root}
+	cur := root
+	for i := 0; i < MaxVersionChainDepth; i++ {
+		var child int64
+		err := tx.QueryRow(`SELECT child_image_id FROM version_edges WHERE parent_image_id = ?`, cur).Scan(&child)
+		if errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		members = append(members, child)
+		cur = child
+	}
+	return members, nil
+}
+
+// collectDerivativeTreeMembersTx walks the derivative tree containing
+// anyMember and returns every member id, or nil when anyMember sits on
+// no derivative edge. Up-walk is depth-capped; the DFS down collects
+// every descendant in arbitrary order.
+func collectDerivativeTreeMembersTx(tx *sql.Tx, anyMember int64) ([]int64, error) {
+	var has int
+	if err := tx.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM derivative_edges WHERE source_image_id = ? OR derivative_image_id = ?)`,
+		anyMember, anyMember,
+	).Scan(&has); err != nil {
+		return nil, err
+	}
+	if has == 0 {
+		return nil, nil
+	}
+	root := anyMember
+	for i := 0; i < MaxVersionChainDepth; i++ {
+		var src int64
+		err := tx.QueryRow(`SELECT source_image_id FROM derivative_edges WHERE derivative_image_id = ?`, root).Scan(&src)
+		if errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		root = src
+	}
+	members := []int64{root}
+	stack := []int64{root}
+	depth := 0
+	for len(stack) > 0 && depth < MaxVersionChainDepth*MaxVersionChainDepth {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		rows, err := tx.Query(`SELECT derivative_image_id FROM derivative_edges WHERE source_image_id = ?`, cur)
+		if err != nil {
+			return nil, err
+		}
+		var children []int64
+		for rows.Next() {
+			var id int64
+			if scanErr := rows.Scan(&id); scanErr != nil {
+				rows.Close()
+				return nil, scanErr
+			}
+			children = append(children, id)
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			rows.Close()
+			return nil, rowsErr
+		}
+		rows.Close()
+		members = append(members, children...)
+		stack = append(stack, children...)
+		depth++
+	}
+	return members, nil
+}
+
+// deleteEdgesByEndpointsTx removes every row in `table` whose `colA` or
+// `colB` is one of `ids`. Used by the version-chain and derivative-tree
+// dissolve methods to drop every edge between any pair of chain
+// members in one statement.
+func deleteEdgesByEndpointsTx(tx *sql.Tx, table, colA, colB string, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, 0, len(ids)*2)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	q := fmt.Sprintf(`DELETE FROM %s WHERE %s IN (%s) OR %s IN (%s)`, table, colA, placeholders, colB, placeholders)
+	_, err := tx.Exec(q, args...)
+	return err
+}
+
 // ReverseDerivativeEdge swaps the source and derivative sides of the
 // named edge in one transaction. Idempotent on a missing edge. If the
 // would-be new derivative side already has another source, the
@@ -679,39 +788,34 @@ func (s *Service) ReverseDerivativeEdge(source, derivative int64) error {
 	if source == derivative {
 		return ErrSelfRelation
 	}
-	tx, err := s.db.Write.Begin()
-	if err != nil {
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(
+			`DELETE FROM derivative_edges WHERE source_image_id = ? AND derivative_image_id = ?`, source, derivative,
+		)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
+		}
+		// The swapped row makes `source` the new derivative. PK on
+		// derivative_image_id makes that collide with any existing edge
+		// where source is already a derivative of another image.
+		var blocked int
+		if err := tx.QueryRow(
+			`SELECT EXISTS (SELECT 1 FROM derivative_edges WHERE derivative_image_id = ?)`, source,
+		).Scan(&blocked); err != nil {
+			return err
+		}
+		if blocked != 0 {
+			return ErrDerivativeExists
+		}
+		_, err = tx.Exec(
+			`INSERT INTO derivative_edges (derivative_image_id, source_image_id, created_at) VALUES (?, ?, ?)`,
+			source, derivative, nowISO(),
+		)
 		return err
-	}
-	defer tx.Rollback()
-	res, err := tx.Exec(
-		`DELETE FROM derivative_edges WHERE source_image_id = ? AND derivative_image_id = ?`, source, derivative,
-	)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return tx.Commit()
-	}
-	// The swapped row makes `source` the new derivative. PK on
-	// derivative_image_id makes that collide with any existing edge
-	// where source is already a derivative of another image.
-	var blocked int
-	if err := tx.QueryRow(
-		`SELECT EXISTS (SELECT 1 FROM derivative_edges WHERE derivative_image_id = ?)`, source,
-	).Scan(&blocked); err != nil {
-		return err
-	}
-	if blocked != 0 {
-		return ErrDerivativeExists
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO derivative_edges (derivative_image_id, source_image_id, created_at) VALUES (?, ?, ?)`,
-		source, derivative, nowISO(),
-	); err != nil {
-		return err
-	}
-	return tx.Commit()
+	})
 }
 
 // RemoveNotRelated forgets a previously-rejected pair so it becomes
@@ -761,42 +865,37 @@ func (s *Service) ClearBetween(a, b int64) error {
 	if a == b {
 		return ErrSelfRelation
 	}
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if share, err := pairShareGroupTx(tx, "dup_group_members", a, b); err != nil {
-		return err
-	} else if share {
-		if err := removeDupMemberTx(tx, b); err != nil {
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		if share, err := pairShareGroupTx(tx, "dup_group_members", a, b); err != nil {
+			return err
+		} else if share {
+			if err := removeDupMemberTx(tx, b); err != nil {
+				return err
+			}
+		}
+		if share, err := pairShareGroupTx(tx, "alt_group_members", a, b); err != nil {
+			return err
+		} else if share {
+			if err := removeAltMemberTx(tx, b); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(
+			`DELETE FROM version_edges WHERE (child_image_id = ? AND parent_image_id = ?) OR (child_image_id = ? AND parent_image_id = ?)`,
+			a, b, b, a,
+		); err != nil {
 			return err
 		}
-	}
-	if share, err := pairShareGroupTx(tx, "alt_group_members", a, b); err != nil {
-		return err
-	} else if share {
-		if err := removeAltMemberTx(tx, b); err != nil {
+		if _, err := tx.Exec(
+			`DELETE FROM derivative_edges WHERE (derivative_image_id = ? AND source_image_id = ?) OR (derivative_image_id = ? AND source_image_id = ?)`,
+			a, b, b, a,
+		); err != nil {
 			return err
 		}
-	}
-	if _, err := tx.Exec(
-		`DELETE FROM version_edges WHERE (child_image_id = ? AND parent_image_id = ?) OR (child_image_id = ? AND parent_image_id = ?)`,
-		a, b, b, a,
-	); err != nil {
+		lo, hi := canonicalPair(a, b)
+		_, err := tx.Exec(`DELETE FROM not_related_pairs WHERE a_image_id = ? AND b_image_id = ?`, lo, hi)
 		return err
-	}
-	if _, err := tx.Exec(
-		`DELETE FROM derivative_edges WHERE (derivative_image_id = ? AND source_image_id = ?) OR (derivative_image_id = ? AND source_image_id = ?)`,
-		a, b, b, a,
-	); err != nil {
-		return err
-	}
-	lo, hi := canonicalPair(a, b)
-	if _, err := tx.Exec(`DELETE FROM not_related_pairs WHERE a_image_id = ? AND b_image_id = ?`, lo, hi); err != nil {
-		return err
-	}
-	return tx.Commit()
+	})
 }
 
 // CopyTagsFromDuplicatesToOriginal inserts every image_tag carried by
@@ -807,39 +906,35 @@ func (s *Service) ClearBetween(a, b int64) error {
 // across the group. Runs in one transaction so the per-tag usage_count
 // refresh stays consistent.
 func (s *Service) CopyTagsFromDuplicatesToOriginal(groupID int64) (int, error) {
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	var original int64
-	if err := tx.QueryRow(`SELECT original_image_id FROM dup_groups WHERE id = ?`, groupID).Scan(&original); err != nil {
-		return 0, err
-	}
-	// Find the rating category id once; we use it to exclude rating
-	// tags from the copy (highest-wins semantics handles them already).
-	var ratingCatID sql.NullInt64
-	if err := tx.QueryRow(`SELECT id FROM tag_categories WHERE name = 'rating'`).Scan(&ratingCatID); err != nil && err != sql.ErrNoRows {
-		return 0, err
-	}
-	res, err := tx.Exec(`
-		INSERT OR IGNORE INTO image_tags (image_id, tag_id, is_auto, is_implied, confidence, tagger_name, created_at)
-		SELECT ?, it.tag_id, 0, 0, NULL, NULL, ?
-		FROM image_tags it
-		JOIN dup_group_members m ON m.image_id = it.image_id
-		LEFT JOIN tags t ON t.id = it.tag_id
-		WHERE m.group_id = ? AND m.image_id != ?
-		  AND (? IS NULL OR t.category_id != ?)`,
-		original, nowISO(), groupID, original, ratingCatID, ratingCatID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	added, _ := res.RowsAffected()
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return int(added), nil
+	var added int64
+	err := s.inWriteTx(func(tx *sql.Tx) error {
+		var original int64
+		if err := tx.QueryRow(`SELECT original_image_id FROM dup_groups WHERE id = ?`, groupID).Scan(&original); err != nil {
+			return err
+		}
+		// Find the rating category id once; we use it to exclude rating
+		// tags from the copy (highest-wins semantics handles them already).
+		var ratingCatID sql.NullInt64
+		if err := tx.QueryRow(`SELECT id FROM tag_categories WHERE name = 'rating'`).Scan(&ratingCatID); err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		res, err := tx.Exec(`
+			INSERT OR IGNORE INTO image_tags (image_id, tag_id, is_auto, is_implied, confidence, tagger_name, created_at)
+			SELECT ?, it.tag_id, 0, 0, NULL, NULL, ?
+			FROM image_tags it
+			JOIN dup_group_members m ON m.image_id = it.image_id
+			LEFT JOIN tags t ON t.id = it.tag_id
+			WHERE m.group_id = ? AND m.image_id != ?
+			  AND (? IS NULL OR t.category_id != ?)`,
+			original, nowISO(), groupID, original, ratingCatID, ratingCatID,
+		)
+		if err != nil {
+			return err
+		}
+		added, _ = res.RowsAffected()
+		return nil
+	})
+	return int(added), err
 }
 
 // OnImageDelete fixes up dup_groups.original_image_id (no FK CASCADE)
@@ -851,18 +946,12 @@ func (s *Service) CopyTagsFromDuplicatesToOriginal(groupID int64) (int, error) {
 // BK-tree (if one is built) so subsequent phash queries don't surface
 // a stale id.
 func (s *Service) OnImageDelete(imageID int64) error {
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := handleDupGroupOnDeleteTx(tx, imageID); err != nil {
-		return err
-	}
-	if err := handleAltGroupOnDeleteTx(tx, imageID); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
+	if err := s.inWriteTx(func(tx *sql.Tx) error {
+		if err := handleDupGroupOnDeleteTx(tx, imageID); err != nil {
+			return err
+		}
+		return handleAltGroupOnDeleteTx(tx, imageID)
+	}); err != nil {
 		return err
 	}
 	if tree := DefaultRegistry.Lookup(s.db); tree != nil && tree.Built() {

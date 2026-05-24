@@ -330,34 +330,3 @@ func TestUploadPost_EnforcesMaxFileSize(t *testing.T) {
 	}
 }
 
-// TestUploadPost_InboxOOBSwap_CeilingAware pins the post-upload OOB swap of
-// the #upload-inbox-link: the cached InboxCount is ceiling-blind, so the
-// handler must recompute against the cookie's rating ceiling. Without the
-// recompute, the link would jump to the explicit count the moment a new
-// upload lands - a regression of the same bug uploadPage already fixes.
-func TestUploadPost_InboxOOBSwap_CeilingAware(t *testing.T) {
-	srv := newTestServer(t)
-	cx := srv.Active()
-	explicitID := seedImage(t, srv, "explicit.png", 10, 10)
-	explicitTagID := ratingTagIDWeb(t, cx.DB, "explicit")
-	if err := cx.TagSvc.AddTagToImage(explicitID, explicitTagID, false, nil); err != nil {
-		t.Fatal(err)
-	}
-	cx.InvalidateCaches()
-
-	req := makeUploadReq(t, srv, map[string][]byte{
-		"fresh.png": makePNGBytes(t, 9, 9, 30, 30, 30),
-	}, "", "")
-	req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: "sensitive"})
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("POST /upload expected 200, got %d", w.Code)
-	}
-	body := w.Body.String()
-	// New upload is inbox; the seeded explicit row is also inbox but hidden
-	// by ceiling=sensitive. Expect the OOB-swap link to show "(1)".
-	if !strings.Contains(body, `>✱ View inbox (1)</a>`) {
-		t.Errorf("ceiling=sensitive OOB swap should drop the hidden row; got: %s", body)
-	}
-}

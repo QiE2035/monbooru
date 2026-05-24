@@ -16,6 +16,37 @@ import (
 	"github.com/leqwin/monbooru/internal/tagger"
 )
 
+// spawnAutoTagJob runs RunWithTaggers in a goroutine, flushes per-DB
+// caches, and posts the completion summary. itemNoun ("" or
+// "uploaded ") splices into the success / partial summaries.
+func (s *Server) spawnAutoTagJob(ids []int64, selected []tagger.TaggerStatus, logScope, itemNoun string) {
+	database := s.db()
+	cx := s.Active()
+	baseline := readVmRSS()
+	go func() {
+		ctx := s.jobs.Context()
+		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.UseCUDA, cx.MangaCacheDir())
+		// New tags are commonly created by a tagger run, so the cached
+		// tag count is stale once the worker returns regardless of
+		// outcome (cancelled runs still wrote rows for completed images).
+		cx.InvalidateCaches()
+		if ctx.Err() != nil {
+			s.jobs.Complete(fmt.Sprintf("auto-tagging cancelled (%d image(s) queued)", len(ids)))
+			return
+		}
+		if err != nil {
+			s.jobs.Fail(err.Error())
+			return
+		}
+		logAutotagPeak(fmt.Sprintf("%s %d image(s)", logScope, len(ids)), baseline)
+		if skipped > 0 {
+			s.jobs.Complete(fmt.Sprintf("auto-tagged %d of %d %simage(s), %d skipped", len(ids)-skipped, len(ids), itemNoun, skipped))
+			return
+		}
+		s.jobs.Complete(fmt.Sprintf("auto-tagged %d %simage(s)", len(ids), itemNoun))
+	}()
+}
+
 // logAutotagPeak writes the peak-RSS-delta for a finished autotag run
 // at INFO level. baselineRSS is sampled before the run; post-run we
 // read VmHWM (the kernel's RSS high-water mark) and subtract. No-op
@@ -32,43 +63,6 @@ func logAutotagPeak(scope string, baselineRSS uint64) {
 		return
 	}
 	logx.Infof("autotag %s: peak RSS +%s", scope, humanBytesFmt(int64(peak-baselineRSS)))
-}
-
-// uploadPage renders the multi-file upload form.
-func (s *Server) uploadPage(w http.ResponseWriter, r *http.Request) {
-	base := s.base(r, "upload", "Upload - Monbooru")
-	// The footer InboxCount stays ceiling-blind; "View inbox (N)"
-	// promises the post-click match count so it reads the ceiling-
-	// aware cached count instead.
-	inboxCount := base.InboxCount
-	if cx := s.Active(); cx != nil {
-		if n, err := cx.InboxCountUnder(resolveCeiling(r, cx)); err == nil {
-			inboxCount = n
-		}
-	}
-	s.renderTemplate(w, "upload.html", map[string]any{
-		"Title":           base.Title,
-		"ActiveNav":       base.ActiveNav,
-		"CSRFToken":       base.CSRFToken,
-		"AuthEnabled":     base.AuthEnabled,
-		"Degraded":        base.Degraded,
-		"Version":         base.Version,
-		"RepoURL":         base.RepoURL,
-		"Variant":         base.Variant,
-		"CustomCSS":       base.CustomCSS,
-		"ActiveGallery":   base.ActiveGallery,
-		"Galleries":       s.galleryList(),
-		"VisibleCount":     base.VisibleCount,
-		"InboxCount":       inboxCount,
-		"TagCount":         base.TagCount,
-		"CollectionsCount": base.CollectionsCount,
-		"RatingLevels":    base.RatingLevels,
-		"ActiveRating":    base.ActiveRating,
-		"RequestStart":    base.RequestStart,
-		"AcceptFileTypes": gallery.SupportedMIMETypes,
-		"TaggerAvailable": tagger.IsAvailable(s.cfg),
-		"EnabledTaggers":  tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
-	})
 }
 
 // uploadPost handles the multi-file form submit. Per-file size, tagging and
@@ -215,50 +209,11 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		} else if err := s.jobs.Start(models.JobTypeAutotag); err != nil {
 			msg += " (autotag skipped: a job is already running)"
 		} else {
-			ids := addedIDs
-			database := s.db()
-			cx := s.Active()
-			baseline := readVmRSS()
-			go func() {
-				ctx := s.jobs.Context()
-				skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.UseCUDA, cx.MangaCacheDir())
-				cx.InvalidateCaches()
-				if ctx.Err() != nil {
-					s.jobs.Complete(fmt.Sprintf("auto-tagging cancelled (%d image(s) queued)", len(ids)))
-					return
-				}
-				if err != nil {
-					s.jobs.Fail(err.Error())
-					return
-				}
-				logAutotagPeak(fmt.Sprintf("upload %d image(s)", len(ids)), baseline)
-				if skipped > 0 {
-					s.jobs.Complete(fmt.Sprintf("auto-tagged %d of %d uploaded image(s), %d skipped", len(ids)-skipped, len(ids), skipped))
-					return
-				}
-				s.jobs.Complete(fmt.Sprintf("auto-tagged %d uploaded image(s)", len(ids)))
-			}()
+			s.spawnAutoTagJob(addedIDs, selected, "upload", "uploaded ")
 			msg += fmt.Sprintf(", auto-tagging %d image(s)", len(addedIDs))
 		}
 	}
 	w.Write([]byte(`<div class="flash ` + cssClass + `">` + html.EscapeString(msg) + `</div>`))
-	// The form's hx-target only swaps #upload-result; the View-inbox
-	// anchor sits outside it and would keep the pre-upload count.
-	// OOB-swap the anchor with the freshly cached count whenever the
-	// upload actually moved rows into the inbox. The cached InboxCount
-	// is ceiling-blind; recompute against the active ceiling so the
-	// parenthesised number matches what a click would surface.
-	if added > 0 {
-		inbox := 0
-		if cx := s.Active(); cx != nil {
-			inbox, _ = cx.InboxCountUnder(resolveCeiling(r, cx))
-		}
-		count := ""
-		if inbox > 0 {
-			count = fmt.Sprintf(" (%d)", inbox)
-		}
-		fmt.Fprintf(w, `<a id="upload-inbox-link" href="/?q=inbox:true" hx-swap-oob="true">✱ View inbox%s</a>`, count)
-	}
 }
 
 func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
@@ -343,31 +298,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 	// the status bar doesn't look stalled.
 	s.jobs.Update(0, len(ids), "starting (loading model may take a few seconds)…")
 
-	database := s.db()
-	cx := s.Active()
-	baseline := readVmRSS()
-	go func() {
-		ctx := s.jobs.Context()
-		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.UseCUDA, cx.MangaCacheDir())
-		// New tags are commonly created by a tagger run, so the cached
-		// tag count is stale once the worker returns regardless of
-		// outcome (cancelled runs still wrote rows for completed images).
-		cx.InvalidateCaches()
-		if ctx.Err() != nil {
-			s.jobs.Complete(fmt.Sprintf("auto-tagging cancelled (%d image(s) queued)", len(ids)))
-			return
-		}
-		if err != nil {
-			s.jobs.Fail(err.Error())
-			return
-		}
-		logAutotagPeak(fmt.Sprintf("batch %d image(s)", len(ids)), baseline)
-		if skipped > 0 {
-			s.jobs.Complete(fmt.Sprintf("auto-tagged %d of %d image(s), %d skipped", len(ids)-skipped, len(ids), skipped))
-			return
-		}
-		s.jobs.Complete(fmt.Sprintf("auto-tagged %d image(s)", len(ids)))
-	}()
+	s.spawnAutoTagJob(ids, selected, "batch", "")
 
 	if isHTMXRequest(r) {
 		w.Write([]byte(`<div class="flash flash-ok">Auto-tagger started for ` + fmt.Sprintf("%d", len(ids)) + ` image(s).</div>`))
@@ -448,7 +379,8 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	if isHTMXRequest(r) {
-		w.Write([]byte(`<div class="flash flash-ok">Auto-tagger started for this image.</div>`))
+		setFlashHeader(w, "Auto-tagger started for this image.", "ok", nil)
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	http.Redirect(w, r, "/images/"+idStr, http.StatusSeeOther)

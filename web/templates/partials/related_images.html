@@ -1,7 +1,7 @@
 {{define "partials/related_images.html"}}
 {{if .Images}}
 <div class="related-images">
-  <h3>Similar entries</h3>
+  <h3>Images with similar tags</h3>
   <div class="related-mini-grid">
     {{range .Images}}
     <a href="/images/{{.ID}}?ref={{$.SourceID}}&back_q={{$.BackQuery}}&back_sort={{$.BackSort}}&back_order={{$.BackOrder}}{{if $.BackPage}}&back_page={{$.BackPage}}{{end}}{{if $.BackSeed}}&back_seed={{$.BackSeed}}{{end}}"

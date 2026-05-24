@@ -86,7 +86,7 @@ func (s *Server) sha256WalkerPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderTemplate(w, "relations_duplicates_sha256.html", relationsWalkerData{
-		baseData:      s.base(r, "relations", "Duplicate files - Monbooru"),
+		baseData:      s.base(r, "relations", "Duplicate files - "+s.booruName()),
 		ActiveGallery: s.activeName,
 		Kind:          "sha256",
 		Sha256Rows:    out,
@@ -142,7 +142,7 @@ func (s *Server) markedWalkerPage(w http.ResponseWriter, r *http.Request) {
 		logx.Warnf("marked walker tags-to-copy: %v", err)
 	}
 	s.renderTemplate(w, "relations_duplicates_marked.html", relationsWalkerData{
-		baseData:      s.base(r, "relations", "Duplicate images - Monbooru"),
+		baseData:      s.base(r, "relations", "Duplicate images - "+s.booruName()),
 		ActiveGallery: s.activeName,
 		Kind:          "marked",
 		MarkedRows:    out,

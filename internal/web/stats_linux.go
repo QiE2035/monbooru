@@ -14,27 +14,18 @@ import (
 // readVmRSS returns this process's VmRSS in bytes, or 0 on parse
 // failure. Used for cheap before/after RSS deltas in log lines and
 // job completion summaries without re-walking smaps.
-func readVmRSS() uint64 {
-	f, err := os.Open("/proc/self/status")
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "VmRSS:") {
-			return parseStatusKB(line[len("VmRSS:"):])
-		}
-	}
-	return 0
-}
+func readVmRSS() uint64 { return readSelfStatusKB("VmRSS:") }
 
 // readVmHWM returns the kernel's high-water mark for resident set
 // size, the peak VmRSS observed for this process since start. Useful
 // for honest "peak during run" reporting without sampling RSS in a
 // loop. Returns 0 on parse failure.
-func readVmHWM() uint64 {
+func readVmHWM() uint64 { return readSelfStatusKB("VmHWM:") }
+
+// readSelfStatusKB returns the first /proc/self/status line whose key
+// matches prefix, parsed via parseStatusKB. 0 on absence or parse
+// failure.
+func readSelfStatusKB(prefix string) uint64 {
 	f, err := os.Open("/proc/self/status")
 	if err != nil {
 		return 0
@@ -43,8 +34,8 @@ func readVmHWM() uint64 {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "VmHWM:") {
-			return parseStatusKB(line[len("VmHWM:"):])
+		if strings.HasPrefix(line, prefix) {
+			return parseStatusKB(line[len(prefix):])
 		}
 	}
 	return 0
@@ -59,10 +50,17 @@ func readVmHWM() uint64 {
 // /proc/<pid>/status's VmRSS / RssAnon / RssFile triplet only when the
 // smaps walk itself fails; ok=false when the pid is gone or unreadable.
 func procRSSAt(pid int) (rssBreakdown, bool) {
-	if total, anon, file, db, ok := sumSmapsPssAt(fmt.Sprintf("/proc/%d", pid)); ok {
+	procDir := fmt.Sprintf("/proc/%d", pid)
+	if total, anon, file, db, ok := sumSmapsPssAt(procDir); ok {
 		return rssBreakdown{total: total, anon: anon, file: file, db: db}, true
 	}
-	f, err := os.Open(fmt.Sprintf("/proc/%d/status", pid))
+	return readStatusRssBreakdown(procDir)
+}
+
+// readStatusRssBreakdown pulls VmRSS / RssAnon / RssFile out of
+// <procDir>/status. (zero, false) when unreadable or VmRSS is missing.
+func readStatusRssBreakdown(procDir string) (rssBreakdown, bool) {
+	f, err := os.Open(procDir + "/status")
 	if err != nil {
 		return rssBreakdown{}, false
 	}
@@ -97,25 +95,8 @@ func procRSSAt(pid int) (rssBreakdown, bool) {
 // anonymous pages are not shared between this process's VMAs, so its
 // Pss equals its Rss. ok=false if VmRSS is missing or unparseable.
 func procRSS() (rssBreakdown, bool) {
-	f, err := os.Open("/proc/self/status")
-	if err != nil {
-		return rssBreakdown{}, false
-	}
-	defer f.Close()
-	var out rssBreakdown
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		switch {
-		case strings.HasPrefix(line, "VmRSS:"):
-			out.total = parseStatusKB(line[len("VmRSS:"):])
-		case strings.HasPrefix(line, "RssAnon:"):
-			out.anon = parseStatusKB(line[len("RssAnon:"):])
-		case strings.HasPrefix(line, "RssFile:"):
-			out.file = parseStatusKB(line[len("RssFile:"):])
-		}
-	}
-	if out.total == 0 {
+	out, ok := readStatusRssBreakdown("/proc/self")
+	if !ok {
 		return rssBreakdown{}, false
 	}
 	if total, _, file, db, ok := sumSmapsPssAt("/proc/self"); ok {

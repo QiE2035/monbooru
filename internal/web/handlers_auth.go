@@ -14,16 +14,29 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		// /login after disabling auth otherwise gets no explanation for why
 		// the page vanished, and leaving the fields live makes it look like
 		// the 'login' somehow worked when the server just redirects to /.
-		s.renderTemplate(w, "login.html", map[string]any{
-			"CSRFToken":    s.csrfToken("anon"),
+		s.renderTemplate(w, "login.html", s.loginPageData(map[string]any{
 			"Error":        "Password authentication is disabled. Enable it from Settings → Authentication.",
 			"AuthDisabled": true,
-		})
+		}))
 		return
 	}
-	s.renderTemplate(w, "login.html", map[string]any{
+	s.renderTemplate(w, "login.html", s.loginPageData(nil))
+}
+
+// loginPageData builds the data map for login.html. The login screen does
+// not run through s.base(), so the brand-name and logo overrides have to
+// be threaded explicitly - otherwise the configured brand would change
+// every page except the login one.
+func (s *Server) loginPageData(extra map[string]any) map[string]any {
+	data := map[string]any{
 		"CSRFToken": s.csrfToken("anon"),
-	})
+		"BooruName": s.booruName(),
+		"BooruLogo": s.booruLogoURL(),
+	}
+	for k, v := range extra {
+		data[k] = v
+	}
+	return data
 }
 
 func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
@@ -35,10 +48,9 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !s.loginRL.check(ip) {
 		logx.Warnf("login rate-limited from %s", ip)
-		s.renderTemplate(w, "login.html", map[string]any{
-			"Error":     "Too many attempts. Please wait before trying again.",
-			"CSRFToken": s.csrfToken("anon"),
-		})
+		s.renderTemplate(w, "login.html", s.loginPageData(map[string]any{
+			"Error": "Too many attempts. Please wait before trying again.",
+		}))
 		return
 	}
 
@@ -48,10 +60,9 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	); err != nil {
 		s.loginRL.recordFailure(ip)
 		logx.Warnf("login failed from %s", ip)
-		s.renderTemplate(w, "login.html", map[string]any{
-			"Error":     "Invalid password",
-			"CSRFToken": s.csrfToken("anon"),
-		})
+		s.renderTemplate(w, "login.html", s.loginPageData(map[string]any{
+			"Error": "Invalid password",
+		}))
 		return
 	}
 	s.loginRL.recordSuccess(ip)
