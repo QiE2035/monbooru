@@ -1,0 +1,8 @@
+{{define "partials/relations_card_thumb.html"}}
+<a href="/images/{{.ID}}" class="relations-card-thumb{{with .ExtraClass}} {{.}}{{end}}" title="{{.Title}}">
+  <img src="/thumbnails/{{.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy">
+  <span class="relations-card-id">#{{.ID}}</span>
+  {{with .Tag}}<span class="relations-card-tag">{{.}}</span>{{end}}
+  {{with .Date}}<span class="relations-card-date">{{.}}</span>{{end}}
+</a>
+{{end}}

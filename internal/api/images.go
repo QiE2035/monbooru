@@ -17,6 +17,7 @@ import (
 
 	_ "golang.org/x/image/webp" // register webp decoder for canDecodeImage
 
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
@@ -119,6 +120,7 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 	if err != nil {
 		return nil, err
 	}
+	img.PageCount = pageCount
 	img.DurationSec = durationSec
 	img.SeriesOrder = seriesOrder
 	img.Phash = phash
@@ -169,7 +171,21 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 		}
 	}
 
-	resp := &imageResponse{
+	resp := makeImageResponse(g, img, tags, aliases)
+	return &resp, nil
+}
+
+// makeImageResponse builds the API JSON shape for one image from its
+// already-loaded models.Image, per-image tag list, and alias paths.
+// Shared by buildImageResponse (single GET) and searchImages (list).
+func makeImageResponse(g Gallery, img models.Image, tags []imageTagJSON, aliases []string) imageResponse {
+	if tags == nil {
+		tags = []imageTagJSON{}
+	}
+	if aliases == nil {
+		aliases = []string{}
+	}
+	return imageResponse{
 		ID:            img.ID,
 		SHA256:        img.SHA256,
 		CanonicalPath: img.CanonicalPath,
@@ -186,15 +202,14 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 		Origin:        img.Origin,
 		Source:        img.Source,
 		URL:           img.URL,
-		PageCount:     pageCount,
+		PageCount:     img.PageCount,
 		Series:        img.Series,
 		SeriesOrder:   img.SeriesOrder,
 		Phash:         phashHexPtr(img.Phash),
 		IngestedAt:    img.IngestedAt,
-		ThumbnailURL:  "/thumbnails/" + g.Name + "/" + strconv.FormatInt(imageID, 10) + ".jpg",
+		ThumbnailURL:  "/thumbnails/" + g.Name + "/" + strconv.FormatInt(img.ID, 10) + ".jpg",
 		Tags:          tags,
 	}
-	return resp, nil
 }
 
 // phashHexPtr renders the optional perceptual hash as a 16-char
@@ -212,10 +227,8 @@ func (h *Handler) getImage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid image id")
+	id, ok := apiPathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -541,10 +554,8 @@ func (h *Handler) deleteImage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid image id")
+	id, ok := apiPathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -652,39 +663,7 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 
 	images := make([]imageResponse, 0, len(result.Results))
 	for _, img := range result.Results {
-		tags := tagsByID[img.ID]
-		if tags == nil {
-			tags = []imageTagJSON{}
-		}
-		aliases := aliasesByID[img.ID]
-		if aliases == nil {
-			aliases = []string{}
-		}
-		images = append(images, imageResponse{
-			ID:            img.ID,
-			SHA256:        img.SHA256,
-			CanonicalPath: img.CanonicalPath,
-			Aliases:       aliases,
-			FileType:      img.FileType,
-			Width:         img.Width,
-			Height:        img.Height,
-			FileSize:      img.FileSize,
-			IsFavorited:   img.IsFavorited,
-			IsInbox:       img.IsInbox,
-			IsMissing:     img.IsMissing,
-			AutoTaggedAt:  img.AutoTaggedAt,
-			SourceType:    img.SourceType,
-			Origin:        img.Origin,
-			Source:        img.Source,
-			URL:           img.URL,
-			PageCount:     img.PageCount,
-			Series:        img.Series,
-			SeriesOrder:   img.SeriesOrder,
-			Phash:         phashHexPtr(img.Phash),
-			IngestedAt:    img.IngestedAt,
-			ThumbnailURL:  "/thumbnails/" + g.Name + "/" + strconv.FormatInt(img.ID, 10) + ".jpg",
-			Tags:          tags,
-		})
+		images = append(images, makeImageResponse(g, img, tagsByID[img.ID], aliasesByID[img.ID]))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -704,12 +683,7 @@ func loadAliasesForImages(g Gallery, ids []int64) (map[int64][]string, error) {
 	if len(ids) == 0 {
 		return out, nil
 	}
-	placeholders := strings.Repeat("?,", len(ids))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
+	placeholders, args := db.InPlaceholders(ids)
 	rows, err := g.DB.Read.Query(
 		`SELECT image_id, path FROM image_paths
 		 WHERE is_canonical = 0 AND image_id IN (`+placeholders+`)
@@ -739,12 +713,7 @@ func loadTagsForImages(g Gallery, ids []int64) (map[int64][]imageTagJSON, error)
 	if len(ids) == 0 {
 		return out, nil
 	}
-	placeholders := strings.Repeat("?,", len(ids))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
+	placeholders, args := db.InPlaceholders(ids)
 	rows, err := g.DB.Read.Query(`
 		SELECT it.image_id, t.name, tc.name, it.is_auto, it.confidence, it.tagger_name
 		FROM image_tags it
@@ -779,10 +748,8 @@ func (h *Handler) listImageTags(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid image id")
+	id, ok := apiPathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	if !imageExists(g, id) {
@@ -805,10 +772,8 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid image id")
+	id, ok := apiPathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	if !imageExists(g, id) {
@@ -932,10 +897,8 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid image id")
+	id, ok := apiPathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	if !imageExists(g, id) {
@@ -1037,15 +1000,8 @@ func (h *Handler) resolveImageTagID(g Gallery, imageID int64, tagName string) (i
 		return 0, fmt.Errorf("tag lookup failed: %w", err)
 	}
 	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return 0, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
+	ids, err := db.ScanIDs(rows)
+	if err != nil {
 		return 0, err
 	}
 	switch len(ids) {

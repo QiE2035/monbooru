@@ -2,7 +2,6 @@ package web
 
 import (
 	"fmt"
-	"html"
 	"net/http"
 	"sort"
 	"strconv"
@@ -141,10 +140,8 @@ func splitTagTokens(s string) ([]parsedTagToken, error) {
 }
 
 func (s *Server) addTagToImage(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	tagInput := strings.TrimSpace(r.FormValue("tag"))
@@ -331,7 +328,7 @@ func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request
 			break
 		}
 	}
-	q := r.URL.Query()
+	back := parseBackContext(r)
 	s.renderTemplate(w, "partials/tag_list.html", map[string]any{
 		"ImageID":       id,
 		"ImageTags":     imageTags,
@@ -340,11 +337,11 @@ func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request
 		"DangerZone":    true,
 		"HasUserTags":   hasUserTags,
 		"ImageTaggers":  distinctAutoTaggerNames(imageTags),
-		"BackQuery":     q.Get("back_q"),
-		"BackSort":      q.Get("back_sort"),
-		"BackOrder":     q.Get("back_order"),
-		"BackPage":      q.Get("back_page"),
-		"BackSeed":      q.Get("back_seed"),
+		"BackQuery":     back.Q,
+		"BackSort":      back.Sort,
+		"BackOrder":     back.Order,
+		"BackPage":      back.Page,
+		"BackSeed":      back.Seed,
 		"CSRFToken":     s.csrfToken(sessionFromContext(r.Context())),
 		"EditMode":      true,
 		"ErrMsg":        errMsg,
@@ -359,10 +356,8 @@ func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request
 // optionally filtered by the caller-supplied `taggers` query parameter
 // (comma-separated tagger names). Empty filter removes every auto-tag.
 func (s *Server) removeAutoTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	raw := r.URL.Query().Get("taggers")
@@ -392,10 +387,8 @@ func (s *Server) removeAllTagsFromImageHandler(w http.ResponseWriter, r *http.Re
 // shared by the bulk-remove tag handlers; remove names the underlying
 // service method.
 func (s *Server) removeImageTagsHandler(w http.ResponseWriter, r *http.Request, remove func(int64) error) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	if err := remove(id); err != nil {
@@ -407,16 +400,12 @@ func (s *Server) removeImageTagsHandler(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) removeTagFromImage(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	tagIDStr := r.PathValue("tagID")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
-	tagID, err := strconv.ParseInt(tagIDStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad tagID", http.StatusBadRequest)
+	tagID, ok := pathInt64(w, r, "tagID")
+	if !ok {
 		return
 	}
 
@@ -429,10 +418,8 @@ func (s *Server) removeTagFromImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) changeTagCategory(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	if !parseFormOK(w, r) {
@@ -447,7 +434,7 @@ func (s *Server) changeTagCategory(w http.ResponseWriter, r *http.Request) {
 	// Route through the tag service for validation and consistency.
 	if err := s.tagSvc().ChangeTagCategory(id, catID); err != nil {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+			writeInlineFlash(w, "err", err.Error())
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -458,17 +445,15 @@ func (s *Server) changeTagCategory(w http.ResponseWriter, r *http.Request) {
 	// survive the move.
 	s.Active().InvalidateCaches()
 	if isHTMXRequest(r) {
-		w.Write([]byte(`<div class="flash flash-ok">Category updated.</div>`))
+		writeInlineFlash(w, "ok", "Category updated.")
 		return
 	}
 	http.Redirect(w, r, "/tags", http.StatusSeeOther)
 }
 
 func (s *Server) getImageTagsHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	s.renderTagListWithSidebar(w, r, id, "", "", "", false)

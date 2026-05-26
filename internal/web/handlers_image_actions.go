@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,10 +32,8 @@ func (s *Server) ratingCeilingPost(w http.ResponseWriter, r *http.Request) {
 // fragments depending on the new value. Shared by toggleFavorite and
 // toggleInbox.
 func (s *Server) toggleBoolColumn(w http.ResponseWriter, r *http.Request, column, onHTML, offHTML string) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	var newVal int
@@ -82,18 +79,12 @@ func (s *Server) toggleInbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 
-	backQ := r.URL.Query().Get("back_q")
-	backSort := r.URL.Query().Get("back_sort")
-	backOrder := r.URL.Query().Get("back_order")
-	backPage := r.URL.Query().Get("back_page")
-	backSeed := r.URL.Query().Get("back_seed")
+	back := parseBackContext(r)
 
 	// When the caller arrived via a Similar-images click the URL carries
 	// ref=<sourceID> and the back_* params describe the source's gallery
@@ -115,21 +106,31 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 	// takes precedence over adjacency: the current image may not even be in
 	// the referring search.
 	var prevID, nextID *int64
-	if refID == nil && (backSort != "" || backQ != "") {
-		sortStr := backSort
+	if refID == nil && (back.Sort != "" || back.Q != "") {
+		sortStr := back.Sort
 		if sortStr == "" {
 			sortStr = "newest"
 		}
-		orderStr := backOrder
+		orderStr := back.Order
 		if orderStr == "" {
 			orderStr = "desc"
 		}
-		prevID, nextID = s.findAdjacentImages(id, backQ, sortStr, orderStr, backSeed, resolveCeiling(r, s.Active()))
+		prevID, nextID = s.findAdjacentImages(id, back.Q, sortStr, orderStr, back.Seed, resolveCeiling(r, s.Active()))
 	}
 
 	result, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), id, s.tagSvc().RemoveAllTagsFromImage, s.onImageDeleteCallback())
 	if err != nil {
-		http.NotFound(w, r)
+		// ErrNoRows on the initial canonical-path lookup is the genuine
+		// "no such image id" case; everything else (write-pool busy,
+		// FK constraint, filesystem permission) is a server-side
+		// failure and should not masquerade as 404.
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		logx.Errorf("delete image %d: %v", id, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		writeInlineFlash(w, "err", "Delete failed; check server log.")
 		return
 	}
 	s.Active().InvalidateCaches()
@@ -141,13 +142,13 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 	redirectURL := ""
 	switch {
 	case refID != nil:
-		redirectURL = buildDetailURL(*refID, backQ, backSort, backOrder, backPage, backSeed)
+		redirectURL = back.DetailURL(*refID)
 	case nextID != nil:
-		redirectURL = buildDetailURL(*nextID, backQ, backSort, backOrder, backPage, backSeed)
+		redirectURL = back.DetailURL(*nextID)
 	case prevID != nil:
-		redirectURL = buildDetailURL(*prevID, backQ, backSort, backOrder, backPage, backSeed)
+		redirectURL = back.DetailURL(*prevID)
 	default:
-		redirectURL = buildGalleryURL(backQ, backSort, backOrder, backPage, backSeed)
+		redirectURL = back.GalleryURL()
 	}
 
 	flashText := fmt.Sprintf("Deleted image #%d.", id)
@@ -177,10 +178,8 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) promoteCanonical(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	newCanonical := r.FormValue("path")
@@ -243,7 +242,7 @@ func (s *Server) promoteCanonical(w http.ResponseWriter, r *http.Request) {
 	// have to drop.
 	s.Active().InvalidateCaches()
 
-	http.Redirect(w, r, "/images/"+idStr, http.StatusSeeOther)
+	http.Redirect(w, r, fmt.Sprintf("/images/%d", id), http.StatusSeeOther)
 }
 
 const (
@@ -427,23 +426,19 @@ func externalErr(w http.ResponseWriter, r *http.Request, msg string, code int) {
 	if isHTMXRequest(r) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(msg) + `</div>`))
+		writeInlineFlash(w, "err", msg)
 		return
 	}
 	http.Error(w, msg, code)
 }
 
 func (s *Server) deleteAlias(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	pathIDStr := r.PathValue("pathID")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
-	pathID, err := strconv.ParseInt(pathIDStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad pathID", http.StatusBadRequest)
+	pathID, ok := pathInt64(w, r, "pathID")
+	if !ok {
 		return
 	}
 
@@ -486,7 +481,7 @@ func (s *Server) deleteAlias(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(""))
 		return
 	}
-	http.Redirect(w, r, "/images/"+idStr, http.StatusSeeOther)
+	http.Redirect(w, r, fmt.Sprintf("/images/%d", id), http.StatusSeeOther)
 }
 
 // unlinkUnderGallery is os.Remove gated on gallery.PathInside so a
@@ -517,17 +512,13 @@ func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	targetFolder := strings.TrimSpace(r.FormValue("folder"))
 
-	if err := s.jobs.Start(models.JobTypeMove); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeMove) {
 		return
 	}
 
@@ -535,7 +526,7 @@ func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
 	if moveErr != nil {
 		s.jobs.Fail(moveErr.Error())
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(moveErr.Error()) + `</div>`))
+		writeInlineFlash(w, "err", moveErr.Error())
 		return
 	}
 	if res.OldFolderPath != res.NewFolderPath && res.OldFolderPath != "" {
@@ -550,11 +541,11 @@ func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
 			dest = "gallery root"
 		}
 		setFlashHeader(w, fmt.Sprintf("Moved image to %s.", dest), "ok", nil)
-		w.Header().Set("HX-Redirect", "/images/"+idStr)
+		w.Header().Set("HX-Redirect", fmt.Sprintf("/images/%d", id))
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	http.Redirect(w, r, "/images/"+idStr, http.StatusSeeOther)
+	http.Redirect(w, r, fmt.Sprintf("/images/%d", id), http.StatusSeeOther)
 }
 
 // nextPrefix returns the smallest string strictly greater than prefix

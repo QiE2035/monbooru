@@ -39,6 +39,49 @@ type Query struct {
 	CacheKey string
 }
 
+// imageRowColumns is the canonical SELECT list shared by Execute and
+// executeFromCachedIDs. Keeping the column order frozen here means
+// scanImageRow's Scan-and-coerce stays the single source of truth for
+// the image row shape.
+const imageRowColumns = `i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
+	        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
+	        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.page_count, i.duration_seconds, i.series, i.series_order, i.phash, i.ingested_at`
+
+// scanImageRow reads one row in the imageRowColumns shape and folds the
+// int-as-bool flags + RFC3339 timestamps back onto the typed Image
+// struct.
+func scanImageRow(rows *sql.Rows) (models.Image, error) {
+	var img models.Image
+	var isMissing, isFav, isInbox int
+	var width, height, pageCount, seriesOrder *int
+	var durationSec *float64
+	var autoTaggedAt *string
+	var phash *int64
+	var ingestedAt string
+	if err := rows.Scan(
+		&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
+		&width, &height, &img.FileSize, &isMissing, &isFav,
+		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt,
+	); err != nil {
+		return models.Image{}, err
+	}
+	img.IsMissing = isMissing == 1
+	img.IsFavorited = isFav == 1
+	img.IsInbox = isInbox == 1
+	img.Width = width
+	img.Height = height
+	img.PageCount = pageCount
+	img.DurationSec = durationSec
+	img.SeriesOrder = seriesOrder
+	img.Phash = phash
+	if autoTaggedAt != nil {
+		t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
+		img.AutoTaggedAt = &t
+	}
+	img.IngestedAt, _ = time.Parse(time.RFC3339, ingestedAt)
+	return img, nil
+}
+
 // Execute runs the query against the DB and returns paginated results.
 func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	page := q.Page
@@ -109,13 +152,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	where, args, hasMissingFilter, ceilingRewrote := buildWhereDBDriverFull(q.Expr, database, driverLegs)
 	where, args = applyAndDriver(where, args, driverLegs)
 
-	if !hasMissingFilter {
-		if where == "" {
-			where = "i.is_missing = 0"
-		} else {
-			where = where + " AND i.is_missing = 0"
-		}
-	}
+	where = andDefaultVisible(where, hasMissingFilter)
 
 	orderClause := buildOrder(q.Sort, q.Order, q.RandomSeed)
 
@@ -151,31 +188,10 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	// Pin the partial sort index when nothing in the query has its own
 	// more-selective index. Without the hint SQLite picks
 	// idx_images_missing and materialises a temp B-tree for ORDER BY.
-	indexHint := ""
-	if !hasMissingFilter && (q.Expr == nil || isPureTagExpr(q.Expr)) {
-		switch q.Sort {
-		case "filesize":
-			if ceilingRewrote {
-				indexHint = " INDEXED BY idx_images_filesize_rating_visible"
-			} else {
-				indexHint = " INDEXED BY idx_images_filesize_visible"
-			}
-		case "", "newest":
-			if ceilingRewrote {
-				indexHint = " INDEXED BY idx_images_ingested_rating_visible"
-			} else {
-				indexHint = " INDEXED BY idx_images_ingested_visible"
-			}
-		}
-	}
-	if h := columnFilterIndexHint(q.Expr, q.Sort); h != "" {
-		indexHint = h
-	}
+	indexHint := sortIndexHint(q.Expr, q.Sort, hasMissingFilter, ceilingRewrote)
 
 	dataSQL := fmt.Sprintf(
-		`SELECT i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
-		        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
-		        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.page_count, i.duration_seconds, i.series, i.series_order, i.phash, i.ingested_at
+		"SELECT "+imageRowColumns+`
 		 FROM images i%s
 		 WHERE %s
 		 %s
@@ -194,35 +210,10 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 
 	var images []models.Image
 	for rows.Next() {
-		var img models.Image
-		var isMissing, isFav, isInbox int
-		var width, height, pageCount, seriesOrder *int
-		var durationSec *float64
-		var autoTaggedAt *string
-		var phash *int64
-		var ingestedAt string
-
-		if err := rows.Scan(
-			&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
-			&width, &height, &img.FileSize, &isMissing, &isFav,
-			&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt,
-		); err != nil {
-			return nil, err
+		img, scanErr := scanImageRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		img.IsMissing = isMissing == 1
-		img.IsFavorited = isFav == 1
-		img.IsInbox = isInbox == 1
-		img.Width = width
-		img.Height = height
-		img.PageCount = pageCount
-		img.DurationSec = durationSec
-		img.SeriesOrder = seriesOrder
-		img.Phash = phash
-		if autoTaggedAt != nil {
-			t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
-			img.AutoTaggedAt = &t
-		}
-		img.IngestedAt, _ = time.Parse(time.RFC3339, ingestedAt)
 		images = append(images, img)
 	}
 	if err := rows.Err(); err != nil {
@@ -237,13 +228,14 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	// Single-page case (len(images) == total): ids are already in hand,
 	// seed synchronously - free.
 	//
-	// Multi-page case: a separate id-only fan fetches up to the cap.
-	// Run it in the background so page 1 returns at the speed of its
-	// data SELECT alone; page 2 either gets the cache hit when the fan
-	// finishes, or falls through to a fresh Execute. Captured args are
-	// not mutated by the caller after Execute returns; the fan reads
-	// the same WHERE shape against the read pool, which is goroutine-
-	// safe.
+	// Multi-page case: page 1 fans synchronously so the immediate next
+	// request hits a populated cache. A previous async fan made page 1
+	// look faster on a one-shot bench, but the very next request (the
+	// real-user page-flip or detail prev/next) raced the fan and missed
+	// the cache. The synchronous fan adds one id-only cursor walk to
+	// the page-1 wall, capped at adjacencyCacheMaxIDs and read off the
+	// read pool. Pages > 1 still skip the fan because the cache either
+	// settled on page 1's request or the operator jumped past it.
 	if q.CacheKey != "" && total > 0 && total <= adjacencyCacheMaxIDs {
 		if len(images) == total {
 			ids := make([]int64, len(images))
@@ -251,15 +243,12 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 				ids[i] = img.ID
 			}
 			AdjacencyCacheSet(q.CacheKey, ids)
-		} else if AdjacencyCacheTryAcquireFan(q.CacheKey) {
-			cacheKey, hint, w, fanArgs, order, t := q.CacheKey, indexHint, where, args, orderClause, total
-			go func() {
-				defer AdjacencyCacheReleaseFan(cacheKey)
-				ids := fetchSortedMatchIDs(database, hint, w, fanArgs, order, t)
-				if len(ids) > 0 {
-					AdjacencyCacheSet(cacheKey, ids)
-				}
-			}()
+		} else if page == 1 && AdjacencyCacheTryAcquireFan(q.CacheKey) {
+			defer AdjacencyCacheReleaseFan(q.CacheKey)
+			ids := fetchSortedMatchIDs(database, indexHint, where, args, orderClause, total)
+			if len(ids) > 0 {
+				AdjacencyCacheSet(q.CacheKey, ids)
+			}
 		}
 	}
 
@@ -289,16 +278,9 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 	}
 	pageIDs := ids[offset:end]
 
-	placeholders := strings.Repeat("?,", len(pageIDs)-1) + "?"
-	args := make([]any, len(pageIDs))
-	for i, id := range pageIDs {
-		args[i] = id
-	}
+	placeholders, args := db.InPlaceholders(pageIDs)
 	sql := fmt.Sprintf(
-		`SELECT i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
-		        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
-		        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.page_count, i.duration_seconds, i.series, i.series_order, i.phash, i.ingested_at
-		 FROM images i WHERE i.id IN (%s)`, placeholders,
+		"SELECT "+imageRowColumns+" FROM images i WHERE i.id IN (%s)", placeholders,
 	)
 	rows, err := database.Read.Query(sql, args...)
 	if err != nil {
@@ -308,34 +290,10 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 
 	byID := make(map[int64]models.Image, len(pageIDs))
 	for rows.Next() {
-		var img models.Image
-		var isMissing, isFav, isInbox int
-		var width, height, pageCount, seriesOrder *int
-		var durationSec *float64
-		var autoTaggedAt *string
-		var phash *int64
-		var ingestedAt string
-		if err := rows.Scan(
-			&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
-			&width, &height, &img.FileSize, &isMissing, &isFav,
-			&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt,
-		); err != nil {
-			return nil, err
+		img, scanErr := scanImageRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		img.IsMissing = isMissing == 1
-		img.IsFavorited = isFav == 1
-		img.IsInbox = isInbox == 1
-		img.Width = width
-		img.Height = height
-		img.PageCount = pageCount
-		img.DurationSec = durationSec
-		img.SeriesOrder = seriesOrder
-		img.Phash = phash
-		if autoTaggedAt != nil {
-			t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
-			img.AutoTaggedAt = &t
-		}
-		img.IngestedAt, _ = time.Parse(time.RFC3339, ingestedAt)
 		byID[img.ID] = img
 	}
 	if err := rows.Err(); err != nil {
@@ -378,15 +336,8 @@ func fetchSortedMatchIDs(database *db.DB, indexHint, where string, args []any, o
 		return nil
 	}
 	defer rows.Close()
-	ids := make([]int64, 0, n)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
+	ids, err := db.ScanIDs(rows)
+	if err != nil {
 		return nil
 	}
 	return ids
@@ -409,6 +360,64 @@ func fetchSortedMatchIDs(database *db.DB, indexHint, where string, args []any, o
 // index so the planner picks fine on its own; pinning the sort
 // index there forces a 1 M-row scan that the seek would otherwise
 // short-circuit.
+// andDefaultVisible appends the default `i.is_missing = 0` predicate
+// unless the caller's expression already pinned an explicit missing:
+// filter (in which case `hasMissingFilter` is true and `where` is
+// returned unchanged).
+func andDefaultVisible(where string, hasMissingFilter bool) string {
+	if hasMissingFilter {
+		return where
+	}
+	if where == "" {
+		return "i.is_missing = 0"
+	}
+	return where + " AND i.is_missing = 0"
+}
+
+// detectPureFolder returns the three-leg split of a root-level
+// `folder:<val>` predicate: the equality leg, plus the half-open
+// subfolder range [val+"/", val+"0") which mirrors buildFilterExpr's
+// folder handling and fastCountFolder's split. '0' is the codepoint
+// immediately after '/'; a bare [val, val+"0") would leak siblings
+// sharing the prefix followed by an ASCII char below '/' ("anime-2024"
+// and "anime " both sit between "anime" and "anime0" lexicographically).
+// active is false when expr isn't a bare folder filter and the caller
+// should stay on the per-image where + args it already built.
+func detectPureFolder(expr Expr) (active bool, eq, lo, hi string) {
+	f, ok := expr.(FilterExpr)
+	if !ok || f.Key != "folder" || f.Val == "" {
+		return false, "", "", ""
+	}
+	return true, f.Val, f.Val + "/", f.Val + "0"
+}
+
+// sortIndexHint returns the ` INDEXED BY ...` clause to pin the partial
+// sort index when the planner would otherwise pick idx_images_missing
+// and materialise a temp B-tree for ORDER BY. Returns "" when a more
+// selective per-column hint should win, or when the query isn't a pure
+// tag predicate. A non-empty columnFilterIndexHint always overrides.
+func sortIndexHint(expr Expr, sort string, hasMissingFilter, ceilingRewrote bool) string {
+	if h := columnFilterIndexHint(expr, sort); h != "" {
+		return h
+	}
+	if hasMissingFilter || (expr != nil && !isPureTagExpr(expr)) {
+		return ""
+	}
+	switch sort {
+	case "filesize":
+		if ceilingRewrote {
+			return " INDEXED BY idx_images_filesize_rating_visible"
+		}
+		return " INDEXED BY idx_images_filesize_visible"
+	case "", "newest":
+		if ceilingRewrote {
+			return " INDEXED BY idx_images_ingested_rating_visible"
+		}
+		return " INDEXED BY idx_images_ingested_visible"
+	}
+	return ""
+}
+
 func isPureTagExpr(expr Expr) bool {
 	switch e := expr.(type) {
 	case AndExpr:
@@ -1147,12 +1156,9 @@ func applyAndDriver(where string, args []any, legs []andDriverLeg) (string, []an
 	driverArgs := make([]any, 0)
 	parts := make([]string, len(legs))
 	for i, leg := range legs {
-		placeholders := strings.Repeat("?,", len(leg.ids))
-		placeholders = placeholders[:len(placeholders)-1]
+		placeholders, idArgs := db.InPlaceholders(leg.ids)
 		parts[i] = "SELECT image_id FROM image_tags WHERE tag_id IN (" + placeholders + ")"
-		for _, id := range leg.ids {
-			driverArgs = append(driverArgs, id)
-		}
+		driverArgs = append(driverArgs, idArgs...)
 		if leg.idBound > 0 {
 			parts[i] += " AND image_id >= ?"
 			driverArgs = append(driverArgs, leg.idBound)
@@ -1227,17 +1233,9 @@ func fastCountTag(database *db.DB, t TagExpr) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	var canonIDs []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return 0, false
-		}
-		canonIDs = append(canonIDs, id)
-	}
+	canonIDs, scanErr := db.ScanIDs(rows)
 	rows.Close()
-	if err := rows.Err(); err != nil {
+	if scanErr != nil {
 		return 0, false
 	}
 	if len(canonIDs) == 0 {
@@ -1258,12 +1256,7 @@ func fastCountTag(database *db.DB, t TagExpr) (int, bool) {
 	if t.Wildcard == "" {
 		return 0, false
 	}
-	placeholders := strings.Repeat("?,", len(canonIDs))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, len(canonIDs))
-	for i, id := range canonIDs {
-		args[i] = id
-	}
+	placeholders, args := db.InPlaceholders(canonIDs)
 	var n int
 	if err := database.Read.QueryRow(
 		`SELECT COALESCE(SUM(usage_count), 0) FROM tags WHERE id IN (`+placeholders+`)`,
@@ -1578,12 +1571,7 @@ func fastCountAI(database *db.DB, e FilterExpr) (int, bool) {
 	if len(matching) == 0 {
 		return 0, true
 	}
-	placeholders := strings.Repeat("?,", len(matching))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, len(matching))
-	for i, s := range matching {
-		args[i] = s
-	}
+	placeholders, args := db.InPlaceholders(matching)
 	var n int
 	if err := database.Read.QueryRow(
 		`SELECT COUNT(*) FROM images WHERE source_type IN (`+placeholders+`) AND is_missing = 0`,
@@ -1798,35 +1786,16 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 	where, args, hasMissingFilter, ceilingRewrote := buildWhereDBDriverFull(q.Expr, database, driverLegs)
 	where, args = applyAndDriver(where, args, driverLegs)
 
-	// Pure folder predicate splits into the folder itself plus the
-	// half-open subfolder range [val+"/", val+"0"); '0' is the codepoint
-	// immediately after '/'. A bare [val, val+"0") would leak siblings
-	// sharing the prefix followed by an ASCII char below '/' -
-	// "anime-2024" and "anime " both sit between "anime" and "anime0"
-	// lexicographically. NOCASE on each compare matches buildFilterExpr's
-	// folder: handling and fastCountFolder's split. The two legs run as
-	// a UNION ALL on the lookup side so each rides
-	// idx_images_folder_nocase_visible as a tight seek instead of
-	// scanning under the OR-of-(equality, range) shape's TEMP B-TREE.
-	var folderEq, folderRangeLo, folderRangeHi string
-	folderActive := false
-	if f, ok := q.Expr.(FilterExpr); ok && f.Key == "folder" && f.Val != "" {
-		folderActive = true
-		folderEq, folderRangeLo, folderRangeHi = f.Val, f.Val+"/", f.Val+"0"
-		// Drop the per-image where so the lookup builds two seekable
-		// legs from scratch; the OR-or-range form would otherwise stay
-		// in args and double-count the folder placeholders.
+	// On a pure folder predicate the lookup builds two seekable legs as
+	// a UNION ALL on idx_images_folder_nocase_visible; the per-image
+	// where is dropped so the legs don't double-count the placeholders.
+	folderActive, folderEq, folderRangeLo, folderRangeHi := detectPureFolder(q.Expr)
+	if folderActive {
 		where = ""
 		args = args[:0]
 	}
 
-	if !hasMissingFilter {
-		if where == "" {
-			where = "i.is_missing = 0"
-		} else {
-			where = where + " AND i.is_missing = 0"
-		}
-	}
+	where = andDefaultVisible(where, hasMissingFilter)
 
 	if bucketed {
 		where = where + " AND i.id BETWEEN ? AND ?"
@@ -1876,26 +1845,7 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 	// idx_images_missing and emit a TEMP B-TREE FOR ORDER BY on libraries
 	// where is_missing=0 has near-zero selectivity. Mirrors the hint in
 	// Execute.
-	indexHint := ""
-	if !hasMissingFilter && (q.Expr == nil || isPureTagExpr(q.Expr)) {
-		switch q.Sort {
-		case "filesize":
-			if ceilingRewrote {
-				indexHint = " INDEXED BY idx_images_filesize_rating_visible"
-			} else {
-				indexHint = " INDEXED BY idx_images_filesize_visible"
-			}
-		case "", "newest":
-			if ceilingRewrote {
-				indexHint = " INDEXED BY idx_images_ingested_rating_visible"
-			} else {
-				indexHint = " INDEXED BY idx_images_ingested_visible"
-			}
-		}
-	}
-	if h := columnFilterIndexHint(q.Expr, q.Sort); h != "" {
-		indexHint = h
-	}
+	indexHint := sortIndexHint(q.Expr, q.Sort, hasMissingFilter, ceilingRewrote)
 
 	lookup := func(cursorCmp, sort string) *int64 {
 		var sql string
@@ -1980,27 +1930,17 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 	where, args, hasMissingFilter, ceilingRewrote := buildWhereDBDriverFull(q.Expr, database, driverLegs)
 	where, args = applyAndDriver(where, args, driverLegs)
 
-	// Pure folder predicate runs as a COUNT-UNION-ALL of equality and
-	// range legs, mirroring ExecuteAdjacent. The OR-of-(equality, range)
-	// shape forced the planner into a full idx_images_folder_nocase_visible
-	// scan; two separate seekable predicates collapse to two short
-	// range walks whose row counts sum to the correct answer.
-	var folderEq, folderRangeLo, folderRangeHi string
-	folderActive := false
-	if f, ok := q.Expr.(FilterExpr); ok && f.Key == "folder" && f.Val != "" {
-		folderActive = true
-		folderEq, folderRangeLo, folderRangeHi = f.Val, f.Val+"/", f.Val+"0"
+	// Mirrors ExecuteAdjacent: a pure folder predicate runs as a
+	// COUNT-UNION-ALL of equality and range legs, sidestepping the
+	// full idx_images_folder_nocase_visible scan the OR-of-(equality,
+	// range) shape forced.
+	folderActive, folderEq, folderRangeLo, folderRangeHi := detectPureFolder(q.Expr)
+	if folderActive {
 		where = ""
 		args = args[:0]
 	}
 
-	if !hasMissingFilter {
-		if where == "" {
-			where = "i.is_missing = 0"
-		} else {
-			where = where + " AND i.is_missing = 0"
-		}
-	}
+	where = andDefaultVisible(where, hasMissingFilter)
 
 	var keyCol string
 	var keyVal any
@@ -2034,26 +1974,7 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 		beforeCmp = fmt.Sprintf("(%s, i.id) > (?, ?)", keyCol)
 	}
 
-	indexHint := ""
-	if !hasMissingFilter && (q.Expr == nil || isPureTagExpr(q.Expr)) {
-		switch q.Sort {
-		case "filesize":
-			if ceilingRewrote {
-				indexHint = " INDEXED BY idx_images_filesize_rating_visible"
-			} else {
-				indexHint = " INDEXED BY idx_images_filesize_visible"
-			}
-		case "", "newest":
-			if ceilingRewrote {
-				indexHint = " INDEXED BY idx_images_ingested_rating_visible"
-			} else {
-				indexHint = " INDEXED BY idx_images_ingested_visible"
-			}
-		}
-	}
-	if h := columnFilterIndexHint(q.Expr, q.Sort); h != "" {
-		indexHint = h
-	}
+	indexHint := sortIndexHint(q.Expr, q.Sort, hasMissingFilter, ceilingRewrote)
 
 	var sql string
 	var qargs []any
@@ -2103,13 +2024,7 @@ func ExecuteForDeleteStream(database *db.DB, expr Expr, visit func(DeleteTarget)
 	driverLegs, _ := pickAndDriverTag(database, expr, false)
 	where, args, hasMissingFilter := buildWhereDBDriver(expr, database, driverLegs)
 	where, args = applyAndDriver(where, args, driverLegs)
-	if !hasMissingFilter {
-		if where == "" {
-			where = "i.is_missing = 0"
-		} else {
-			where = where + " AND i.is_missing = 0"
-		}
-	}
+	where = andDefaultVisible(where, hasMissingFilter)
 
 	rows, err := database.Read.Query(
 		"SELECT i.id, i.canonical_path, i.folder_path, i.is_missing FROM images i WHERE "+where+" ORDER BY i.id",
@@ -2148,13 +2063,7 @@ func SidebarTagsWithGlobalCount(database *db.DB, imageIDs []int64) ([]models.Tag
 		return nil, nil
 	}
 
-	placeholders := strings.Repeat("?,", len(imageIDs))
-	placeholders = placeholders[:len(placeholders)-1]
-
-	args := make([]any, len(imageIDs))
-	for i, id := range imageIDs {
-		args[i] = id
-	}
+	placeholders, args := db.InPlaceholders(imageIDs)
 
 	rows, err := database.Read.Query(
 		fmt.Sprintf(
@@ -2232,13 +2141,7 @@ func SuggestTagsWithFilter(database *db.DB, expr Expr, prefix, categoryName stri
 	}
 
 	where, args, hasMissingFilter := buildWhereDB(expr, database)
-	if !hasMissingFilter {
-		if where == "" {
-			where = "i.is_missing = 0"
-		} else {
-			where = where + " AND i.is_missing = 0"
-		}
-	}
+	where = andDefaultVisible(where, hasMissingFilter)
 
 	// Two-pass: prefix matches first (ranked by combo count), then
 	// substring matches until limit is hit. Each pass first picks up to
@@ -2416,6 +2319,24 @@ type whereBuilder struct {
 	// sort index instead of the bare ingested / filesize partials so
 	// the deep-page cursor stays covering.
 	ceilingRewrote bool
+	// relPresence caches per-source "has any row?" results so
+	// repeated relation: predicates inside one builder walk share
+	// the lookups. Populated lazily on first relation: encounter;
+	// the relPresenceResolved bool gates re-query.
+	relPresence         relationPresence
+	relPresenceResolved bool
+}
+
+// relationPresence is the per-source existence answer used to
+// short-circuit relation: predicates against an empty source. A nil
+// db (test path) leaves every field false and the builder falls back
+// to the regular EXISTS / NOT-IN shape.
+type relationPresence struct {
+	dup        bool
+	alt        bool
+	version    bool
+	derivative bool
+	series     bool
 }
 
 // resolveRatingIDs queries the four canonical rating tag rows and caches
@@ -2474,15 +2395,8 @@ func (b *whereBuilder) resolveCategoryTagByName(category, name string) ([]int64,
 		return nil, false
 	}
 	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, false
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
+	ids, err := db.ScanIDs(rows)
+	if err != nil {
 		return nil, false
 	}
 	return ids, true
@@ -2811,26 +2725,26 @@ func (b *whereBuilder) buildSystemFilter(_ FilterExpr) string {
 	return "1=0"
 }
 
-func (b *whereBuilder) buildFavFilter(e FilterExpr) string {
-	val, ok := parseBoolVal(e.Val)
+// boolColumnFilter parses a bool from val and returns "col = 1" /
+// "col = 0", or "1=0" on a parse failure (no row matches, so the
+// AND with the rest of the WHERE short-circuits).
+func boolColumnFilter(col, val string) string {
+	b, ok := parseBoolVal(val)
 	if !ok {
 		return "1=0"
 	}
-	if val {
-		return "i.is_favorited = 1"
+	if b {
+		return col + " = 1"
 	}
-	return "i.is_favorited = 0"
+	return col + " = 0"
+}
+
+func (b *whereBuilder) buildFavFilter(e FilterExpr) string {
+	return boolColumnFilter("i.is_favorited", e.Val)
 }
 
 func (b *whereBuilder) buildInboxFilter(e FilterExpr) string {
-	val, ok := parseBoolVal(e.Val)
-	if !ok {
-		return "1=0"
-	}
-	if val {
-		return "i.is_inbox = 1"
-	}
-	return "i.is_inbox = 0"
+	return boolColumnFilter("i.is_inbox", e.Val)
 }
 
 // buildAIFilter accepts comma-separated source_type and the legacy
@@ -2893,14 +2807,7 @@ func (b *whereBuilder) buildHeightFilter(e FilterExpr) string {
 // is_missing = 0` and returns nothing.
 func (b *whereBuilder) buildMissingFilter(e FilterExpr) string {
 	b.hasMissingFilter = true
-	val, ok := parseBoolVal(e.Val)
-	if !ok {
-		return "1=0"
-	}
-	if val {
-		return "i.is_missing = 1"
-	}
-	return "i.is_missing = 0"
+	return boolColumnFilter("i.is_missing", e.Val)
 }
 
 // buildTypeFilter emits a comma-separated union of named file-type
@@ -3273,30 +3180,34 @@ func (b *whereBuilder) buildDefaultFilter(e FilterExpr) string {
 
 // dateFilterRe matches the documented date filter shapes: YYYY,
 // YYYY-MM, YYYY-MM-DD, plus the optional time component used by the
-// inbox-cluster links: YYYY-MM-DDTHH:MM and YYYY-MM-DDTHH:MM:SS. The
-// HELP.md examples show YYYY-MM ranges (`date:2024-01..2024-06`) which
-// lexicographically string-compare correctly against the ISO-8601
-// ingested_at column. `buildDateFilter` accepts each component (after
-// stripping the optional comparison or range syntax) and rejects
-// malformed input with `1=0` rather than passing it into a SQL
-// comparison verbatim, which produced silent zero-result answers
-// indistinguishable from a real "no images on that date" result.
-var dateFilterRe = regexp.MustCompile(`^\d{4}(-\d{2}(-\d{2}(T\d{2}:\d{2}(:\d{2})?)?)?)?$`)
+// inbox-cluster links: YYYY-MM-DDTHH, YYYY-MM-DDTHH:MM, and
+// YYYY-MM-DDTHH:MM:SS. The HELP.md examples show YYYY-MM ranges
+// (`date:2024-01..2024-06`) which lexicographically string-compare
+// correctly against the ISO-8601 ingested_at column. `buildDateFilter`
+// accepts each component (after stripping the optional comparison or
+// range syntax) and rejects malformed input with `1=0` rather than
+// passing it into a SQL comparison verbatim, which produced silent
+// zero-result answers indistinguishable from a real "no images on
+// that date" result.
+var dateFilterRe = regexp.MustCompile(`^\d{4}(-\d{2}(-\d{2}(T\d{2}(:\d{2}(:\d{2})?)?)?)?)?$`)
 
 // endOfPrecisionISO returns the lexicographically-largest ingested_at
 // value that still belongs to the truncated precision the caller named.
 // `2026-05-22` -> `2026-05-22T23:59:59Z` (end of day, matches the
-// historical contract), `2026-05-22T19:23` -> `2026-05-22T19:23:59Z`
-// (end of minute), `2026-05-22T19:23:42` -> `2026-05-22T19:23:42Z`
-// (the exact second). Bare years and months keep the historical
-// end-of-day append since `2026T23:59:59Z` still sorts lex-larger than
-// any `2026-MM-DD...` timestamp.
+// historical contract), `2026-05-22T06` -> `2026-05-22T06:59:59Z`
+// (end of hour), `2026-05-22T19:23` -> `2026-05-22T19:23:59Z` (end of
+// minute), `2026-05-22T19:23:42` -> `2026-05-22T19:23:42Z` (the exact
+// second). Bare years and months keep the historical end-of-day
+// append since `2026T23:59:59Z` still sorts lex-larger than any
+// `2026-MM-DD...` timestamp.
 func endOfPrecisionISO(val string) string {
 	tIdx := strings.Index(val, "T")
 	if tIdx < 0 {
 		return val + "T23:59:59Z"
 	}
 	switch strings.Count(val[tIdx+1:], ":") {
+	case 0:
+		return val + ":59:59Z"
 	case 1:
 		return val + ":59Z"
 	case 2:
@@ -3583,12 +3494,9 @@ func (b *whereBuilder) buildPhashFilter(e FilterExpr) string {
 				if len(ids) == 0 {
 					return "1=0"
 				}
-				placeholders := make([]string, len(ids))
-				for i, id := range ids {
-					placeholders[i] = "?"
-					b.args = append(b.args, id)
-				}
-				return "i.id IN (" + strings.Join(placeholders, ", ") + ")"
+				placeholders, idArgs := db.InPlaceholders(ids)
+				b.args = append(b.args, idArgs...)
+				return "i.id IN (" + placeholders + ")"
 			}
 		}
 	}
@@ -3602,28 +3510,182 @@ func (b *whereBuilder) buildPhashFilter(e FilterExpr) string {
 // an EXISTS / NOT-EXISTS over the matching relations table; every
 // clause rides a covering index, so cost is dominated by the outer
 // sort. `any` is the union, `none` is the NOT-any inverse.
+//
+// resolveRelationPresence is consulted first so a gallery with no
+// declared relations skips the per-row EXISTS / NOT IN entirely: an
+// empty source means the predicate's answer is constant across every
+// visible row, and we emit `1=0` (positive sense) or `1=1` (NOT) up
+// front. The cold relation:none scan on a 1M-row visible set used to
+// land in seconds; here it folds into the outer sort with no
+// per-row work.
 func (b *whereBuilder) buildRelationFilter(e FilterExpr) string {
-	switch strings.ToLower(strings.TrimSpace(e.Val)) {
+	val := strings.ToLower(strings.TrimSpace(e.Val))
+	b.resolveRelationPresence()
+	switch val {
 	case "duplicate":
+		if !b.relPresence.dup {
+			return "1=0"
+		}
 		return "EXISTS (SELECT 1 FROM dup_group_members m WHERE m.image_id = i.id)"
 	case "original":
+		if !b.relPresence.dup {
+			return "1=0"
+		}
 		return "EXISTS (SELECT 1 FROM dup_groups g WHERE g.original_image_id = i.id)"
 	case "alternate":
+		if !b.relPresence.alt {
+			return "1=0"
+		}
 		return "EXISTS (SELECT 1 FROM alt_group_members m WHERE m.image_id = i.id)"
 	case "version":
+		if !b.relPresence.version {
+			return "1=0"
+		}
 		return "EXISTS (SELECT 1 FROM version_edges v WHERE v.child_image_id = i.id OR v.parent_image_id = i.id)"
 	case "derivative":
+		if !b.relPresence.derivative {
+			return "1=0"
+		}
 		return "EXISTS (SELECT 1 FROM derivative_edges d WHERE d.derivative_image_id = i.id)"
 	case "source":
+		if !b.relPresence.derivative {
+			return "1=0"
+		}
 		return "EXISTS (SELECT 1 FROM derivative_edges d WHERE d.source_image_id = i.id)"
 	case "collection":
+		if !b.relPresence.series {
+			return "1=0"
+		}
 		return "i.series IS NOT NULL AND i.series != ''"
 	case "any":
-		return relationAnyClause()
+		if !b.anyRelationPresent() {
+			return "1=0"
+		}
+		return b.relationAnyClauseForPresence()
 	case "none":
-		return relationNoneClause()
+		if !b.anyRelationPresent() {
+			return "1=1"
+		}
+		return b.relationNoneClauseForPresence()
 	}
 	return "1=0"
+}
+
+// resolveRelationPresence runs a single COUNT(EXISTS) probe per
+// relations source (5 cheap lookups, each <0.1 ms on a warm DB) and
+// caches the booleans on the builder. Skipped on a nil db (test path)
+// so the regular EXISTS / NOT IN shapes still surface there.
+func (b *whereBuilder) resolveRelationPresence() {
+	if b.relPresenceResolved {
+		return
+	}
+	b.relPresenceResolved = true
+	if b.db == nil {
+		return
+	}
+	probe := func(query string) bool {
+		var has int
+		if err := b.db.Read.QueryRow(query).Scan(&has); err != nil {
+			// Treat probe failure as "may have rows" so the slow but
+			// correct path runs - errors here only surface in degraded
+			// modes, not on the empty-table fast path this resolver
+			// targets.
+			return true
+		}
+		return has > 0
+	}
+	b.relPresence = relationPresence{
+		dup:        probe(`SELECT EXISTS (SELECT 1 FROM dup_group_members)`),
+		alt:        probe(`SELECT EXISTS (SELECT 1 FROM alt_group_members)`),
+		version:    probe(`SELECT EXISTS (SELECT 1 FROM version_edges)`),
+		derivative: probe(`SELECT EXISTS (SELECT 1 FROM derivative_edges)`),
+		series:     probe(`SELECT EXISTS (SELECT 1 FROM images WHERE series IS NOT NULL AND series != '' LIMIT 1)`),
+	}
+}
+
+func (b *whereBuilder) anyRelationPresent() bool {
+	p := &b.relPresence
+	return p.dup || p.alt || p.version || p.derivative || p.series
+}
+
+// relationAnyClauseForPresence returns the union with each subquery
+// dropped when its source is known to be empty. Strict-empty branches
+// can't contribute matches, so trimming them yields a cheaper plan
+// (often a single EXISTS or a series-IS-NOT-NULL leg).
+func (b *whereBuilder) relationAnyClauseForPresence() string {
+	p := &b.relPresence
+	parts := make([]string, 0, 5)
+	if p.dup {
+		parts = append(parts,
+			"EXISTS (SELECT 1 FROM dup_group_members m WHERE m.image_id = i.id)",
+		)
+	}
+	if p.alt {
+		parts = append(parts,
+			"EXISTS (SELECT 1 FROM alt_group_members m WHERE m.image_id = i.id)",
+		)
+	}
+	if p.version {
+		parts = append(parts,
+			"EXISTS (SELECT 1 FROM version_edges v WHERE v.child_image_id = i.id OR v.parent_image_id = i.id)",
+		)
+	}
+	if p.derivative {
+		parts = append(parts,
+			"EXISTS (SELECT 1 FROM derivative_edges d WHERE d.derivative_image_id = i.id OR d.source_image_id = i.id)",
+		)
+	}
+	if p.series {
+		parts = append(parts, "(i.series IS NOT NULL AND i.series != '')")
+	}
+	if len(parts) == 0 {
+		return "1=0"
+	}
+	return strings.Join(parts, " OR ")
+}
+
+// relationNoneClauseForPresence rewrites the NOT IN (UNION ...) so
+// only the populated relation sources contribute. An empty union
+// would walk every visible row checking against nothing; dropping
+// the empty branches keeps the materialised set tight to whatever
+// the operator actually has. Series carriers stay on the AND-leg
+// per the original shape.
+func (b *whereBuilder) relationNoneClauseForPresence() string {
+	p := &b.relPresence
+	var unions []string
+	if p.dup {
+		unions = append(unions, "SELECT image_id FROM dup_group_members")
+	}
+	if p.alt {
+		unions = append(unions, "SELECT image_id FROM alt_group_members")
+	}
+	if p.version {
+		unions = append(unions,
+			"SELECT child_image_id FROM version_edges",
+			"SELECT parent_image_id FROM version_edges",
+		)
+	}
+	if p.derivative {
+		unions = append(unions,
+			"SELECT derivative_image_id FROM derivative_edges",
+			"SELECT source_image_id FROM derivative_edges",
+		)
+	}
+	if !p.series && len(unions) == 0 {
+		return "1=1"
+	}
+	// Fold the series-empty check into the NOT IN so SQLite uses the
+	// partial idx_images_series to materialise the carriers cheaply
+	// (the index covers WHERE series != ''). The bare LIKE on series
+	// would otherwise force a per-row column read on every visible
+	// image even when zero carriers exist.
+	if p.series {
+		unions = append(unions, "SELECT id FROM images WHERE series IS NOT NULL AND series != ''")
+	}
+	if len(unions) == 0 {
+		return "1=1"
+	}
+	return "i.id NOT IN (\n\t\t" + strings.Join(unions, "\n\t\tUNION ") + "\n\t)"
 }
 
 // relationAnyClause is the union "this image carries any kind of

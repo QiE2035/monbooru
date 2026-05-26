@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"mime"
 	"net/http"
 )
 
@@ -82,7 +83,12 @@ func (s *Server) CSRFMiddleware(next http.Handler) http.Handler {
 		// type-to-confirm gate is the canonical example). Fall back to
 		// the hidden form input so existing form submissions still work.
 		token := r.Header.Get("X-CSRF-Token")
-		if token == "" {
+		if token == "" && !isMultipart(r) {
+			// r.FormValue on multipart drains the entire body through
+			// stdlib's 32 MiB ParseMultipartForm, defeating any handler-
+			// side MaxBytesReader. Multipart callers must supply the
+			// token via the header (set by htmx-on-multipart hx-headers
+			// or by an explicit XHR header).
 			token = r.FormValue("_csrf")
 		}
 
@@ -93,4 +99,19 @@ func (s *Server) CSRFMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isMultipart returns true when the request's Content-Type top-level
+// type is multipart (multipart/form-data, multipart/related, etc.).
+// Used to skip the body-draining FormValue fallback in CSRFMiddleware.
+func isMultipart(r *http.Request) bool {
+	ct := r.Header.Get("Content-Type")
+	if ct == "" {
+		return false
+	}
+	mt, _, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return false
+	}
+	return len(mt) > 10 && mt[:10] == "multipart/"
 }

@@ -140,6 +140,18 @@ func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// apiPathInt64 parses a numeric path segment, writing an
+// invalid_request apiError on failure. The bool reports whether the
+// caller can keep going.
+func apiPathInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
+	v, err := strconv.ParseInt(r.PathValue(name), 10, 64)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "invalid "+name)
+		return 0, false
+	}
+	return v, true
+}
+
 func apiError(w http.ResponseWriter, status int, code, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -161,7 +173,7 @@ func parsePage(r *http.Request, defaultLimit, maxLimit int) (offset, limit int) 
 	limit = defaultLimit
 	q := r.URL.Query()
 	if p := q.Get("page"); p != "" {
-		if n, err := parseInt(p); err == nil && n > 0 {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 {
 			page = n
 		}
 	}
@@ -170,7 +182,7 @@ func parsePage(r *http.Request, defaultLimit, maxLimit int) (offset, limit int) 
 		l = q.Get("page_size")
 	}
 	if l != "" {
-		if n, err := parseInt(l); err == nil && n > 0 {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
 			if n > maxLimit {
 				n = maxLimit
 			}
@@ -178,8 +190,4 @@ func parsePage(r *http.Request, defaultLimit, maxLimit int) (offset, limit int) 
 		}
 	}
 	return (page - 1) * limit, limit
-}
-
-func parseInt(s string) (int, error) {
-	return strconv.Atoi(s)
 }

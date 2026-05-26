@@ -52,7 +52,7 @@ func catIDForName(t *testing.T, database *db.DB, name string) int64 {
 	return id
 }
 
-// TestStoreResults_ScopesDeleteToTaggerNames pins T-F007's central
+// TestStoreResults_ScopesDeleteToTaggerNames pins the central
 // invariant: an inference run by tagger A must remove A's prior auto
 // tags that aren't in the new merged set, but leave tagger B's rows
 // alone. The pipeline is build-tag-gated; this test runs only under

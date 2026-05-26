@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -88,6 +89,20 @@ func (cx *galleryCtx) Sync(ctx context.Context, maxFileSizeMB int, progress func
 	result, err := gallery.Sync(ctx, cx.DB, cx.GalleryPath, cx.ThumbnailsPath, maxFileSizeMB, progress)
 	cx.InvalidateCaches()
 	return result, err
+}
+
+// requireActive returns the active gallery context, or writes a 503
+// "no gallery" and returns false. Callers must `return` on a false
+// result. Use this for any handler whose work can't proceed without a
+// live DB; sub-service guards (RelationsSvc==nil, bkTree==nil) still
+// belong inline because they check different fields.
+func (s *Server) requireActive(w http.ResponseWriter) (*galleryCtx, bool) {
+	cx := s.Active()
+	if cx == nil || cx.DB == nil {
+		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+		return nil, false
+	}
+	return cx, true
 }
 
 // InvalidateCaches drops the folder-tree and visible-count caches. Call after

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/models"
 )
 
@@ -158,18 +159,10 @@ func (s *Service) MergeTags(aliasID, canonicalID int64) error {
 	if err != nil {
 		return fmt.Errorf("merge enumerate alias-only images: %w", err)
 	}
-	var newCarrierIDs []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return fmt.Errorf("merge scan alias-only image: %w", err)
-		}
-		newCarrierIDs = append(newCarrierIDs, id)
-	}
+	newCarrierIDs, scanErr := db.ScanIDs(rows)
 	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("merge iterate alias-only images: %w", err)
+	if scanErr != nil {
+		return fmt.Errorf("merge scan alias-only images: %w", scanErr)
 	}
 
 	if _, err := tx.Exec(

@@ -292,13 +292,8 @@ func (s *Service) ChunkedDeleteWithTagRecalc(
 			end = len(ids)
 		}
 		chunk := ids[start:end]
-		placeholders := strings.Repeat("?,", len(chunk))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, 0, len(chunk)+len(extraArgs))
-		for _, id := range chunk {
-			args = append(args, id)
-		}
-		args = append(args, extraArgs...)
+		placeholders, chunkArgs := db.InPlaceholders(chunk)
+		args := append(chunkArgs, extraArgs...)
 
 		tx, err := s.db.Write.Begin()
 		if err != nil {
@@ -356,19 +351,8 @@ func (s *Service) RecalcIDs(ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	const chunkSize = 500
-	for start := 0; start < len(ids); start += chunkSize {
-		end := start + chunkSize
-		if end > len(ids) {
-			end = len(ids)
-		}
-		chunk := ids[start:end]
-		placeholders := strings.Repeat("?,", len(chunk))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, len(chunk))
-		for i, id := range chunk {
-			args[i] = id
-		}
+	return db.Chunked(ids, 500, func(chunk []int64) error {
+		placeholders, args := db.InPlaceholders(chunk)
 		if _, err := s.db.Write.Exec(`UPDATE tags SET usage_count = (
 			SELECT COUNT(*) FROM image_tags it
 			JOIN images i ON i.id = it.image_id
@@ -376,8 +360,8 @@ func (s *Service) RecalcIDs(ids []int64) error {
 		) WHERE id IN (`+placeholders+`)`, args...); err != nil {
 			return fmt.Errorf("recalc usage_count chunk: %w", err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (s *Service) ListCategories() ([]models.TagCategory, error) {
@@ -518,20 +502,11 @@ func (s *Service) DeleteCategoryMoveOrDelete(id int64, action string, targetID i
 		if err != nil {
 			return err
 		}
-		var tagIDs []int64
-		for rows.Next() {
-			var tid int64
-			if scanErr := rows.Scan(&tid); scanErr != nil {
-				rows.Close()
-				return scanErr
-			}
-			tagIDs = append(tagIDs, tid)
-		}
-		if iterErr := rows.Err(); iterErr != nil {
-			rows.Close()
-			return iterErr
-		}
+		tagIDs, scanErr := db.ScanIDs(rows)
 		rows.Close()
+		if scanErr != nil {
+			return scanErr
+		}
 		for _, tid := range tagIDs {
 			if _, err := tx.Exec(`DELETE FROM image_tags WHERE tag_id = ?`, tid); err != nil {
 				return err
@@ -795,18 +770,17 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 	// excluded - no live image_tag means no origin to report, and
 	// flagging them auto would mislabel manually-added tags whose rows
 	// have all been removed.
-	var ids []any
+	var ids []int64
 	for _, t := range tagList {
 		if !t.IsAlias && t.UsageCount > 0 {
 			ids = append(ids, t.ID)
 		}
 	}
 	if len(ids) > 0 {
-		placeholders := strings.Repeat("?,", len(ids))
-		placeholders = placeholders[:len(placeholders)-1]
+		placeholders, args := db.InPlaceholders(ids)
 		userRows, err := s.db.Read.Query(
 			`SELECT DISTINCT tag_id FROM image_tags WHERE is_auto = 0 AND tag_id IN (`+placeholders+`)`,
-			ids...,
+			args...,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -844,15 +818,7 @@ func (s *Service) ListTagIDs(filter TagFilter) ([]int64, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return db.ScanIDs(rows)
 }
 
 func (s *Service) GetTag(id int64) (*models.Tag, error) {
@@ -896,19 +862,8 @@ func (s *Service) AliasesForTagIDs(canonicalIDs []int64) (map[int64][]models.Tag
 	if len(canonicalIDs) == 0 {
 		return out, nil
 	}
-	const chunk = 500
-	for start := 0; start < len(canonicalIDs); start += chunk {
-		end := start + chunk
-		if end > len(canonicalIDs) {
-			end = len(canonicalIDs)
-		}
-		batch := canonicalIDs[start:end]
-		placeholders := strings.Repeat("?,", len(batch))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, len(batch))
-		for i, id := range batch {
-			args[i] = id
-		}
+	err := db.Chunked(canonicalIDs, 500, func(batch []int64) error {
+		placeholders, args := db.InPlaceholders(batch)
 		rows, err := s.db.Read.Query(
 			`SELECT a.id, a.name, a.category_id, ac.name, ac.color,
 			        a.canonical_tag_id,
@@ -922,8 +877,9 @@ func (s *Service) AliasesForTagIDs(canonicalIDs []int64) (map[int64][]models.Tag
 			args...,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
+		defer rows.Close()
 		for rows.Next() {
 			var t models.Tag
 			var canonicalID int64
@@ -932,14 +888,16 @@ func (s *Service) AliasesForTagIDs(canonicalIDs []int64) (map[int64][]models.Tag
 				&canonicalID,
 				&t.CanonicalName, &t.CanonicalCategoryName, &t.CanonicalCategoryColor,
 			); err != nil {
-				rows.Close()
-				return nil, err
+				return err
 			}
 			t.IsAlias = true
 			t.CanonicalTagID = &canonicalID
 			out[canonicalID] = append(out[canonicalID], t)
 		}
-		rows.Close()
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -1039,6 +997,46 @@ func (s *Service) AddTagToImage(imageID, tagID int64, isAuto bool, confidence *f
 func (s *Service) AddTagToImageFromTagger(imageID, tagID int64, isAuto bool, confidence *float64, taggerName string) error {
 	_, err := s.AddTagToImageReportingDup(imageID, tagID, isAuto, confidence, taggerName)
 	return err
+}
+
+// AddTagsToImageFromTagger applies a batch of tag IDs to a single image
+// in one write transaction. Per-tag promotion / dup-detection and the
+// rating-prune split (manual overwrites, auto keeps highest) are
+// preserved so the result matches a serial chain of
+// AddTagToImageFromTagger calls, minus the per-tag transaction
+// overhead. Used by gallery_merge.go's import path so a record
+// carrying dozens of tags doesn't pay one tx per row.
+func (s *Service) AddTagsToImageFromTagger(imageID int64, tagIDs []int64, isAuto bool, taggerName string) error {
+	if len(tagIDs) == 0 {
+		return nil
+	}
+	tx, err := s.db.Write.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, tagID := range tagIDs {
+		added, promoted, addErr := addTagToImageTxReportingDup(tx, imageID, tagID, isAuto, nil, taggerName, s.ratingCatID)
+		if addErr != nil {
+			return addErr
+		}
+		if (added || promoted) && s.ratingCatID != 0 {
+			var catID int64
+			if err := tx.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, tagID).Scan(&catID); err == nil && catID == s.ratingCatID {
+				if isAuto {
+					if err := pruneLowerRatingsTx(tx, s.ratingCatID, imageID); err != nil {
+						return err
+					}
+				} else {
+					if _, err := pruneOtherRatingsTx(tx, s.ratingCatID, imageID, tagID); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return tx.Commit()
 }
 
 // AddResult bundles the dup-tracking and rating-overwrite signals so
@@ -1183,12 +1181,7 @@ func transitiveImpliedTx(tx *sql.Tx, parents []int64) ([]int64, error) {
 	frontier := append([]int64(nil), parents...)
 	var out []int64
 	for depth := 0; depth < MaxImplicationDepth && len(frontier) > 0; depth++ {
-		placeholders := strings.Repeat("?,", len(frontier))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, len(frontier))
-		for i, id := range frontier {
-			args[i] = id
-		}
+		placeholders, args := db.InPlaceholders(frontier)
 		rows, err := tx.Query(
 			`SELECT DISTINCT implied_tag_id FROM tag_implications WHERE parent_tag_id IN (`+placeholders+`)`,
 			args...,
@@ -1434,17 +1427,11 @@ func (s *Service) RemoveUserTagsFromImage(imageID int64) error {
 	if err != nil {
 		return err
 	}
-	var tagIDs []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		tagIDs = append(tagIDs, id)
-	}
+	tagIDs, scanErr := db.ScanIDs(rows)
 	rows.Close()
-
+	if scanErr != nil {
+		return scanErr
+	}
 	for _, tagID := range tagIDs {
 		if err := removeTagFromImageTx(tx, imageID, tagID); err != nil {
 			return err
@@ -1469,12 +1456,8 @@ func (s *Service) RemoveAutoTagsFromImage(imageID int64, taggerNames []string) e
 	if len(taggerNames) == 0 {
 		rows, err = tx.Query(`SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 1`, imageID)
 	} else {
-		placeholders := strings.Repeat("?,", len(taggerNames))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := []any{imageID}
-		for _, n := range taggerNames {
-			args = append(args, n)
-		}
+		placeholders, nameArgs := db.InPlaceholders(taggerNames)
+		args := append([]any{imageID}, nameArgs...)
 		rows, err = tx.Query(
 			`SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 1 AND tagger_name IN (`+placeholders+`)`,
 			args...,
@@ -1483,17 +1466,11 @@ func (s *Service) RemoveAutoTagsFromImage(imageID int64, taggerNames []string) e
 	if err != nil {
 		return err
 	}
-	var tagIDs []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		tagIDs = append(tagIDs, id)
-	}
+	tagIDs, scanErr := db.ScanIDs(rows)
 	rows.Close()
-
+	if scanErr != nil {
+		return scanErr
+	}
 	for _, tagID := range tagIDs {
 		if err := removeTagFromImageTx(tx, imageID, tagID); err != nil {
 			return err
@@ -1513,16 +1490,11 @@ func (s *Service) RemoveAllTagsFromImage(imageID int64) error {
 	if err != nil {
 		return err
 	}
-	var tagIDs []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		tagIDs = append(tagIDs, id)
-	}
+	tagIDs, scanErr := db.ScanIDs(rows)
 	rows.Close()
+	if scanErr != nil {
+		return scanErr
+	}
 
 	if len(tagIDs) > 0 {
 		// Skip the bulk decrement when the image was missing: its rows
@@ -1532,12 +1504,7 @@ func (s *Service) RemoveAllTagsFromImage(imageID int64) error {
 			return err
 		}
 		if isMissing == 0 {
-			placeholders := strings.Repeat("?,", len(tagIDs))
-			placeholders = placeholders[:len(placeholders)-1]
-			args := make([]any, len(tagIDs))
-			for i, id := range tagIDs {
-				args[i] = id
-			}
+			placeholders, args := db.InPlaceholders(tagIDs)
 			if _, err := tx.Exec(
 				`UPDATE tags SET usage_count = MAX(0, usage_count - 1) WHERE id IN (`+placeholders+`)`,
 				args...,
@@ -1708,13 +1675,8 @@ func (s *Service) RatingTagIDsAbove(ceiling string) []int64 {
 		return nil
 	}
 	above := RatingLevels[rank+1:]
-	placeholders := strings.Repeat("?,", len(above))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, 0, len(above)+1)
-	args = append(args, s.ratingCatID)
-	for _, n := range above {
-		args = append(args, n)
-	}
+	placeholders, nameArgs := db.InPlaceholders(above)
+	args := append([]any{s.ratingCatID}, nameArgs...)
 	rows, err := s.db.Read.Query(
 		`SELECT id FROM tags WHERE category_id = ? AND name IN (`+placeholders+`)`,
 		args...,
@@ -1723,13 +1685,9 @@ func (s *Service) RatingTagIDsAbove(ceiling string) []int64 {
 		return nil
 	}
 	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil
-		}
-		ids = append(ids, id)
+	ids, err := db.ScanIDs(rows)
+	if err != nil {
+		return nil
 	}
 	return ids
 }
@@ -1779,16 +1737,13 @@ func (s *Service) RelatedImages(imageID int64, limit int, ratingCeiling string) 
 	candidatesExtra := ""
 	args := []any{imageID, relatedMaxTagUsage, relatedGeneralTagsCap, imageID}
 	if len(excluded) > 0 {
-		placeholders := strings.Repeat("?,", len(excluded))
-		placeholders = placeholders[:len(placeholders)-1]
+		placeholders, excludedArgs := db.InPlaceholders(excluded)
 		candidatesExtra = ` AND NOT EXISTS (
 		         SELECT 1 FROM image_tags x
 		         WHERE x.image_id = theirs.image_id
 		           AND x.tag_id IN (` + placeholders + `)
 		     )`
-		for _, id := range excluded {
-			args = append(args, id)
-		}
+		args = append(args, excludedArgs...)
 	}
 	args = append(args, limit*2+5, limit)
 

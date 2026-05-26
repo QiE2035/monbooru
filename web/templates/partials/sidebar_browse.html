@@ -1,30 +1,8 @@
 {{define "partials/sidebar_browse.html"}}
-  {{/* Inbox / Favorites shortcuts sit at the top: they cover the most
-       frequent triage navigation. Collections, source labels, folders,
-       and the AI source breakdown follow, in that order so deliberate
-       per-image groupings rank above filesystem layout. */}}
-  {{if or (gt .InboxCount 0) (gt .NonInboxCount 0)}}
-  <div id="inbox-filter-section">
-    <div class="sidebar-section-header">
-      <span class="sidebar-section-title">Inbox</span>
-      <button id="inbox-filter-toggle" class="folder-toggle-btn" data-target="inbox-filter-list">▶</button>
-    </div>
-    <ul id="inbox-filter-list" class="folder-tree" style="display:none">
-      <li class="folder-node-wrap">
-        <div class="folder-node-row">
-          <span class="folder-spacer"></span>
-          <a href="/?q=inbox:true" class="folder-link{{if eq .Query "inbox:true"}} active{{end}}">Inbox ({{.InboxCount}})</a>
-        </div>
-      </li>
-      <li class="folder-node-wrap">
-        <div class="folder-node-row">
-          <span class="folder-spacer"></span>
-          <a href="/?q=inbox:false" class="folder-link{{if eq .Query "inbox:false"}} active{{end}}">Archived ({{.NonInboxCount}})</a>
-        </div>
-      </li>
-    </ul>
-  </div>
-  {{end}}
+  {{/* Favorites shortcut sits at the top: it covers the most frequent
+       triage navigation. Collections, source labels, folders, and the
+       AI source breakdown follow, in that order so deliberate per-image
+       groupings rank above filesystem layout. */}}
   {{if or (gt .FavoritedCount 0) (gt .NonFavoritedCount 0)}}
   <div id="favorites-filter-section">
     <div class="sidebar-section-header">

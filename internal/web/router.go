@@ -703,6 +703,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /relations/remove", s.removeRelationPost)
 	mux.HandleFunc("POST /relations/reverse", s.reverseRelationPost)
 	mux.HandleFunc("POST /relations/browse-groups/merge", s.mergeGroupsPost)
+	mux.HandleFunc("POST /relations/browse-groups/dissolve", s.dissolveGroupsPost)
 	mux.HandleFunc("GET /internal/images/{id}/related-entries", s.relatedEntriesGet)
 	mux.HandleFunc("GET /images/{id}/relations", s.imageRelationsPage)
 	mux.HandleFunc("POST /settings/maintenance/vacuum-db", s.vacuumDBPost)
@@ -905,6 +906,37 @@ type baseData struct {
 	// middleware + handler work + template execution, not just the
 	// tail-end after base() runs.
 	RequestStart time.Time
+}
+
+// AsMap renders baseData as a string→any map for handlers that pass
+// the layout fields into renderTemplate without a typed page struct.
+// Drift between sites (one carrying CustomCSS, another not) closes
+// because every map starts with the same canonical set.
+func (b baseData) AsMap() map[string]any {
+	return map[string]any{
+		"Title":            b.Title,
+		"ActiveNav":        b.ActiveNav,
+		"CSRFToken":        b.CSRFToken,
+		"AuthEnabled":      b.AuthEnabled,
+		"Degraded":         b.Degraded,
+		"Version":          b.Version,
+		"RepoURL":          b.RepoURL,
+		"Variant":          b.Variant,
+		"CustomCSS":        b.CustomCSS,
+		"BooruName":        b.BooruName,
+		"BooruLogo":        b.BooruLogo,
+		"ActiveGallery":    b.ActiveGallery,
+		"Galleries":        b.Galleries,
+		"VisibleCount":     b.VisibleCount,
+		"InboxCount":       b.InboxCount,
+		"InboxNavActive":   b.InboxNavActive,
+		"TagCount":         b.TagCount,
+		"CollectionsCount": b.CollectionsCount,
+		"HiddenByCeiling":  b.HiddenByCeiling,
+		"RatingLevels":     b.RatingLevels,
+		"ActiveRating":     b.ActiveRating,
+		"RequestStart":     b.RequestStart,
+	}
 }
 
 func (s *Server) base(r *http.Request, nav, title string) baseData {

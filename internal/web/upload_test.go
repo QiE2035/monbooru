@@ -330,3 +330,28 @@ func TestUploadPost_EnforcesMaxFileSize(t *testing.T) {
 	}
 }
 
+// TestCSRFMiddleware_RejectsMultipartWithoutHeader pins that a multipart
+// POST without the X-CSRF-Token header is rejected even when the body
+// would carry a valid _csrf form field. The middleware skips the
+// FormValue fallback on multipart so the handler-side MaxBytesReader
+// stays effective; the caller must opt into header auth (htmx
+// hx-headers or an explicit XHR header).
+func TestCSRFMiddleware_RejectsMultipartWithoutHeader(t *testing.T) {
+	srv := newTestServer(t)
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	mw.WriteField("_csrf", srv.csrfToken("anon"))
+	mw.WriteField("name", "newgal")
+	mw.WriteField("gallery_path", t.TempDir())
+	mw.Close()
+
+	req := httptest.NewRequest("POST", "/settings/galleries", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	// Deliberately omit X-CSRF-Token; the middleware should refuse.
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+

@@ -4,12 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"html"
 	"net/http"
 	"os"
 	"runtime/debug"
 	"strconv"
-	"strings"
 
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/gallery"
@@ -27,32 +25,21 @@ import (
 func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db().Read.Query(`SELECT id FROM images WHERE is_missing = 1`)
 	if err != nil {
-		w.Write([]byte(`<div class="flash flash-err">Error: ` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", "Error: "+err.Error())
 		return
 	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if scanErr := rows.Scan(&id); scanErr != nil {
-			rows.Close()
-			w.Write([]byte(`<div class="flash flash-err">Error: ` + html.EscapeString(scanErr.Error()) + `</div>`))
-			return
-		}
-		ids = append(ids, id)
-	}
+	ids, scanErr := db.ScanIDs(rows)
 	rows.Close()
-	if iterErr := rows.Err(); iterErr != nil {
-		w.Write([]byte(`<div class="flash flash-err">Error: ` + html.EscapeString(iterErr.Error()) + `</div>`))
+	if scanErr != nil {
+		writeInlineFlash(w, "err", "Error: "+scanErr.Error())
 		return
 	}
 	if len(ids) == 0 {
-		w.Write([]byte(`<div class="flash flash-ok">Removed 0 missing image(s).</div>`))
+		writeInlineFlash(w, "ok", "Removed 0 missing image(s).")
 		return
 	}
 
-	if err := s.jobs.Start(models.JobTypeDelete); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeDelete) {
 		return
 	}
 	thumbnailsPath := s.thumbnailsPath()
@@ -105,7 +92,7 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 		}
 		s.jobs.Complete(fmt.Sprintf("Removed %d missing image(s).", removed))
 	}()
-	w.Write([]byte(`<div class="flash flash-ok">Prune started.</div>`))
+	writeInlineFlash(w, "ok", "Prune started.")
 }
 
 // pruneOrphanedThumbnailsPost queues the orphan sweep as a background
@@ -116,12 +103,10 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 func (s *Server) pruneOrphanedThumbnailsPost(w http.ResponseWriter, r *http.Request) {
 	cx := s.Active()
 	if cx == nil {
-		w.Write([]byte(`<div class="flash flash-err">No active gallery.</div>`))
+		writeInlineFlash(w, "err", "No active gallery.")
 		return
 	}
-	if err := s.jobs.Start(models.JobTypePruneThumbs); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypePruneThumbs) {
 		return
 	}
 	go func() {
@@ -137,23 +122,17 @@ func (s *Server) pruneOrphanedThumbnailsPost(w http.ResponseWriter, r *http.Requ
 		}
 		s.jobs.Complete(fmt.Sprintf("Removed %d orphaned thumbnail(s).", removed))
 	}()
-	w.Write([]byte(`<div class="flash flash-ok">Thumbnail prune started.</div>`))
+	writeInlineFlash(w, "ok", "Thumbnail prune started.")
 }
 
 func (s *Server) recalcTagsPost(w http.ResponseWriter, r *http.Request) {
 	updated, err := s.tagSvc().RecalcCount()
 	s.Active().InvalidateCaches()
 	if err != nil {
-		w.Write([]byte(fmt.Sprintf(
-			`<div class="flash flash-err">Recalc partially completed (%d updated): %s</div>`,
-			updated, html.EscapeString(err.Error()),
-		)))
+		writeInlineFlash(w, "err", fmt.Sprintf("Recalc partially completed (%d updated): %s", updated, err.Error()))
 		return
 	}
-	w.Write([]byte(fmt.Sprintf(
-		`<div class="flash flash-ok">Recalculated %d tag count(s).</div>`,
-		updated,
-	)))
+	writeInlineFlash(w, "ok", fmt.Sprintf("Recalculated %d tag count(s).", updated))
 }
 
 func (s *Server) duplicatesListHandler(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +191,7 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 	selected := r.Form["path_id"]
 	allFlag := r.FormValue("all") == "true"
 	if len(selected) == 0 && !allFlag {
-		w.Write([]byte(`<div class="flash flash-err">No duplicate paths selected.</div>`))
+		writeInlineFlash(w, "err", "No duplicate paths selected.")
 		return
 	}
 
@@ -240,18 +219,17 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 		// Build an IN (?,?,...) query restricted to the supplied path_ids
 		// that still aren't canonical - callers can't use this endpoint to
 		// remove the canonical path for an image.
-		placeholders := strings.Repeat("?,", len(selected))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, 0, len(selected))
+		ids := make([]int64, 0, len(selected))
 		for _, s := range selected {
 			if id, err := strconv.ParseInt(s, 10, 64); err == nil {
-				args = append(args, id)
+				ids = append(ids, id)
 			}
 		}
-		if len(args) == 0 {
-			w.Write([]byte(`<div class="flash flash-err">No valid path_ids in request.</div>`))
+		if len(ids) == 0 {
+			writeInlineFlash(w, "err", "No valid path_ids in request.")
 			return
 		}
+		placeholders, args := db.InPlaceholders(ids)
 		rows, err = s.db().Read.Query(
 			`SELECT ip.id, ip.path FROM image_paths ip
 			 WHERE ip.is_canonical = 0 AND ip.id IN (`+placeholders+`)`,
@@ -259,7 +237,7 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 	if err != nil {
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 
@@ -278,12 +256,12 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 	if iterErr := rows.Err(); iterErr != nil {
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(iterErr.Error()) + `</div>`))
+		writeInlineFlash(w, "err", iterErr.Error())
 		return
 	}
 
 	if len(paths) == 0 {
-		w.Write([]byte(`<div class="flash flash-ok">Removed 0 duplicate path(s).</div>`))
+		writeInlineFlash(w, "ok", "Removed 0 duplicate path(s).")
 		return
 	}
 
@@ -292,56 +270,53 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 	// rebuild-thumbs / vacuum doesn't race the per-path unlinks. The
 	// goroutine drives the actual work; the response returns
 	// immediately and the status bar surfaces progress.
-	if err := s.jobs.Start(models.JobTypeDelete); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeDelete) {
 		return
 	}
 	galleryRoot := s.galleryPath()
 	go func() {
 		ctx := s.jobs.Context()
 		total := len(paths)
-		s.jobs.Update(0, total, fmt.Sprintf("removing 0/%d…", total))
 		removed := 0
 		const chunkSize = 500
+		pathIDs := make([]int64, len(paths))
+		byID := make(map[int64]string, len(paths))
+		for i, p := range paths {
+			pathIDs[i] = p.ID
+			byID[p.ID] = p.Path
+		}
 		// Batch DELETEs by chunk in one transaction each so the writer
 		// pool sees one Exec per 500 rows instead of one per row.
-		for start := 0; start < total; start += chunkSize {
-			if ctx.Err() != nil {
-				s.jobs.Complete(fmt.Sprintf("remove duplicates cancelled (%d/%d)", removed, total))
-				return
-			}
-			end := start + chunkSize
-			if end > total {
-				end = total
-			}
-			chunk := paths[start:end]
-			ph := strings.Repeat("?,", len(chunk))
-			ph = ph[:len(ph)-1]
-			args := make([]any, len(chunk))
-			for i, p := range chunk {
-				args[i] = p.ID
-			}
+		_, cancelled, err := chunkedJob(ctx, s.jobs, pathIDs, chunkSize, "removing", func(chunk []int64) error {
+			ph, args := db.InPlaceholders(chunk)
 			if _, err := s.db().Write.Exec(`DELETE FROM image_paths WHERE id IN (`+ph+`)`, args...); err != nil {
 				logx.Warnf("remove duplicates chunk delete: %v", err)
-				s.jobs.Fail(err.Error())
-				return
+				return err
 			}
-			for _, p := range chunk {
-				if p.Path == "" {
+			for _, id := range chunk {
+				path := byID[id]
+				if path == "" {
 					removed++
 					continue
 				}
-				if err := unlinkUnderGallery(galleryRoot, p.Path); err != nil {
-					logx.Warnf("remove duplicate %q: %v", p.Path, err)
+				if err := unlinkUnderGallery(galleryRoot, path); err != nil {
+					logx.Warnf("remove duplicate %q: %v", path, err)
 				}
 				removed++
 			}
-			s.jobs.Update(removed, total, fmt.Sprintf("removing %d/%d…", removed, total))
+			return nil
+		})
+		if err != nil {
+			s.jobs.Fail(err.Error())
+			return
+		}
+		if cancelled {
+			s.jobs.Complete(fmt.Sprintf("remove duplicates cancelled (%d/%d)", removed, total))
+			return
 		}
 		s.jobs.Complete(fmt.Sprintf("Removed %d duplicate path(s).", removed))
 	}()
-	w.Write([]byte(`<div class="flash flash-ok">Duplicate-path removal started.</div>`))
+	writeInlineFlash(w, "ok", "Duplicate-path removal started.")
 }
 
 // promoteAliasPathPost flips an alias path to the canonical path for
@@ -357,13 +332,13 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 	pathID, err := strconv.ParseInt(pathIDRaw, 10, 64)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Invalid path id.</div>`))
+		writeInlineFlash(w, "err", "Invalid path id.")
 		return
 	}
 	tx, err := s.db().Write.Begin()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	defer tx.Rollback()
@@ -372,42 +347,42 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 	var alreadyCanonical int
 	if err := tx.QueryRow(`SELECT image_id, path, is_canonical FROM image_paths WHERE id = ?`, pathID).Scan(&imageID, &newPath, &alreadyCanonical); err != nil {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`<div class="flash flash-err">Path not found.</div>`))
+		writeInlineFlash(w, "err", "Path not found.")
 		return
 	}
 	if alreadyCanonical == 1 {
-		w.Write([]byte(`<div class="flash flash-ok">Already canonical.</div>`))
+		writeInlineFlash(w, "ok", "Already canonical.")
 		return
 	}
 	if _, err := tx.Exec(`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ?`, imageID); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	if _, err := tx.Exec(`UPDATE image_paths SET is_canonical = 1 WHERE id = ?`, pathID); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	if _, err := tx.Exec(`UPDATE images SET canonical_path = ? WHERE id = ?`, newPath, imageID); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	if err := tx.Commit(); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
-	w.Write([]byte(`<div class="flash flash-ok">Promoted to canonical.</div>`))
+	writeInlineFlash(w, "ok", "Promoted to canonical.")
 }
 
 func (s *Server) rebuildThumbnailsPost(w http.ResponseWriter, r *http.Request) {
 	if err := s.startRebuildThumbsJob(s.Active()); err != nil {
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
-	w.Write([]byte(`<div class="flash flash-ok">Thumbnail rebuild started.</div>`))
+	writeInlineFlash(w, "ok", "Thumbnail rebuild started.")
 }
 
 // startRebuildThumbsJob queues a rebuild-thumbs job against the supplied
@@ -447,6 +422,7 @@ func (s *Server) startRebuildThumbsJob(cx *galleryCtx) error {
 	}
 	thumbnailsPath := cx.ThumbnailsPath
 	galleryName := cx.Name
+	database := cx.DB
 	go func() {
 		ctx := s.jobs.Context()
 		processed := 0
@@ -460,6 +436,20 @@ func (s *Server) startRebuildThumbsJob(cx *galleryCtx) error {
 			if err := gallery.Generate(img.Path, thumbnailsPath, img.ID, img.FileType); err != nil {
 				logx.Warnf("rebuild thumbnail for %d: %v", img.ID, err)
 			}
+			// Backfill width/height for video rows that pre-date the
+			// ingest-time ffprobe probe. Cheap (one ffprobe per row, only
+			// when the file_type is video) and rides the existing rebuild
+			// iteration so the operator gets the fix without a new button.
+			if gallery.IsVideoType(img.FileType) {
+				if w, h, ok := gallery.ProbeVideoDimensions(img.Path); ok {
+					if _, err := database.Write.ExecContext(ctx,
+						`UPDATE images SET width = ?, height = ? WHERE id = ?`,
+						w, h, img.ID,
+					); err != nil {
+						logx.Warnf("backfill video dimensions for %d: %v", img.ID, err)
+					}
+				}
+			}
 			processed++
 		}
 		s.jobs.Complete(fmt.Sprintf("[%s] rebuilt %d thumbnail(s).", galleryName, processed))
@@ -472,7 +462,7 @@ func (s *Server) startRebuildThumbsJob(cx *galleryCtx) error {
 // Maintenance section button.
 func (s *Server) computePhashesPost(w http.ResponseWriter, r *http.Request) {
 	if err := s.jobs.Start(models.JobTypePhash); err != nil {
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+		writeInlineFlash(w, "err", "A job is already running.")
 		return
 	}
 	database := s.db()
@@ -503,7 +493,7 @@ func (s *Server) computePhashesPost(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jobs.Complete(fmt.Sprintf("Computed perceptual hashes for %d image(s) (%d updated).", processed, updated))
 	}()
-	w.Write([]byte(`<div class="flash flash-ok">Perceptual-hash backfill started.</div>`))
+	writeInlineFlash(w, "ok", "Perceptual-hash backfill started.")
 }
 
 func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
@@ -513,7 +503,7 @@ func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
 	// usual "a job is already running" message instead of silently
 	// queueing behind the writer.
 	if err := s.jobs.Start(models.JobTypeVacuum); err != nil {
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+		writeInlineFlash(w, "err", "A job is already running.")
 		return
 	}
 	// Run the (long) VACUUM + checkpoint sequence in a goroutine so the
@@ -540,7 +530,7 @@ func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jobs.Complete(fmt.Sprintf("Vacuumed (reclaimed %s).", humanBytesFmt(freed)))
 	}()
-	w.Write([]byte(`<div class="flash flash-ok">Vacuum started. Watch the status bar for the reclaimed-space report.</div>`))
+	writeInlineFlash(w, "ok", "Vacuum started. Watch the status bar for the reclaimed-space report.")
 }
 
 // freeMemoryPost runs the on-demand version of runMemoryReclaim: trims
@@ -553,7 +543,7 @@ func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) freeMemoryPost(w http.ResponseWriter, r *http.Request) {
 	if err := s.jobs.Start(models.JobTypeFreeMemory); err != nil {
 		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is running; try again when it finishes.</div>`))
+		writeInlineFlash(w, "err", "A job is running; try again when it finishes.")
 		return
 	}
 	defer s.jobs.Complete("Memory caches released.")
@@ -573,13 +563,10 @@ func (s *Server) freeMemoryPost(w http.ResponseWriter, r *http.Request) {
 	tagger.ReleaseAll()
 	after := readVmRSS()
 	if before > 0 && after > 0 && before > after {
-		w.Write([]byte(fmt.Sprintf(
-			`<div class="flash flash-ok">Freed %s.</div>`,
-			html.EscapeString(humanBytesFmt(int64(before-after))),
-		)))
+		writeInlineFlash(w, "ok", "Freed "+humanBytesFmt(int64(before-after))+".")
 		return
 	}
-	w.Write([]byte(`<div class="flash flash-ok">Memory caches released.</div>`))
+	writeInlineFlash(w, "ok", "Memory caches released.")
 }
 
 // dbFileSize returns the total on-disk footprint of the SQLite database -
@@ -638,7 +625,7 @@ func (s *Server) reExtractMetadataPost(w http.ResponseWriter, r *http.Request) {
 		WHERE i.is_missing = 0
 	`)
 	if err != nil {
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	var imgs []imgRow
@@ -652,12 +639,12 @@ func (s *Server) reExtractMetadataPost(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 
 	if err := s.jobs.Start(models.JobTypeReExtract); err != nil {
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+		writeInlineFlash(w, "err", "A job is already running.")
 		return
 	}
 
@@ -739,7 +726,7 @@ func (s *Server) reExtractMetadataPost(w http.ResponseWriter, r *http.Request) {
 		s.jobs.Complete(fmt.Sprintf("Re-extracted metadata for %d image(s) (%d updated).", processed, updated))
 	}()
 
-	w.Write([]byte(`<div class="flash flash-ok">Re-extraction started.</div>`))
+	writeInlineFlash(w, "ok", "Re-extraction started.")
 }
 
 // reExtractApply commits a re-extracted image's source_type, deletes the

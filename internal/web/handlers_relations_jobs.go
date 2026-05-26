@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"fmt"
-	"html"
 	"net/http"
 	"strconv"
 
@@ -24,7 +23,7 @@ func (s *Server) findRelationPairsPost(w http.ResponseWriter, r *http.Request) {
 	cx := s.Active()
 	if cx == nil || cx.DB == nil || cx.bkTree == nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">No active gallery.</div>`))
+		writeInlineFlash(w, "err", "No active gallery.")
 		return
 	}
 	s.cfgMu.Lock()
@@ -44,13 +43,11 @@ func (s *Server) findRelationPairsPost(w http.ResponseWriter, r *http.Request) {
 	// script) can't drop the queue with a single missing flag.
 	if replace && r.FormValue("confirm") != "REBUILD" {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">replace=true requires confirm=REBUILD.</div>`))
+		writeInlineFlash(w, "err", "replace=true requires confirm=REBUILD.")
 		return
 	}
 
-	if err := s.jobs.Start(models.JobTypeRelations); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeRelations) {
 		return
 	}
 	database := cx.DB
@@ -76,7 +73,7 @@ func (s *Server) findRelationPairsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jobs.Complete(fmt.Sprintf("find-pairs added %d candidate(s).", added))
 	}()
-	w.Write([]byte(`<div class="flash flash-ok">Find-pairs started.</div>`))
+	writeInlineFlash(w, "ok", "Find-pairs started.")
 }
 
 // resetSkippedPost clears skipped_at on every potential_relation_pairs
@@ -89,7 +86,7 @@ func (s *Server) resetSkippedPost(w http.ResponseWriter, r *http.Request) {
 	cx := s.Active()
 	if cx == nil || cx.DB == nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">No active gallery.</div>`))
+		writeInlineFlash(w, "err", "No active gallery.")
 		return
 	}
 	res, err := cx.DB.Write.ExecContext(r.Context(),
@@ -97,9 +94,9 @@ func (s *Server) resetSkippedPost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logx.Warnf("reset skipped: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	n, _ := res.RowsAffected()
-	fmt.Fprintf(w, `<div class="flash flash-ok">Reset %d skipped pair(s).</div>`, n)
+	writeInlineFlash(w, "ok", fmt.Sprintf("Reset %d skipped pair(s).", n))
 }

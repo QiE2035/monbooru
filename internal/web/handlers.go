@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"html"
 	"net/http"
 	"time"
 
@@ -33,32 +34,22 @@ func setFlashHeader(w http.ResponseWriter, text, kind string, extras map[string]
 	}
 }
 
-func (s *Server) helpHandler(w http.ResponseWriter, r *http.Request) {
-	base := s.base(r, "help", "Help - "+s.booruName())
-	data := map[string]any{
-		"Title":         base.Title,
-		"ActiveNav":     base.ActiveNav,
-		"CSRFToken":     base.CSRFToken,
-		"AuthEnabled":   base.AuthEnabled,
-		"Degraded":      base.Degraded,
-		"Version":       base.Version,
-		"RepoURL":       base.RepoURL,
-		"Variant":       base.Variant,
-		"CustomCSS":     base.CustomCSS,
-		"BooruName":     base.BooruName,
-		"BooruLogo":     base.BooruLogo,
-		"ActiveGallery": base.ActiveGallery,
-		"Galleries":     base.Galleries,
-		"VisibleCount":     base.VisibleCount,
-		"InboxCount":       base.InboxCount,
-		"InboxNavActive":   base.InboxNavActive,
-		"TagCount":         base.TagCount,
-		"CollectionsCount": base.CollectionsCount,
-		"RatingLevels":  base.RatingLevels,
-		"ActiveRating":  base.ActiveRating,
-		"RequestStart":  base.RequestStart,
+// writeInlineFlash writes a `<div class="flash flash-{kind}">...</div>`
+// fragment with text HTML-escaped, for handlers that need the flash
+// payload in the response body (htmx partial swap target) rather than
+// only as an HX-Trigger. kind is "ok" / "err" / "warn" (callers pass
+// the bare suffix; the function adds the `flash-` prefix). text is
+// taken verbatim and HTML-escaped here so every call site shares one
+// escape boundary.
+func writeInlineFlash(w http.ResponseWriter, kind, text string) {
+	if kind == "" {
+		kind = "ok"
 	}
-	s.renderTemplate(w, "help.html", data)
+	w.Write([]byte(`<div class="flash flash-` + kind + `">` + html.EscapeString(text) + `</div>`))
+}
+
+func (s *Server) helpHandler(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, "help.html", s.base(r, "help", "Help - "+s.booruName()).AsMap())
 }
 
 // notFoundHandler renders a styled 404 for any unmatched GET path. The

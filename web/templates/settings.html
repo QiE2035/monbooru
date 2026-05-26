@@ -150,13 +150,16 @@
     <dialog id="gallery-add-dialog">
       <form hx-post="/settings/galleries" hx-target="#flash-gallery-add" hx-swap="innerHTML"
             hx-encoding="multipart/form-data" class="add-gallery-form"
+            hx-headers='{"X-CSRF-Token": "{{$csrf}}"}'
             hx-on::before-request="setAddGalleryBusy(this, true)"
             hx-on::after-request="onAddGalleryResponse(this)">
         <input type="hidden" name="_csrf" value="{{$csrf}}">
         <p>Add a new gallery</p>
         <div class="field">
           <label>Name</label>
-          <input type="text" name="name" required pattern="[A-Za-z0-9_\-]+">
+          <input type="text" name="name" required pattern="[A-Za-z0-9_\-]+"
+                 title="Letters, digits, underscore, dash"
+                 placeholder="letters / digits / _ / -">
         </div>
         <div class="field">
           <label>Gallery path</label>
@@ -226,7 +229,9 @@
       <p>Rename <strong id="gallery-rename-src"></strong></p>
       <div class="field">
         <label>New name</label>
-        <input type="text" name="new_name" id="gallery-rename-input" required pattern="[A-Za-z0-9_\-]+" autocomplete="off">
+        <input type="text" name="new_name" id="gallery-rename-input" required pattern="[A-Za-z0-9_\-]+" autocomplete="off"
+               title="Letters, digits, underscore, dash"
+               placeholder="letters / digits / _ / -">
       </div>
       <div id="flash-gallery-rename"></div>
       <div class="dialog-actions">
@@ -528,7 +533,11 @@
             </td>
             <td>
               {{if $r.Supported}}
-              <button type="button" class="btn-sm" onclick="document.getElementById('tagger-cmd-{{$r.Name}}').showModal()">Show instructions</button>
+              <button type="button" class="btn-sm btn-tagger-cmd"
+                      data-tagger-name="{{$r.Name}}"
+                      data-tagger-desc="{{$r.Description}}"
+                      data-host-cmd="{{$r.HostCommand}}"
+                      data-docker-cmd="{{$r.DockerCommand}}">Show instructions</button>
               {{end}}
             </td>
             <td>
@@ -603,25 +612,23 @@
       <div id="tagger-gal-{{.Name}}-body">Loading...</div>
     </dialog>
     {{end}}{{end}}
-    {{range $rows}}{{if .Supported}}
-    <dialog id="tagger-cmd-{{.Name}}">
-      <p><strong>{{.Name}}</strong> - {{.Description}}</p>
+    <dialog id="tagger-cmd-dialog">
+      <p><strong id="tagger-cmd-name"></strong> - <span id="tagger-cmd-desc"></span></p>
       <p class="field-hint">Run one of the commands below on a host with internet access, then reload the Settings page.</p>
       <p class="code-block-label"><strong>Direct host install</strong> <span class="field-hint">(run inside <code>{{$cfg.Paths.ModelPath}}</code>)</span>
-        <button type="button" class="btn-sm code-block-copy" data-copy="{{.HostCommand}}" title="Copy command">Copy</button>
+        <button type="button" class="btn-sm code-block-copy" id="tagger-cmd-host-copy" title="Copy command">Copy</button>
         <span class="copy-flash" hidden>copied</span>
       </p>
-      <pre class="code-block"><code>{{.HostCommand}}</code></pre>
+      <pre class="code-block"><code id="tagger-cmd-host"></code></pre>
       <p class="code-block-label"><strong>Docker (monbooru container)</strong>
-        <button type="button" class="btn-sm code-block-copy" data-copy="{{.DockerCommand}}" title="Copy command">Copy</button>
+        <button type="button" class="btn-sm code-block-copy" id="tagger-cmd-docker-copy" title="Copy command">Copy</button>
         <span class="copy-flash" hidden>copied</span>
       </p>
-      <pre class="code-block"><code>{{.DockerCommand}}</code></pre>
+      <pre class="code-block"><code id="tagger-cmd-docker"></code></pre>
       <div class="dialog-actions">
         <button type="button" onclick="this.closest('dialog').close()">Close</button>
       </div>
     </dialog>
-    {{end}}{{end}}
   </section>
 
   <section id="relations" class="settings-section">

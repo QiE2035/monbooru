@@ -77,15 +77,12 @@ func LoadImageRelations(database *db.DB, imageID int64) (*ImageRelations, error)
 		if err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			dg.Members = append(dg.Members, id)
-		}
+		members, scanErr := db.ScanIDs(rows)
 		rows.Close()
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		dg.Members = members
 		out.DupGroup = &dg
 	}
 
@@ -105,15 +102,12 @@ func LoadImageRelations(database *db.DB, imageID int64) (*ImageRelations, error)
 		if err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			out.AltGroupMembers = append(out.AltGroupMembers, id)
-		}
+		members, scanErr := db.ScanIDs(rows)
 		rows.Close()
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out.AltGroupMembers = members
 	}
 
 	// Version edges.
@@ -152,14 +146,11 @@ func LoadImageRelations(database *db.DB, imageID int64) (*ImageRelations, error)
 	if err != nil {
 		return nil, err
 	}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		out.Derivatives = append(out.Derivatives, id)
-	}
+	derivatives, scanErr := db.ScanIDs(rows)
 	rows.Close()
+	if scanErr != nil {
+		return nil, scanErr
+	}
+	out.Derivatives = derivatives
 	return out, nil
 }

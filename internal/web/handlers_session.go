@@ -51,14 +51,16 @@ type sessionPairView struct {
 }
 
 // sessionImageView mirrors models.Image but only carries the bits the
-// session UI renders (id, size, dimensions, tag count). Loaded
-// alongside the queue row in a single SELECT.
+// session UI renders (id, size, dimensions, tag count, file type).
+// Loaded alongside the queue row in a single SELECT. FileType drives
+// the compare slider's <img>-vs-<video> branch.
 type sessionImageView struct {
 	ID       int64
 	Width    sql.NullInt64
 	Height   sql.NullInt64
 	FileSize int64
 	Filename string
+	FileType string
 	TagCount int
 }
 
@@ -66,9 +68,8 @@ type sessionImageView struct {
 // according to the persisted order mode (or the ?order= override)
 // and serves the two-cell swipe view.
 func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
-	cx := s.Active()
-	if cx == nil || cx.DB == nil {
-		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+	cx, ok := s.requireActive(w)
+	if !ok {
 		return
 	}
 	order := r.URL.Query().Get("order")
@@ -197,8 +198,8 @@ func loadNextPair(cx *galleryCtx, order string, ceiling *Ceiling) (*sessionPairV
 	}
 	selectQ := `
 		SELECT p.a_image_id, p.b_image_id, p.distance,
-		       ia.canonical_path, COALESCE(ia.width, 0), COALESCE(ia.height, 0), ia.file_size,
-		       ib.canonical_path, COALESCE(ib.width, 0), COALESCE(ib.height, 0), ib.file_size
+		       ia.canonical_path, COALESCE(ia.width, 0), COALESCE(ia.height, 0), ia.file_size, ia.file_type,
+		       ib.canonical_path, COALESCE(ib.width, 0), COALESCE(ib.height, 0), ib.file_size, ib.file_type
 		FROM potential_relation_pairs p
 		JOIN images ia ON ia.id = p.a_image_id
 		JOIN images ib ON ib.id = p.b_image_id`
@@ -211,8 +212,8 @@ func loadNextPair(cx *galleryCtx, order string, ceiling *Ceiling) (*sessionPairV
 	view := sessionPairView{Order: order, Remaining: visible}
 	if err := cx.DB.Read.QueryRow(selectQ, args...).Scan(
 		&view.A.ID, &view.B.ID, &view.Distance,
-		&aPath, &aW, &aH, &view.A.FileSize,
-		&bPath, &bW, &bH, &view.B.FileSize,
+		&aPath, &aW, &aH, &view.A.FileSize, &view.A.FileType,
+		&bPath, &bW, &bH, &view.B.FileSize, &view.B.FileType,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, visible, rawRemaining, nil
@@ -445,7 +446,7 @@ func (s *Server) sessionDecidePost(w http.ResponseWriter, r *http.Request) {
 		err = cx.RelationsSvc.AddNotRelated(left, right)
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Unknown decision.</div>`))
+		writeInlineFlash(w, "err", "Unknown decision.")
 		return
 	}
 	if err != nil {

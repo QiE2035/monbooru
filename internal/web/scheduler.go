@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/leqwin/monbooru/internal/config"
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/relations"
@@ -276,22 +277,19 @@ func (s *Server) runOrphanSweep(ctx context.Context, cx *galleryCtx) (removed, p
 		return 0, 0, 0, fmt.Errorf("read thumbnails dir: %w", err)
 	}
 	total = len(entries)
-	known := map[int64]struct{}{}
 	rows, err := cx.DB.Read.QueryContext(ctx, `SELECT id FROM images`)
 	if err != nil {
 		return 0, 0, total, err
 	}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err == nil {
-			known[id] = struct{}{}
-		}
-	}
-	if iterErr := rows.Err(); iterErr != nil {
-		rows.Close()
-		return 0, 0, total, fmt.Errorf("cursor: %w", iterErr)
-	}
+	ids, scanErr := db.ScanIDs(rows)
 	rows.Close()
+	if scanErr != nil {
+		return 0, 0, total, fmt.Errorf("cursor: %w", scanErr)
+	}
+	known := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		known[id] = struct{}{}
+	}
 
 	s.jobs.Update(0, total, fmt.Sprintf("[%s] pruning 0/%d…", cx.Name, total))
 	for i, e := range entries {
@@ -330,7 +328,6 @@ func (s *Server) runOrphanSweep(ctx context.Context, cx *galleryCtx) (removed, p
 }
 
 func (s *Server) scheduledAutotag(cx *galleryCtx) error {
-	var ids []int64
 	rows, err := cx.DB.Read.Query(
 		`SELECT i.id FROM images i WHERE i.is_missing = 0
 		 AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = i.id AND it.is_auto = 1)`,
@@ -339,13 +336,12 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) error {
 		logx.Warnf("scheduler autotag %q: %v", cx.Name, err)
 		return err
 	}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err == nil {
-			ids = append(ids, id)
-		}
-	}
+	ids, scanErr := db.ScanIDs(rows)
 	rows.Close()
+	if scanErr != nil {
+		logx.Warnf("scheduler autotag %q: %v", cx.Name, scanErr)
+		return scanErr
+	}
 	if len(ids) == 0 {
 		return nil
 	}

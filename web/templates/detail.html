@@ -59,7 +59,7 @@
       {{if .RefURL}}
       <a href="{{.RefURL}}" class="back-link">← Previous image</a>
       {{else if or .BackQuery .BackSort}}
-      <a href="/?q={{.BackQuery}}&sort={{.BackSort}}&order={{.BackOrder}}{{if .BackPage}}&page={{.BackPage}}{{end}}{{if .BackSeed}}&seed={{.BackSeed}}{{end}}#img-{{.Image.ID}}" class="back-link">← Back</a>
+      <a href="/?q={{urlQ .BackQuery}}&sort={{.BackSort}}&order={{.BackOrder}}{{if .BackPage}}&page={{.BackPage}}{{end}}{{if .BackSeed}}&seed={{.BackSeed}}{{end}}#img-{{.Image.ID}}" class="back-link">← Back</a>
       {{else}}
       <a href="/#img-{{.Image.ID}}" class="back-link">← Back</a>
       {{end}}
@@ -71,13 +71,13 @@
     <div class="detail-topbar-right">
       <div class="detail-meta-nav">
         {{if .PrevID}}
-        <a href="/images/{{deref64 .PrevID}}?back_q={{.BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}"
+        <a href="/images/{{deref64 .PrevID}}?back_q={{urlQ .BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}"
            class="nav-arrow" title="Previous image (←)">← Prev</a>
         {{else}}
         <span class="nav-arrow nav-arrow-placeholder" aria-hidden="true">← Prev</span>
         {{end}}
         {{if .NextID}}
-        <a href="/images/{{deref64 .NextID}}?back_q={{.BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}"
+        <a href="/images/{{deref64 .NextID}}?back_q={{urlQ .BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}"
            class="nav-arrow" title="Next image (→)">Next →</a>
         {{else}}
         <span class="nav-arrow nav-arrow-placeholder" aria-hidden="true">Next →</span>
@@ -109,96 +109,24 @@
     </div>
   </div>
 
-  <dialog id="external-source-dialog">
-    <form hx-post="/images/{{.Image.ID}}/external"
-          hx-target="#external-source-error"
+  <dialog id="external-edit-dialog">
+    <form id="external-edit-form" hx-post="/images/{{.Image.ID}}/external"
+          hx-target="#external-edit-error"
           hx-swap="innerHTML"
-          hx-on::after-request="onExternalEditResponse(event, 'external-source-dialog')">
+          hx-on::after-request="onExternalEditResponse(event, 'external-edit-dialog')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <p>Edit <strong>Source</strong></p>
+      <p>Edit <strong id="external-edit-title">Source</strong></p>
       <div class="field">
-        <label>Source label (max 200 chars)</label>
-        <div class="series-input-wrap">
-          <input type="text" name="source" id="external-source-input" maxlength="200" autocomplete="off"
-                 hx-get="/internal/source/suggest"
-                 hx-trigger="input changed delay:200ms"
-                 hx-target="#external-source-suggest"
-                 hx-swap="innerHTML"
-                 hx-vals='js:{prefix: document.getElementById("external-source-input").value}'
-                 onkeydown="handleSuggestKey(event, 'external-source-suggest', 'external-source-input')">
-          <div id="external-source-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
+        <label id="external-edit-label">Source label (max 200 chars)</label>
+        <div id="external-edit-input-wrap" class="series-input-wrap">
+          <input id="external-edit-input" type="text" name="source" maxlength="200" autocomplete="off">
+          <div id="external-edit-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
         </div>
       </div>
-      <div id="external-source-error"></div>
+      <div id="external-edit-error"></div>
       <div class="dialog-actions">
         <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('external-source-dialog').close()">Cancel</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="external-url-dialog">
-    <form hx-post="/images/{{.Image.ID}}/external"
-          hx-target="#external-url-error"
-          hx-swap="innerHTML"
-          hx-on::after-request="onExternalEditResponse(event, 'external-url-dialog')">
-      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <p>Edit <strong>URL</strong></p>
-      <div class="field">
-        <label>Original URL (must start with http:// or https://; max 2048 chars)</label>
-        <input type="url" name="url" id="external-url-input" maxlength="2048" autocomplete="off" placeholder="https://...">
-      </div>
-      <div id="external-url-error"></div>
-      <div class="dialog-actions">
-        <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('external-url-dialog').close()">Cancel</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="external-collection-dialog">
-    <form hx-post="/images/{{.Image.ID}}/external"
-          hx-target="#external-collection-error"
-          hx-swap="innerHTML"
-          hx-on::after-request="onExternalEditResponse(event, 'external-collection-dialog')">
-      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <p>Edit <strong>Collection</strong></p>
-      <div class="field">
-        <label>Collection label (max 200 chars)</label>
-        <div class="series-input-wrap">
-          <input type="text" name="collection" id="external-collection-input" maxlength="200" autocomplete="off"
-                 hx-get="/internal/collection/suggest"
-                 hx-trigger="input changed delay:200ms"
-                 hx-target="#external-collection-suggest"
-                 hx-swap="innerHTML"
-                 hx-vals='js:{prefix: document.getElementById("external-collection-input").value}'
-                 onkeydown="handleSuggestKey(event, 'external-collection-suggest', 'external-collection-input')">
-          <div id="external-collection-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
-        </div>
-      </div>
-      <div id="external-collection-error"></div>
-      <div class="dialog-actions">
-        <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('external-collection-dialog').close()">Cancel</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="external-order-dialog">
-    <form hx-post="/images/{{.Image.ID}}/external"
-          hx-target="#external-order-error"
-          hx-swap="innerHTML"
-          hx-on::after-request="onExternalEditResponse(event, 'external-order-dialog')">
-      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <p>Edit <strong>Order within collection</strong></p>
-      <div class="field">
-        <label>Order (optional, 1 or higher; leave blank to clear)</label>
-        <input type="number" name="collection_order" id="external-order-input" min="1" autocomplete="off">
-      </div>
-      <div id="external-order-error"></div>
-      <div class="dialog-actions">
-        <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('external-order-dialog').close()">Cancel</button>
+        <button type="button" onclick="document.getElementById('external-edit-dialog').close()">Cancel</button>
       </div>
     </form>
   </dialog>
@@ -459,22 +387,56 @@
       document.addEventListener('click', function(e) {
         var btn = e.target.closest && e.target.closest('.btn-edit-external');
         if (!btn) return;
-        var field = btn.dataset.field;
-        var value = btn.dataset.value || '';
-        var inputId = 'external-' + field + '-input';
-        var dialogId = 'external-' + field + '-dialog';
-        var input = document.getElementById(inputId);
-        var dlg = document.getElementById(dialogId);
-        if (!input || !dlg) return;
-        input.value = value;
-        if (field === 'collection') {
-          var dd = document.getElementById('external-collection-suggest');
-          if (dd) dd.innerHTML = '';
+        var dlg = document.getElementById('external-edit-dialog');
+        var input = document.getElementById('external-edit-input');
+        if (!dlg || !input) return;
+        var shape = externalEditShape(btn.dataset.field);
+        document.getElementById('external-edit-title').textContent = shape.title;
+        document.getElementById('external-edit-label').textContent = shape.label;
+        input.type = shape.type;
+        input.name = shape.name;
+        input.value = btn.dataset.value || '';
+        input.placeholder = shape.placeholder || '';
+        if (shape.maxlength) input.setAttribute('maxlength', shape.maxlength); else input.removeAttribute('maxlength');
+        if (shape.min) input.setAttribute('min', shape.min); else input.removeAttribute('min');
+        var suggest = document.getElementById('external-edit-suggest');
+        suggest.innerHTML = '';
+        if (shape.suggestURL) {
+          input.setAttribute('hx-get', shape.suggestURL);
+          input.setAttribute('hx-trigger', 'input changed delay:200ms');
+          input.setAttribute('hx-target', '#external-edit-suggest');
+          input.setAttribute('hx-swap', 'innerHTML');
+          input.setAttribute('hx-vals', 'js:{prefix: document.getElementById("external-edit-input").value}');
+          input.setAttribute('onkeydown', "handleSuggestKey(event, 'external-edit-suggest', 'external-edit-input')");
+          if (window.htmx) window.htmx.process(input);
+          suggest.hidden = false;
+        } else {
+          ['hx-get','hx-trigger','hx-target','hx-swap','hx-vals','onkeydown'].forEach(function(a){ input.removeAttribute(a); });
+          suggest.hidden = true;
         }
+        document.getElementById('external-edit-error').innerHTML = '';
         dlg.showModal();
         input.focus();
         input.select();
       });
+      function externalEditShape(field) {
+        switch (field) {
+          case 'url':
+            return {title: 'URL', label: 'Original URL (must start with http:// or https://; max 2048 chars)',
+                    type: 'url', name: 'url', maxlength: '2048', placeholder: 'https://...'};
+          case 'collection':
+            return {title: 'Collection', label: 'Collection label (max 200 chars)',
+                    type: 'text', name: 'collection', maxlength: '200',
+                    suggestURL: '/internal/collection/suggest'};
+          case 'order':
+            return {title: 'Order within collection', label: 'Order (optional, 1 or higher; leave blank to clear)',
+                    type: 'number', name: 'collection_order', min: '1'};
+          default:
+            return {title: 'Source', label: 'Source label (max 200 chars)',
+                    type: 'text', name: 'source', maxlength: '200',
+                    suggestURL: '/internal/source/suggest'};
+        }
+      }
       function submitRemoveAutoTags(imageId) {
         var form = document.getElementById('remove-auto-form');
         var names = Array.from(form.querySelectorAll('input[name="taggers"]:checked')).map(function(cb){ return cb.value; });
@@ -739,10 +701,10 @@
       </div>
     </details>
     <div id="related-entries-panel"
-         hx-get="/internal/images/{{.Image.ID}}/related-entries?back_q={{.BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}"
+         hx-get="/internal/images/{{.Image.ID}}/related-entries?back_q={{urlQ .BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}"
          hx-trigger="load, relations-changed"
          hx-swap="innerHTML"></div>
-    <div hx-get="/images/{{.Image.ID}}/related?back_q={{.BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}" hx-trigger="load" hx-swap="outerHTML"></div>
+    <div hx-get="/images/{{.Image.ID}}/related?back_q={{urlQ .BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}" hx-trigger="load" hx-swap="outerHTML"></div>
     </div>{{/* end detail-meta-col */}}
   </div>
 </div>

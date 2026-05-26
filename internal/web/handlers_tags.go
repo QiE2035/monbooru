@@ -2,12 +2,12 @@ package web
 
 import (
 	"fmt"
-	"html"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/tags"
@@ -206,24 +206,16 @@ func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
 			// the dialog's after-request hook detects the
 			// flash-err class to stay open instead of closing.
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Write([]byte(`<div class="flash flash-err">Invalid source tag.</div>`))
+			writeInlineFlash(w, "err", "Invalid source tag.")
 			return
 		}
 		http.Error(w, "bad alias id", http.StatusBadRequest)
 		return
 	}
 
-	mergeErr := func(msg string) {
-		if isHTMXRequest(r) {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(msg) + `</div>`))
-			return
-		}
-		http.Error(w, msg, http.StatusBadRequest)
-	}
 	canonID, msg := s.resolveOrCreateCanonicalTag(canonInput)
 	if msg != "" {
-		mergeErr(msg)
+		flashErr(w, r, http.StatusBadRequest, msg)
 		return
 	}
 
@@ -233,7 +225,7 @@ func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
 	if err := s.tagSvc().MergeTags(aliasID, canonID); err != nil {
 		if isHTMXRequest(r) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+			writeInlineFlash(w, "err", err.Error())
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -306,14 +298,9 @@ func (s *Server) resolveOrCreateCanonicalTag(input string) (int64, string) {
 		return 0, "Tag lookup failed: " + err.Error()
 	}
 	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			logx.Warnf("resolveOrCreateCanonicalTag scan: %v", err)
-			continue
-		}
-		ids = append(ids, id)
+	ids, err := db.ScanIDs(rows)
+	if err != nil {
+		return 0, "Tag lookup failed: " + err.Error()
 	}
 	switch len(ids) {
 	case 1:
@@ -340,21 +327,13 @@ func (s *Server) createTagPost(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	catIDStr := r.FormValue("category_id")
 
-	flashErr := func(msg string) {
-		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(msg) + `</div>`))
-			return
-		}
-		http.Error(w, msg, http.StatusBadRequest)
-	}
-
 	catID, err := strconv.ParseInt(catIDStr, 10, 64)
 	if err != nil {
-		flashErr("Invalid category.")
+		flashErr(w, r, http.StatusBadRequest, "Invalid category.")
 		return
 	}
 	if _, err := s.tagSvc().GetOrCreateTag(name, catID); err != nil {
-		flashErr(err.Error())
+		flashErr(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 	s.Active().InvalidateCaches()
@@ -377,7 +356,7 @@ func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
 
 	flashErr := func(msg string) {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(msg) + `</div>`))
+			writeInlineFlash(w, "err", msg)
 			return
 		}
 		http.Error(w, msg, http.StatusBadRequest)
@@ -410,10 +389,8 @@ func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteTagHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	if err := s.tagSvc().DeleteTag(id); err != nil {
@@ -443,16 +420,14 @@ func (s *Server) deleteTagsSearchPost(w http.ResponseWriter, r *http.Request) {
 	ids, err := s.tagSvc().ListTagIDs(filter)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	if len(ids) == 0 {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	if err := s.jobs.Start(models.JobTypeTag); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeTag) {
 		return
 	}
 	go s.runDeleteTagsByIDs(ids)
@@ -494,10 +469,8 @@ func (s *Server) runDeleteTagsByIDs(ids []int64) {
 }
 
 func (s *Server) renameTagPost(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	if !parseFormOK(w, r) {
@@ -506,7 +479,7 @@ func (s *Server) renameTagPost(w http.ResponseWriter, r *http.Request) {
 	newName := strings.TrimSpace(r.FormValue("name"))
 	if newName == "" {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">Name required.</div>`))
+			writeInlineFlash(w, "err", "Name required.")
 			return
 		}
 		http.Error(w, "name required", http.StatusBadRequest)
@@ -514,7 +487,7 @@ func (s *Server) renameTagPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.tagSvc().RenameTag(id, newName); err != nil {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+			writeInlineFlash(w, "err", err.Error())
 			return
 		}
 		http.Error(w, err.Error(), http.StatusBadRequest)

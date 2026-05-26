@@ -94,11 +94,18 @@ func tokenize(query string) []token {
 		// Read a term up to whitespace, supporting quoted filter values
 		// like `folder:"my set 1"` and bare quoted tag tokens like
 		// `"red hair"` whose internal spaces are collapsed to
-		// underscores in parseTerm.
+		// underscores in parseTerm. Backslash escapes (`\"`, `\\`) are
+		// honored inside the quoted run so an operator can embed a
+		// literal quote in a folder / source / collection value
+		// without the scanner ending the token at the inner quote.
 		j := i
 		if query[j] == '"' {
 			j++
 			for j < len(query) && query[j] != '"' {
+				if query[j] == '\\' && j+1 < len(query) {
+					j += 2
+					continue
+				}
 				j++
 			}
 			if j < len(query) {
@@ -109,6 +116,10 @@ func tokenize(query string) []token {
 				if query[j] == ':' && j+1 < len(query) && query[j+1] == '"' {
 					j += 2 // skip :"
 					for j < len(query) && query[j] != '"' {
+						if query[j] == '\\' && j+1 < len(query) {
+							j += 2
+							continue
+						}
 						j++
 					}
 					if j < len(query) {
@@ -246,7 +257,7 @@ func (p *parser) parseTerm() Expr {
 		key := strings.ToLower(t.val[:colonIdx])
 		val := t.val[colonIdx+1:]
 		if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
-			val = val[1 : len(val)-1]
+			val = unescapeQuoted(val[1 : len(val)-1])
 		}
 		return FilterExpr{Key: key, Val: val}
 
@@ -257,7 +268,7 @@ func (p *parser) parseTerm() Expr {
 		// quotes and collapse internal whitespace to underscores so
 		// they compose with `-` and `NOT` like any other tag literal.
 		if len(tag) >= 2 && tag[0] == '"' && tag[len(tag)-1] == '"' {
-			tag = tag[1 : len(tag)-1]
+			tag = unescapeQuoted(tag[1 : len(tag)-1])
 			tag = strings.Join(strings.Fields(tag), "_")
 		}
 		// All-asterisks tokens (`*`, `**`, `***`...) would otherwise
@@ -286,5 +297,28 @@ func trimWildcards(s string) string {
 	s = strings.TrimPrefix(s, "*")
 	s = strings.TrimSuffix(s, "*")
 	return s
+}
+
+// unescapeQuoted resolves the backslash escapes the tokenizer kept
+// inside a quoted run: `\"` -> `"`, `\\` -> `\`. A trailing lone
+// backslash stays as-is so the operator sees what they typed.
+func unescapeQuoted(s string) string {
+	if !strings.ContainsRune(s, '\\') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case '"', '\\':
+				b.WriteByte(s[i+1])
+				i++
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 

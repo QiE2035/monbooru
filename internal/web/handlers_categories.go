@@ -2,7 +2,6 @@ package web
 
 import (
 	"fmt"
-	"html"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,31 +16,9 @@ func (s *Server) categoriesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	base := s.base(r, "categories", "Categories - "+s.booruName())
-	data := map[string]any{
-		"Title":         base.Title,
-		"ActiveNav":     base.ActiveNav,
-		"CSRFToken":     base.CSRFToken,
-		"AuthEnabled":   base.AuthEnabled,
-		"Degraded":      base.Degraded,
-		"Version":       base.Version,
-		"RepoURL":       base.RepoURL,
-		"Variant":       base.Variant,
-		"CustomCSS":     base.CustomCSS,
-		"BooruName":     base.BooruName,
-		"BooruLogo":     base.BooruLogo,
-		"ActiveGallery": base.ActiveGallery,
-		"Galleries":     s.galleryList(),
-		"VisibleCount":     base.VisibleCount,
-		"InboxCount":       base.InboxCount,
-		"InboxNavActive":   base.InboxNavActive,
-		"TagCount":         base.TagCount,
-		"CollectionsCount": base.CollectionsCount,
-		"RatingLevels":  base.RatingLevels,
-		"ActiveRating":  base.ActiveRating,
-		"RequestStart":  base.RequestStart,
-		"Categories":    cats,
-	}
+	data := s.base(r, "categories", "Categories - "+s.booruName()).AsMap()
+	data["Galleries"] = s.galleryList()
+	data["Categories"] = cats
 	s.renderTemplate(w, "categories.html", data)
 }
 
@@ -71,10 +48,8 @@ func (s *Server) categoryColors() map[string]string {
 }
 
 func (s *Server) categoryCountHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	count, err := s.tagSvc().GetCategoryTagCount(id)
@@ -97,7 +72,7 @@ func (s *Server) createCategoryPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := s.tagSvc().CreateCategory(name, color); err != nil {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+			writeInlineFlash(w, "err", err.Error())
 			return
 		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -113,10 +88,8 @@ func (s *Server) createCategoryPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) updateCategoryPatch(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	if !parseFormOK(w, r) {
@@ -125,7 +98,7 @@ func (s *Server) updateCategoryPatch(w http.ResponseWriter, r *http.Request) {
 	color := r.FormValue("color")
 	if err := s.tagSvc().UpdateCategoryColor(id, color); err != nil {
 		logx.Warnf("update category %d color: %v", id, err)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	if isHTMXRequest(r) {
@@ -138,10 +111,8 @@ func (s *Server) updateCategoryPatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteCategoryDelete(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	if !parseFormOK(w, r) {
@@ -172,10 +143,8 @@ func (s *Server) deleteCategoryDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renameCategoryPost(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	if !parseFormOK(w, r) {
@@ -184,7 +153,7 @@ func (s *Server) renameCategoryPost(w http.ResponseWriter, r *http.Request) {
 	newName := strings.TrimSpace(r.FormValue("name"))
 	if newName == "" {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">Name required.</div>`))
+			writeInlineFlash(w, "err", "Name required.")
 			return
 		}
 		http.Error(w, "name required", http.StatusBadRequest)
@@ -192,7 +161,7 @@ func (s *Server) renameCategoryPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.tagSvc().RenameCategory(id, newName); err != nil {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+			writeInlineFlash(w, "err", err.Error())
 			return
 		}
 		http.Error(w, err.Error(), http.StatusBadRequest)

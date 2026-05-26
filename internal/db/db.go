@@ -288,6 +288,11 @@ func Bootstrap(db *DB) error {
 		`UPDATE images SET tag_count = (SELECT COUNT(*) FROM image_tags WHERE image_id = images.id)`,
 		"backfill images.tag_count")
 	b.exec("create idx_images_tag_count_visible", `CREATE INDEX IF NOT EXISTS idx_images_tag_count_visible ON images(tag_count) WHERE is_missing = 0`)
+	// Partial covering index for `mime:` / `type:` so the planner can
+	// seek `i.file_type IN (...)` instead of scanning every visible row.
+	// The bucket is small (jpeg, png, webp, gif, mp4, webm, cbz) so the
+	// index stays compact even at large scale.
+	b.exec("create idx_images_file_type_visible", `CREATE INDEX IF NOT EXISTS idx_images_file_type_visible ON images(file_type) WHERE is_missing = 0`)
 	// Maintain images.tag_count with row-level triggers. MAX(0, ...) on
 	// the delete trigger guards against the impossible-but-cheap case of
 	// a negative count from a torn upgrade. The triggers are FOR EACH

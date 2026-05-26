@@ -3,7 +3,6 @@ package gallery
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"github.com/leqwin/monbooru/internal/db"
 )
@@ -23,13 +22,8 @@ func excludeNotExists(imageCol string, excludeIDs []int64) (string, []any) {
 	if len(excludeIDs) == 0 {
 		return "", nil
 	}
-	placeholders := make([]string, len(excludeIDs))
-	args := make([]any, 0, len(excludeIDs))
-	for i, id := range excludeIDs {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-	return ` AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = ` + imageCol + ` AND it.tag_id IN (` + strings.Join(placeholders, ",") + `))`, args
+	placeholders, args := db.InPlaceholders(excludeIDs)
+	return ` AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = ` + imageCol + ` AND it.tag_id IN (` + placeholders + `))`, args
 }
 
 // scalarCountUnder is the shared COUNT(*) shape behind the four

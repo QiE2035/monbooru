@@ -2,10 +2,10 @@ package web
 
 import (
 	"fmt"
-	"html"
 	"net/http"
 	"strconv"
 
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
@@ -49,9 +49,8 @@ type relationsWalkerData struct {
 // carries in one table. The Walk button on the Relations page links
 // here.
 func (s *Server) sha256WalkerPage(w http.ResponseWriter, r *http.Request) {
-	cx := s.Active()
-	if cx == nil || cx.DB == nil {
-		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+	cx, ok := s.requireActive(w)
+	if !ok {
 		return
 	}
 	ceiling := resolveCeiling(r, cx)
@@ -99,9 +98,8 @@ func (s *Server) sha256WalkerPage(w http.ResponseWriter, r *http.Request) {
 // markings land at the top - the operator's most recent decisions are
 // the ones most likely to need a follow-up action.
 func (s *Server) markedWalkerPage(w http.ResponseWriter, r *http.Request) {
-	cx := s.Active()
-	if cx == nil || cx.DB == nil {
-		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+	cx, ok := s.requireActive(w)
+	if !ok {
 		return
 	}
 	ceiling := resolveCeiling(r, cx)
@@ -204,7 +202,7 @@ func (s *Server) sha256WalkerRemoveOnePost(w http.ResponseWriter, r *http.Reques
 	pathID, err := strconv.ParseInt(r.FormValue("path_id"), 10, 64)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Invalid path id.</div>`))
+		writeInlineFlash(w, "err", "Invalid path id.")
 		return
 	}
 	var aliasPath string
@@ -213,12 +211,12 @@ func (s *Server) sha256WalkerRemoveOnePost(w http.ResponseWriter, r *http.Reques
 		pathID,
 	).Scan(&aliasPath); err != nil {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`<div class="flash flash-err">Not a non-canonical path.</div>`))
+		writeInlineFlash(w, "err", "Not a non-canonical path.")
 		return
 	}
 	if _, err := s.db().Write.Exec(`DELETE FROM image_paths WHERE id = ?`, pathID); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	if aliasPath != "" {
@@ -239,12 +237,12 @@ func (s *Server) markedWalkerDeleteOnePost(w http.ResponseWriter, r *http.Reques
 	imageID, err := strconv.ParseInt(r.FormValue("image_id"), 10, 64)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Invalid image id.</div>`))
+		writeInlineFlash(w, "err", "Invalid image id.")
 		return
 	}
 	if _, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), imageID, s.tagSvc().RemoveAllTagsFromImage, s.onImageDeleteCallback()); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	s.Active().InvalidateCaches()
@@ -261,9 +259,8 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 	if !parseFormOK(w, r) {
 		return
 	}
-	cx := s.Active()
-	if cx == nil || cx.DB == nil {
-		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+	cx, ok := s.requireActive(w)
+	if !ok {
 		return
 	}
 	q := `
@@ -279,36 +276,24 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 	rows, err := cx.DB.Read.Query(q, args...)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
-	var victims []int64
-	for rows.Next() {
-		var id int64
-		if scanErr := rows.Scan(&id); scanErr != nil {
-			rows.Close()
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(scanErr.Error()) + `</div>`))
-			return
-		}
-		victims = append(victims, id)
-	}
+	victims, scanErr := db.ScanIDs(rows)
 	rows.Close()
-	if iterErr := rows.Err(); iterErr != nil {
+	if scanErr != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(iterErr.Error()) + `</div>`))
+		writeInlineFlash(w, "err", scanErr.Error())
 		return
 	}
 	if len(victims) == 0 {
-		w.Write([]byte(`<div class="flash flash-ok">Removed 0 marked duplicate(s).</div>`))
+		writeInlineFlash(w, "ok", "Removed 0 marked duplicate(s).")
 		return
 	}
 	// Reserve a job slot so the per-image unlinks don't race a concurrent
 	// autotag / rebuild-thumbs / vacuum; the response returns immediately
 	// and the status bar surfaces progress.
-	if err := s.jobs.Start(models.JobTypeDelete); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeDelete) {
 		return
 	}
 	galleryPath := s.galleryPath()
@@ -338,7 +323,7 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 		s.Active().InvalidateCaches()
 		s.jobs.Complete(fmt.Sprintf("Removed %d marked duplicate(s).", removed))
 	}()
-	w.Write([]byte(`<div class="flash flash-ok">Marked duplicate removal started.</div>`))
+	writeInlineFlash(w, "ok", "Marked duplicate removal started.")
 }
 
 // redirectWalker writes an HX-Redirect (or 303) back to the walker

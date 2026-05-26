@@ -3,7 +3,6 @@ package web
 import (
 	"crypto/rand"
 	"fmt"
-	"html"
 	"net/http"
 	"strconv"
 	"strings"
@@ -83,36 +82,15 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	taggerRows := append(supportedRows, unsupportedRows...)
-	data := map[string]any{
-		"Title":            base.Title,
-		"ActiveNav":        base.ActiveNav,
-		"CSRFToken":        base.CSRFToken,
-		"AuthEnabled":      base.AuthEnabled,
-		"Degraded":         base.Degraded,
-		"Version":          base.Version,
-		"RepoURL":          base.RepoURL,
-		"Variant":          base.Variant,
-		"CustomCSS":        base.CustomCSS,
-		"BooruName":        base.BooruName,
-		"BooruLogo":        base.BooruLogo,
-		"ActiveGallery":    base.ActiveGallery,
-		"Galleries":        s.galleryRowsWithSnapshot(s.activeName, base.VisibleCount, base.TagCount),
-		"VisibleCount":     base.VisibleCount,
-		"InboxCount":       base.InboxCount,
-		"InboxNavActive":   base.InboxNavActive,
-		"TagCount":         base.TagCount,
-		"CollectionsCount": base.CollectionsCount,
-		"RatingLevels":     base.RatingLevels,
-		"ActiveRating":     base.ActiveRating,
-		"RequestStart":     base.RequestStart,
-		"Config":           s.cfg,
-		"Taggers":          taggers,
-		"TaggerRows":       taggerRows,
-		"SupportedCount":   len(supportedRows),
-		"UnsupportedCount": len(unsupportedRows),
-		"ScheduleStatus":   s.ScheduleStatus(),
-		"Stats":            s.gatherStats(),
-	}
+	data := base.AsMap()
+	data["Galleries"] = s.galleryRowsWithSnapshot(s.activeName, base.VisibleCount, base.TagCount)
+	data["Config"] = s.cfg
+	data["Taggers"] = taggers
+	data["TaggerRows"] = taggerRows
+	data["SupportedCount"] = len(supportedRows)
+	data["UnsupportedCount"] = len(unsupportedRows)
+	data["ScheduleStatus"] = s.ScheduleStatus()
+	data["Stats"] = s.gatherStats()
 	s.renderTemplate(w, "settings.html", data)
 }
 
@@ -125,7 +103,7 @@ func (s *Server) settingsSchedulePost(w http.ResponseWriter, r *http.Request) {
 		timeVal = "01:00"
 	}
 	if err := config.ValidateScheduleTime(timeVal); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">%s</div>`, html.EscapeString(err.Error()))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	s.cfgMu.Lock()
@@ -136,7 +114,7 @@ func (s *Server) settingsSchedulePost(w http.ResponseWriter, r *http.Request) {
 	s.cfg.Schedule.FindRelationPairs = r.FormValue("find_relation_pairs") == "on"
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	select {
@@ -144,7 +122,7 @@ func (s *Server) settingsSchedulePost(w http.ResponseWriter, r *http.Request) {
 	default:
 	}
 	logx.Infof("settings: schedule updated (time=%s)", timeVal)
-	w.Write([]byte(`<div class="flash flash-ok">Saved.</div>`))
+	writeInlineFlash(w, "ok", "Saved.")
 }
 
 // settingsGeneralPost saves the unified Settings → General form: the Files
@@ -164,11 +142,11 @@ func (s *Server) settingsGeneralPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	logx.Infof("settings: general updated")
-	w.Write([]byte(`<div class="flash flash-ok">Saved.</div>`))
+	writeInlineFlash(w, "ok", "Saved.")
 }
 
 func (s *Server) settingsPasswordPost(w http.ResponseWriter, r *http.Request) {
@@ -178,19 +156,19 @@ func (s *Server) settingsPasswordPost(w http.ResponseWriter, r *http.Request) {
 	currentPass := r.FormValue("current_password")
 	newPass := r.FormValue("new_password")
 	if newPass == "" {
-		w.Write([]byte(`<div class="flash flash-err">New password required.</div>`))
+		writeInlineFlash(w, "err", "New password required.")
 		return
 	}
 	// If a password is already set, require the current one for verification.
 	if s.cfg.Auth.EnablePassword && s.cfg.Auth.PasswordHash != "" {
 		if err := bcrypt.CompareHashAndPassword([]byte(s.cfg.Auth.PasswordHash), []byte(currentPass)); err != nil {
-			w.Write([]byte(`<div class="flash flash-err">Current password is incorrect.</div>`))
+			writeInlineFlash(w, "err", "Current password is incorrect.")
 			return
 		}
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPass), bcrypt.DefaultCost)
 	if err != nil {
-		w.Write([]byte(`<div class="flash flash-err">Error hashing password.</div>`))
+		writeInlineFlash(w, "err", "Error hashing password.")
 		return
 	}
 	s.cfgMu.Lock()
@@ -198,11 +176,11 @@ func (s *Server) settingsPasswordPost(w http.ResponseWriter, r *http.Request) {
 	s.cfg.Auth.EnablePassword = true
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	logx.Infof("settings: password updated from %s", clientIP(r))
-	w.Write([]byte(`<div class="flash flash-ok">Password updated.</div>`))
+	writeInlineFlash(w, "ok", "Password updated.")
 	s.renderAuthPasswordOOB(w, r)
 }
 
@@ -210,7 +188,7 @@ func (s *Server) settingsTokenPost(w http.ResponseWriter, r *http.Request) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		logx.Errorf("generating API token: %v", err)
-		w.Write([]byte(`<div class="flash flash-err">Failed to generate token.</div>`))
+		writeInlineFlash(w, "err", "Failed to generate token.")
 		return
 	}
 	token := fmt.Sprintf("%x", buf)
@@ -218,7 +196,7 @@ func (s *Server) settingsTokenPost(w http.ResponseWriter, r *http.Request) {
 	s.cfg.Auth.APIToken = token
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	logx.Infof("settings: API token regenerated from %s", clientIP(r))
@@ -237,7 +215,7 @@ func (s *Server) settingsRemovePasswordPost(w http.ResponseWriter, r *http.Reque
 	currentPass := r.FormValue("current_password")
 	if s.cfg.Auth.PasswordHash != "" {
 		if err := bcrypt.CompareHashAndPassword([]byte(s.cfg.Auth.PasswordHash), []byte(currentPass)); err != nil {
-			w.Write([]byte(`<div class="flash flash-err">Current password is incorrect.</div>`))
+			writeInlineFlash(w, "err", "Current password is incorrect.")
 			return
 		}
 	}
@@ -246,12 +224,12 @@ func (s *Server) settingsRemovePasswordPost(w http.ResponseWriter, r *http.Reque
 	s.cfg.Auth.PasswordHash = ""
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	logx.Infof("settings: password removed from %s", clientIP(r))
 	// Invalidate all sessions so nobody is locked out of the now-open instance
 	s.sessions.Clear()
-	w.Write([]byte(`<div class="flash flash-ok">Password removed. Authentication is now disabled.</div>`))
+	writeInlineFlash(w, "ok", "Password removed. Authentication is now disabled.")
 	s.renderAuthPasswordOOB(w, r)
 }

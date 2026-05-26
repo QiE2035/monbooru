@@ -1,8 +1,8 @@
 package web
 
 import (
+	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	"os"
 	"strconv"
@@ -15,6 +15,18 @@ import (
 	"github.com/leqwin/monbooru/internal/search"
 	"github.com/leqwin/monbooru/internal/tagger"
 )
+
+// autotagSearchScopeCap bounds the scope=search materialisation so a
+// clean-sweep autotag against an unbounded result set can't fill RAM
+// with the ids slice plus the matching per-image frame state
+// tagger.RunWithTaggers builds. Operators with a larger working set
+// re-run the autotag job over narrower searches.
+const autotagSearchScopeCap = 50000
+
+// errAutotagOverCap is the sentinel the ExecuteForDeleteStream callback
+// returns once autotagSearchScopeCap is reached, so the caller can
+// distinguish "over cap" from a real cursor error.
+var errAutotagOverCap = errors.New("autotag: search-scope cap reached")
 
 // spawnAutoTagJob runs RunWithTaggers in a goroutine, flushes per-DB
 // caches, and posts the completion summary. itemNoun ("" or
@@ -70,7 +82,7 @@ func logAutotagPeak(scope string, baselineRSS uint64) {
 func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	if cx := s.Active(); cx == nil || cx.Degraded {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`<div class="flash flash-err">Upload unavailable: gallery path is unreadable.</div>`))
+		writeInlineFlash(w, "err", "Upload unavailable: gallery path is unreadable.")
 		return
 	}
 	maxBytes := int64(s.cfg.Gallery.MaxFileSizeMB) * 1024 * 1024
@@ -81,7 +93,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBytes*10+4096) // allow multiple files
 	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		w.Write([]byte(`<div class="flash flash-err">Upload too large or invalid.</div>`))
+		writeInlineFlash(w, "err", "Upload too large or invalid.")
 		return
 	}
 
@@ -91,17 +103,17 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
 	files := r.MultipartForm.File["files"]
 	if len(files) == 0 {
-		w.Write([]byte(`<div class="flash flash-err">No files selected.</div>`))
+		writeInlineFlash(w, "err", "No files selected.")
 		return
 	}
 
 	destDir, destErr := gallery.ResolveSubdir(s.galleryPath(), folderInput)
 	if destErr != nil {
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(destErr.Error()) + `</div>`))
+		writeInlineFlash(w, "err", destErr.Error())
 		return
 	}
 	if err := os.MkdirAll(destDir, 0755); err != nil {
-		w.Write([]byte(`<div class="flash flash-err">Could not create folder: ` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", "Could not create folder: "+err.Error())
 		return
 	}
 
@@ -213,7 +225,11 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 			msg += fmt.Sprintf(", auto-tagging %d image(s)", len(addedIDs))
 		}
 	}
-	w.Write([]byte(`<div class="flash ` + cssClass + `">` + html.EscapeString(msg) + `</div>`))
+	kind := "ok"
+	if cssClass == "flash-err" {
+		kind = "err"
+	}
+	writeInlineFlash(w, kind, msg)
 }
 
 func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
@@ -231,7 +247,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 	selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName)
 	if selErr != nil {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(selErr.Error()) + `</div>`))
+			writeInlineFlash(w, "err", selErr.Error())
 			return
 		}
 		http.Error(w, selErr.Error(), http.StatusBadRequest)
@@ -246,25 +262,41 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 		expr, parseErr := search.Parse(r.FormValue("q"))
 		if parseErr != nil {
 			if isHTMXRequest(r) {
-				w.Write([]byte(`<div class="flash flash-err">Could not parse search: ` +
-					html.EscapeString(parseErr.Error()) + `</div>`))
+				writeInlineFlash(w, "err", "Could not parse search: "+parseErr.Error())
 				return
 			}
 			http.Error(w, parseErr.Error(), http.StatusBadRequest)
 			return
 		}
 		expr = resolveCeiling(r, s.Active()).Apply(expr)
+		// Hard ceiling so a clean-sweep autotag against an unbounded
+		// search doesn't materialise million-id slices plus the
+		// matching per-image frame-extraction state in tagger.RunWithTaggers.
+		// errAutotagOverCap stops the stream cleanly and surfaces a
+		// "narrow your search" flash to the operator.
 		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
+			if len(ids) >= autotagSearchScopeCap {
+				return errAutotagOverCap
+			}
 			ids = append(ids, t.ID)
 			return nil
 		})
-		if err != nil {
+		if err != nil && err != errAutotagOverCap {
 			logx.Errorf("autotag search: %v", err)
 			if isHTMXRequest(r) {
-				w.Write([]byte(`<div class="flash flash-err">Search error.</div>`))
+				writeInlineFlash(w, "err", "Search error.")
 				return
 			}
 			http.Error(w, "search error", http.StatusInternalServerError)
+			return
+		}
+		if err == errAutotagOverCap {
+			msg := fmt.Sprintf("Search matches more than %d images; narrow the query and re-run.", autotagSearchScopeCap)
+			if isHTMXRequest(r) {
+				writeInlineFlash(w, "err", msg)
+				return
+			}
+			http.Error(w, msg, http.StatusBadRequest)
 			return
 		}
 	} else {
@@ -278,7 +310,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 
 	if len(ids) == 0 {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">No images to tag.</div>`))
+			writeInlineFlash(w, "err", "No images to tag.")
 			return
 		}
 		http.Error(w, "no images selected", http.StatusBadRequest)
@@ -287,7 +319,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.jobs.Start(models.JobTypeAutotag); err != nil {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+			writeInlineFlash(w, "err", "A job is already running.")
 			return
 		}
 		http.Error(w, "job already running", http.StatusConflict)
@@ -301,7 +333,8 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 	s.spawnAutoTagJob(ids, selected, "batch", "")
 
 	if isHTMXRequest(r) {
-		w.Write([]byte(`<div class="flash flash-ok">Auto-tagger started for ` + fmt.Sprintf("%d", len(ids)) + ` image(s).</div>`))
+		setFlashHeader(w, fmt.Sprintf("Auto-tagger started for %d image(s).", len(ids)), "ok", nil)
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
@@ -311,17 +344,15 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 	if !tagger.IsAvailable(s.cfg) {
 		reason := tagger.UnavailableReason(s.cfg)
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">Auto-tagger not available: ` + html.EscapeString(reason) + `.</div>`))
+			writeInlineFlash(w, "err", "Auto-tagger not available: "+reason+".")
 			return
 		}
 		http.Error(w, "auto-tagger not available: "+reason, http.StatusServiceUnavailable)
 		return
 	}
 
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	if !parseFormOK(w, r) {
@@ -332,7 +363,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 	selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName)
 	if selErr != nil {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(selErr.Error()) + `</div>`))
+			writeInlineFlash(w, "err", selErr.Error())
 			return
 		}
 		http.Error(w, selErr.Error(), http.StatusBadRequest)
@@ -341,7 +372,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.jobs.Start(models.JobTypeAutotag); err != nil {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+			writeInlineFlash(w, "err", "A job is already running.")
 			return
 		}
 		http.Error(w, "job already running", http.StatusConflict)
@@ -370,12 +401,12 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 			s.jobs.Fail(err.Error())
 			return
 		}
-		logAutotagPeak("image #"+idStr, baseline)
+		logAutotagPeak(fmt.Sprintf("image #%d", id), baseline)
 		if skipped > 0 {
-			s.jobs.Complete("auto-tagger skipped image #" + idStr)
+			s.jobs.Complete(fmt.Sprintf("auto-tagger skipped image #%d", id))
 			return
 		}
-		s.jobs.Complete("auto-tagged image #" + idStr)
+		s.jobs.Complete(fmt.Sprintf("auto-tagged image #%d", id))
 	}()
 
 	if isHTMXRequest(r) {
@@ -383,7 +414,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	http.Redirect(w, r, "/images/"+idStr, http.StatusSeeOther)
+	http.Redirect(w, r, fmt.Sprintf("/images/%d", id), http.StatusSeeOther)
 }
 
 // selectTaggers resolves a user-supplied tagger_name to the concrete

@@ -101,10 +101,9 @@ func TestCustomCSS_ServesConfiguredFile(t *testing.T) {
 	}
 }
 
-// TestCustomCSSPathAllowed pins A-F009: the path scope check must
-// accept paths under config dir / /config / /data and reject every
-// other absolute or relative path - including the operator footgun
-// /etc/passwd.
+// TestCustomCSSPathAllowed: the path scope check must accept paths
+// under config dir / /config / /data and reject every other absolute
+// or relative path - including the operator footgun /etc/passwd.
 func TestCustomCSSPathAllowed(t *testing.T) {
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "monbooru.toml")

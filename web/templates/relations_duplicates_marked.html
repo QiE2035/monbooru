@@ -3,7 +3,7 @@
 <div id="sidebar-inner"></div>
 {{template "layout_mid" .}}
 
-<div id="relations-walker-page">
+<div id="relations-walker-page" data-esc-back="/relations#duplicates">
   <div class="detail-topbar">
     <div class="detail-nav-group">
       <a href="/relations#duplicates" class="back-link">← Back to Relations</a>
@@ -100,21 +100,6 @@ document.querySelectorAll('.btn-copy-tags-preview').forEach(function(btn) {
     }
     dlg.showModal();
   });
-});
-
-document.addEventListener('keydown', function(e) {
-  if (e.key !== 'Escape') return;
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.defaultPrevented) return;
-  // Native <dialog> handles its own Esc-to-close while open (cancel
-  // event then default-close); skip the back navigation so the
-  // operator's first Esc dismisses the preview or any hx-confirm
-  // prompt instead of jumping to /relations.
-  if (document.querySelector('dialog[open]')) return;
-  var tag = e.target.tagName;
-  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-  e.preventDefault();
-  window.location.href = '/relations#duplicates';
 });
 </script>
 

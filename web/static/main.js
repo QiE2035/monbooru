@@ -578,6 +578,20 @@ document.addEventListener('keydown', function(e) {
       else { window.location.href = '/'; }
       return;
     }
+    // Back-navigation fallback: respect any page handler that already
+    // claimed this Esc (e.g. the relations-session compare-slider close).
+    // Without this guard the data-esc-back match below would navigate on
+    // top of a slider dismissal.
+    if (e.defaultPrevented) return;
+    var escBackEl = document.querySelector('[data-esc-back]');
+    if (escBackEl) {
+      var dest = escBackEl.dataset.escBack;
+      if (dest) {
+        e.preventDefault();
+        window.location.href = dest;
+        return;
+      }
+    }
     return;
   }
 
@@ -715,8 +729,8 @@ document.addEventListener('keydown', function(e) {
   // so a selection-mode `f` doesn't also trip the detail-page handler.
   if (e.key === 'f') {
     if (batchBarVisible()) {
-      if (typeof openFavoriteSelectedDialog === 'function') {
-        e.preventDefault(); openFavoriteSelectedDialog(); return;
+      if (typeof openBatchFavoriteDialog === 'function') {
+        e.preventDefault(); openBatchFavoriteDialog('selection'); return;
       }
     }
     var favBtn = document.querySelector('.btn-fav');
@@ -775,7 +789,7 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 't') {
     if (batchBarVisible()) {
       if (!document.querySelector('.btn-autotag')) return;
-      e.preventDefault(); openAutotagSelectedDialog(); return;
+      e.preventDefault(); openBatchAutotagDialog('selection'); return;
     }
     if (isDetailPage()) {
       var btn = document.querySelector('.btn-autotag');
@@ -785,7 +799,7 @@ document.addEventListener('keydown', function(e) {
 
   // 'm' → move dialog (selection on the gallery; detail page).
   if (e.key === 'm') {
-    if (batchBarVisible()) { e.preventDefault(); openMoveSelectedDialog(); return; }
+    if (batchBarVisible()) { e.preventDefault(); openBatchMoveDialog('selection'); return; }
     if (isDetailPage()) {
       var moveDlg = document.getElementById('move-image-dialog');
       if (moveDlg && typeof openMoveImageDialog === 'function') {
@@ -797,8 +811,8 @@ document.addEventListener('keydown', function(e) {
   // 'i' → toggle inbox / archive (selection bulk dialog or detail toggle).
   if (e.key === 'i') {
     if (batchBarVisible()) {
-      if (typeof openInboxSelectedDialog === 'function') {
-        e.preventDefault(); openInboxSelectedDialog(); return;
+      if (typeof openBatchInboxDialog === 'function') {
+        e.preventDefault(); openBatchInboxDialog('selection'); return;
       }
     }
     if (isDetailPage()) {
@@ -1245,20 +1259,11 @@ function cycleTagFocus(step) {
   items[idx].scrollIntoView({block: 'nearest'});
 }
 
-// Batch delete: populate the confirmation dialog with the selected count and
-// show it. The actual fetch + background-job wiring lives in confirmDeleteSelected
-// (gallery.html) alongside the sibling delete-all-search flow.
+// Batch delete: opens the unified delete dialog scoped to the checked
+// thumbs. The actual fetch + background-job wiring lives in
+// confirmBatchDelete (gallery.html).
 function batchDeleteSelected() {
-  var checked = document.querySelectorAll('.thumb-checkbox:checked');
-  if (checked.length === 0) return;
-  var countEl = document.getElementById('delete-selected-count');
-  if (countEl) countEl.textContent = checked.length;
-  var nounEl = document.getElementById('delete-selected-noun');
-  if (nounEl) nounEl.textContent = checked.length === 1 ? 'image' : 'images';
-  var flash = document.getElementById('delete-selected-flash');
-  if (flash) flash.innerHTML = '';
-  var dlg = document.getElementById('delete-selected-dialog');
-  if (dlg) dlg.showModal();
+  if (typeof openBatchDeleteDialog === 'function') openBatchDeleteDialog('selection');
 }
 
 // refreshJobStatus forces the top-right job-status widget to re-fetch its
@@ -1662,11 +1667,9 @@ function initFolderTree() {
   var sourceLabelMatch = q.match(/(?:^|\s)source:(?:"([^"]+)"|([^\s]+))/);
   var sourceLabelOpen = urlChanged && !!sourceLabelMatch;
   initSectionToggle('source-labels-toggle', 'source-labels-list', '__sources__', sourceLabelOpen);
-  // Inbox / Favorites quick-filter panels: collapse by default; auto-open
-  // when the active query already targets the predicate so the matching
-  // row renders visible without an extra click.
-  var inboxQueryActive = urlChanged && /(?:^|\s)inbox:(?:true|false)\b/.test(q);
-  initSectionToggle('inbox-filter-toggle', 'inbox-filter-list', '__inbox__', inboxQueryActive);
+  // Favorites quick-filter panel: collapse by default; auto-open when
+  // the active query already targets the predicate so the matching row
+  // renders visible without an extra click.
   var favQueryActive = urlChanged && /(?:^|\s)fav:(?:true|false)\b/.test(q);
   initSectionToggle('favorites-filter-toggle', 'favorites-filter-list', '__favorites__', favQueryActive);
   var treeToggle = document.getElementById('folder-tree-toggle');
@@ -1853,6 +1856,22 @@ document.addEventListener('click', function (e) {
   e.preventDefault();
   var flash = btn.parentElement && btn.parentElement.querySelector('.copy-flash');
   copyToClipboard(btn.dataset.copy, flash);
+});
+
+document.addEventListener('click', function (e) {
+  var btn = e.target.closest('.btn-tagger-cmd');
+  if (!btn) return;
+  var dlg = document.getElementById('tagger-cmd-dialog');
+  if (!dlg) return;
+  var host = btn.dataset.hostCmd || '';
+  var docker = btn.dataset.dockerCmd || '';
+  document.getElementById('tagger-cmd-name').textContent = btn.dataset.taggerName || '';
+  document.getElementById('tagger-cmd-desc').textContent = btn.dataset.taggerDesc || '';
+  document.getElementById('tagger-cmd-host').textContent = host;
+  document.getElementById('tagger-cmd-docker').textContent = docker;
+  document.getElementById('tagger-cmd-host-copy').dataset.copy = host;
+  document.getElementById('tagger-cmd-docker-copy').dataset.copy = docker;
+  dlg.showModal();
 });
 
 // Auto-reload gallery/tags after job completes; auto-clear status after 30s
@@ -2160,12 +2179,11 @@ function initSuggestDismiss(dropdownId, inputId, opts) {
 initSuggestDismiss('search-suggest', 'search-input', {blurOnSubmit: true});
 initSuggestDismiss('tag-suggest-dropdown', 'tag-input');
 initSuggestDismiss('merge-suggest', 'merge-canon-input');
-initSuggestDismiss('move-selected-suggest', 'move-selected-folder');
-initSuggestDismiss('move-search-suggest', 'move-search-folder');
+initSuggestDismiss('batch-move-suggest', 'batch-move-folder');
 initSuggestDismiss('move-image-suggest', 'move-image-folder');
 initSuggestDismiss('batch-tag-suggest', 'batch-tag-input');
 initSuggestDismiss('batch-strip-suggest', 'batch-strip-input');
-initSuggestDismiss('external-collection-suggest', 'external-collection-input');
+initSuggestDismiss('external-edit-suggest', 'external-edit-input');
 initSuggestDismiss('batch-series-search-suggest', 'batch-series-search-input');
 initSuggestDismiss('batch-series-selected-suggest', 'batch-series-selected-input');
 
@@ -2339,6 +2357,9 @@ function initInboxUpload() {
       list.appendChild(li);
     }
     input.files = _pending.files;
+    var empty = files.length === 0;
+    if (submitBtn) submitBtn.disabled = empty;
+    if (resetBtn) resetBtn.disabled = empty;
   }
 
   function appendFiles(incoming) {
@@ -2365,6 +2386,12 @@ function initInboxUpload() {
   if (resetBtn) {
     resetBtn.addEventListener('click', function(e) { e.preventDefault(); clearPending(); });
   }
+  // Initial empty state disables submit / reset until the user picks
+  // or drops a file. An empty submit posts /upload as a no-op (server
+  // 200, no rows added) and an empty reset does nothing visible;
+  // surfacing the disabled state up front is honest.
+  renderList();
+
   ['dragenter', 'dragover'].forEach(function(ev) {
     dz.addEventListener(ev, function(e) { e.preventDefault(); dz.classList.add('drag-over'); });
   });

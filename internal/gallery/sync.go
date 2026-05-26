@@ -512,12 +512,7 @@ func markImagesMissingChunked(ctx context.Context, database *db.DB, ids []int64)
 			end = len(ids)
 		}
 		chunk := ids[start:end]
-		placeholders := strings.Repeat("?,", len(chunk))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, len(chunk))
-		for i, id := range chunk {
-			args[i] = id
-		}
+		placeholders, args := db.InPlaceholders(chunk)
 		res, wErr := database.Write.Exec(
 			`UPDATE images SET is_missing = 1 WHERE id IN (`+placeholders+`)`, args...,
 		)
@@ -559,7 +554,11 @@ func applyInPlaceEdit(database *db.DB, galleryPath, thumbnailsPath, path, fileTy
 			pageCount = &pcVal
 			archive.Close()
 		}
-	} else if !IsVideoType(fileType) {
+	} else if IsVideoType(fileType) {
+		if w, h, ok := ProbeVideoDimensions(path); ok {
+			imgWidth, imgHeight = &w, &h
+		}
+	} else {
 		f, openErr := os.Open(path)
 		if openErr == nil {
 			if cfg2, _, decErr := imageDecodeConfig(f); decErr == nil {

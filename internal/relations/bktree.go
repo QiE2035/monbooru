@@ -3,6 +3,7 @@ package relations
 import (
 	"math/bits"
 	"sync"
+	"sync/atomic"
 
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/gallery"
@@ -57,7 +58,7 @@ type BKTree struct {
 	mu      sync.RWMutex
 	root    *bkNode
 	idIndex map[int64]int64 // id -> phash, drives Remove
-	built   bool
+	built   atomic.Bool
 }
 
 type bkNode struct {
@@ -85,9 +86,7 @@ func (t *BKTree) Size() int {
 // gating in handlers that want to avoid showing a partial result while
 // the lazy build is in flight.
 func (t *BKTree) Built() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.built
+	return t.built.Load()
 }
 
 // Reset clears every entry. Used after a full backfill so the next
@@ -98,7 +97,7 @@ func (t *BKTree) Reset() {
 	defer t.mu.Unlock()
 	t.root = nil
 	t.idIndex = make(map[int64]int64)
-	t.built = false
+	t.built.Store(false)
 }
 
 // BuildFromDB rebuilds the tree from every (id, phash) row in images
@@ -126,7 +125,7 @@ func (t *BKTree) BuildFromDB(database *db.DB) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	t.built = true
+	t.built.Store(true)
 	return nil
 }
 

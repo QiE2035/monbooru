@@ -166,8 +166,8 @@ func TestSearchImagesReturnsEnvelope(t *testing.T) {
 	}
 }
 
-// TestSearchImages_PopulatesTags pins U-F010: the search response shape
-// matches the per-image GET shape on the same Image.tags property.
+// TestSearchImages_PopulatesTags: the search response shape matches
+// the per-image GET shape on the same Image.tags property.
 func TestSearchImages_PopulatesTags(t *testing.T) {
 	env := newTestEnv(t)
 	id := env.createTestImage(t, "search_tags.png", 12, 12)
@@ -400,7 +400,7 @@ func TestCreateImage_JSONPath_Duplicate(t *testing.T) {
 	w := httptest.NewRecorder()
 	env.mux.ServeHTTP(w, req)
 
-	// U-F008: duplicate-SHA returns 200 + alias_added so a retry-on-409
+	// Duplicate-SHA returns 200 + alias_added so a retry-on-409
 	// client doesn't keep re-pushing the same file expecting rejection.
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 for duplicate, got %d: %s", w.Code, w.Body.String())
@@ -1207,20 +1207,6 @@ func TestParsePage_InvalidValues(t *testing.T) {
 	}
 	if limit != 40 {
 		t.Errorf("invalid limit = %d, want 40", limit)
-	}
-}
-
-func TestParseInt_Valid(t *testing.T) {
-	n, err := parseInt("42")
-	if err != nil || n != 42 {
-		t.Errorf("parseInt(42) = %d, %v", n, err)
-	}
-}
-
-func TestParseInt_Invalid(t *testing.T) {
-	_, err := parseInt("notanumber")
-	if err == nil {
-		t.Error("expected error for non-numeric input")
 	}
 }
 

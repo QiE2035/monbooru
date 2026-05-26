@@ -1,5 +1,28 @@
 # Changelog
 
+## [v1.9.1] - 2026-05-26
+### Added
+- Relations browse: [Remove selected] selection toolbar.
+
+### Changed
+- Relations session: pair cells render the original image bytes, with `<video>` for mp4 / webm sides instead of the stretched 360px thumbnail.
+- Search faster on `mime:` / `type:` filters and short-circuited `relation:any` / `relation:none` queries; merge imports apply tags per image in one transaction.
+- Inbox: "Reset" relabelled to "Clear staged".
+
+### Fixed
+- Relations browse: card thumbs link to `/images/{id}`, matching every other relations thumb.
+- Relations: [unlink] surfaces under self when self is the dup original; Same Collection cards render every sibling without shadowing.
+- Relations session: compare slider guards against a stale prior-pair id.
+- Search: `date:` accepts bare `T HH` hour precision; backslash escapes inside quoted filter values pass through; pagination and back-link hrefs URL-encode `q` and `back_q`.
+- Inbox: cluster header count clarified as the page-local slice; Upload / Clear staged disable on empty staged set; clusters split at exactly 15 minutes; cluster range link drops its hard-coded sort/order.
+- Settings: gallery name input hints the allowed characters.
+- Image delete: 404 distinguished from generic 500.
+- Ingest: video dimensions probed with ffprobe and backfilled by Rebuild thumbnails.
+- `.btn-danger` disabled state readable on the red fill; sidebar `+/-` column aligns across tag rows.
+
+### Removed
+- Sidebar Inbox section (the top-nav Inbox link still carries the count).
+
 ## [v1.9.0] - 2026-05-24
 ### Added
 - Server `name` and `logo` configurable in `monbooru.toml`, swapping the title, topbar wordmark, login screen, and favicon at render.

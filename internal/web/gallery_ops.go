@@ -3,7 +3,6 @@ package web
 import (
 	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	"net/url"
 	"os"
@@ -314,10 +313,6 @@ func (s *Server) galleryRowsWithSnapshot(activeName string, activeImages, active
 	return out
 }
 
-func writeFlash(rw http.ResponseWriter, class, msg string) {
-	rw.Write([]byte(`<div class="flash flash-` + class + `">` + html.EscapeString(msg) + `</div>`))
-}
-
 // gallerySwitchHandler handles POST /internal/gallery/switch. Errors render
 // as an inline flash inside the topbar dialog; success triggers HX-Refresh.
 func (s *Server) gallerySwitchHandler(w http.ResponseWriter, r *http.Request) {
@@ -327,7 +322,7 @@ func (s *Server) gallerySwitchHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	if err := s.SwitchGallery(name); err != nil {
 		if isHTMXRequest(r) {
-			writeFlash(w, "err", err.Error())
+			writeInlineFlash(w, "err", err.Error())
 			return
 		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -371,13 +366,13 @@ func (s *Server) settingsGalleriesPost(w http.ResponseWriter, r *http.Request) {
 	const maxImport = 16 << 30
 	r.Body = http.MaxBytesReader(w, r.Body, maxImport)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeFlash(w, "err", "bad form data: "+err.Error())
+		writeInlineFlash(w, "err", "bad form data: "+err.Error())
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	path := strings.TrimSpace(r.FormValue("gallery_path"))
 	if err := s.AddGallery(name, path); err != nil {
-		writeFlash(w, "err", err.Error())
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 
@@ -391,11 +386,11 @@ func (s *Server) settingsGalleriesPost(w http.ResponseWriter, r *http.Request) {
 		if switchErr := s.SwitchGallery(name); switchErr != nil {
 			logx.Infof("gallery %q: post-add switch skipped: %v", name, switchErr)
 		}
-		writeFlash(w, "ok", "Gallery "+name+" added.")
+		writeInlineFlash(w, "ok", "Gallery "+name+" added.")
 		return
 	}
 	if err != nil {
-		writeFlash(w, "err", "Gallery created. Import failed reading upload: "+err.Error())
+		writeInlineFlash(w, "err", "Gallery created. Import failed reading upload: "+err.Error())
 		return
 	}
 	defer file.Close()
@@ -403,21 +398,21 @@ func (s *Server) settingsGalleriesPost(w http.ResponseWriter, r *http.Request) {
 		if switchErr := s.SwitchGallery(name); switchErr != nil {
 			logx.Infof("gallery %q: post-add switch skipped: %v", name, switchErr)
 		}
-		writeFlash(w, "ok", "Gallery "+name+" added.")
+		writeInlineFlash(w, "ok", "Gallery "+name+" added.")
 		return
 	}
 	format := formatFromExt(fh.Filename)
 	if format == "" {
-		writeFlash(w, "err", "Gallery created. Import failed: file must be .db, .json, or .zip.")
+		writeInlineFlash(w, "err", "Gallery created. Import failed: file must be .db, .json, or .zip.")
 		return
 	}
 	// ImportGallery itself calls SwitchGallery on success, so the gallery
 	// becomes active without an extra step here.
 	if err := s.ImportGallery(name, format, file); err != nil {
-		writeFlash(w, "err", "Gallery created. Import failed: "+err.Error())
+		writeInlineFlash(w, "err", "Gallery created. Import failed: "+err.Error())
 		return
 	}
-	writeFlash(w, "ok", "Gallery "+name+" added and imported.")
+	writeInlineFlash(w, "ok", "Gallery "+name+" added and imported.")
 }
 
 func (s *Server) settingsGalleryRenamePost(w http.ResponseWriter, r *http.Request) {
@@ -427,7 +422,7 @@ func (s *Server) settingsGalleryRenamePost(w http.ResponseWriter, r *http.Reques
 	oldName := r.PathValue("name")
 	newName := r.FormValue("new_name")
 	if err := s.RenameGallery(oldName, newName); err != nil {
-		writeFlash(w, "err", err.Error())
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	w.Header().Set("HX-Refresh", "true")
@@ -440,12 +435,12 @@ func (s *Server) settingsGalleryDeletePost(w http.ResponseWriter, r *http.Reques
 	name := r.PathValue("name")
 	confirm := strings.TrimSpace(r.FormValue("confirm_name"))
 	if confirm != name {
-		writeFlash(w, "err", "type-to-confirm name does not match")
+		writeInlineFlash(w, "err", "type-to-confirm name does not match")
 		return
 	}
 	removeFolder := r.FormValue("remove_folder") == "on"
 	if err := s.RemoveGallery(name, removeFolder); err != nil {
-		writeFlash(w, "err", err.Error())
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	w.Header().Set("HX-Refresh", "true")
@@ -454,7 +449,7 @@ func (s *Server) settingsGalleryDeletePost(w http.ResponseWriter, r *http.Reques
 func (s *Server) settingsGalleryDefaultPost(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := s.SetDefault(name); err != nil {
-		writeFlash(w, "err", err.Error())
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	w.Header().Set("HX-Refresh", "true")

@@ -345,7 +345,7 @@ func TestCreateCategory_RejectsSystemReservedName(t *testing.T) {
 	}
 }
 
-// TestCreateCategory_RejectsInvalidNames pins A-F015: the allowlist
+// TestCreateCategory_RejectsInvalidNames: the allowlist
 // stops payloads that would round-trip badly through the tagger
 // threshold form-field name attribute, the cat: search syntax, and
 // the rendered template context. Numbers/dashes/underscores are fine;
@@ -1518,11 +1518,11 @@ func TestMergeTags_RepointsImplicationsAndKeepsImpliedRowsCleanable(t *testing.T
 	}
 }
 
-// TestMergeTags_FansCanonicalImplicationsOntoMigratedRows pins A-F004:
-// an image previously tagged only with the alias must, after the
-// merge, carry both the canonical AND the canonical's declared implied
-// children. Without the fan-out the canonical lands but its implied
-// closure is silently absent.
+// TestMergeTags_FansCanonicalImplicationsOntoMigratedRows: an image
+// previously tagged only with the alias must, after the merge, carry
+// both the canonical AND the canonical's declared implied children.
+// Without the fan-out the canonical lands but its implied closure is
+// silently absent.
 func TestMergeTags_FansCanonicalImplicationsOntoMigratedRows(t *testing.T) {
 	database, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
@@ -1886,10 +1886,10 @@ func TestAddRating_ManualOverwritesPriorLevel(t *testing.T) {
 	}
 }
 
-// TestAddImplication_RejectsCycle pins T-F003: ErrImplicationCycle
-// fires when a new edge would close a loop through the existing
-// graph. Without this guard the depth-bound walk runs indefinitely
-// against a cyclic graph and the implied closure becomes ambiguous.
+// TestAddImplication_RejectsCycle: ErrImplicationCycle fires when a
+// new edge would close a loop through the existing graph. Without
+// this guard the depth-bound walk runs indefinitely against a cyclic
+// graph and the implied closure becomes ambiguous.
 func TestAddImplication_RejectsCycle(t *testing.T) {
 	_, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
@@ -1951,11 +1951,11 @@ func TestAddImplication_HonoursDepthBound(t *testing.T) {
 	}
 }
 
-// TestAddImplication_RatingImpliedPrunesLower pins A-F013: an
-// implication whose implied side is a rating tag must trigger the
-// rating-prune sweep when fan-out lands the implied row, otherwise
-// the image carries multiple rating rows and breaks the highest-wins
-// invariant the executor's fast counts rely on.
+// TestAddImplication_RatingImpliedPrunesLower: an implication whose
+// implied side is a rating tag must trigger the rating-prune sweep
+// when fan-out lands the implied row, otherwise the image carries
+// multiple rating rows and breaks the highest-wins invariant the
+// executor's fast counts rely on.
 func TestAddImplication_RatingImpliedPrunesLower(t *testing.T) {
 	database, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
@@ -2001,9 +2001,9 @@ func TestAddImplication_RatingImpliedPrunesLower(t *testing.T) {
 	}
 }
 
-// TestAddRating_ManualReportsDisplacedNames pins U-F014: callers
-// (the detail-page tag input) need to surface "replaced rating:X"
-// inline when a manual rating add sweeps a prior row.
+// TestAddRating_ManualReportsDisplacedNames: callers (the
+// detail-page tag input) need to surface "replaced rating:X" inline
+// when a manual rating add sweeps a prior row.
 func TestAddRating_ManualReportsDisplacedNames(t *testing.T) {
 	database, svc := setupTestDB(t)
 	imageID := insertTestImage(t, database, "displaced.png")

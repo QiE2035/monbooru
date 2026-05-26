@@ -534,9 +534,9 @@ func makeJPEGWithUserComment(t *testing.T, exifType uint16, comment string) stri
 	return tmp.Name()
 }
 
-// TestExtractSDFromJPEG_ParsesA1111UserComment pins T-F004: the
-// positive A1111-via-EXIF path must parse Steps / Sampler / CFG /
-// Seed / Model out of an ASCII-typed UserComment.
+// TestExtractSDFromJPEG_ParsesA1111UserComment: the positive
+// A1111-via-EXIF path must parse Steps / Sampler / CFG / Seed /
+// Model out of an ASCII-typed UserComment.
 func TestExtractSDFromJPEG_ParsesA1111UserComment(t *testing.T) {
 	t.Parallel()
 	params := "a beautiful landscape\nNegative prompt: ugly\nSteps: 20, Sampler: Euler, CFG scale: 7, Seed: 12345, Model: v1-5"
@@ -621,10 +621,10 @@ func makeWebPWithExifChunk(t *testing.T, includeMagic bool, comment string) stri
 	return tmp.Name()
 }
 
-// TestExtractSDFromWebP_ParsesA1111UserComment pins T-F005: the
-// positive RIFF EXIF parse path. Covers both the with-magic-prefix
-// shape and the no-magic shape so future changes to the chunk
-// pre-processing keep both branches alive.
+// TestExtractSDFromWebP_ParsesA1111UserComment: the positive RIFF
+// EXIF parse path. Covers both the with-magic-prefix shape and the
+// no-magic shape so future changes to the chunk pre-processing keep
+// both branches alive.
 func TestExtractSDFromWebP_ParsesA1111UserComment(t *testing.T) {
 	t.Parallel()
 	params := "a beautiful landscape\nNegative prompt: ugly\nSteps: 30, Sampler: Euler, CFG scale: 7, Seed: 42, Model: webp_v1"
@@ -654,11 +654,11 @@ func TestExtractSDFromWebP_ParsesA1111UserComment(t *testing.T) {
 	}
 }
 
-// TestExtractSDFromJPEG_RejectsUndefinedType pins T-F001: a UserComment
-// with type UNDEFINED must return (nil, nil) from extractSDFromJPEG -
-// no error, no partial metadata. The fixture is built in-memory so the
-// UNDEFINED-type branch is actually reached; a missing-file path would
-// short-circuit on os.Open and skip the assertion entirely.
+// TestExtractSDFromJPEG_RejectsUndefinedType: a UserComment with
+// type UNDEFINED must return (nil, nil) from extractSDFromJPEG - no
+// error, no partial metadata. The fixture is built in-memory so the
+// UNDEFINED-type branch is actually reached; a missing-file path
+// would short-circuit on os.Open and skip the assertion entirely.
 func TestExtractSDFromJPEG_RejectsUndefinedType(t *testing.T) {
 	t.Parallel()
 	path := makeJPEGWithUserComment(t, 7, "anything")

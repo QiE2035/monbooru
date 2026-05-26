@@ -247,10 +247,10 @@ func TestSync_NoChange(t *testing.T) {
 	}
 }
 
-// TestSync_MovePreservesPriorPathAsAlias pins the A-F003 fix: the
-// previous canonical entry must be demoted to an alias so the move
-// history isn't silently overwritten. Counts both image_paths rows
-// after the move and asserts the prior path is still in the table.
+// TestSync_MovePreservesPriorPathAsAlias: the previous canonical
+// entry must be demoted to an alias so the move history isn't
+// silently overwritten. Counts both image_paths rows after the move
+// and asserts the prior path is still in the table.
 func TestSync_MovePreservesPriorPathAsAlias(t *testing.T) {
 	database, env, galleryDir := setupSyncTest(t)
 	subDir := filepath.Join(galleryDir, "moved")
@@ -295,11 +295,11 @@ func TestSync_MovePreservesPriorPathAsAlias(t *testing.T) {
 	}
 }
 
-// TestSync_DetectsSameSizeInPlaceEdit pins the A-F001 fix: a same-
-// size in-place rewrite must surface (re-hash) on the next sync via
-// the mtime gate, not silently keep the prior SHA. The unchanged-
-// shortcut keeps idle syncs cheap on libraries that haven't seen
-// edits, but a touch + same-size overwrite must invalidate it.
+// TestSync_DetectsSameSizeInPlaceEdit: a same-size in-place rewrite
+// must surface (re-hash) on the next sync via the mtime gate, not
+// silently keep the prior SHA. The unchanged-shortcut keeps idle
+// syncs cheap on libraries that haven't seen edits, but a touch +
+// same-size overwrite must invalidate it.
 func TestSync_DetectsSameSizeInPlaceEdit(t *testing.T) {
 	database, env, galleryDir := setupSyncTest(t)
 	path := createTestPNGFile(t, galleryDir, "edit.png")

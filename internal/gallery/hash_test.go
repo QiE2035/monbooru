@@ -236,10 +236,10 @@ func TestUniqueDestPath_PreservesExtension(t *testing.T) {
 	}
 }
 
-// TestPathInside pins T-F002's hash-side coverage: the path-traversal
-// defense the serveImageFile handler relies on must reject sibling-
-// prefix attacks, .. segments, absolute escapes, and the equal-prefix
-// edge case the docstring calls out (`/data/gallery_backup` vs
+// TestPathInside covers the hash-side path-traversal defense the
+// serveImageFile handler relies on. It must reject sibling-prefix
+// attacks, .. segments, absolute escapes, and the equal-prefix edge
+// case the docstring calls out (`/data/gallery_backup` vs
 // `/data/gallery`).
 func TestPathInside(t *testing.T) {
 	cases := []struct {

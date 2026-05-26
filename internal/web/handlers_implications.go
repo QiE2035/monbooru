@@ -3,11 +3,11 @@ package web
 import (
 	"database/sql"
 	"fmt"
-	"html"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/tags"
@@ -17,10 +17,8 @@ import (
 // on the /tags page: one chip per direct implication with a delete
 // button, plus a multi-tag input with autocomplete to declare new edges.
 func (s *Server) implicationsDialogHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	parent, err := s.tagSvc().GetTag(id)
@@ -45,14 +43,13 @@ func (s *Server) addImplicationPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
-	parentID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	parentID, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	rawInput := strings.TrimSpace(r.FormValue("implied_id"))
 	if rawInput == "" {
-		w.Write([]byte(`<div class="flash flash-err">Tag name is required.</div>`))
+		writeInlineFlash(w, "err", "Tag name is required.")
 		return
 	}
 
@@ -60,7 +57,7 @@ func (s *Server) addImplicationPost(w http.ResponseWriter, r *http.Request) {
 	// space-separated multi-add and "category:name" / quoted spans.
 	catTags, parseErrMsg := s.parseTagInput(rawInput)
 	if parseErrMsg != "" {
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(parseErrMsg) + `</div>`))
+		writeInlineFlash(w, "err", parseErrMsg)
 		return
 	}
 
@@ -102,26 +99,21 @@ func (s *Server) addImplicationPost(w http.ResponseWriter, r *http.Request) {
 	case len(failures) == 0 && added > 0:
 		w.WriteHeader(http.StatusNoContent)
 	case len(failures) == 0 && added == 0:
-		w.Write([]byte(`<div class="flash flash-ok">Already declared.</div>`))
+		writeInlineFlash(w, "ok", "Already declared.")
 	case added > 0:
-		w.Write([]byte(`<div class="flash flash-err">Added ` +
-			strconv.Itoa(added) + `. Failed: ` +
-			html.EscapeString(strings.Join(failures, "; ")) + `</div>`))
+		writeInlineFlash(w, "err", "Added "+strconv.Itoa(added)+". Failed: "+strings.Join(failures, "; "))
 	default:
-		w.Write([]byte(`<div class="flash flash-err">` +
-			html.EscapeString(strings.Join(failures, "; ")) + `</div>`))
+		writeInlineFlash(w, "err", strings.Join(failures, "; "))
 	}
 }
 
 func (s *Server) removeImplicationDelete(w http.ResponseWriter, r *http.Request) {
-	parentID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	parentID, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
-	impliedID, err := strconv.ParseInt(r.PathValue("impliedID"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad implied id", http.StatusBadRequest)
+	impliedID, ok := pathInt64(w, r, "impliedID")
+	if !ok {
 		return
 	}
 	if err := s.tagSvc().RemoveImplication(parentID, impliedID); err != nil {
@@ -152,7 +144,6 @@ func (s *Server) startImplicationPropagation(parentID, impliedID int64, op strin
 func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string) {
 	ctx := s.jobs.Context()
 	const chunkSize = 500
-	processed := 0
 
 	rows, err := s.db().Read.QueryContext(ctx,
 		`SELECT image_id FROM image_tags WHERE tag_id = ? ORDER BY image_id`, parentID,
@@ -161,24 +152,17 @@ func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string)
 		s.jobs.Fail(err.Error())
 		return
 	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			s.jobs.Fail(err.Error())
-			return
-		}
-		ids = append(ids, id)
-	}
+	ids, err := db.ScanIDs(rows)
 	rows.Close()
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		return
+	}
 
-	total := len(ids)
 	verb := "applying implication"
 	if op == "remove" {
 		verb = "removing implication"
 	}
-	s.jobs.Update(0, total, fmt.Sprintf("%s 0/%d…", verb, total))
 
 	// Pre-walk the implied tag's closure once for the remove path; it's
 	// invariant across the propagation job. The chunked tx loop below
@@ -201,43 +185,34 @@ func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string)
 		removeClosure = append([]int64{impliedID}, removeClosure...)
 	}
 
-	for start := 0; start < total; start += chunkSize {
-		if ctx.Err() != nil {
-			s.jobs.Complete(fmt.Sprintf("%s cancelled (%d/%d)", verb, processed, total))
-			return
-		}
-		end := start + chunkSize
-		if end > total {
-			end = total
-		}
-		chunk := ids[start:end]
+	processed, cancelled, err := chunkedJob(ctx, s.jobs, ids, chunkSize, verb, func(chunk []int64) error {
 		tx, err := s.db().Write.Begin()
 		if err != nil {
-			s.jobs.Fail(err.Error())
-			return
+			return err
 		}
 		ratingCatID := s.tagSvc().RatingCategoryID()
 		for _, imageID := range chunk {
 			if op == "add" {
 				if err := propagateAddImplication(tx, imageID, parentID, ratingCatID); err != nil {
 					tx.Rollback()
-					s.jobs.Fail(err.Error())
-					return
+					return err
 				}
 			} else {
 				if err := propagateRemoveImplication(tx, imageID, parentID, removeClosure); err != nil {
 					tx.Rollback()
-					s.jobs.Fail(err.Error())
-					return
+					return err
 				}
 			}
 		}
-		if err := tx.Commit(); err != nil {
-			s.jobs.Fail(err.Error())
-			return
-		}
-		processed = end
-		s.jobs.Update(processed, total, fmt.Sprintf("%s %d/%d…", verb, processed, total))
+		return tx.Commit()
+	})
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		return
+	}
+	if cancelled {
+		s.jobs.Complete(fmt.Sprintf("%s cancelled (%d/%d)", verb, processed, len(ids)))
+		return
 	}
 
 	if err := s.tagSvc().RecalcIDs([]int64{impliedID}); err != nil {

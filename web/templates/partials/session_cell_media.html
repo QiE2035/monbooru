@@ -1,0 +1,17 @@
+{{define "partials/session_cell_media.html"}}
+{{- /* Video plays the real bytes in-place so the operator can see the
+       motion that drives the duplicate-vs-variant call. The thumbnail
+       jpg is just the first frame and hides exactly the signal the
+       session is trying to surface. */ -}}
+{{- if or (eq .FileType "mp4") (eq .FileType "webm") -}}
+<video class="session-cell-img" src="/images/{{.ID}}/file" muted loop autoplay playsinline preload="metadata"></video>
+{{- /* Archives have no single viewable image; the cover jpg is the only
+       sensible source. */ -}}
+{{- else if eq .FileType "cbz" -}}
+<img src="/thumbnails/{{.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" class="session-cell-img">
+{{- /* Static image: the 360px thumbnail looks soft at 65vh, so serve
+       the real bytes and let the browser scale them. */ -}}
+{{- else -}}
+<img src="/images/{{.ID}}/file" alt="image {{.ID}}" class="session-cell-img" loading="lazy">
+{{- end -}}
+{{end}}

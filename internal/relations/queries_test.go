@@ -2,8 +2,8 @@ package relations
 
 import "testing"
 
-// TestLoadImageRelationsIncludesSelf pins F013: dup and alt groups
-// both surface member_ids that include the queried image, so the API
+// TestLoadImageRelationsIncludesSelf: dup and alt groups both
+// surface member_ids that include the queried image, so the API
 // shape is consistent. Templates filter self when they want to render
 // peers; consumers that want the membership get it all.
 func TestLoadImageRelationsIncludesSelf(t *testing.T) {

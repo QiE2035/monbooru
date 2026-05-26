@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -116,6 +117,132 @@ func TestSessionLoadNextPair_RatingCeilingFiltersBothSides(t *testing.T) {
 	}
 	if visibleNo != 2 || rawNo != 2 {
 		t.Errorf("no-filter counts: visible=%d raw=%d, want 2/2", visibleNo, rawNo)
+	}
+}
+
+// A pair whose sides are mp4/webm must surface the file_type on the
+// session-pair data attributes so the compare-slider JS mounts <video>
+// elements rather than <img>. Without these attributes the slider
+// renders the raw video bytes through <img> and shows broken-image
+// icons.
+func TestSessionPage_VideoPairExposesFileType(t *testing.T) {
+	srv := newTestServer(t)
+	resA, _ := srv.db().Write.Exec(
+		`INSERT INTO images (canonical_path, file_type, file_size, sha256, ingested_at)
+		 VALUES ('/tmp/clip_a.mp4', 'mp4', 4096, 'sha_clip_a', datetime('now'))`)
+	aID, _ := resA.LastInsertId()
+	resB, _ := srv.db().Write.Exec(
+		`INSERT INTO images (canonical_path, file_type, file_size, sha256, ingested_at)
+		 VALUES ('/tmp/clip_b.webm', 'webm', 2048, 'sha_clip_b', datetime('now'))`)
+	bID, _ := resB.LastInsertId()
+	queueRow(t, srv.db(), aID, bID, 3)
+
+	req := httptest.NewRequest("GET", "/relations/session", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("session page expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `data-a-type="mp4"`) {
+		t.Errorf("expected data-a-type=\"mp4\" on .session-pair, body did not contain it")
+	}
+	if !strings.Contains(body, `data-b-type="webm"`) {
+		t.Errorf("expected data-b-type=\"webm\" on .session-pair, body did not contain it")
+	}
+	if !strings.Contains(body, `id="compare-slot-left"`) || !strings.Contains(body, `id="compare-slot-right"`) {
+		t.Errorf("expected compare-slot-left / compare-slot-right containers in the dialog")
+	}
+	// The old <img id="compare-img-left"> elements are gone now that
+	// the JS mounts the right media element per slot at open time.
+	if strings.Contains(body, `id="compare-img-left"`) || strings.Contains(body, `id="compare-img-right"`) {
+		t.Errorf("legacy <img id=\"compare-img-{left,right}\"> elements still in the dialog")
+	}
+}
+
+// Session-cell previews serve the real image bytes (or video element for
+// mp4/webm sides) rather than the 360px jpg thumbnail. The thumbnail
+// path is reserved for the archive case where there is no single image
+// to display.
+func TestSessionPage_CellMediaSrc(t *testing.T) {
+	srv := newTestServer(t)
+	exec := func(path, ftype, sha string) int64 {
+		t.Helper()
+		res, err := srv.db().Write.Exec(
+			`INSERT INTO images (canonical_path, file_type, file_size, sha256, ingested_at)
+			 VALUES (?, ?, 1024, ?, datetime('now'))`,
+			path, ftype, sha,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		return id
+	}
+
+	staticID := exec("/tmp/cell_static.png", "png", "sha_cell_static")
+	videoID := exec("/tmp/cell_video.mp4", "mp4", "sha_cell_video")
+	queueRow(t, srv.db(), staticID, videoID, 3)
+
+	req := httptest.NewRequest("GET", "/relations/session", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("session page expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `<img src="/images/`+strconv.FormatInt(staticID, 10)+`/file"`) {
+		t.Errorf("expected static-side <img> wired to /images/%d/file, body: %s", staticID, body)
+	}
+	if !strings.Contains(body, `<video class="session-cell-img" src="/images/`+strconv.FormatInt(videoID, 10)+`/file"`) {
+		t.Errorf("expected mp4-side <video> wired to /images/%d/file, body: %s", videoID, body)
+	}
+	// The cell <img>/<video> must not fall back to the thumbnail endpoint
+	// for static or video sides - the whole point of the change is to
+	// drop the 360px stretch.
+	if strings.Contains(body, `src="/thumbnails/`+srv.activeName+`/`+strconv.FormatInt(staticID, 10)+`.jpg" alt="image `+strconv.FormatInt(staticID, 10)+`" class="session-cell-img"`) {
+		t.Errorf("static cell still serves the thumbnail jpg, body: %s", body)
+	}
+	if strings.Contains(body, `src="/thumbnails/`+srv.activeName+`/`+strconv.FormatInt(videoID, 10)+`.jpg" alt="image `+strconv.FormatInt(videoID, 10)+`" class="session-cell-img"`) {
+		t.Errorf("video cell still serves the thumbnail jpg, body: %s", body)
+	}
+}
+
+// Archive (cbz/zip) sides have no single viewable image, so the cell
+// keeps the existing cover-thumbnail src rather than pointing at the
+// archive bytes the browser cannot render.
+func TestSessionPage_CellMediaArchiveKeepsThumbnail(t *testing.T) {
+	srv := newTestServer(t)
+	exec := func(path, ftype, sha string) int64 {
+		t.Helper()
+		res, err := srv.db().Write.Exec(
+			`INSERT INTO images (canonical_path, file_type, file_size, sha256, ingested_at)
+			 VALUES (?, ?, 1024, ?, datetime('now'))`,
+			path, ftype, sha,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		return id
+	}
+	zipA := exec("/tmp/cell_zip_a.cbz", "cbz", "sha_zip_a")
+	zipB := exec("/tmp/cell_zip_b.cbz", "cbz", "sha_zip_b")
+	queueRow(t, srv.db(), zipA, zipB, 4)
+
+	req := httptest.NewRequest("GET", "/relations/session", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("session page expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, id := range []int64{zipA, zipB} {
+		want := `src="/thumbnails/` + srv.activeName + `/` + strconv.FormatInt(id, 10) + `.jpg"`
+		if !strings.Contains(body, want) {
+			t.Errorf("expected archive cell to keep thumbnail src %q, body: %s", want, body)
+		}
 	}
 }
 

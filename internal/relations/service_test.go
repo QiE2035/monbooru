@@ -3,6 +3,7 @@ package relations
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/leqwin/monbooru/internal/db"
@@ -354,6 +355,48 @@ func TestAddVersionEdgeRejectsCycle(t *testing.T) {
 	}
 	if err := svc.AddVersionEdge(z, x); !errors.Is(err, ErrVersionExists) {
 		t.Fatalf("z->x (cycle): got %v, want ErrVersionExists", err)
+	}
+}
+
+// Identical re-add of the same edge is a silent success; only a
+// different edge that would conflict with the per-row schema still
+// raises ErrVersionExists. This lets REST callers retry idempotently
+// after a network blip.
+func TestAddVersionEdgeIdempotentSameEdge(t *testing.T) {
+	database, svc := setupTestDB(t)
+	parent := insertImage(t, database, "p", 100)
+	child := insertImage(t, database, "c", 100)
+	if err := svc.AddVersionEdge(parent, child); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := svc.AddVersionEdge(parent, child); err != nil {
+		t.Errorf("idempotent re-add: got %v, want nil", err)
+	}
+	var n int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM version_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("version_edges = %d, want 1", n)
+	}
+}
+
+func TestAddDerivativeEdgeIdempotentSameEdge(t *testing.T) {
+	database, svc := setupTestDB(t)
+	src := insertImage(t, database, "src", 100)
+	d := insertImage(t, database, "d", 100)
+	if err := svc.AddDerivativeEdge(src, d); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := svc.AddDerivativeEdge(src, d); err != nil {
+		t.Errorf("idempotent re-add: got %v, want nil", err)
+	}
+	var n int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM derivative_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("derivative_edges = %d, want 1", n)
 	}
 }
 
@@ -927,11 +970,10 @@ func TestCopyTagsFromDuplicatesToOriginal(t *testing.T) {
 	}
 }
 
-// TestAddDuplicateSweepsCoGroupedQueueRows pins F007: after a merge
-// lands two endpoints in the same dup group, any queue row whose
-// endpoints are now both in that group is dropped so the session
-// doesn't re-ask the operator about a pair that already shares the
-// group.
+// TestAddDuplicateSweepsCoGroupedQueueRows: after a merge lands two
+// endpoints in the same dup group, any queue row whose endpoints are
+// now both in that group is dropped so the session doesn't re-ask
+// the operator about a pair that already shares the group.
 func TestAddDuplicateSweepsCoGroupedQueueRows(t *testing.T) {
 	database, svc := setupTestDB(t)
 	a := insertImage(t, database, "a", 100)
@@ -1297,6 +1339,32 @@ func TestDissolveDerivativeTreeNoEdges(t *testing.T) {
 	_, svc := setupTestDB(t)
 	if err := svc.DissolveDerivativeTree(42); err != nil {
 		t.Fatalf("DissolveDerivativeTree on missing tree: %v", err)
+	}
+}
+
+// A wide derivative tree (single source with many siblings) must not
+// silently truncate when the walker's depth budget is mis-applied to
+// fan-out instead of vertical reach. Pins the BFS-by-level cap so a
+// future regression that re-counts depth-per-node would fail here.
+func TestDissolveDerivativeTreeWideFanout(t *testing.T) {
+	database, svc := setupTestDB(t)
+	src := insertImage(t, database, "src", 100)
+	const fanout = 300
+	for i := 0; i < fanout; i++ {
+		d := insertImage(t, database, fmt.Sprintf("d%03d", i), int64(200+i))
+		if err := svc.AddDerivativeEdge(src, d); err != nil {
+			t.Fatalf("src->d%d: %v", i, err)
+		}
+	}
+	if err := svc.DissolveDerivativeTree(src); err != nil {
+		t.Fatalf("DissolveDerivativeTree: %v", err)
+	}
+	var n int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM derivative_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("derivative_edges remaining = %d, want 0", n)
 	}
 }
 

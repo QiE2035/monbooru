@@ -25,7 +25,7 @@
             onclick="openMoveImageDialog()">Move image</button>
     <button class="btn-danger"
             id="delete-image-btn"
-            hx-delete="/images/{{.ImageID}}?back_q={{.BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}{{if .Ref}}&ref={{.Ref}}{{end}}"
+            hx-delete="/images/{{.ImageID}}?back_q={{urlQ .BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}{{if .Ref}}&ref={{.Ref}}{{end}}"
             hx-swap="none"
             hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
             hx-confirm="Delete this image?"

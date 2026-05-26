@@ -3,7 +3,7 @@
 <div id="sidebar-inner"></div>
 {{template "layout_mid" .}}
 
-<div id="relations-browse-page">
+<div id="relations-browse-page" data-esc-back="/relations">
   <div class="detail-topbar">
     <div class="detail-nav-group">
       <a href="/relations" class="back-link">← Back to Relations</a>
@@ -38,12 +38,13 @@
   <p class="field-hint">Nothing declared yet for this kind.</p>
   {{end}}
   {{else}}
-  {{if or (eq .Kind "duplicate") (eq .Kind "alternate")}}
   <div class="merge-toolbar" id="merge-toolbar">
     <span class="merge-toolbar-count"><span id="merge-selected-count">0</span> selected</span>
+    {{if or (eq .Kind "duplicate") (eq .Kind "alternate")}}
     <button type="button" class="btn-sm btn-purple" id="merge-selected-btn" disabled>Merge selected</button>
+    {{end}}
+    <button type="button" class="btn-sm btn-danger" id="remove-selected-btn" disabled>Remove selected</button>
   </div>
-  {{end}}
   {{$pageBase := printf "/relations/browse?kind=%s&sort=%s" .Kind .Sort}}
   <ul class="relations-cards">
     {{range .Cards}}
@@ -112,6 +113,9 @@
         </form>
         {{end}}
       {{else if eq .Kind "version"}}
+        <label class="merge-select" title="Select this chain for removal">
+          <input type="checkbox" value="{{index .Members 0}}" class="merge-checkbox">
+        </label>
         <strong>Version chain #{{index .Members 0}}</strong>
         ({{len .Members}} image(s), oldest #{{index .Members 0}} → newest #{{index .Members (sub (len .Members) 1)}})
         <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
@@ -137,6 +141,9 @@
         </form>
         {{end}}
       {{else if eq .Kind "derivative"}}
+        <label class="merge-select" title="Select this tree for removal">
+          <input type="checkbox" value="{{index .Members 0}}" class="merge-checkbox">
+        </label>
         <strong>Derivative tree</strong>
         ({{len .Members}} image(s), source #{{index .Members 0}})
         <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
@@ -149,6 +156,9 @@
           <button type="submit" class="btn-link-accent">[dissolve]</button>
         </form>
       {{else if eq .Kind "not_related"}}
+        <label class="merge-select" title="Select this pair for removal">
+          <input type="checkbox" value="{{index .Members 0}}:{{index .Members 1}}" class="merge-checkbox">
+        </label>
         <strong>Not related</strong>
         (#{{index .Members 0}} ↔ #{{index .Members 1}})
         <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
@@ -180,25 +190,15 @@
       {{$first := index .Members 0}}{{$last := index .Members (sub (len .Members) 1)}}
       <details class="relations-card-expand">
         <summary class="relations-card-summary">
-          <a href="/images/{{$first}}/relations" class="relations-card-thumb relations-card-summary-thumb" title="Image {{$first}} - added {{index $card.MemberIngestedAt $first}}">
-            <img src="/thumbnails/{{$.ActiveGallery}}/{{$first}}.jpg" alt="image {{$first}}" loading="lazy">
-            <span class="relations-card-id">#{{$first}}</span>
-          </a>
+          {{template "partials/relations_card_thumb.html" (dict "ID" $first "ActiveGallery" $.ActiveGallery "ExtraClass" "relations-card-summary-thumb" "Title" (printf "Image %d - added %s" $first (index $card.MemberIngestedAt $first)))}}
           <span class="relations-chain-arrow" aria-hidden="true">→</span>
-          <a href="/images/{{$last}}/relations" class="relations-card-thumb relations-card-summary-thumb" title="Image {{$last}} - added {{index $card.MemberIngestedAt $last}}">
-            <img src="/thumbnails/{{$.ActiveGallery}}/{{$last}}.jpg" alt="image {{$last}}" loading="lazy">
-            <span class="relations-card-id">#{{$last}}</span>
-          </a>
+          {{template "partials/relations_card_thumb.html" (dict "ID" $last "ActiveGallery" $.ActiveGallery "ExtraClass" "relations-card-summary-thumb" "Title" (printf "Image %d - added %s" $last (index $card.MemberIngestedAt $last)))}}
           <span class="relations-card-summary-meta">{{len .Members}} images</span>
         </summary>
         <div class="relations-card-chain">
           {{range $i, $id := .Members}}
           {{if $i}}<span class="relations-chain-arrow" aria-hidden="true">→</span>{{end}}
-          <a href="/images/{{$id}}/relations" class="relations-card-thumb" title="Image {{$id}} - added {{index $card.MemberIngestedAt $id}}">
-            <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy">
-            <span class="relations-card-id">#{{$id}}</span>
-            <span class="relations-card-date">{{index $card.MemberIngestedAt $id}}</span>
-          </a>
+          {{template "partials/relations_card_thumb.html" (dict "ID" $id "ActiveGallery" $.ActiveGallery "Title" (printf "Image %d - added %s" $id (index $card.MemberIngestedAt $id)) "Date" (index $card.MemberIngestedAt $id))}}
           {{end}}
         </div>
       </details>
@@ -206,10 +206,7 @@
       {{$source := index .Members 0}}
       <details class="relations-card-expand">
         <summary class="relations-card-summary">
-          <a href="/images/{{$source}}/relations" class="relations-card-thumb relations-card-summary-thumb" title="Image {{$source}} - added {{index $card.MemberIngestedAt $source}}">
-            <img src="/thumbnails/{{$.ActiveGallery}}/{{$source}}.jpg" alt="image {{$source}}" loading="lazy">
-            <span class="relations-card-id">#{{$source}}</span>
-          </a>
+          {{template "partials/relations_card_thumb.html" (dict "ID" $source "ActiveGallery" $.ActiveGallery "ExtraClass" "relations-card-summary-thumb" "Title" (printf "Image %d - added %s" $source (index $card.MemberIngestedAt $source)))}}
           <span class="relations-card-summary-meta">tree, {{len .Members}} images</span>
         </summary>
         <div class="relations-card-tree">
@@ -221,11 +218,7 @@
               {{range $row.Trunks}}<span class="relations-tree-trunk" data-style="{{.}}"></span>{{end}}
             </div>
             {{end}}
-            <a href="/images/{{.ID}}/relations" class="relations-card-thumb" title="Image {{.ID}} - added {{index $card.MemberIngestedAt .ID}}">
-              <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy">
-              <span class="relations-card-id">#{{.ID}}</span>
-              <span class="relations-card-date">{{index $card.MemberIngestedAt .ID}}</span>
-            </a>
+            {{template "partials/relations_card_thumb.html" (dict "ID" .ID "ActiveGallery" $.ActiveGallery "Title" (printf "Image %d - added %s" .ID (index $card.MemberIngestedAt .ID)) "Date" (index $card.MemberIngestedAt .ID))}}
           </div>
           {{end}}
         </div>
@@ -234,41 +227,20 @@
       <div class="relations-card-thumbs{{if eq .Kind "not_related"}} relations-card-thumbs-pair{{end}}">
         {{if and (eq .Kind "duplicate") .Original}}
         {{$orig := .Original}}
-        <a href="/images/{{$orig}}/relations" class="relations-card-thumb relations-card-original" title="Original {{$orig}} - added {{index $card.MemberIngestedAt $orig}}">
-          <img src="/thumbnails/{{$.ActiveGallery}}/{{$orig}}.jpg" alt="image {{$orig}}" loading="lazy">
-          <span class="relations-card-id">#{{$orig}}</span>
-          <span class="relations-card-tag">original</span>
-          <span class="relations-card-date">{{index $card.MemberIngestedAt $orig}}</span>
-        </a>
+        {{template "partials/relations_card_thumb.html" (dict "ID" $orig "ActiveGallery" $.ActiveGallery "ExtraClass" "relations-card-original" "Title" (printf "Original %d - added %s" $orig (index $card.MemberIngestedAt $orig)) "Tag" "original" "Date" (index $card.MemberIngestedAt $orig))}}
         {{range $id := .Members}}
           {{if ne $id $orig}}
-          <a href="/images/{{$id}}/relations" class="relations-card-thumb" title="Image {{$id}} - added {{index $card.MemberIngestedAt $id}}">
-            <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy">
-            <span class="relations-card-id">#{{$id}}</span>
-            <span class="relations-card-date">{{index $card.MemberIngestedAt $id}}</span>
-          </a>
+          {{template "partials/relations_card_thumb.html" (dict "ID" $id "ActiveGallery" $.ActiveGallery "Title" (printf "Image %d - added %s" $id (index $card.MemberIngestedAt $id)) "Date" (index $card.MemberIngestedAt $id))}}
           {{end}}
         {{end}}
         {{else if eq .Kind "not_related"}}
         {{$left := index .Members 0}}{{$right := index .Members 1}}
-        <a href="/images/{{$left}}/relations" class="relations-card-thumb" title="Image {{$left}} - added {{index $card.MemberIngestedAt $left}}">
-          <img src="/thumbnails/{{$.ActiveGallery}}/{{$left}}.jpg" alt="image {{$left}}" loading="lazy">
-          <span class="relations-card-id">#{{$left}}</span>
-          <span class="relations-card-date">{{index $card.MemberIngestedAt $left}}</span>
-        </a>
+        {{template "partials/relations_card_thumb.html" (dict "ID" $left "ActiveGallery" $.ActiveGallery "Title" (printf "Image %d - added %s" $left (index $card.MemberIngestedAt $left)) "Date" (index $card.MemberIngestedAt $left))}}
         <span class="relations-card-arrow" aria-hidden="true">↔</span>
-        <a href="/images/{{$right}}/relations" class="relations-card-thumb" title="Image {{$right}} - added {{index $card.MemberIngestedAt $right}}">
-          <img src="/thumbnails/{{$.ActiveGallery}}/{{$right}}.jpg" alt="image {{$right}}" loading="lazy">
-          <span class="relations-card-id">#{{$right}}</span>
-          <span class="relations-card-date">{{index $card.MemberIngestedAt $right}}</span>
-        </a>
+        {{template "partials/relations_card_thumb.html" (dict "ID" $right "ActiveGallery" $.ActiveGallery "Title" (printf "Image %d - added %s" $right (index $card.MemberIngestedAt $right)) "Date" (index $card.MemberIngestedAt $right))}}
         {{else}}
         {{range $id := .Members}}
-        <a href="/images/{{$id}}/relations" class="relations-card-thumb" title="Image {{$id}} - added {{index $card.MemberIngestedAt $id}}">
-          <img src="/thumbnails/{{$.ActiveGallery}}/{{$id}}.jpg" alt="image {{$id}}" loading="lazy">
-          <span class="relations-card-id">#{{$id}}</span>
-          <span class="relations-card-date">{{index $card.MemberIngestedAt $id}}</span>
-        </a>
+        {{template "partials/relations_card_thumb.html" (dict "ID" $id "ActiveGallery" $.ActiveGallery "Title" (printf "Image %d - added %s" $id (index $card.MemberIngestedAt $id)) "Date" (index $card.MemberIngestedAt $id))}}
         {{end}}
         {{end}}
       </div>
@@ -277,23 +249,7 @@
     {{end}}
   </ul>
 
-  {{if gt .TotalPages 1}}
-  <div class="pagination">
-    {{if and (gt .Page 2) (gt .TotalPages 2)}}
-    <a href="{{$pageBase}}&page=1">« First</a>
-    {{end}}
-    {{if gt .Page 1}}
-    <a href="{{$pageBase}}&page={{sub .Page 1}}">← Prev</a>
-    {{end}}
-    <button type="button" class="page-jump current" data-current="{{.Page}}" data-total="{{.TotalPages}}" title="Go to page…">Page {{.Page}} / {{.TotalPages}}</button>
-    {{if lt .Page .TotalPages}}
-    <a href="{{$pageBase}}&page={{add .Page 1}}">Next →</a>
-    {{end}}
-    {{if and (lt .Page .TotalPages) (gt .TotalPages 2)}}
-    <a href="{{$pageBase}}&page={{.TotalPages}}">Last »</a>
-    {{end}}
-  </div>
-  {{end}}
+  {{template "partials/pagination.html" (dict "Base" (printf "%s&page=" $pageBase) "Page" .Page "Total" .TotalPages)}}
   {{end}}
 </div>
 
@@ -313,24 +269,81 @@
 <script>
 (function() {
   var kind = {{.Kind}};
-  if (kind !== 'duplicate' && kind !== 'alternate') return;
   var toolbarCount = document.getElementById('merge-selected-count');
-  var toolbarBtn = document.getElementById('merge-selected-btn');
-  if (!toolbarCount || !toolbarBtn) return;
+  var mergeBtn = document.getElementById('merge-selected-btn');
+  var removeBtn = document.getElementById('remove-selected-btn');
+  if (!toolbarCount || !removeBtn) return;
   function selectedCheckboxes() {
     return Array.prototype.slice.call(document.querySelectorAll('.merge-checkbox:checked'));
   }
   function refresh() {
-    var sel = selectedCheckboxes();
-    toolbarCount.textContent = sel.length;
-    toolbarBtn.disabled = sel.length < 2;
+    var n = selectedCheckboxes().length;
+    toolbarCount.textContent = n;
+    // Merge needs two groups to consolidate; Remove takes any non-empty
+    // selection because each row dissolves independently.
+    if (mergeBtn) mergeBtn.disabled = n < 2;
+    removeBtn.disabled = n < 1;
   }
   document.querySelectorAll('.merge-checkbox').forEach(function(cb) {
     cb.addEventListener('change', refresh);
   });
   refresh();
+  // Remove-selected: per-kind confirmation copy, then a single POST to
+  // the bulk dissolve endpoint. Each kind names its id field after the
+  // existing per-row dissolve form (group_id for dup/alt, root_id for
+  // version/derivative, pair="a:b" for not_related).
+  removeBtn.addEventListener('click', function() {
+    var sel = selectedCheckboxes();
+    if (!sel.length) return;
+    var n = sel.length;
+    var prompt;
+    if (kind === 'duplicate') {
+      prompt = 'Dissolve ' + n + ' same-image group(s)?';
+    } else if (kind === 'alternate') {
+      prompt = 'Dissolve ' + n + ' variant group(s)?';
+    } else if (kind === 'version') {
+      prompt = 'Dissolve ' + n + ' revision chain(s)? Every edge in each chain is dropped.';
+    } else if (kind === 'derivative') {
+      prompt = 'Dissolve ' + n + ' derivative tree(s)? Every edge in each tree is dropped.';
+    } else {
+      prompt = 'Unlink ' + n + ' not-related pair(s)? They can resurface in find-pairs.';
+    }
+    showConfirm(prompt, function() {
+      submitDissolve(kind, sel.map(function(cb) { return cb.value; }));
+    }, '', 'Remove');
+  });
+  function submitDissolve(kind, values) {
+    var field = 'group_id';
+    if (kind === 'version' || kind === 'derivative') field = 'root_id';
+    else if (kind === 'not_related') field = 'pair';
+    var params = new URLSearchParams();
+    params.append('_csrf', {{.CSRFToken}});
+    values.forEach(function(v) { params.append(field, v); });
+    fetch('/relations/browse-groups/dissolve?kind=' + encodeURIComponent(kind), {
+      method: 'POST',
+      headers: {
+        'HX-Request': 'true',
+        'X-CSRF-Token': {{.CSRFToken}},
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    }).then(function(resp) {
+      if (resp.ok) {
+        var redirect = resp.headers.get('HX-Redirect');
+        window.location.href = redirect || ('/relations/browse?kind=' + kind);
+      } else {
+        return resp.text().then(function(txt) {
+          var flash = document.getElementById('flash-relations');
+          if (flash) flash.innerHTML = txt;
+        });
+      }
+    });
+  }
+  // Merge-selected: only present on dup/alt tabs. Dup needs the
+  // operator to pick which group's original survives; alt just merges.
+  if (!mergeBtn) return;
   var mergeKind = (kind === 'duplicate') ? 'dup' : 'alt';
-  toolbarBtn.addEventListener('click', function() {
+  mergeBtn.addEventListener('click', function() {
     var sel = selectedCheckboxes();
     if (sel.length < 2) return;
     if (mergeKind === 'alt') {
@@ -414,17 +427,6 @@
     });
   }
 })();
-
-document.addEventListener('keydown', function(e) {
-  if (e.key !== 'Escape') return;
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.defaultPrevented) return;
-  if (document.querySelector('dialog[open]')) return;
-  var tag = e.target.tagName;
-  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-  e.preventDefault();
-  window.location.href = '/relations';
-});
 </script>
 
 {{template "layout_end" .}}

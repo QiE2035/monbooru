@@ -3,7 +3,7 @@
 <div id="sidebar-inner"></div>
 {{template "layout_mid" .}}
 
-<div id="relations-session-page" class="relations-session">
+<div id="relations-session-page" class="relations-session" data-esc-back="/relations">
   <div class="detail-topbar">
     <div class="detail-nav-group">
       <a class="back-link" href="/relations">← Back to Relations</a>
@@ -49,12 +49,13 @@
     {{- $firstSide = "B" -}}
     {{- $secondSide = "A" -}}
   {{- end -}}
-  <section class="session-pair" data-a="{{.Pair.A.ID}}" data-b="{{.Pair.B.ID}}">
+  <section class="session-pair" data-a="{{.Pair.A.ID}}" data-b="{{.Pair.B.ID}}"
+           data-a-type="{{.Pair.A.FileType}}" data-b-type="{{.Pair.B.FileType}}">
     <div class="session-cells">
       <div class="session-cell" data-side="{{$firstSide}}">
         <h4 class="session-role" data-role="left">Left</h4>
         <a href="/images/{{$first.ID}}" target="_blank">
-          <img src="/thumbnails/{{$.ActiveGallery}}/{{$first.ID}}.jpg" alt="image {{$first.ID}}" class="session-cell-img">
+          {{template "partials/session_cell_media.html" (dict "ID" $first.ID "FileType" $first.FileType "ActiveGallery" $.ActiveGallery)}}
         </a>
         <div class="session-cell-meta">
           <strong class="session-cell-filename">{{$first.Filename}}</strong>
@@ -75,7 +76,7 @@
       <div class="session-cell" data-side="{{$secondSide}}">
         <h4 class="session-role" data-role="right">Right</h4>
         <a href="/images/{{$second.ID}}" target="_blank">
-          <img src="/thumbnails/{{$.ActiveGallery}}/{{$second.ID}}.jpg" alt="image {{$second.ID}}" class="session-cell-img">
+          {{template "partials/session_cell_media.html" (dict "ID" $second.ID "FileType" $second.FileType "ActiveGallery" $.ActiveGallery)}}
         </a>
         <div class="session-cell-meta">
           <strong class="session-cell-filename">{{$second.Filename}}</strong>
@@ -127,8 +128,8 @@
         <span class="compare-caption">Right <span class="mono-small" id="compare-caption-right-id">#?</span></span>
       </div>
       <div class="compare-stage" id="compare-stage">
-        <img id="compare-img-left"  alt="left">
-        <img id="compare-img-right" alt="right">
+        <div class="compare-slot compare-slot-left"  id="compare-slot-left"></div>
+        <div class="compare-slot compare-slot-right" id="compare-slot-right"></div>
         <div class="compare-divider" id="compare-divider" aria-hidden="true">
           <span class="compare-divider-handle">&#x21d4;</span>
         </div>
@@ -160,24 +161,19 @@
 (function() {
   var form = document.getElementById('session-decision-form');
   if (!form) {
-    // Empty-queue render: the decision form and its keydown shortcuts
-    // are not on the page, but Esc should still bounce back to the
-    // Relations page so the navigation parity holds across queue
-    // states.
-    document.addEventListener('keydown', function(e) {
-      if (e.key !== 'Escape') return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.defaultPrevented) return;
-      if (document.querySelector('dialog[open]')) return;
-      var tag = e.target.tagName;
-      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-      e.preventDefault();
-      window.location.href = '/relations';
-    });
     return;
   }
   var pair = document.querySelector('.session-pair');
   var leftInput = document.getElementById('session-left');
+
+  // Browser form restoration on bfcache can leave a previous pair's id
+  // in session-left after the page rerenders for a new pair; fall back
+  // to A when the input doesn't match either side.
+  function currentLeftID() {
+    var v = leftInput ? leftInput.value : null;
+    if (v === pair.dataset.a || v === pair.dataset.b) return v;
+    return pair.dataset.a;
+  }
 
   function flipSides() {
     var cells = pair.querySelector('.session-cells');
@@ -218,7 +214,7 @@
     var defaultPrompt = prompt.getAttribute('data-default') || prompt.textContent;
     function resolvePrompt(template) {
       if (!leftInput || !pair) return template;
-      var leftID = leftInput.value;
+      var leftID = currentLeftID();
       var rightID = (leftID === pair.dataset.a) ? pair.dataset.b : pair.dataset.a;
       return template.replace(/{left}/g, '#' + leftID).replace(/{right}/g, '#' + rightID);
     }
@@ -232,30 +228,55 @@
     });
   }
 
-  // Compare dialog: a before/after slider over the full-size images.
-  // The left image is the base layer; the right image sits on top
-  // clipped to a width set by the cursor's X within the stage. Dragging
-  // (or moving without click on desktop) updates the split.
+  // Compare dialog: a before/after slider over the full-size media.
+  // The left slot is the base layer; the right slot sits on top clipped
+  // to a width set by the cursor's X within the stage. The slot owns
+  // either an <img> (image sides) or a muted/looping <video> (mp4 /
+  // webm sides) so video-vs-video and mixed pairs slide the same way
+  // image pairs do. Dragging (or moving without click on desktop)
+  // updates the split.
   var compareBtn = document.getElementById('session-compare');
   var compareDlg = document.getElementById('session-compare-dialog');
   var compareStage = document.getElementById('compare-stage');
-  var imgLeftEl = document.getElementById('compare-img-left');
-  var imgRightEl = document.getElementById('compare-img-right');
+  var slotLeft = document.getElementById('compare-slot-left');
+  var slotRight = document.getElementById('compare-slot-right');
   var divider = document.getElementById('compare-divider');
   function setSplit(pct) {
     if (pct < 0) pct = 0; else if (pct > 100) pct = 100;
-    if (imgRightEl) imgRightEl.style.clipPath = 'inset(0 0 0 ' + pct + '%)';
+    if (slotRight) slotRight.style.clipPath = 'inset(0 0 0 ' + pct + '%)';
     if (divider) divider.style.left = pct + '%';
+  }
+  function mountMedia(slot, id, fileType) {
+    if (!slot) return;
+    while (slot.firstChild) slot.removeChild(slot.firstChild);
+    var src = '/images/' + id + '/file';
+    var isVideo = fileType === 'mp4' || fileType === 'webm';
+    var el = document.createElement(isVideo ? 'video' : 'img');
+    if (isVideo) {
+      el.autoplay = true;
+      el.loop = true;
+      el.muted = true;
+      el.playsInline = true;
+      el.preload = 'auto';
+    } else {
+      el.alt = slot.id === 'compare-slot-left' ? 'left' : 'right';
+    }
+    el.src = src;
+    slot.appendChild(el);
   }
   function openCompare() {
     if (!compareDlg || !compareStage) return;
     var aID = pair.dataset.a, bID = pair.dataset.b;
+    var aType = pair.dataset.aType || '';
+    var bType = pair.dataset.bType || '';
     // session-left tracks the operator's current "left" so the slider
     // mirrors what's on screen even after a swap.
-    var leftID = leftInput ? leftInput.value : aID;
+    var leftID = currentLeftID();
     var rightID = (leftID === aID) ? bID : aID;
-    if (imgLeftEl)  imgLeftEl.src  = '/images/' + leftID + '/file';
-    if (imgRightEl) imgRightEl.src = '/images/' + rightID + '/file';
+    var leftType = (leftID === aID) ? aType : bType;
+    var rightType = (leftID === aID) ? bType : aType;
+    mountMedia(slotLeft, leftID, leftType);
+    mountMedia(slotRight, rightID, rightType);
     var capL = document.getElementById('compare-caption-left-id');
     var capR = document.getElementById('compare-caption-right-id');
     if (capL) capL.textContent = '#' + leftID;
@@ -264,10 +285,22 @@
     compareDlg.showModal();
   }
   if (compareBtn) compareBtn.addEventListener('click', openCompare);
+  function clearCompareSlots() {
+    [slotLeft, slotRight].forEach(function(slot) {
+      if (!slot) return;
+      // Pause any playing <video> before tear-down so audio decoders
+      // and the video timer release immediately rather than running
+      // unseen behind the closed <dialog>.
+      var v = slot.querySelector('video');
+      if (v) { try { v.pause(); } catch (_) {} v.removeAttribute('src'); v.load(); }
+      while (slot.firstChild) slot.removeChild(slot.firstChild);
+    });
+  }
   var compareClose = document.getElementById('compare-close');
   if (compareClose) compareClose.addEventListener('click', function() {
     if (compareDlg) compareDlg.close();
   });
+  if (compareDlg) compareDlg.addEventListener('close', clearCompareSlots);
   function trackSplit(evt) {
     if (!compareStage) return;
     var rect = compareStage.getBoundingClientRect();

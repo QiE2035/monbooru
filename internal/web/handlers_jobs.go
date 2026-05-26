@@ -32,9 +32,7 @@ func (s *Server) syncTrigger(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sync unavailable: gallery path is unreadable", http.StatusServiceUnavailable)
 		return
 	}
-	if err := s.jobs.Start(models.JobTypeSync); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeSync) {
 		return
 	}
 	// Snapshot the active gallery's state under the request's RLock so the

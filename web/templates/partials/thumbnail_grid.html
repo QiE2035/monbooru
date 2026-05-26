@@ -8,7 +8,8 @@
         hx-post="/upload"
         hx-target="#inbox-upload-result"
         hx-swap="innerHTML"
-        hx-encoding="multipart/form-data">
+        hx-encoding="multipart/form-data"
+        hx-headers='{"X-CSRF-Token": "{{.CSRFToken}}"}'>
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div id="inbox-upload-drop" class="upload-drop-zone">
       <div class="upload-drop-prompt">
@@ -20,7 +21,7 @@
     </div>
     <div class="thumb-cluster-header inbox-upload-footer">
       <span class="thumb-cluster-rule" aria-hidden="true"></span>
-      <button type="button" id="inbox-upload-reset-btn" class="btn-sm thumb-cluster-select">[Reset]</button>
+      <button type="button" id="inbox-upload-reset-btn" class="btn-sm thumb-cluster-select" title="Clears files you picked but did not upload yet. Already-uploaded files stay in the inbox.">[Clear staged]</button>
       <button type="submit" id="inbox-upload-submit-btn" class="btn-sm thumb-cluster-select">[Upload]</button>
     </div>
     <div id="inbox-upload-result"></div>
@@ -33,7 +34,7 @@
   {{if $.InboxClusterAtIdx}}{{with index $.InboxClusterAtIdx $i}}
   <div class="thumb-cluster-header" data-cluster-start="{{$i}}">
     <span class="thumb-cluster-rule" aria-hidden="true"></span>
-    <span class="thumb-cluster-label mono-small">{{.DateLabel}} · <a class="thumb-cluster-range" href="{{.RangeLink}}">{{.RangeLabel}}</a> · {{.Count}} item{{if ne .Count 1}}s{{end}}</span>
+    <span class="thumb-cluster-label mono-small">{{.DateLabel}} · <a class="thumb-cluster-range" href="{{.RangeLink}}">{{.RangeLabel}}</a> · {{.Count}} on this page</span>
     <span class="thumb-cluster-rule" aria-hidden="true"></span>
     <button type="button" class="btn-sm thumb-cluster-select" data-cluster-unselect>[Unselect]</button>
     <button type="button" class="btn-sm thumb-cluster-select" data-cluster-select>[Select]</button>
@@ -42,7 +43,7 @@
   <div class="thumb-card" data-id="{{.ID}}"
        {{if or (eq .FileType "mp4") (eq .FileType "webm") (eq .FileType "gif")}}data-hover="/thumbnails/{{$.ActiveGallery}}/{{.ID}}_hover.webp"{{end}}>
     <input type="checkbox" class="thumb-checkbox" name="ids" value="{{.ID}}">
-    <a href="/images/{{.ID}}?back_q={{$.Query}}&back_sort={{$.Sort}}&back_order={{$.Order}}&back_page={{$.Page}}{{if $.RandomSeed}}&back_seed={{$.RandomSeed}}{{end}}" class="thumb-link">
+    <a href="/images/{{.ID}}?back_q={{urlQ $.Query}}&back_sort={{$.Sort}}&back_order={{$.Order}}&back_page={{$.Page}}{{if $.RandomSeed}}&back_seed={{$.RandomSeed}}{{end}}" class="thumb-link">
       <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy"
            class="thumb-img"
            onerror="this.parentElement.innerHTML='<div class=thumb-placeholder title=&quot;preview unavailable&quot;>?</div>'">
@@ -85,26 +86,27 @@
 
 {{if gt .TotalPages 1}}
 {{$seed := .RandomSeed}}
+{{$q := urlQ .Query}}
 <div class="pagination">
   {{if and (gt .Page 1) (gt .TotalPages 2)}}
-    <a href="/?q={{.Query}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page=1"
-       hx-get="/?q={{.Query}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page=1"
+    <a href="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page=1"
+       hx-get="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page=1"
        hx-target="#gallery-grid" hx-swap="innerHTML" hx-push-url="true">« First</a>
   {{end}}
   {{if gt .Page 1}}
-    <a href="/?q={{.Query}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{sub .Page 1}}"
-       hx-get="/?q={{.Query}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{sub .Page 1}}"
+    <a href="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{sub .Page 1}}"
+       hx-get="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{sub .Page 1}}"
        hx-target="#gallery-grid" hx-swap="innerHTML" hx-push-url="true">← Prev</a>
   {{end}}
   <button type="button" class="page-jump current" data-current="{{.Page}}" data-total="{{.TotalPages}}" title="Go to page…">Page {{.Page}} / {{.TotalPages}}</button>
   {{if lt .Page .TotalPages}}
-    <a href="/?q={{.Query}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{add .Page 1}}"
-       hx-get="/?q={{.Query}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{add .Page 1}}"
+    <a href="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{add .Page 1}}"
+       hx-get="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{add .Page 1}}"
        hx-target="#gallery-grid" hx-swap="innerHTML" hx-push-url="true">Next →</a>
   {{end}}
   {{if and (lt .Page .TotalPages) (gt .TotalPages 2)}}
-    <a href="/?q={{.Query}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{.TotalPages}}"
-       hx-get="/?q={{.Query}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{.TotalPages}}"
+    <a href="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{.TotalPages}}"
+       hx-get="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{.TotalPages}}"
        hx-target="#gallery-grid" hx-swap="innerHTML" hx-push-url="true">Last »</a>
   {{end}}
 </div>

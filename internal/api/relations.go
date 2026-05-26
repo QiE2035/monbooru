@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 
 	"github.com/leqwin/monbooru/internal/relations"
 )
@@ -37,10 +36,8 @@ func (h *Handler) relationsForImage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid image id")
+	id, ok := apiPathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	rels, err := relations.LoadImageRelations(g.DB, id)

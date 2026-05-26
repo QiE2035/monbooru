@@ -27,9 +27,9 @@ func TestComputeInboxClusters_Singleton(t *testing.T) {
 }
 
 func TestComputeInboxClusters_ExactBoundary(t *testing.T) {
-	// Two rows exactly batchGapMinutes apart stay in one cluster
-	// (the boundary is strictly > gap). Bump by one second across
-	// the gap and the second row opens a new cluster.
+	// Two rows exactly batchGapMinutes apart open a new cluster
+	// (the boundary is >= gap). Bump by one second under the gap and
+	// they stay in one cluster.
 	base := time.Date(2026, 5, 22, 14, 32, 0, 0, time.UTC)
 	t.Run("equal-to-gap", func(t *testing.T) {
 		imgs := []models.Image{
@@ -37,24 +37,24 @@ func TestComputeInboxClusters_ExactBoundary(t *testing.T) {
 			{ID: 1, IngestedAt: base},
 		}
 		got := computeInboxClusters(imgs, "")
-		if got[0] == nil || got[1] != nil {
-			t.Fatalf("equal-to-gap: expected single cluster, got %+v / %+v", got[0], got[1])
-		}
-		if got[0].Count != 2 {
-			t.Errorf("count = %d, want 2", got[0].Count)
-		}
-	})
-	t.Run("one-second-past-gap", func(t *testing.T) {
-		imgs := []models.Image{
-			{ID: 2, IngestedAt: base.Add(time.Duration(batchGapMinutes)*time.Minute + time.Second)},
-			{ID: 1, IngestedAt: base},
-		}
-		got := computeInboxClusters(imgs, "")
 		if got[0] == nil || got[1] == nil {
-			t.Fatalf("one-second-past-gap: expected two clusters, got %+v / %+v", got[0], got[1])
+			t.Fatalf("equal-to-gap: expected two clusters, got %+v / %+v", got[0], got[1])
 		}
 		if got[0].Count != 1 || got[1].Count != 1 {
 			t.Errorf("counts = %d, %d; want 1, 1", got[0].Count, got[1].Count)
+		}
+	})
+	t.Run("one-second-under-gap", func(t *testing.T) {
+		imgs := []models.Image{
+			{ID: 2, IngestedAt: base.Add(time.Duration(batchGapMinutes)*time.Minute - time.Second)},
+			{ID: 1, IngestedAt: base},
+		}
+		got := computeInboxClusters(imgs, "")
+		if got[0] == nil || got[1] != nil {
+			t.Fatalf("one-second-under-gap: expected single cluster, got %+v / %+v", got[0], got[1])
+		}
+		if got[0].Count != 2 {
+			t.Errorf("count = %d, want 2", got[0].Count)
 		}
 	})
 }

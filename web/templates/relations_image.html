@@ -2,11 +2,11 @@
 {{template "layout_head" .}}
 {{template "layout_mid" .}}
 
-<div id="relations-image-page" data-image-id="{{.Image.ID}}">
+<div id="relations-image-page" data-image-id="{{.Image.ID}}" data-esc-back="/images/{{.Image.ID}}?back_q={{urlQ .BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}">
   <div id="detail-flash"></div>
   <div class="detail-topbar">
     <div class="detail-nav-group">
-      <a href="/images/{{.Image.ID}}?back_q={{.BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}" class="back-link">← Back to detail</a>
+      <a href="/images/{{.Image.ID}}?back_q={{urlQ .BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}" class="back-link">← Back to detail</a>
       <span class="detail-nav-sep">·</span>
       <span class="detail-filename mono-small">Relations for image {{.Image.ID}}</span>
     </div>
@@ -71,33 +71,19 @@
         {{if eq $id $.Self}}
           <span class="relations-inline-label">^ This image</span>
           {{if ne $id $.Relations.DupGroup.Original}}
-          <form hx-post="/relations/remove" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
-            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-            <input type="hidden" name="type" value="promote-original">
-            <input type="hidden" name="group_id" value="{{$.Relations.DupGroup.ID}}">
-            <input type="hidden" name="image_id" value="{{$id}}">
-            <button type="submit" class="btn-link-accent" title="Promote this image to the group original">[original]</button>
-          </form>
+          {{template "partials/relation_unlink_form.html" (dict "CSRFToken" $.CSRFToken "Type" "promote-original" "GroupID" $.Relations.DupGroup.ID "ImageID" $id "Label" "[original]" "Title" "Promote this image to the group original")}}
+          {{end}}
+          {{if and (eq $id $.Relations.DupGroup.Original) $.NextOriginalIfOriginalUnlinked}}
+          {{template "partials/relation_unlink_form.html" (dict "CSRFToken" $.CSRFToken "Type" "duplicate" "ImageID" $id "Label" "[unlink]" "Title" "Unlink this image from the group" "Confirm" (printf "Unlink this image (the current original)? Image #%d will be promoted to the new original." $.NextOriginalIfOriginalUnlinked))}}
           {{end}}
         {{else}}
-          <form hx-post="/relations/remove" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline"
-                {{if and (eq $id $.Relations.DupGroup.Original) $.NextOriginalIfOriginalUnlinked}}hx-confirm="Unlink image #{{$id}} (the current original)? Image #{{$.NextOriginalIfOriginalUnlinked}} will be promoted to the new original."{{end}}>
-            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-            <input type="hidden" name="type" value="duplicate">
-            <input type="hidden" name="image_id" value="{{$id}}">
-            <button type="submit" class="btn-link-accent" title="Unlink this duplicate">[unlink]</button>
-          </form>
+          {{if and (eq $id $.Relations.DupGroup.Original) $.NextOriginalIfOriginalUnlinked}}
+          {{template "partials/relation_unlink_form.html" (dict "CSRFToken" $.CSRFToken "Type" "duplicate" "ImageID" $id "Label" "[unlink]" "Title" "Unlink this duplicate" "Confirm" (printf "Unlink image #%d (the current original)? Image #%d will be promoted to the new original." $id $.NextOriginalIfOriginalUnlinked))}}
+          {{else}}
+          {{template "partials/relation_unlink_form.html" (dict "CSRFToken" $.CSRFToken "Type" "duplicate" "ImageID" $id "Label" "[unlink]" "Title" "Unlink this duplicate")}}
+          {{end}}
           {{if ne $id $.Relations.DupGroup.Original}}
-          <form hx-post="/relations/remove" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
-            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-            <input type="hidden" name="type" value="promote-original">
-            <input type="hidden" name="group_id" value="{{$.Relations.DupGroup.ID}}">
-            <input type="hidden" name="image_id" value="{{$id}}">
-            <button type="submit" class="btn-link-accent" title="Make this the original">[original]</button>
-          </form>
+          {{template "partials/relation_unlink_form.html" (dict "CSRFToken" $.CSRFToken "Type" "promote-original" "GroupID" $.Relations.DupGroup.ID "ImageID" $id "Label" "[original]" "Title" "Make this the original")}}
           {{end}}
         {{end}}
         </div>
@@ -121,13 +107,7 @@
         {{if eq $id $.Self}}
           <span class="relations-inline-label">^ This image</span>
         {{else}}
-          <form hx-post="/relations/remove" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
-            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-            <input type="hidden" name="type" value="alternate">
-            <input type="hidden" name="image_id" value="{{$id}}">
-            <button type="submit" class="btn-link-accent">[unlink]</button>
-          </form>
+          {{template "partials/relation_unlink_form.html" (dict "CSRFToken" $.CSRFToken "Type" "alternate" "ImageID" $id "Label" "[unlink]")}}
         {{end}}
         </div>
       </li>
@@ -152,23 +132,9 @@
         {{if eq $action "this"}}
         <span class="relations-inline-label">^ This image</span>
         {{else if eq $action "earlier"}}
-        <form hx-post="/relations/remove" hx-swap="none"
-              hx-on::after-request="if(event.detail.successful){window.location.reload()}" class="relations-inline-action">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="version">
-          <input type="hidden" name="a" value="{{$id}}">
-          <input type="hidden" name="b" value="{{$.Image.ID}}">
-          <button type="submit" class="btn-link-accent">[unlink earlier revision]</button>
-        </form>
+        {{template "partials/relation_unlink_form.html" (dict "CSRFToken" $.CSRFToken "Type" "version" "A" $id "B" $.Image.ID "Label" "[unlink earlier revision]" "ExtraClass" "relations-inline-action")}}
         {{else if eq $action "newer"}}
-        <form hx-post="/relations/remove" hx-swap="none"
-              hx-on::after-request="if(event.detail.successful){window.location.reload()}" class="relations-inline-action">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="version">
-          <input type="hidden" name="a" value="{{$.Image.ID}}">
-          <input type="hidden" name="b" value="{{$id}}">
-          <button type="submit" class="btn-link-accent">[unlink newer revision]</button>
-        </form>
+        {{template "partials/relation_unlink_form.html" (dict "CSRFToken" $.CSRFToken "Type" "version" "A" $.Image.ID "B" $id "Label" "[unlink newer revision]" "ExtraClass" "relations-inline-action")}}
         {{end}}
       </div>
       {{end}}
@@ -197,23 +163,9 @@
         {{if eq $action "this"}}
         <span class="relations-inline-label">&lt;- This image</span>
         {{else if eq $action "source"}}
-        <form hx-post="/relations/remove" hx-swap="none"
-              hx-on::after-request="if(event.detail.successful){window.location.reload()}" class="relations-inline-action">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="derivative">
-          <input type="hidden" name="a" value="{{.ID}}">
-          <input type="hidden" name="b" value="{{$.Image.ID}}">
-          <button type="submit" class="btn-link-accent">[unlink source #{{.ID}}]</button>
-        </form>
+        {{template "partials/relation_unlink_form.html" (dict "CSRFToken" $.CSRFToken "Type" "derivative" "A" .ID "B" $.Image.ID "Label" (printf "[unlink source #%d]" .ID) "ExtraClass" "relations-inline-action")}}
         {{else if eq $action "derivative"}}
-        <form hx-post="/relations/remove" hx-swap="none"
-              hx-on::after-request="if(event.detail.successful){window.location.reload()}" class="relations-inline-action">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="derivative">
-          <input type="hidden" name="a" value="{{$.Image.ID}}">
-          <input type="hidden" name="b" value="{{.ID}}">
-          <button type="submit" class="btn-link-accent">[unlink derivative #{{.ID}}]</button>
-        </form>
+        {{template "partials/relation_unlink_form.html" (dict "CSRFToken" $.CSRFToken "Type" "derivative" "A" $.Image.ID "B" .ID "Label" (printf "[unlink derivative #%d]" .ID) "ExtraClass" "relations-inline-action")}}
         {{end}}
       </div>
       {{end}}
@@ -222,20 +174,6 @@
   {{end}}
 </div>
 
-<script>
-document.addEventListener('keydown', function(e) {
-  if (e.key !== 'Escape') return;
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.defaultPrevented) return;
-  if (document.querySelector('dialog[open]')) return;
-  var tag = e.target.tagName;
-  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-  var back = document.querySelector('.back-link');
-  if (!back) return;
-  e.preventDefault();
-  back.click();
-});
-</script>
 
 {{template "layout_end" .}}
 {{end}}

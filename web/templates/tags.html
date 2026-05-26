@@ -162,24 +162,8 @@
   </table>
 
   {{$page := .Page}}
-  {{$total := .TotalPages}}
-  {{if gt $total 1}}
-  <div class="pagination">
-    {{if and (gt $page 2) (gt $total 2)}}
-    <a href="/tags?q={{.Prefix}}&sort={{.Sort}}&order={{.Order}}&cat={{.CategoryID}}&origin={{.Origin}}&show_zero={{$zero}}&page=1">« First</a>
-    {{end}}
-    {{if gt $page 1}}
-    <a href="/tags?q={{.Prefix}}&sort={{.Sort}}&order={{.Order}}&cat={{.CategoryID}}&origin={{.Origin}}&show_zero={{$zero}}&page={{sub $page 1}}">← Prev</a>
-    {{end}}
-    <button type="button" class="page-jump current" data-current="{{$page}}" data-total="{{$total}}" title="Go to page…">Page {{$page}} / {{$total}}</button>
-    {{if lt $page $total}}
-    <a href="/tags?q={{.Prefix}}&sort={{.Sort}}&order={{.Order}}&cat={{.CategoryID}}&origin={{.Origin}}&show_zero={{$zero}}&page={{add $page 1}}">Next →</a>
-    {{end}}
-    {{if and (lt $page $total) (gt $total 2)}}
-    <a href="/tags?q={{.Prefix}}&sort={{.Sort}}&order={{.Order}}&cat={{.CategoryID}}&origin={{.Origin}}&show_zero={{$zero}}&page={{$total}}">Last »</a>
-    {{end}}
-  </div>
-  {{end}}
+  {{$tagsBase := printf "/tags?q=%s&sort=%s&order=%s&cat=%s&origin=%s&show_zero=%s&page=" .Prefix .Sort .Order .CategoryID .Origin $zero}}
+  {{template "partials/pagination.html" (dict "Base" $tagsBase "Page" $page "Total" .TotalPages)}}
 
 </div>
 

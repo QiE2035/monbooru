@@ -199,9 +199,9 @@ func TestBeginSchedule_DoubleAcquireRefuses(t *testing.T) {
 	}
 }
 
-// TestCancel_ReleasesScheduleHeld pins A-F017: cancelling a job mid-
-// schedule must drop the scheduleHeld reservation so a subsequent user
-// Start succeeds. Without the release, the scheduler's deferred
+// TestCancel_ReleasesScheduleHeld: cancelling a job mid-schedule
+// must drop the scheduleHeld reservation so a subsequent user Start
+// succeeds. Without the release, the scheduler's deferred
 // EndSchedule was the only thing that could clear the bit, and a
 // future code path that returned early without it would leak.
 func TestCancel_ReleasesScheduleHeld(t *testing.T) {

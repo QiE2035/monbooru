@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -77,11 +76,8 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 	// is carried through via back_* query params. Resolve the values now so
 	// the parallel block below can launch the adjacency lookup alongside the
 	// other reads instead of after them.
-	backQ := r.URL.Query().Get("back_q")
-	backSort := r.URL.Query().Get("back_sort")
-	backOrder := r.URL.Query().Get("back_order")
-	backPage := r.URL.Query().Get("back_page")
-	backSeed := r.URL.Query().Get("back_seed")
+	back := parseBackContext(r)
+	backQ, backSort, backOrder, backPage, backSeed := back.Q, back.Sort, back.Order, back.Page, back.Seed
 
 	// A "ref" query param points at the detail page the user just came from
 	// (a Similar-images click). When set and valid, the gallery-context UI
@@ -94,7 +90,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 	refStrValid := ""
 	if refStr := r.URL.Query().Get("ref"); refStr != "" {
 		if refID, err := strconv.ParseInt(refStr, 10, 64); err == nil && refID != id {
-			refURL = buildDetailURL(refID, backQ, backSort, backOrder, backPage, backSeed)
+			refURL = back.DetailURL(refID)
 			refStrValid = strconv.FormatInt(refID, 10)
 		}
 	}
@@ -248,8 +244,8 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		BackOrder:      backOrder,
 		BackPage:       backPage,
 		BackSeed:       backSeed,
-		BackQS:         buildDetailBackQS(backQ, backSort, backOrder, backPage, backSeed, "?"),
-		BackKVQS:       buildDetailBackQS(backQ, backSort, backOrder, backPage, backSeed, "&"),
+		BackQS:         back.QueryString("?"),
+		BackKVQS:       back.QueryString("&"),
 		EnabledTaggers: enabledTaggers,
 		ImageTaggers:   imageTaggers,
 		HasUserTags:    hasUserTags,
@@ -270,7 +266,7 @@ func (s *Server) relatedImagesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	related, _ := s.tagSvc().RelatedImages(id, 6, readRatingCookie(r))
-	q := r.URL.Query()
+	back := parseBackContext(r)
 	s.renderTemplate(w, "partials/related_images.html", map[string]any{
 		"Images":        related,
 		"ActiveGallery": s.activeName,
@@ -280,11 +276,11 @@ func (s *Server) relatedImagesHandler(w http.ResponseWriter, r *http.Request) {
 		// flow through so that "← Previous image" link restores this
 		// page's own gallery context when clicked.
 		"SourceID":  id,
-		"BackQuery": q.Get("back_q"),
-		"BackSort":  q.Get("back_sort"),
-		"BackOrder": q.Get("back_order"),
-		"BackPage":  q.Get("back_page"),
-		"BackSeed":  q.Get("back_seed"),
+		"BackQuery": back.Q,
+		"BackSort":  back.Sort,
+		"BackOrder": back.Order,
+		"BackPage":  back.Page,
+		"BackSeed":  back.Seed,
 	})
 }
 
@@ -302,61 +298,6 @@ func distinctAutoTaggerNames(tags []models.ImageTag) []string {
 		out = append(out, t.TaggerName)
 	}
 	return out
-}
-
-// buildDetailBackQS returns a URL-encoded `back_*` fragment with the
-// supplied separator (`?` for stand-alone hrefs, `&` for hrefs that
-// already opened a query string). Returns empty when no back_* is set.
-// The result is template.URL so the html/template engine doesn't
-// double-escape `&` and `=` when interpolated into a URL attribute.
-func buildDetailBackQS(q, sort, order, page, seed, sep string) template.URL {
-	v := url.Values{}
-	if q != "" {
-		v.Set("back_q", q)
-	}
-	if sort != "" {
-		v.Set("back_sort", sort)
-	}
-	if order != "" {
-		v.Set("back_order", order)
-	}
-	if page != "" {
-		v.Set("back_page", page)
-	}
-	if seed != "" {
-		v.Set("back_seed", seed)
-	}
-	if len(v) == 0 {
-		return ""
-	}
-	return template.URL(sep + v.Encode())
-}
-
-// buildDetailURL constructs a detail-page URL with back_* params so the
-// destination page keeps the same gallery context (prev/next adjacency,
-// back-link target) the user came in with.
-func buildDetailURL(id int64, q, sort, order, page, seed string) string {
-	base := fmt.Sprintf("/images/%d", id)
-	v := url.Values{}
-	if q != "" {
-		v.Set("back_q", q)
-	}
-	if sort != "" {
-		v.Set("back_sort", sort)
-	}
-	if order != "" {
-		v.Set("back_order", order)
-	}
-	if page != "" {
-		v.Set("back_page", page)
-	}
-	if seed != "" {
-		v.Set("back_seed", seed)
-	}
-	if len(v) == 0 {
-		return base
-	}
-	return base + "?" + v.Encode()
 }
 
 // findAdjacentImages finds the prev/next image IDs in the given search context

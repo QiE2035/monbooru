@@ -45,7 +45,6 @@ type galleryData struct {
 	SourceLabelCounts []gallery.SourceLabelCount
 	FavoritedCount    int
 	NonFavoritedCount int
-	NonInboxCount     int
 	SavedSearches     []models.SavedSearch
 	SidebarURL        string                // populated on full-page renders so the placeholder can lazy-load the sidebar
 	EnabledTaggers    []tagger.TaggerStatus // gates the gallery's Auto-tag controls; mirrors detailData.EnabledTaggers
@@ -285,7 +284,6 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		SourceLabelCounts: sb.SourceLabels,
 		FavoritedCount:    sb.Favorited,
 		NonFavoritedCount: sb.NonFavorited,
-		NonInboxCount:     sb.NonInbox,
 		SavedSearches:     sb.Saved,
 		EnabledTaggers:    tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
 		ActiveTagTerms:    computeActiveTagTerms(queryStr),
@@ -309,9 +307,9 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 
 // sidebarBundle is the parallel-fetched payload that populates the
 // gallery sidebar - tags from the current page, folder tree, AI source
-// breakdown, top series + source labels, inbox / favourite tallies,
-// saved searches. Bundling them in one struct keeps the goroutine fan
-// at sidebarLoad readable as the count grows.
+// breakdown, top series + source labels, favourite tallies, saved
+// searches. Bundling them in one struct keeps the goroutine fan at
+// sidebarLoad readable as the count grows.
 type sidebarBundle struct {
 	Tags         []models.Tag
 	Folders      []gallery.FolderNode
@@ -320,7 +318,6 @@ type sidebarBundle struct {
 	SourceLabels []gallery.SourceLabelCount
 	Favorited    int
 	NonFavorited int
-	NonInbox     int
 	Saved        []models.SavedSearch
 }
 
@@ -370,16 +367,11 @@ func (s *Server) sidebarLoad(pageImageIDs []int64, ceiling *Ceiling) sidebarBund
 		sb.Series, _ = cx.SeriesCountsUnder(ceiling)
 		sb.SourceLabels, _ = cx.SourceLabelCountsUnder(ceiling)
 		visible, _ := cx.VisibleCountUnder(ceiling)
-		inbox, _ := cx.InboxCountUnder(ceiling)
 		fav, _ := cx.FavoritedCountUnder(ceiling)
 		sb.Favorited = fav
 		sb.NonFavorited = visible - fav
 		if sb.NonFavorited < 0 {
 			sb.NonFavorited = 0
-		}
-		sb.NonInbox = visible - inbox
-		if sb.NonInbox < 0 {
-			sb.NonInbox = 0
 		}
 	}
 	wg.Wait()
@@ -452,10 +444,6 @@ func (s *Server) gallerySidebar(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sb := s.sidebarLoad(ids, ceiling)
-	inboxCount := 0
-	if cx := s.Active(); cx != nil {
-		inboxCount, _ = cx.InboxCountUnder(ceiling)
-	}
 
 	s.renderTemplate(w, "partials/sidebar_content.html", map[string]any{
 		"Query":             queryStr,
@@ -467,8 +455,6 @@ func (s *Server) gallerySidebar(w http.ResponseWriter, r *http.Request) {
 		"SourceLabelCounts": sb.SourceLabels,
 		"FavoritedCount":    sb.Favorited,
 		"NonFavoritedCount": sb.NonFavorited,
-		"InboxCount":        inboxCount,
-		"NonInboxCount":     sb.NonInbox,
 		"SavedSearches":     sb.Saved,
 		"ActiveTagTerms":    computeActiveTagTerms(queryStr),
 	})
@@ -483,13 +469,12 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 	ceiling := resolveCeiling(r, s.Active())
 
 	var (
-		folders        []gallery.FolderNode
-		sources        gallery.SourceCounts
-		series         []gallery.SeriesCount
-		sourceLabels   []gallery.SourceLabelCount
-		visible, inbox int
-		fav            int
-		saved          []models.SavedSearch
+		folders      []gallery.FolderNode
+		sources      gallery.SourceCounts
+		series       []gallery.SeriesCount
+		sourceLabels []gallery.SourceLabelCount
+		visible, fav int
+		saved        []models.SavedSearch
 	)
 	var wg sync.WaitGroup
 	wg.Add(6)
@@ -521,7 +506,6 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 		defer wg.Done()
 		if cx := s.Active(); cx != nil {
 			visible, _ = cx.VisibleCountUnder(ceiling)
-			inbox, _ = cx.InboxCountUnder(ceiling)
 			fav, _ = cx.FavoritedCountUnder(ceiling)
 		}
 	}()
@@ -546,10 +530,6 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 	if nonFav < 0 {
 		nonFav = 0
 	}
-	nonInbox := visible - inbox
-	if nonInbox < 0 {
-		nonInbox = 0
-	}
 
 	s.renderTemplate(w, "partials/sidebar_browse.html", map[string]any{
 		"Query":             queryStr,
@@ -558,8 +538,6 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 		"SourceCounts":      sources,
 		"SeriesCounts":      series,
 		"SourceLabelCounts": sourceLabels,
-		"InboxCount":        inbox,
-		"NonInboxCount":     nonInbox,
 		"FavoritedCount":    fav,
 		"NonFavoritedCount": nonFav,
 		"SavedSearches":     saved,
@@ -693,7 +671,11 @@ func computeInboxClusters(images []models.Image, queryStr string) []*inboxCluste
 		if !closeCluster {
 			prev := images[i-1].IngestedAt
 			next := images[i].IngestedAt
-			if prev.Sub(next) > gap {
+			// >= so a cron-driven schedule landing on the exact gap
+			// boundary opens a fresh batch, matching "every 15 minutes
+			// is a new cluster" intuition. Strict > used to glue
+			// exactly-aligned syncs together.
+			if prev.Sub(next) >= gap {
 				closeCluster = true
 			}
 		}
@@ -706,9 +688,6 @@ func computeInboxClusters(images []models.Image, queryStr string) []*inboxCluste
 }
 
 func buildInboxCluster(rows []models.Image, queryStr string) *inboxCluster {
-	if len(rows) == 0 {
-		return nil
-	}
 	// rows[0] is the newest entry (DESC), rows[len-1] the oldest.
 	// Format the header label oldest -> newest so the visible time
 	// arrow reads left-to-right.
@@ -729,34 +708,15 @@ func buildInboxCluster(rows []models.Image, queryStr string) *inboxCluster {
 		// an implicit AND.
 		clusterQ = queryStr + " date:" + oldest.Format("2006-01-02T15:04") + ".." + newest.Format("2006-01-02T15:04")
 	}
+	// RangeLink omits sort/order so the receiving gallery handler falls
+	// through to its defaults (newest, desc). The cluster gate
+	// inboxClustersActive enforces newest-DESC at render time; baking
+	// it back into the URL would discard any future re-sort variation.
 	return &inboxCluster{
 		Count:      len(rows),
 		DateLabel:  dateLabel,
 		RangeLabel: rangeLabel,
-		RangeLink:  "/?" + url.Values{"q": []string{clusterQ}, "sort": []string{"newest"}, "order": []string{"desc"}}.Encode(),
+		RangeLink:  "/?" + url.Values{"q": []string{clusterQ}}.Encode(),
 	}
 }
 
-// buildGalleryURL constructs a properly URL-encoded gallery redirect URL.
-func buildGalleryURL(q, sort, order, page, seed string) string {
-	if q == "" && sort == "" && order == "" && page == "" && seed == "" {
-		return "/"
-	}
-	v := url.Values{}
-	if q != "" {
-		v.Set("q", q)
-	}
-	if sort != "" {
-		v.Set("sort", sort)
-	}
-	if order != "" {
-		v.Set("order", order)
-	}
-	if page != "" {
-		v.Set("page", page)
-	}
-	if seed != "" {
-		v.Set("seed", seed)
-	}
-	return "/?" + v.Encode()
-}

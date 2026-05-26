@@ -218,3 +218,38 @@ func ProbeDurationSeconds(srcPath string) (float64, bool) {
 	}
 	return d, true
 }
+
+// ProbeVideoDimensions returns the first video stream's width and
+// height via ffprobe. Mirrors ProbeDurationSeconds: (0, 0, false) when
+// ffmpeg is unavailable or the probe fails so callers leave width and
+// height NULL in that case.
+func ProbeVideoDimensions(srcPath string) (int, int, bool) {
+	if !ffmpegAvailable() {
+		return 0, 0, false
+	}
+	cmd := exec.Command("ffprobe",
+		"-v", "quiet",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=width,height",
+		"-print_format", "csv=p=0:s=x",
+		"--",
+		srcPath,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "x", 2)
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	w, err := strconv.Atoi(parts[0])
+	if err != nil || w <= 0 {
+		return 0, 0, false
+	}
+	h, err := strconv.Atoi(parts[1])
+	if err != nil || h <= 0 {
+		return 0, 0, false
+	}
+	return w, h, true
+}

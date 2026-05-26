@@ -1,19 +1,15 @@
 package web
 
 import (
-	"html"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/leqwin/monbooru/internal/logx"
 )
 
 func (s *Server) deleteSavedSearch(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
 		return
 	}
 	if _, err := s.db().Write.Exec(`DELETE FROM saved_searches WHERE id = ?`, id); err != nil {
@@ -35,7 +31,7 @@ func (s *Server) createSavedSearch(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.FormValue("query"))
 	if name == "" || query == "" {
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">Name and query required.</div>`))
+			writeInlineFlash(w, "err", "Name and query required.")
 			return
 		}
 		http.Error(w, "name and query required", http.StatusBadRequest)
@@ -60,7 +56,7 @@ func (s *Server) createSavedSearch(w http.ResponseWriter, r *http.Request) {
 			msg = "A saved search named " + name + " already exists. Delete it first or pick another name."
 		}
 		if isHTMXRequest(r) {
-			w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(msg) + `</div>`))
+			writeInlineFlash(w, "err", msg)
 			return
 		}
 		http.Error(w, msg, http.StatusBadRequest)
@@ -68,7 +64,7 @@ func (s *Server) createSavedSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Active().InvalidateCaches()
 	if isHTMXRequest(r) {
-		w.Write([]byte(`<div class="flash flash-ok">Saved.</div>`))
+		writeInlineFlash(w, "ok", "Saved.")
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)

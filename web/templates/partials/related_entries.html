@@ -36,14 +36,14 @@
   <div class="related-entries-header">
     <h3>Related images</h3>
     <div class="related-entries-actions">
-      {{if .Tiles}}<a class="btn-link-accent" href="/images/{{.ImageID}}/relations?back_q={{.BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}">[See all]</a>{{end}}
+      {{if .Tiles}}<a class="btn-link-accent" href="/images/{{.ImageID}}/relations?back_q={{urlQ .BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}">[See all]</a>{{end}}
       <button type="button" class="btn-link-accent" data-relations-add="{{.ImageID}}">[Add a relation]</button>
     </div>
   </div>
   {{if .Tiles}}
   <div class="related-mini-grid">
     {{range .Tiles}}
-    <a href="/images/{{.ID}}?ref={{$.ImageID}}&back_q={{$.BackQ}}&back_sort={{$.BackSort}}&back_order={{$.BackOrder}}{{if $.BackPage}}&back_page={{$.BackPage}}{{end}}{{if $.BackSeed}}&back_seed={{$.BackSeed}}{{end}}"
+    <a href="/images/{{.ID}}?ref={{$.ImageID}}&back_q={{urlQ $.BackQ}}&back_sort={{$.BackSort}}&back_order={{$.BackOrder}}{{if $.BackPage}}&back_page={{$.BackPage}}{{end}}{{if $.BackSeed}}&back_seed={{$.BackSeed}}{{end}}"
        class="related-mini-card related-entry-card" title="{{.Label}}: image {{.ID}}">
       <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy"
            onerror="this.parentElement.innerHTML='<span class=thumb-fail title=&quot;preview unavailable&quot;>?</span>'">

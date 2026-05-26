@@ -2,7 +2,6 @@ package web
 
 import (
 	"fmt"
-	"html"
 	"net/http"
 	"sort"
 	"strconv"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/leqwin/monbooru/internal/config"
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/relations"
 )
@@ -54,13 +54,13 @@ func (s *Server) settingsRelationsPost(w http.ResponseWriter, r *http.Request) {
 	d, err := strconv.Atoi(r.FormValue("default_distance"))
 	if err != nil || d < 0 || d > 12 {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Distance must be an integer 0..12.</div>`))
+		writeInlineFlash(w, "err", "Distance must be an integer 0..12.")
 		return
 	}
 	order := r.FormValue("default_session_order")
 	if !validOrderModes[order] {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Unknown session order.</div>`))
+		writeInlineFlash(w, "err", "Unknown session order.")
 		return
 	}
 	s.cfgMu.Lock()
@@ -71,7 +71,7 @@ func (s *Server) settingsRelationsPost(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	applyRelationsConfig(rc)
@@ -149,9 +149,8 @@ type treeRow struct {
 // relationsPage serves /relations: header counters and the per-section
 // CTAs. Per-group cards live on /relations/browse-groups.
 func (s *Server) relationsPage(w http.ResponseWriter, r *http.Request) {
-	cx := s.Active()
-	if cx == nil || cx.DB == nil {
-		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+	cx, ok := s.requireActive(w)
+	if !ok {
 		return
 	}
 	ceiling := resolveCeiling(r, cx)
@@ -877,15 +876,7 @@ func scanGroupMembers(cx *galleryCtx, table string, groupID int64) ([]int64, err
 		return nil, err
 	}
 	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
+	return db.ScanIDs(rows)
 }
 
 // validBrowseKinds is the closed vocabulary the /relations/browse page
@@ -934,9 +925,8 @@ const browseRelationsPageSize = 60
 // thumbs with a directional arrow plus reverse / unlink; not-related
 // rows render two thumbs plus unlink.
 func (s *Server) browseRelationsPage(w http.ResponseWriter, r *http.Request) {
-	cx := s.Active()
-	if cx == nil || cx.DB == nil {
-		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+	cx, ok := s.requireActive(w)
+	if !ok {
 		return
 	}
 	kind := r.URL.Query().Get("kind")

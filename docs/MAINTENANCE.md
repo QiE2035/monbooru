@@ -9,7 +9,8 @@ Settings → Maintenance has the manual tools:
 - **Prune orphaned thumbnails** - delete thumbnail files whose image
   row is gone.
 - **Rebuild thumbnails** - regenerate every thumbnail. Useful after
-  import or after a backup restore.
+  import or after a backup restore. Also re-probes video dimensions
+  via ffprobe.
 - **Compute perceptual hashes** - backfill `phash` for every image
   that doesn't have one yet. Required reading for the Relations
   find-pairs job; see [RELATIONS.md](RELATIONS.md).

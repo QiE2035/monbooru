@@ -680,9 +680,9 @@ func TestSearchSuggest_System_Level2_RealCategoryDrillIn(t *testing.T) {
 	}
 }
 
-// TestSavedSearch_RoundtripsSortAndSeed pins the U-F003 fix: a save
-// from the random-sort gallery must persist sort+order+seed and the
-// sidebar entry must reopen at the same view.
+// TestSavedSearch_RoundtripsSortAndSeed: a save from the random-sort
+// gallery must persist sort+order+seed and the sidebar entry must
+// reopen at the same view.
 func TestSavedSearch_RoundtripsSortAndSeed(t *testing.T) {
 	srv := newTestServer(t)
 	csrf := srv.csrfToken("anon")
@@ -1330,12 +1330,12 @@ func TestUpdateExternal_HTMXSuccessRefreshes(t *testing.T) {
 	}
 }
 
-// TestVacuumDBPost_RunsToCompletion pins T-F010: the maintenance
-// handler kicks off a vacuum job (now in a goroutine after A-F007),
-// returns the "started" flash immediately, and the job worker runs
-// VACUUM + wal_checkpoint to completion. Pinning the handler shape
-// would catch a future regression that drops the goroutine wrap or
-// inverts the WAL checkpoint order.
+// TestVacuumDBPost_RunsToCompletion: the maintenance handler kicks
+// off a vacuum job in a goroutine, returns the "started" flash
+// immediately, and the job worker runs VACUUM + wal_checkpoint to
+// completion. Pinning the handler shape would catch a future
+// regression that drops the goroutine wrap or inverts the WAL
+// checkpoint order.
 func TestVacuumDBPost_RunsToCompletion(t *testing.T) {
 	srv := newTestServer(t)
 	csrf := srv.csrfToken("anon")
@@ -1377,11 +1377,11 @@ func TestVacuumDBPost_RunsToCompletion(t *testing.T) {
 	}
 }
 
-// TestDeleteSearch_BulkDeleteReconcilesUsage pins T-F009: the bulk-
-// delete background path must drop image rows, cascade image_tags,
-// reconcile tags.usage_count to the post-delete reality, and clear
-// thumbnail files. The Playwright cancel test owns the cancellation
-// branch; this test pins the happy-path commit invariants without
+// TestDeleteSearch_BulkDeleteReconcilesUsage: the bulk-delete
+// background path must drop image rows, cascade image_tags, reconcile
+// tags.usage_count to the post-delete reality, and clear thumbnail
+// files. The Playwright cancel test owns the cancellation branch;
+// this test pins the happy-path commit invariants without
 // the 3000-image fixture cost.
 func TestDeleteSearch_BulkDeleteReconcilesUsage(t *testing.T) {
 	srv := newTestServer(t)
@@ -1456,10 +1456,10 @@ func TestDeleteSearch_BulkDeleteReconcilesUsage(t *testing.T) {
 	}
 }
 
-// TestRemoveUserTagsFromImageHandler_DropsManualOnly pins T-F008's
-// user-side scope: a DELETE on /images/{id}/user-tags must clear
-// every is_auto=0 row for the image while leaving auto-tagged rows
-// intact, with usage_count reconciled on each affected tag.
+// TestRemoveUserTagsFromImageHandler_DropsManualOnly: a DELETE on
+// /images/{id}/user-tags must clear every is_auto=0 row for the
+// image while leaving auto-tagged rows intact, with usage_count
+// reconciled on each affected tag.
 func TestRemoveUserTagsFromImageHandler_DropsManualOnly(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "ut.png", 10, 10)
@@ -1521,10 +1521,10 @@ func TestRemoveUserTagsFromImageHandler_DropsManualOnly(t *testing.T) {
 	}
 }
 
-// TestRemoveAutoTagsFromImageHandler_RespectsTaggerFilter pins
-// T-F008's auto-side scope: the optional `taggers=` query param must
-// narrow the delete to the named taggers, leaving other tagger rows
-// alone. An empty filter removes every auto row.
+// TestRemoveAutoTagsFromImageHandler_RespectsTaggerFilter: the
+// optional `taggers=` query param must narrow the delete to the
+// named taggers, leaving other tagger rows alone. An empty filter
+// removes every auto row.
 func TestRemoveAutoTagsFromImageHandler_RespectsTaggerFilter(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "at.png", 10, 10)
@@ -1572,8 +1572,8 @@ func TestRemoveAutoTagsFromImageHandler_RespectsTaggerFilter(t *testing.T) {
 	}
 }
 
-// TestServeImageFile_RejectsTraversal pins T-F002 (handler side):
-// the path-traversal defense at GET /images/{id}/file must refuse a
+// TestServeImageFile_RejectsTraversal: the handler-side
+// path-traversal defense at GET /images/{id}/file must refuse a
 // canonical_path that resolves outside the active gallery root, even
 // when the row exists in the DB. Mirrors the gallery.PathInside test
 // in the gallery package.
@@ -1669,11 +1669,11 @@ func TestServeThumbnail_InvalidatesOnIDReuse(t *testing.T) {
 	}
 }
 
-// TestUpdateExternal_AbsentFieldsLeaveOthersAlone pins the UI-F023
-// contract: each detail-page dialog ships only its own field, so a
-// caller that posts only `source=foo` (no series, no url) must leave
-// collection and url unchanged. Absent != empty - empty clears the
-// field, truly absent leaves it alone.
+// TestUpdateExternal_AbsentFieldsLeaveOthersAlone: each detail-page
+// dialog ships only its own field, so a caller that posts only
+// `source=foo` (no series, no url) must leave collection and url
+// unchanged. Absent != empty - empty clears the field, truly absent
+// leaves it alone.
 func TestUpdateExternal_AbsentFieldsLeaveOthersAlone(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "ext_isolation.png", 10, 10)
@@ -1726,9 +1726,8 @@ func TestUpdateExternal_AbsentFieldsLeaveOthersAlone(t *testing.T) {
 	}
 }
 
-// TestUpdateExternal_RejectsCollectionOrderWithoutCollection pins the
-// U-F004 fix: an order without an anchoring collection label is
-// meaningless.
+// TestUpdateExternal_RejectsCollectionOrderWithoutCollection: an
+// order without an anchoring collection label is meaningless.
 func TestUpdateExternal_RejectsCollectionOrderWithoutCollection(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "ext_so.png", 10, 10)
@@ -1801,8 +1800,8 @@ func TestUpdateExternal_ClearingCollectionNullsOrder(t *testing.T) {
 	}
 }
 
-// TestUpdateExternal_RejectsZeroOrNegativeOrder pins the U-F006 fix:
-// zero and negative integers fall outside the 1-based position model.
+// TestUpdateExternal_RejectsZeroOrNegativeOrder: zero and negative
+// integers fall outside the 1-based position model.
 func TestUpdateExternal_RejectsZeroOrNegativeOrder(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "ext_neg.png", 10, 10)
@@ -1941,9 +1940,9 @@ func TestTagsPage_ClampsPastTheEndPage(t *testing.T) {
 	}
 }
 
-// TestTagsPage_CategoryPrefixRedirectsToCatFilter pins U-F005: a
-// `?q=character:` token (category prefix only, no tag-name suffix)
-// surfaces the category-only filter instead of returning "No tags found".
+// TestTagsPage_CategoryPrefixRedirectsToCatFilter: a `?q=character:`
+// token (category prefix only, no tag-name suffix) surfaces the
+// category-only filter instead of returning "No tags found".
 func TestTagsPage_CategoryPrefixRedirectsToCatFilter(t *testing.T) {
 	srv := newTestServer(t)
 

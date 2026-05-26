@@ -11,7 +11,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/leqwin/monbooru/internal/db"
@@ -181,6 +180,20 @@ func (s *Service) AddVersionEdge(parent, child int64) error {
 		} else if conflict {
 			return ErrRelationConflict
 		}
+		// Idempotent re-add: the same (parent, child) already on the
+		// chain is a silent success so REST retries against a flaky
+		// network don't have to distinguish "first call landed but
+		// the response was lost" from a real cycle / direction
+		// conflict.
+		var exact int
+		if err := tx.QueryRow(
+			`SELECT 1 FROM version_edges WHERE child_image_id = ? AND parent_image_id = ?`,
+			child, parent,
+		).Scan(&exact); err == nil {
+			return nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		var n int
 		if err := tx.QueryRow(
 			`SELECT COUNT(*) FROM version_edges WHERE child_image_id = ? OR parent_image_id = ?`,
@@ -229,6 +242,18 @@ func (s *Service) AddDerivativeEdge(source, derivative int64) error {
 			return err
 		} else if conflict {
 			return ErrRelationConflict
+		}
+		// Idempotent re-add: the same (source, derivative) already
+		// declared returns silent success so retries don't have to
+		// distinguish a same-edge replay from a real source-conflict.
+		var exact int
+		if err := tx.QueryRow(
+			`SELECT 1 FROM derivative_edges WHERE derivative_image_id = ? AND source_image_id = ?`,
+			derivative, source,
+		).Scan(&exact); err == nil {
+			return nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
 		}
 		var n int
 		if err := tx.QueryRow(
@@ -726,33 +751,29 @@ func collectDerivativeTreeMembersTx(tx *sql.Tx, anyMember int64) ([]int64, error
 		}
 		root = src
 	}
+	// BFS by tree level so MaxVersionChainDepth bounds genuine depth.
+	// A previous DFS implementation incremented depth per stack pop, so
+	// a wide tree (single source with >256 derivatives) silently
+	// truncated at the 256th child; the cap should describe the tree's
+	// vertical reach, not its fan-out.
 	members := []int64{root}
-	stack := []int64{root}
-	depth := 0
-	for len(stack) > 0 && depth < MaxVersionChainDepth*MaxVersionChainDepth {
-		cur := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		rows, err := tx.Query(`SELECT derivative_image_id FROM derivative_edges WHERE source_image_id = ?`, cur)
-		if err != nil {
-			return nil, err
-		}
-		var children []int64
-		for rows.Next() {
-			var id int64
-			if scanErr := rows.Scan(&id); scanErr != nil {
-				rows.Close()
+	frontier := []int64{root}
+	for level := 0; level < MaxVersionChainDepth && len(frontier) > 0; level++ {
+		var next []int64
+		for _, parent := range frontier {
+			rows, err := tx.Query(`SELECT derivative_image_id FROM derivative_edges WHERE source_image_id = ?`, parent)
+			if err != nil {
+				return nil, err
+			}
+			ids, scanErr := db.ScanIDs(rows)
+			rows.Close()
+			if scanErr != nil {
 				return nil, scanErr
 			}
-			children = append(children, id)
+			next = append(next, ids...)
 		}
-		if rowsErr := rows.Err(); rowsErr != nil {
-			rows.Close()
-			return nil, rowsErr
-		}
-		rows.Close()
-		members = append(members, children...)
-		stack = append(stack, children...)
-		depth++
+		members = append(members, next...)
+		frontier = next
 	}
 	return members, nil
 }
@@ -765,15 +786,8 @@ func deleteEdgesByEndpointsTx(tx *sql.Tx, table, colA, colB string, ids []int64)
 	if len(ids) == 0 {
 		return nil
 	}
-	placeholders := strings.Repeat("?,", len(ids))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, 0, len(ids)*2)
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	for _, id := range ids {
-		args = append(args, id)
-	}
+	placeholders, idArgs := db.InPlaceholders(ids)
+	args := append(append([]any{}, idArgs...), idArgs...)
 	q := fmt.Sprintf(`DELETE FROM %s WHERE %s IN (%s) OR %s IN (%s)`, table, colA, placeholders, colB, placeholders)
 	_, err := tx.Exec(q, args...)
 	return err

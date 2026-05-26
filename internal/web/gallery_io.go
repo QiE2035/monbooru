@@ -1374,7 +1374,7 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 
 	mr, err := r.MultipartReader()
 	if err != nil {
-		writeFlash(w, "err", "expected multipart/form-data")
+		writeInlineFlash(w, "err", "expected multipart/form-data")
 		return
 	}
 
@@ -1388,14 +1388,14 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			writeFlash(w, "err", "malformed upload")
+			writeInlineFlash(w, "err", "malformed upload")
 			return
 		}
 		if part.FileName() == "" {
 			body, readErr := io.ReadAll(io.LimitReader(part, maxFieldBytes))
 			part.Close()
 			if readErr != nil {
-				writeFlash(w, "err", "malformed upload")
+				writeInlineFlash(w, "err", "malformed upload")
 				return
 			}
 			fields[part.FormName()] = strings.TrimSpace(string(body))
@@ -1406,7 +1406,7 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 		break
 	}
 	if filePart == nil {
-		writeFlash(w, "err", "missing file")
+		writeInlineFlash(w, "err", "missing file")
 		return
 	}
 	defer filePart.Close()
@@ -1416,24 +1416,24 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 		mode = "replace"
 	}
 	if mode != "replace" && mode != "merge" {
-		writeFlash(w, "err", "mode must be replace or merge")
+		writeInlineFlash(w, "err", "mode must be replace or merge")
 		return
 	}
 	if mode == "replace" {
 		if fields["confirm_name"] != name {
-			writeFlash(w, "err", "type-to-confirm name does not match")
+			writeInlineFlash(w, "err", "type-to-confirm name does not match")
 			return
 		}
 	}
 	format := formatFromExt(fileFilename)
 	if format == "" {
-		writeFlash(w, "err", "file must be .db, .json, or .zip")
+		writeInlineFlash(w, "err", "file must be .db, .json, or .zip")
 		return
 	}
 
 	if mode == "merge" {
 		if err := s.MergeGallery(name, format, filePart); err != nil {
-			writeFlash(w, "err", err.Error())
+			writeInlineFlash(w, "err", err.Error())
 			return
 		}
 		// Mirror the replace path (ImportGallery → SwitchGallery): a merge
@@ -1442,17 +1442,17 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 		if err := s.SwitchGallery(name); err != nil {
 			logx.Infof("gallery %q: post-merge switch skipped: %v", name, err)
 		}
-		writeFlash(w, "ok", "Gallery "+name+" merged.")
+		writeInlineFlash(w, "ok", "Gallery "+name+" merged.")
 		return
 	}
 	if err := s.ImportGallery(name, format, filePart); err != nil {
-		writeFlash(w, "err", err.Error())
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 	// Write the success flash into #flash-galleries; the dialog's
 	// after-request hook detects the flash-ok, closes the modal, and
 	// triggers a reload so the newly-active gallery badge shows.
-	writeFlash(w, "ok", "Gallery "+name+" imported. Rebuilding thumbnails in the background.")
+	writeInlineFlash(w, "ok", "Gallery "+name+" imported. Rebuilding thumbnails in the background.")
 }
 
 func formatFromExt(filename string) string {

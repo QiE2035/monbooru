@@ -569,11 +569,11 @@ func buildMultipart(t *testing.T, fields map[string]string, fileField, filename 
 	return &buf, mw.FormDataContentType()
 }
 
-// TestSafeArchiveDest pins T-F006: the central path-traversal defense
-// for every zip-import path (gallery import db / json / zip / light,
-// Blombooru / Hydrus translators) must reject absolute entries, plain
-// `..` traversal, nested `..` after a normal segment, and the equal-
-// prefix sibling-directory attack the docstring calls out. Names that
+// TestSafeArchiveDest: the central path-traversal defense for every
+// zip-import path (gallery import db / json / zip / light, Blombooru
+// / Hydrus translators) must reject absolute entries, plain `..`
+// traversal, nested `..` after a normal segment, and the equal-prefix
+// sibling-directory attack the docstring calls out. Names that
 // merely contain `..` as a substring stay legal.
 func TestSafeArchiveDest(t *testing.T) {
 	root := t.TempDir()

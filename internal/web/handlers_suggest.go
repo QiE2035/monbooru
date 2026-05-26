@@ -59,9 +59,13 @@ func (s *Server) foldersSuggest(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var fp string
 		if err := rows.Scan(&fp); err != nil {
+			logx.Warnf("folders suggest: scan: %v", err)
 			continue
 		}
 		folders = append(folders, fp)
+	}
+	if err := rows.Err(); err != nil {
+		logx.Warnf("folders suggest: iter: %v", err)
 	}
 	if len(folders) == 0 {
 		w.WriteHeader(http.StatusNoContent)

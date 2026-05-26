@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/search"
 	"github.com/leqwin/monbooru/internal/tags"
 )
@@ -281,24 +282,17 @@ func (c *Ceiling) TaintedImageIDs() (map[int64]bool, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	tainted := map[int64]bool{}
-	for rows.Next() {
-		var id int64
-		if scanErr := rows.Scan(&id); scanErr != nil {
-			c.mu.Lock()
-			c.taintedLoaded = true
-			c.taintedErr = scanErr
-			c.mu.Unlock()
-			return nil, scanErr
-		}
-		tainted[id] = true
-	}
-	if iterErr := rows.Err(); iterErr != nil {
+	ids, scanErr := db.ScanIDs(rows)
+	if scanErr != nil {
 		c.mu.Lock()
 		c.taintedLoaded = true
-		c.taintedErr = iterErr
+		c.taintedErr = scanErr
 		c.mu.Unlock()
-		return nil, iterErr
+		return nil, scanErr
+	}
+	tainted := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		tainted[id] = true
 	}
 	c.mu.Lock()
 	c.tainted = tainted

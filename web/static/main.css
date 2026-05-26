@@ -257,7 +257,7 @@ button.footer-rating-link:hover { color: var(--fg); }
 }
 
 .tag-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-.tag-count { color: var(--fg-dim); font-size: 11px; }
+.tag-count { color: var(--fg-dim); font-size: 11px; text-align: right; min-width: 32px; }
 
 /* Folder tree */
 .folder-node-wrap { list-style: none; }
@@ -323,10 +323,21 @@ button.footer-rating-link:hover { color: var(--fg); }
 
 /* Folder tree section */
 #folder-tree-section, #saved-searches-section, #source-filter-section, #series-filter-section,
-#inbox-filter-section, #favorites-filter-section, #source-labels-section {
+#favorites-filter-section, #source-labels-section {
   border-top: 1px solid var(--border);
   margin-top: 8px;
   padding-top: 4px;
+}
+/* Skip the top divider when this section is the first content in its
+   container - otherwise the gallery sidebar without tag-groups (and the
+   detail sidebar without image tags) would render a floating line above
+   nothing. */
+#folder-tree-section:first-child, #saved-searches-section:first-child,
+#source-filter-section:first-child, #series-filter-section:first-child,
+#favorites-filter-section:first-child, #source-labels-section:first-child {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 0;
 }
 .sidebar-section-header {
   display: flex;
@@ -335,7 +346,7 @@ button.footer-rating-link:hover { color: var(--fg); }
   padding: 3px 8px;
 }
 #folder-tree-toggle, #source-tree-toggle, #series-tree-toggle,
-#source-labels-toggle, #inbox-filter-toggle, #favorites-filter-toggle {
+#source-labels-toggle, #favorites-filter-toggle {
   background: none;
   border: none;
   padding: 0;
@@ -379,11 +390,17 @@ button.footer-rating-link:hover { color: var(--fg); }
 }
 .saved-search-del:hover { color: var(--error); }
 
-/* Sidebar tag add button */
+/* Sidebar tag add button. The fixed width + centred glyph keeps the
+   button itself uniform across rows where the + or - glyph differs;
+   the .tag-count sibling carries a right-aligned min-width so a
+   variable-digit count to the right doesn't shove the button column
+   sideways. Without both, +/- drift visibly between rows. */
 .tag-add-btn {
   background: none;
   border: none;
-  padding: 0 2px;
+  padding: 0;
+  width: 14px;
+  text-align: center;
   cursor: pointer;
   color: var(--fg-dim);
   font-size: 11px;
@@ -1298,12 +1315,35 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   background: var(--error);
 }
 .btn-danger:hover { background: var(--bg); color: var(--error); }
-.btn-warning {
-  color: var(--warning);
-  border-color: var(--warning);
+/* The global button:disabled rule dims text to --fg-dim but leaves the
+   red fill in place, which reads as grey-on-red and has poor contrast.
+   Drop the fill and the red border on disabled so the dimmed label
+   sits on the surface background instead. */
+.btn-danger:disabled, .btn-danger[disabled] {
+  background: var(--bg-surface);
+  border-color: var(--border);
+}
+.btn-danger:disabled:hover, .btn-danger[disabled]:hover {
+  background: var(--bg-surface);
+  color: var(--fg-dim);
+  border-color: var(--border);
+}
+/* Filled-hover accent buttons. Each declares only its accent var; the
+   shared rule below picks up rest + hover. .btn-purple matches
+   .btn-autotag's indigo so the two action accents stay paired. */
+.btn-warning { --btn-accent: var(--warning); }
+.btn-success { --btn-accent: var(--success); }
+.btn-purple  { --btn-accent: var(--indigo); }
+.btn-warning, .btn-success, .btn-purple {
+  color: var(--btn-accent);
+  border-color: var(--btn-accent);
   background: var(--bg);
 }
-.btn-warning:hover { background: var(--warning); color: var(--bg); border-color: var(--warning); }
+.btn-warning:hover, .btn-success:hover, .btn-purple:hover {
+  background: var(--btn-accent);
+  color: var(--bg);
+  border-color: var(--btn-accent);
+}
 /* Subdued so a slip next to "Remove all tags" doesn't nuke the wrong subset. */
 .btn-warning-subtle {
   color: var(--warning);
@@ -1313,21 +1353,6 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   padding: 2px 6px;
 }
 .btn-warning-subtle:hover { border-color: var(--warning); }
-.btn-success {
-  color: var(--success);
-  border-color: var(--success);
-  background: var(--bg);
-}
-.btn-success:hover { background: var(--success); color: var(--bg); }
-/* Indigo accent reserved for the Relations session CTA - the operator's
-   "go" button on /relations. Matches .btn-autotag's indigo treatment so
-   the two action accents (auto-tag, start session) stay paired. */
-.btn-purple {
-  color: var(--indigo);
-  border-color: var(--indigo);
-  background: var(--bg);
-}
-.btn-purple:hover { background: var(--indigo); color: var(--bg); border-color: var(--indigo); }
 
 /* Tag list partial */
 .tag-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 10px; }
@@ -2062,14 +2087,19 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   background: var(--bg);
   overflow: hidden;
 }
-.compare-stage img {
+.compare-slot {
+  display: block;
+  width: 100%;
+}
+.compare-slot > img,
+.compare-slot > video {
   display: block;
   width: 100%;
   max-height: 80vh;
   object-fit: contain;
   pointer-events: none;
 }
-#compare-img-right {
+.compare-slot-right {
   position: absolute;
   top: 0; left: 0;
 }

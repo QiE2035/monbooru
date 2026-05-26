@@ -1,0 +1,19 @@
+{{define "partials/pagination.html"}}
+{{if gt .Total 1}}
+<div class="pagination">
+  {{if and (gt .Page 2) (gt .Total 2)}}
+  <a href="{{.Base}}1">« First</a>
+  {{end}}
+  {{if gt .Page 1}}
+  <a href="{{.Base}}{{sub .Page 1}}">← Prev</a>
+  {{end}}
+  <button type="button" class="page-jump current" data-current="{{.Page}}" data-total="{{.Total}}" title="Go to page…">Page {{.Page}} / {{.Total}}</button>
+  {{if lt .Page .Total}}
+  <a href="{{.Base}}{{add .Page 1}}">Next →</a>
+  {{end}}
+  {{if and (lt .Page .Total) (gt .Total 2)}}
+  <a href="{{.Base}}{{.Total}}">Last »</a>
+  {{end}}
+</div>
+{{end}}
+{{end}}

@@ -71,11 +71,11 @@ func (s *Server) settingsTaggerPost(w http.ResponseWriter, r *http.Request) {
 	// init is not re-entrant so refuse while a tagger job is holding it.
 	if newUseCUDA && !s.cfg.Tagger.UseCUDA {
 		if s.jobs.IsRunning() {
-			w.Write([]byte(`<div class="flash flash-err">A job is running; try again when it finishes.</div>`))
+			writeInlineFlash(w, "err", "A job is running; try again when it finishes.")
 			return
 		}
 		if err := tagger.CheckCUDAAvailable(); err != nil {
-			fmt.Fprintf(w, `<div class="flash flash-err">Cannot enable GPU: %s</div>`, html.EscapeString(err.Error()))
+			writeInlineFlash(w, "err", "Cannot enable GPU: "+err.Error())
 			return
 		}
 	}
@@ -93,7 +93,7 @@ func (s *Server) settingsTaggerPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	// Drop the cached ORT session so the freed RAM is visible immediately
@@ -102,7 +102,7 @@ func (s *Server) settingsTaggerPost(w http.ResponseWriter, r *http.Request) {
 		tagger.ReleaseAll()
 	}
 	logx.Infof("settings: tagger updated (use_cuda=%t)", s.cfg.Tagger.UseCUDA)
-	w.Write([]byte(`<div class="flash flash-ok">Saved.</div>`))
+	writeInlineFlash(w, "ok", "Saved.")
 	s.renderTemplate(w, "partials/tagger_mode_badge.html", map[string]any{
 		"UseCUDA": s.cfg.Tagger.UseCUDA,
 		"OOB":     true,
@@ -123,6 +123,31 @@ func (s *Server) settingsTaggerDisablePost(w http.ResponseWriter, r *http.Reques
 	s.applyTaggerEnabled(w, strings.TrimSpace(r.PathValue("name")), false)
 }
 
+// updateTagger applies mutate to the named TaggerInstance under cfgMu,
+// seeding a fresh entry from the on-disk catalog when one doesn't exist
+// yet, then persists the config to disk. Returns the saveConfig error
+// or nil. Callers that need to surface a save failure to the operator
+// pass its error string through their usual flash helper.
+func (s *Server) updateTagger(name string, mutate func(*config.TaggerInstance)) error {
+	s.cfgMu.Lock()
+	found := false
+	for i := range s.cfg.Tagger.Taggers {
+		if s.cfg.Tagger.Taggers[i].Name == name {
+			mutate(&s.cfg.Tagger.Taggers[i])
+			found = true
+			break
+		}
+	}
+	if !found {
+		catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
+		seeded := tagger.SeedTaggerInstance(name, false, catalog)
+		mutate(&seeded)
+		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers, seeded)
+	}
+	s.cfgMu.Unlock()
+	return s.saveConfig()
+}
+
 // applyTaggerEnabled flips a tagger's Enabled flag, seeding a TOML
 // entry from the on-disk catalog when one doesn't exist yet so the
 // preference persists across disable/enable round trips.
@@ -131,23 +156,10 @@ func (s *Server) applyTaggerEnabled(w http.ResponseWriter, name string, enabled 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.cfgMu.Lock()
-	found := false
-	for i, t := range s.cfg.Tagger.Taggers {
-		if t.Name == name {
-			s.cfg.Tagger.Taggers[i].Enabled = enabled
-			found = true
-			break
-		}
-	}
-	if !found {
-		catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
-		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers,
-			tagger.SeedTaggerInstance(name, enabled, catalog))
-	}
-	s.cfgMu.Unlock()
-	if err := s.saveConfig(); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+	if err := s.updateTagger(name, func(t *config.TaggerInstance) {
+		t.Enabled = enabled
+	}); err != nil {
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	verb := "enabled"
@@ -156,7 +168,7 @@ func (s *Server) applyTaggerEnabled(w http.ResponseWriter, name string, enabled 
 	}
 	logx.Infof("settings: tagger %q %s", name, verb)
 	w.Header().Set("HX-Refresh", "true")
-	w.Write([]byte(`<div class="flash flash-ok">Tagger ` + html.EscapeString(name) + ` ` + verb + `.</div>`))
+	writeInlineFlash(w, "ok", "Tagger "+name+" "+verb+".")
 }
 
 // settingsTaggerThresholdsGet renders the dialog body for one tagger's
@@ -166,9 +178,8 @@ func (s *Server) applyTaggerEnabled(w http.ResponseWriter, name string, enabled 
 // dispatch rule could route something into it). HTMX lazy-loads the
 // body via hx-get on first dialog open.
 func (s *Server) settingsTaggerThresholdsGet(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.PathValue("name"))
-	if err := tagger.ValidateTaggerName(name); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	name, ok := pathTaggerName(w, r, "name")
+	if !ok {
 		return
 	}
 	rows, global, ok := s.thresholdDialogData(name)
@@ -196,9 +207,8 @@ func (s *Server) settingsTaggerThresholdsGet(w http.ResponseWriter, r *http.Requ
 // `#flash-tagger` carries the confirmation, and the row's summary text
 // is OOB-swapped to reflect the new values without a page reload.
 func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.PathValue("name"))
-	if err := tagger.ValidateTaggerName(name); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	name, ok := pathTaggerName(w, r, "name")
+	if !ok {
 		return
 	}
 	if !parseFormOK(w, r) {
@@ -207,7 +217,7 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 	globalRaw := strings.TrimSpace(r.FormValue("global_threshold"))
 	global, err := strconv.ParseFloat(globalRaw, 64)
 	if err != nil || global < 0 || global > 1 {
-		w.Write([]byte(`<div class="flash flash-err">Global threshold must be between 0 and 1.</div>`))
+		writeInlineFlash(w, "err", "Global threshold must be between 0 and 1.")
 		return
 	}
 	overrides := map[string]float64{}
@@ -221,8 +231,7 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 		if raw != "" {
 			v, err := strconv.ParseFloat(raw, 64)
 			if err != nil || v < 0 || v > 1 {
-				fmt.Fprintf(w, `<div class="flash flash-err">Threshold for %s must be between 0 and 1.</div>`,
-					html.EscapeString(cat))
+				writeInlineFlash(w, "err", "Threshold for "+cat+" must be between 0 and 1.")
 				return
 			}
 			overrides[cat] = v
@@ -231,51 +240,26 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 		if rawK != "" {
 			n, err := strconv.Atoi(rawK)
 			if err != nil || n < 0 {
-				fmt.Fprintf(w, `<div class="flash flash-err">Max tags for %s must be 0 or higher.</div>`,
-					html.EscapeString(cat))
+				writeInlineFlash(w, "err", "Max tags for "+cat+" must be 0 or higher.")
 				return
 			}
 			topK[cat] = n
 		}
 	}
-	s.cfgMu.Lock()
-	found := false
-	for i, t := range s.cfg.Tagger.Taggers {
-		if t.Name == name {
-			s.cfg.Tagger.Taggers[i].ConfidenceThreshold = global
-			if len(overrides) > 0 {
-				s.cfg.Tagger.Taggers[i].CategoryThresholds = overrides
-			} else {
-				s.cfg.Tagger.Taggers[i].CategoryThresholds = nil
-			}
-			if len(topK) > 0 {
-				s.cfg.Tagger.Taggers[i].PerCategoryTopK = topK
-			} else {
-				s.cfg.Tagger.Taggers[i].PerCategoryTopK = nil
-			}
-			found = true
-			break
-		}
-	}
-	if !found {
-		catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
-		seeded := tagger.SeedTaggerInstance(name, false, catalog)
-		seeded.ConfidenceThreshold = global
+	if err := s.updateTagger(name, func(t *config.TaggerInstance) {
+		t.ConfidenceThreshold = global
 		if len(overrides) > 0 {
-			seeded.CategoryThresholds = overrides
+			t.CategoryThresholds = overrides
 		} else {
-			seeded.CategoryThresholds = nil
+			t.CategoryThresholds = nil
 		}
 		if len(topK) > 0 {
-			seeded.PerCategoryTopK = topK
+			t.PerCategoryTopK = topK
 		} else {
-			seeded.PerCategoryTopK = nil
+			t.PerCategoryTopK = nil
 		}
-		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers, seeded)
-	}
-	s.cfgMu.Unlock()
-	if err := s.saveConfig(); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+	}); err != nil {
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	logx.Infof("settings: tagger %q thresholds updated (global=%.2f, %d threshold overrides, %d top-K overrides)", name, global, len(overrides), len(topK))
@@ -305,9 +289,8 @@ func setTaggerSavedTrigger(w http.ResponseWriter, dialogID string) {
 // parent table updates immediately. Stays inside the dialog so the
 // operator can fine-tune from the reset baseline before clicking Save.
 func (s *Server) settingsTaggerThresholdsResetPost(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.PathValue("name"))
-	if err := tagger.ValidateTaggerName(name); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	name, ok := pathTaggerName(w, r, "name")
+	if !ok {
 		return
 	}
 	if !parseFormOK(w, r) {
@@ -315,23 +298,12 @@ func (s *Server) settingsTaggerThresholdsResetPost(w http.ResponseWriter, r *htt
 	}
 	catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
 	defaults := tagger.SeedTaggerInstance(name, false, catalog)
-	s.cfgMu.Lock()
-	found := false
-	for i, t := range s.cfg.Tagger.Taggers {
-		if t.Name == name {
-			s.cfg.Tagger.Taggers[i].ConfidenceThreshold = defaults.ConfidenceThreshold
-			s.cfg.Tagger.Taggers[i].CategoryThresholds = defaults.CategoryThresholds
-			s.cfg.Tagger.Taggers[i].PerCategoryTopK = defaults.PerCategoryTopK
-			found = true
-			break
-		}
-	}
-	if !found {
-		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers, defaults)
-	}
-	s.cfgMu.Unlock()
-	if err := s.saveConfig(); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+	if err := s.updateTagger(name, func(t *config.TaggerInstance) {
+		t.ConfidenceThreshold = defaults.ConfidenceThreshold
+		t.CategoryThresholds = defaults.CategoryThresholds
+		t.PerCategoryTopK = defaults.PerCategoryTopK
+	}); err != nil {
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	logx.Infof("settings: tagger %q thresholds reset to defaults", name)
@@ -467,9 +439,8 @@ func taggerThresholdSummary(global float64, overrides map[string]float64) string
 // galleries" sentinel renders pre-checked when the TaggerInstance has
 // no explicit Galleries list (the legacy default).
 func (s *Server) settingsTaggerGalleriesGet(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.PathValue("name"))
-	if err := tagger.ValidateTaggerName(name); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	name, ok := pathTaggerName(w, r, "name")
+	if !ok {
 		return
 	}
 	rows, allChecked, ok := s.galleryDialogData(name)
@@ -498,9 +469,8 @@ func (s *Server) settingsTaggerGalleriesGet(w http.ResponseWriter, r *http.Reque
 //
 // On success the dialog closes via the shared tagger-saved HX-Trigger.
 func (s *Server) settingsTaggerGalleriesPost(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.PathValue("name"))
-	if err := tagger.ValidateTaggerName(name); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	name, ok := pathTaggerName(w, r, "name")
+	if !ok {
 		return
 	}
 	if !parseFormOK(w, r) {
@@ -526,24 +496,10 @@ func (s *Server) settingsTaggerGalleriesPost(w http.ResponseWriter, r *http.Requ
 			galleries = append(galleries, n)
 		}
 	}
-	s.cfgMu.Lock()
-	found := false
-	for i, t := range s.cfg.Tagger.Taggers {
-		if t.Name == name {
-			s.cfg.Tagger.Taggers[i].Galleries = galleries
-			found = true
-			break
-		}
-	}
-	if !found {
-		catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
-		seeded := tagger.SeedTaggerInstance(name, false, catalog)
-		seeded.Galleries = galleries
-		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers, seeded)
-	}
-	s.cfgMu.Unlock()
-	if err := s.saveConfig(); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+	if err := s.updateTagger(name, func(t *config.TaggerInstance) {
+		t.Galleries = galleries
+	}); err != nil {
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	logx.Infof("settings: tagger %q galleries updated (all=%t, %d named)", name, all, len(galleries))
@@ -699,16 +655,15 @@ func (s *Server) persistNewlyDiscoveredTaggers() {
 // enabled (the UI hides the button in that case; this is the server gate).
 // The name is validated so it can't escape model_path with `..` segments.
 func (s *Server) settingsTaggerDeletePost(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.PathValue("name"))
-	if err := tagger.ValidateTaggerName(name); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	name, ok := pathTaggerName(w, r, "name")
+	if !ok {
 		return
 	}
 	s.cfgMu.Lock()
 	for _, t := range s.cfg.Tagger.Taggers {
 		if t.Name == name && t.Enabled {
 			s.cfgMu.Unlock()
-			fmt.Fprintf(w, `<div class="flash flash-err">Disable tagger %s before deleting it.</div>`, html.EscapeString(name))
+			writeInlineFlash(w, "err", "Disable tagger "+name+" before deleting it.")
 			return
 		}
 	}
@@ -722,14 +677,14 @@ func (s *Server) settingsTaggerDeletePost(w http.ResponseWriter, r *http.Request
 	s.cfgMu.Unlock()
 	if err := os.RemoveAll(dir); err != nil {
 		logx.Warnf("delete tagger %q: remove %q: %v", name, dir, err)
-		fmt.Fprintf(w, `<div class="flash flash-err">Removed config entry but could not delete folder: %s</div>`, html.EscapeString(err.Error()))
+		writeInlineFlash(w, "err", "Removed config entry but could not delete folder: "+err.Error())
 		return
 	}
 	if err := s.saveConfig(); err != nil {
-		fmt.Fprintf(w, `<div class="flash flash-err">Could not save: %s</div>`, html.EscapeString(err.Error()))
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	logx.Infof("settings: tagger %q deleted (folder %s removed)", name, dir)
 	w.Header().Set("HX-Refresh", "true")
-	w.Write([]byte(`<div class="flash flash-ok">Tagger ` + html.EscapeString(name) + ` deleted.</div>`))
+	writeInlineFlash(w, "ok", "Tagger "+name+" deleted.")
 }

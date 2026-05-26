@@ -229,6 +229,28 @@ func TestParse_Filter_Folder(t *testing.T) {
 	}
 }
 
+func TestParse_Filter_QuotedWithEscapedQuote(t *testing.T) {
+	e, _ := Parse(`folder:"a\"b"`)
+	f, ok := e.(FilterExpr)
+	if !ok {
+		t.Fatalf("expected FilterExpr, got %T", e)
+	}
+	if f.Key != "folder" || f.Val != `a"b` {
+		t.Errorf("filter = {%q, %q}", f.Key, f.Val)
+	}
+}
+
+func TestParse_Filter_QuotedWithEscapedBackslash(t *testing.T) {
+	e, _ := Parse(`source:"a\\b"`)
+	f, ok := e.(FilterExpr)
+	if !ok {
+		t.Fatalf("expected FilterExpr, got %T", e)
+	}
+	if f.Key != "source" || f.Val != `a\b` {
+		t.Errorf("filter = {%q, %q}", f.Key, f.Val)
+	}
+}
+
 func TestParse_Filter_AI(t *testing.T) {
 	e, _ := Parse("ai:sd")
 	f, ok := e.(FilterExpr)
@@ -1467,10 +1489,10 @@ func TestFastCountAI_Csv(t *testing.T) {
 	}
 }
 
-// TestFastCountTagged_PartitionsVisible pins the fix for U-F012:
-// `tagged:true` and `tagged:false` must partition the visible image
-// set (sum = visible_total, no overlap). Mixed fixture: one tagged,
-// one untagged, one auto-tagged.
+// TestFastCountTagged_PartitionsVisible: `tagged:true` and
+// `tagged:false` must partition the visible image set (sum =
+// visible_total, no overlap). Mixed fixture: one tagged, one
+// untagged, one auto-tagged.
 func TestFastCountTagged_PartitionsVisible(t *testing.T) {
 	database, env := setupSearchDB(t)
 	ingestTestImage(t, database, env, "ft_tagged.png")
@@ -2341,9 +2363,9 @@ func TestExecute_AndDriverPreservesOrAndNot(t *testing.T) {
 }
 
 // TestPickAndDriverTag_SingleWildcard pins the wildcard-only branch of
-// the driver: a single prefix TagExpr at root (the F206 shape: the
-// detail page's random-sort adjacency rides this expression) gets the
-// driver, replacing the LIST SUBQUERY scan with a literal IN(...).
+// the driver: a single prefix TagExpr at root (the detail page's
+// random-sort adjacency rides this expression) gets the driver,
+// replacing the LIST SUBQUERY scan with a literal IN(...).
 func TestPickAndDriverTag_SingleWildcard(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID int64
@@ -2889,11 +2911,11 @@ func TestExecute_RecentIDBoundSkipsAsc(t *testing.T) {
 	}
 }
 
-// TestExecute_AndDriverWildcardReplacesListSubquery runs the F206 shape
-// end-to-end: a single wildcard predicate. Without the wildcard driver
-// the EXISTS body rides a LIST SUBQUERY scan of every tag matching
-// `blue%`. Asserting on results verifies the substitution preserves
-// semantics.
+// TestExecute_AndDriverWildcardReplacesListSubquery runs the
+// wildcard-driver path end-to-end: a single wildcard predicate.
+// Without the wildcard driver the EXISTS body rides a LIST SUBQUERY
+// scan of every tag matching `blue%`. Asserting on results verifies
+// the substitution preserves semantics.
 func TestExecute_AndDriverWildcardReplacesListSubquery(t *testing.T) {
 	database, env := setupSearchDB(t)
 	ingestTestImage(t, database, env, "wd_blue1.png")
@@ -4936,8 +4958,20 @@ func TestBuildWhere_DateFilter_AcceptsMinutePrecision(t *testing.T) {
 			t.Errorf("`= second` args = %v, want [\"2026-05-22T19:23:42\" \"2026-05-22T19:23:42Z\"]", args)
 		}
 	})
+	t.Run("hour precision extends to end of hour", func(t *testing.T) {
+		_, args, _ := buildWhere(FilterExpr{Key: "date", Val: "2026-05-22T06"})
+		if len(args) != 2 || args[0] != "2026-05-22T06" || args[1] != "2026-05-22T06:59:59Z" {
+			t.Errorf("hour args = %v, want [\"2026-05-22T06\" \"2026-05-22T06:59:59Z\"]", args)
+		}
+	})
+	t.Run("hour range form", func(t *testing.T) {
+		_, args, _ := buildWhere(FilterExpr{Key: "date", Val: "2026-05-22T06..2026-05-22T08"})
+		if len(args) != 2 || args[0] != "2026-05-22T06" || args[1] != "2026-05-22T08:59:59Z" {
+			t.Errorf("hour-range args = %v, want [\"2026-05-22T06\" \"2026-05-22T08:59:59Z\"]", args)
+		}
+	})
 	t.Run("malformed time precision still rejected", func(t *testing.T) {
-		for _, in := range []string{"2026-05-22T19", "2026-05-22T19:", "2026-05-22T", "T19:23"} {
+		for _, in := range []string{"2026-05-22T19:", "2026-05-22T", "T19:23"} {
 			where, _, _ := buildWhere(FilterExpr{Key: "date", Val: in})
 			if !strings.Contains(where, "1=0") {
 				t.Errorf("bad %q: expected 1=0, got %q", in, where)
@@ -5373,12 +5407,29 @@ func TestExecute_RelationVocabulary(t *testing.T) {
 	check("relation:any", []int64{a, b, c})
 	check("relation:none", []int64{d})
 
+	// Short-circuit verification: with relations populated, the SQL
+	// still emits the EXISTS / NOT IN shape and the result is correct.
+	// Below we wipe every relation row to assert relation:none folds
+	// to a constant-true and relation:duplicate to a constant-false
+	// without scanning per row.
+	if _, err := database.Write.Exec(`DELETE FROM dup_group_members; DELETE FROM dup_groups; DELETE FROM alt_group_members; DELETE FROM alt_groups; DELETE FROM derivative_edges; DELETE FROM version_edges`); err != nil {
+		t.Fatal(err)
+	}
+	check("relation:duplicate", []int64{})
+	check("relation:alternate", []int64{})
+	check("relation:version", []int64{})
+	check("relation:derivative", []int64{})
+	check("relation:source", []int64{})
+	check("relation:none", []int64{a, b, c, d})
+
 	if _, err := database.Write.Exec(`UPDATE images SET series = 'My Set' WHERE id = ?`, d); err != nil {
 		t.Fatal(err)
 	}
 	check("relation:collection", []int64{d})
-	check("relation:any", []int64{a, b, c, d})
-	check("relation:none", []int64{})
+	// Only d carries any relation now (the series tag on d); the wipe
+	// above dropped every dup/alt/version/derivative row.
+	check("relation:any", []int64{d})
+	check("relation:none", []int64{a, b, c})
 }
 
 func TestExecute_IDFilter(t *testing.T) {

@@ -7,37 +7,6 @@ import (
 	"testing"
 )
 
-// TestSidebarBrowse_CeilingAwareInboxCounts: on the lazy-loaded
-// /internal/sidebar-browse endpoint, with a ceiling hiding the
-// explicit row, the Inbox / Archived line drops to the general-
-// only count.
-func TestSidebarBrowse_CeilingAwareInboxCounts(t *testing.T) {
-	srv := newTestServer(t)
-	seedRatedPair(t, srv) // 2 rows, both inbox=1; one explicit, one general
-
-	// No ceiling: both rows surface.
-	req := httptest.NewRequest("GET", "/internal/sidebar-browse?q=", nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("sidebar-browse expected 200, got %d", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, "Inbox (2)") {
-		t.Errorf("no-ceiling: expected Inbox (2); body slice: %s", inboxBrowseSlice(body))
-	}
-
-	// ceiling=sensitive hides the explicit row.
-	req = httptest.NewRequest("GET", "/internal/sidebar-browse?q=", nil)
-	req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: "sensitive"})
-	w = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	body = w.Body.String()
-	if !strings.Contains(body, "Inbox (1)") {
-		t.Errorf("ceiling=sensitive: expected Inbox (1); body slice: %s", inboxBrowseSlice(body))
-	}
-}
-
 // TestSidebar_CeilingAwareFavoritedCounts pins the Favorites row on
 // /internal/sidebar - both Favorites and Not-favorites should respect
 // the ceiling so the totals add up to the ceiling-aware visible count.
@@ -106,10 +75,6 @@ func TestRelationsHub_PhashMissingHonoursCeiling(t *testing.T) {
 	if !strings.Contains(body, "<strong>1</strong>") || !strings.Contains(body, "without a phash") {
 		t.Errorf("ceiling=sensitive: expected 1 image without a phash; body slice: %s", phashMissingSlice(body))
 	}
-}
-
-func inboxBrowseSlice(body string) string {
-	return sliceAround(body, "inbox-filter-section", 400)
 }
 
 func favSlice(body string) string {

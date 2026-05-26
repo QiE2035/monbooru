@@ -194,6 +194,9 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 		if d, ok := ProbeDurationSeconds(path); ok {
 			durationSec = &d
 		}
+		if w, h, ok := ProbeVideoDimensions(path); ok {
+			imgWidth, imgHeight = &w, &h
+		}
 	}
 	if fileType == models.FileTypeCBZ {
 		archive, openErr := OpenManga(path)

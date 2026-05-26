@@ -4,13 +4,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"syscall"
 
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
@@ -36,8 +36,7 @@ func (s *Server) resolveBatchScope(w http.ResponseWriter, r *http.Request, errLa
 		expr, parseErr := search.Parse(r.FormValue("q"))
 		if parseErr != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`<div class="flash flash-err">Could not parse search: ` +
-				html.EscapeString(parseErr.Error()) + `</div>`))
+			writeInlineFlash(w, "err", "Could not parse search: "+parseErr.Error())
 			return nil, false
 		}
 		// "act on current search" must mirror what the operator sees in
@@ -53,13 +52,13 @@ func (s *Server) resolveBatchScope(w http.ResponseWriter, r *http.Request, errLa
 		if err != nil {
 			logx.Errorf("%s search: %v", errLabel, err)
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`<div class="flash flash-err">Search error.</div>`))
+			writeInlineFlash(w, "err", "Search error.")
 			return nil, false
 		}
 		return ids, true
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">scope must be search or selection</div>`))
+		writeInlineFlash(w, "err", "scope must be search or selection")
 		return nil, false
 	}
 }
@@ -86,12 +85,7 @@ func (s *Server) batchDelete(w http.ResponseWriter, r *http.Request) {
 	// 1000-checkbox selection used to pay 1000 reads here. The order
 	// returned by the SELECT is undefined under SQLite without an
 	// ORDER BY, so re-emit in the caller's input order via a map.
-	placeholders := strings.Repeat("?,", len(ids))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
+	placeholders, args := db.InPlaceholders(ids)
 	rows, err := s.db().Read.Query(
 		`SELECT id, canonical_path, folder_path, is_missing FROM images WHERE id IN (`+placeholders+`)`,
 		args...,
@@ -130,8 +124,7 @@ func (s *Server) deleteSearchPost(w http.ResponseWriter, r *http.Request) {
 	if parseErr != nil {
 		logx.Warnf("delete-search parse: %v", parseErr)
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Could not parse search: ` +
-			html.EscapeString(parseErr.Error()) + `</div>`))
+		writeInlineFlash(w, "err", "Could not parse search: "+parseErr.Error())
 		return
 	}
 	expr = resolveCeiling(r, s.Active()).Apply(expr)
@@ -147,7 +140,7 @@ func (s *Server) deleteSearchPost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logx.Errorf("delete-search: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">Search error.</div>`))
+		writeInlineFlash(w, "err", "Search error.")
 		return
 	}
 
@@ -162,9 +155,7 @@ func (s *Server) startBulkDelete(w http.ResponseWriter, targets []search.DeleteT
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	if err := s.jobs.Start(models.JobTypeDelete); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeDelete) {
 		return
 	}
 	go s.runBulkDelete(targets)
@@ -260,7 +251,7 @@ func (s *Server) batchMove(w http.ResponseWriter, r *http.Request) {
 	// rather than as a per-image log entry once the job starts.
 	if _, err := gallery.ResolveSubdir(s.galleryPath(), targetFolder); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(err.Error()) + `</div>`))
+		writeInlineFlash(w, "err", err.Error())
 		return
 	}
 
@@ -270,8 +261,7 @@ func (s *Server) batchMove(w http.ResponseWriter, r *http.Request) {
 		expr, parseErr := search.Parse(r.FormValue("q"))
 		if parseErr != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`<div class="flash flash-err">Could not parse search: ` +
-				html.EscapeString(parseErr.Error()) + `</div>`))
+			writeInlineFlash(w, "err", "Could not parse search: "+parseErr.Error())
 			return
 		}
 		expr = resolveCeiling(r, s.Active()).Apply(expr)
@@ -282,7 +272,7 @@ func (s *Server) batchMove(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			logx.Errorf("batch-move search: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`<div class="flash flash-err">Search error.</div>`))
+			writeInlineFlash(w, "err", "Search error.")
 			return
 		}
 	} else {
@@ -298,9 +288,7 @@ func (s *Server) batchMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.jobs.Start(models.JobTypeMove); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeMove) {
 		return
 	}
 	go s.runBatchMove(ids, targetFolder)
@@ -385,24 +373,24 @@ func (s *Server) batchTag(w http.ResponseWriter, r *http.Request) {
 	op := strings.TrimSpace(r.FormValue("op"))
 	if op != "add" && op != "remove" {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">op must be add or remove</div>`))
+		writeInlineFlash(w, "err", "op must be add or remove")
 		return
 	}
 	tagInput := strings.TrimSpace(r.FormValue("tags"))
 	if tagInput == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">No tags provided.</div>`))
+		writeInlineFlash(w, "err", "No tags provided.")
 		return
 	}
 	catTags, parseErrMsg := s.parseTagInput(tagInput)
 	if parseErrMsg != "" {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(parseErrMsg) + `</div>`))
+		writeInlineFlash(w, "err", parseErrMsg)
 		return
 	}
 	if len(catTags) == 0 {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">No tags to apply.</div>`))
+		writeInlineFlash(w, "err", "No tags to apply.")
 		return
 	}
 
@@ -415,9 +403,7 @@ func (s *Server) batchTag(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	if err := s.jobs.Start(models.JobTypeTag); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeTag) {
 		return
 	}
 	go s.runBatchTag(ids, op, catTags)
@@ -432,12 +418,7 @@ func (s *Server) anyTagHasImplications(tagIDs []int64) bool {
 	if len(tagIDs) == 0 {
 		return false
 	}
-	placeholders := strings.Repeat("?,", len(tagIDs))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, len(tagIDs))
-	for i, id := range tagIDs {
-		args[i] = id
-	}
+	placeholders, args := db.InPlaceholders(tagIDs)
 	var n int
 	if err := s.db().Read.QueryRow(
 		`SELECT 1 FROM tag_implications WHERE parent_tag_id IN (`+placeholders+`) LIMIT 1`,
@@ -491,19 +472,13 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 
 	ctx := s.jobs.Context()
 	total := len(ids)
-	processed, applied := 0, 0
-	cancelled := false
-	affectedTags := map[int64]struct{}{}
-	for _, t := range resolved {
-		affectedTags[t.id] = struct{}{}
-	}
+	applied := 0
 
 	tagIDs := make([]int64, 0, len(resolved))
 	for _, t := range resolved {
 		tagIDs = append(tagIDs, t.id)
 	}
 
-	s.jobs.Update(0, total, fmt.Sprintf("%s 0/%d…", label, total))
 	// Chunk size compresses to 100 when any resolved tag carries
 	// implications so the per-row fan-out cost in addTagToImageTxReportingDup
 	// doesn't hold the writer for tens of seconds on a 500-row chunk.
@@ -513,20 +488,10 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 	if op == "add" && s.anyTagHasImplications(tagIDs) {
 		chunkSize = 100
 	}
-	for start := 0; start < total; start += chunkSize {
-		if ctx.Err() != nil {
-			cancelled = true
-			break
-		}
-		end := start + chunkSize
-		if end > total {
-			end = total
-		}
-		chunk := ids[start:end]
+	processed, cancelled, err := chunkedJob(ctx, s.jobs, ids, chunkSize, label, func(chunk []int64) error {
 		tx, err := s.db().Write.Begin()
 		if err != nil {
-			s.jobs.Fail(err.Error())
-			return
+			return err
 		}
 		var n int
 		if op == "add" {
@@ -536,27 +501,21 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 		}
 		if err != nil {
 			tx.Rollback()
-			logx.Warnf("batch-tag %s chunk [%d, %d): %v", op, start, end, err)
-			s.jobs.Fail(err.Error())
-			return
+			return err
 		}
 		if err := tx.Commit(); err != nil {
-			s.jobs.Fail(err.Error())
-			return
+			return err
 		}
 		applied += n
-		processed = end
-		s.jobs.Update(processed, total, fmt.Sprintf("%s %d/%d…", label, processed, total))
+		return nil
+	})
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		return
 	}
 
-	if len(affectedTags) > 0 {
-		tagIDs := make([]int64, 0, len(affectedTags))
-		for id := range affectedTags {
-			tagIDs = append(tagIDs, id)
-		}
-		if err := s.tagSvc().RecalcIDs(tagIDs); err != nil {
-			logx.Warnf("batch-tag recalc IDs: %v", err)
-		}
+	if err := s.tagSvc().RecalcIDs(tagIDs); err != nil {
+		logx.Warnf("batch-tag recalc IDs: %v", err)
 	}
 	s.Active().InvalidateCaches()
 
@@ -582,7 +541,7 @@ func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
 	case "user", "auto", "all":
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">mode must be user, auto, or all</div>`))
+		writeInlineFlash(w, "err", "mode must be user, auto, or all")
 		return
 	}
 	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
@@ -601,9 +560,7 @@ func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	if err := s.jobs.Start(models.JobTypeTag); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeTag) {
 		return
 	}
 	go s.runBatchStrip(ids, mode, taggerName)
@@ -719,9 +676,7 @@ func (s *Server) startBatchToggleJob(w http.ResponseWriter, r *http.Request, sco
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	if err := s.jobs.Start(models.JobTypeTag); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeTag) {
 		return
 	}
 	go run(ids)
@@ -736,46 +691,24 @@ func (s *Server) runBulkToggle(ids []int64, column, progressNoun, cancelNoun, su
 	ctx := s.jobs.Context()
 	const chunkSize = 500
 	total := len(ids)
-	processed := 0
-	cancelled := false
 
-	s.jobs.Update(0, total, fmt.Sprintf("toggling %s 0/%d…", progressNoun, total))
-
-	for start := 0; start < total; start += chunkSize {
-		if ctx.Err() != nil {
-			cancelled = true
-			break
-		}
-		end := start + chunkSize
-		if end > total {
-			end = total
-		}
-		chunk := ids[start:end]
-		placeholders := strings.Repeat("?,", len(chunk))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, len(chunk))
-		for i, id := range chunk {
-			args[i] = id
-		}
-
+	processed, cancelled, err := chunkedJob(ctx, s.jobs, ids, chunkSize, "toggling "+progressNoun, func(chunk []int64) error {
+		placeholders, args := db.InPlaceholders(chunk)
 		tx, err := s.db().Write.Begin()
 		if err != nil {
-			s.jobs.Fail(err.Error())
-			return
+			return err
 		}
 		if _, err := tx.Exec(
 			`UPDATE images SET `+column+` = 1 - `+column+` WHERE id IN (`+placeholders+`)`, args...,
 		); err != nil {
 			tx.Rollback()
-			s.jobs.Fail(err.Error())
-			return
+			return err
 		}
-		if err := tx.Commit(); err != nil {
-			s.jobs.Fail(err.Error())
-			return
-		}
-		processed = end
-		s.jobs.Update(processed, total, fmt.Sprintf("toggling %s %d/%d…", progressNoun, processed, total))
+		return tx.Commit()
+	})
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		return
 	}
 
 	s.Active().InvalidateCaches()
@@ -800,7 +733,7 @@ func (s *Server) batchCollection(w http.ResponseWriter, r *http.Request) {
 	collectionVal := strings.TrimSpace(r.FormValue("collection"))
 	if len(collectionVal) > maxExternalSourceLen {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Collection label too long.</div>`))
+		writeInlineFlash(w, "err", "Collection label too long.")
 		return
 	}
 
@@ -813,9 +746,7 @@ func (s *Server) batchCollection(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	if err := s.jobs.Start(models.JobTypeTag); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte(`<div class="flash flash-err">A job is already running.</div>`))
+	if !s.startJob(w, models.JobTypeTag) {
 		return
 	}
 	go s.runBatchCollection(ids, collectionVal)
@@ -829,47 +760,25 @@ func (s *Server) runBatchCollection(ids []int64, label string) {
 	ctx := s.jobs.Context()
 	const chunkSize = 500
 	total := len(ids)
-	processed := 0
-	cancelled := false
 
-	s.jobs.Update(0, total, fmt.Sprintf("setting collection 0/%d…", total))
-
-	for start := 0; start < total; start += chunkSize {
-		if ctx.Err() != nil {
-			cancelled = true
-			break
-		}
-		end := start + chunkSize
-		if end > total {
-			end = total
-		}
-		chunk := ids[start:end]
-		placeholders := strings.Repeat("?,", len(chunk))
-		placeholders = placeholders[:len(placeholders)-1]
-
+	processed, cancelled, err := chunkedJob(ctx, s.jobs, ids, chunkSize, "setting collection", func(chunk []int64) error {
+		placeholders, chunkArgs := db.InPlaceholders(chunk)
 		tx, err := s.db().Write.Begin()
 		if err != nil {
-			s.jobs.Fail(err.Error())
-			return
+			return err
 		}
-		args := make([]any, 0, 1+len(chunk))
-		args = append(args, label)
-		for _, id := range chunk {
-			args = append(args, id)
-		}
+		args := append([]any{label}, chunkArgs...)
 		if _, err := tx.Exec(
 			`UPDATE images SET series = ? WHERE id IN (`+placeholders+`)`, args...,
 		); err != nil {
 			tx.Rollback()
-			s.jobs.Fail(err.Error())
-			return
+			return err
 		}
-		if err := tx.Commit(); err != nil {
-			s.jobs.Fail(err.Error())
-			return
-		}
-		processed = end
-		s.jobs.Update(processed, total, fmt.Sprintf("setting collection %d/%d…", processed, total))
+		return tx.Commit()
+	})
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		return
 	}
 
 	s.Active().InvalidateCaches()

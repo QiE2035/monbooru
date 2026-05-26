@@ -756,7 +756,14 @@ func readExportMergeRecords(exp galleryExport) []mergeRecord {
 // stored on every inserted image_tags row (`tagger_name`) so the detail
 // page can credit the import provider - `"import"` for native exports,
 // the format name (`"hydrus"`...) for compat archives.
+//
+// Tags resolve outside the write transaction so GetOrCreateTag can
+// take its own writer slot; the per-image insert batch then opens a
+// single tx for every image_tags row, which is the difference between
+// O(tokens) and 1 commit on merges that pour dozens of tags onto each
+// image.
 func applyImportTagsToImage(database *db.DB, tagSvc *tags.Service, imageID int64, tokens []string, generalID int64, source string) {
+	tagIDs := make([]int64, 0, len(tokens))
 	for _, token := range tokens {
 		token = strings.TrimSpace(token)
 		if token == "" {
@@ -768,9 +775,10 @@ func applyImportTagsToImage(database *db.DB, tagSvc *tags.Service, imageID int64
 			logx.Warnf("import tag %q: %v", token, err)
 			continue
 		}
-		if err := tagSvc.AddTagToImageFromTagger(imageID, t.ID, false, nil, source); err != nil {
-			logx.Warnf("import tag %q to image %d: %v", token, imageID, err)
-		}
+		tagIDs = append(tagIDs, t.ID)
+	}
+	if err := tagSvc.AddTagsToImageFromTagger(imageID, tagIDs, false, source); err != nil {
+		logx.Warnf("import tags to image %d: %v", imageID, err)
 	}
 }
 

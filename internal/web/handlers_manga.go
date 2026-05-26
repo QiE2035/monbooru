@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"html/template"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"strconv"
 
@@ -91,13 +90,9 @@ func (s *Server) readerHandler(w http.ResponseWriter, r *http.Request) {
 	if page < pageCount {
 		next = page + 1
 	}
-	backQ := r.URL.Query().Get("back_q")
-	backSort := r.URL.Query().Get("back_sort")
-	backOrder := r.URL.Query().Get("back_order")
-	backPage := r.URL.Query().Get("back_page")
-	backSeed := r.URL.Query().Get("back_seed")
+	back := parseBackContext(r)
 	backToPages := r.URL.Query().Get("from") == "pages"
-	backQS, backKVQS := buildReaderBackQS(backQ, backSort, backOrder, backPage, backSeed, backToPages)
+	backQS, backKVQS := back.ReaderQS(backToPages)
 
 	data := readerData{
 		baseData:    s.base(r, "gallery", filepath.Base(img.CanonicalPath)+" - Reader - "+s.booruName()),
@@ -127,15 +122,11 @@ func (s *Server) pagesGridHandler(w http.ResponseWriter, r *http.Request) {
 		s.notFoundHandler(w, r)
 		return
 	}
-	backQ := r.URL.Query().Get("back_q")
-	backSort := r.URL.Query().Get("back_sort")
-	backOrder := r.URL.Query().Get("back_order")
-	backPage := r.URL.Query().Get("back_page")
-	backSeed := r.URL.Query().Get("back_seed")
+	back := parseBackContext(r)
 	// Pages grid never opens the reader as a from=pages context for
 	// itself; the back link from the grid lands on the detail page,
 	// not back on the grid.
-	backQS, backKVQS := buildReaderBackQS(backQ, backSort, backOrder, backPage, backSeed, false)
+	backQS, backKVQS := back.ReaderQS(false)
 	_, imageTags, _ := s.tagSvc().GetImageTags(id)
 	data := pagesGridData{
 		baseData:  s.base(r, "gallery", filepath.Base(img.CanonicalPath)+" - Pages - "+s.booruName()),
@@ -144,46 +135,11 @@ func (s *Server) pagesGridHandler(w http.ResponseWriter, r *http.Request) {
 		PageCount: *img.PageCount,
 		ImageTags: imageTags,
 		Aliases:   s.aliasesForImageTags(imageTags),
-		BackQuery: backQ,
+		BackQuery: back.Q,
 		BackQS:    backQS,
 		BackKVQS:  backKVQS,
 	}
 	s.renderTemplate(w, "pages.html", data)
-}
-
-// buildReaderBackQS returns two query-string fragments derived from the
-// back_* parameters (and the optional from=pages flag): one usable as
-// a standalone `?` query (for the detail-page back link), and one
-// usable as an `&`-prefixed tail (for reader-internal page-flip links
-// that already have `?page=N`). Empty when no back context flows
-// through and fromPages is false. Returned as template.URL so the
-// embedded `&` separators survive interpolation into a URL attribute
-// rather than being treated as a query value and re-encoded.
-func buildReaderBackQS(backQ, backSort, backOrder, backPage, backSeed string, fromPages bool) (template.URL, template.URL) {
-	v := url.Values{}
-	if backQ != "" {
-		v.Set("back_q", backQ)
-	}
-	if backSort != "" {
-		v.Set("back_sort", backSort)
-	}
-	if backOrder != "" {
-		v.Set("back_order", backOrder)
-	}
-	if backPage != "" {
-		v.Set("back_page", backPage)
-	}
-	if backSeed != "" {
-		v.Set("back_seed", backSeed)
-	}
-	if fromPages {
-		v.Set("from", "pages")
-	}
-	if len(v) == 0 {
-		return "", ""
-	}
-	enc := v.Encode()
-	return template.URL("?" + enc), template.URL("&" + enc)
 }
 
 // loadMangaMeta reads the manga_metadata row for an image, or nil when

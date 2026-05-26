@@ -4,9 +4,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/models"
 )
 
@@ -67,19 +67,8 @@ func (s *Service) ImplicationsForParents(parentIDs []int64) (map[int64][]models.
 	if len(parentIDs) == 0 {
 		return out, nil
 	}
-	const chunk = 500
-	for start := 0; start < len(parentIDs); start += chunk {
-		end := start + chunk
-		if end > len(parentIDs) {
-			end = len(parentIDs)
-		}
-		batch := parentIDs[start:end]
-		placeholders := strings.Repeat("?,", len(batch))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, len(batch))
-		for i, id := range batch {
-			args[i] = id
-		}
+	err := db.Chunked(parentIDs, 500, func(batch []int64) error {
+		placeholders, args := db.InPlaceholders(batch)
 		rows, err := s.db.Read.Query(
 			`SELECT ti.parent_tag_id, ti.implied_tag_id,
 			        i.name, ic.name, ic.color
@@ -91,20 +80,23 @@ func (s *Service) ImplicationsForParents(parentIDs []int64) (map[int64][]models.
 			args...,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
+		defer rows.Close()
 		for rows.Next() {
 			var im models.Implication
 			if err := rows.Scan(
 				&im.ParentID, &im.ImpliedID,
 				&im.ImpliedName, &im.ImpliedCategoryName, &im.ImpliedCategoryColor,
 			); err != nil {
-				rows.Close()
-				return nil, err
+				return err
 			}
 			out[im.ParentID] = append(out[im.ParentID], im)
 		}
-		rows.Close()
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -213,36 +205,26 @@ func (s *Service) ImpliedTagIDs(parents []int64) ([]int64, error) {
 // directImplied returns the union of implied_tag_id rows for the given
 // parents. Chunks the IN-list to stay under SQLite's parameter cap.
 func (s *Service) directImplied(parents []int64) ([]int64, error) {
-	const chunk = 500
 	var out []int64
-	for start := 0; start < len(parents); start += chunk {
-		end := start + chunk
-		if end > len(parents) {
-			end = len(parents)
-		}
-		batch := parents[start:end]
-		placeholders := strings.Repeat("?,", len(batch))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, len(batch))
-		for i, id := range batch {
-			args[i] = id
-		}
+	err := db.Chunked(parents, 500, func(batch []int64) error {
+		placeholders, args := db.InPlaceholders(batch)
 		rows, err := s.db.Read.Query(
 			`SELECT DISTINCT implied_tag_id FROM tag_implications WHERE parent_tag_id IN (`+placeholders+`)`,
 			args...,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		for rows.Next() {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			out = append(out, id)
-		}
+		ids, err := db.ScanIDs(rows)
 		rows.Close()
+		if err != nil {
+			return err
+		}
+		out = append(out, ids...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -254,12 +236,7 @@ func implicationReachesTx(tx *sql.Tx, start, target int64) (bool, error) {
 	seen := map[int64]struct{}{start: {}}
 	frontier := []int64{start}
 	for depth := 0; depth < MaxImplicationDepth && len(frontier) > 0; depth++ {
-		placeholders := strings.Repeat("?,", len(frontier))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, len(frontier))
-		for i, id := range frontier {
-			args[i] = id
-		}
+		placeholders, args := db.InPlaceholders(frontier)
 		rows, err := tx.Query(
 			`SELECT DISTINCT implied_tag_id FROM tag_implications WHERE parent_tag_id IN (`+placeholders+`)`,
 			args...,

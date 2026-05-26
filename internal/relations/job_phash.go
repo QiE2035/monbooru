@@ -28,18 +28,10 @@ func BackfillPhashes(ctx context.Context, database *db.DB, thumbnailsPath string
 	if err != nil {
 		return 0, 0, err
 	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if scanErr := rows.Scan(&id); scanErr != nil {
-			rows.Close()
-			return 0, 0, scanErr
-		}
-		ids = append(ids, id)
-	}
+	ids, scanErr := db.ScanIDs(rows)
 	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, 0, err
+	if scanErr != nil {
+		return 0, 0, scanErr
 	}
 
 	total := len(ids)

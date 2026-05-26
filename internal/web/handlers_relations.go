@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -57,17 +56,18 @@ func (s *Server) relatedEntriesGet(w http.ResponseWriter, r *http.Request) {
 	}
 	tiles := flattenRelationsForPanel(rels, id, siblings)
 	paths := loadImagePaths(r.Context(), cx.DB, id)
+	back := parseBackContext(r)
 	s.renderTemplate(w, "partials/related_entries.html", map[string]any{
 		"ImageID":       id,
 		"Tiles":         tiles,
 		"ImagePaths":    paths,
 		"CSRFToken":     s.csrfToken(sessionFromContext(r.Context())),
 		"ActiveGallery": s.activeName,
-		"BackQ":         r.URL.Query().Get("back_q"),
-		"BackSort":      r.URL.Query().Get("back_sort"),
-		"BackOrder":     r.URL.Query().Get("back_order"),
-		"BackSeed":      r.URL.Query().Get("back_seed"),
-		"BackPage":      r.URL.Query().Get("back_page"),
+		"BackQ":         back.Q,
+		"BackSort":      back.Sort,
+		"BackOrder":     back.Order,
+		"BackSeed":      back.Seed,
+		"BackPage":      back.Page,
 	})
 }
 
@@ -186,9 +186,8 @@ func (s *Server) imageRelationsPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cx := s.Active()
-	if cx == nil || cx.DB == nil {
-		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+	cx, ok := s.requireActive(w)
+	if !ok {
 		return
 	}
 	img, err := loadImage(r.Context(), cx.DB, id)
@@ -206,9 +205,13 @@ func (s *Server) imageRelationsPage(w http.ResponseWriter, r *http.Request) {
 	if sErr != nil {
 		logx.Warnf("relations page collection siblings %d: %v", id, sErr)
 	}
-	// Strip declared-relation neighbours from the collection strip so
-	// the same row never appears twice on the page.
-	siblings = filterCollectionSiblings(siblings, rels)
+	// Same Collection renders every sibling regardless of whether it
+	// already appears in a stronger declared-relation section above.
+	// Dropping shadowed cards leaves an obvious gap in the operator-
+	// set series_order numbering (Test Series #1, #3 with #2 missing);
+	// rendering the card twice with its real position is honest about
+	// the collection's true membership, and the strong-relation cell
+	// above carries the actual decision surface for that pair.
 	// Splice the current image into the collection so the operator sees
 	// the same "here is this image among its siblings" framing every
 	// other section uses. Only when at least one sibling remains; a
@@ -216,10 +219,18 @@ func (s *Server) imageRelationsPage(w http.ResponseWriter, r *http.Request) {
 	collection := collectionWithSelf(siblings, *img)
 	// When the operator is about to unlink the current original from a
 	// group with 3+ members, the post-step promotes a new original.
-	// Surface that id so the confirm prompt can name it.
+	// Surface that id so the confirm prompt can name it. Computed in
+	// two cases: the operator is looking at another member's page
+	// (so the original's cell carries the unlink) and the operator
+	// is on the original's own page (so the self cell can offer the
+	// same removal symmetrically).
 	var nextOriginal int64
-	if rels.DupGroup != nil && rels.DupGroup.Original != id && len(rels.DupGroup.Members) >= 3 {
-		next, nErr := cx.RelationsSvc.NextOriginalIfRemoved(rels.DupGroup.ID, rels.DupGroup.Original)
+	if rels.DupGroup != nil && len(rels.DupGroup.Members) >= 3 {
+		target := rels.DupGroup.Original
+		if rels.DupGroup.Original == id {
+			target = id
+		}
+		next, nErr := cx.RelationsSvc.NextOriginalIfRemoved(rels.DupGroup.ID, target)
 		if nErr != nil {
 			logx.Warnf("relations page next-original %d: %v", id, nErr)
 		}
@@ -232,6 +243,7 @@ func (s *Server) imageRelationsPage(w http.ResponseWriter, r *http.Request) {
 	if parent := filepath.Base(filepath.Dir(img.CanonicalPath)); parent != "" && parent != "." && parent != "/" {
 		titleName = parent + "/" + titleName
 	}
+	back := parseBackContext(r)
 	pageData := relationsImagePageData{
 		baseData:                       s.base(r, "gallery", fmt.Sprintf("Relations - %s - %s", titleName, s.booruName())),
 		Image:                          *img,
@@ -241,11 +253,11 @@ func (s *Server) imageRelationsPage(w http.ResponseWriter, r *http.Request) {
 		ThumbnailURL:                   thumbURL,
 		NextOriginalIfOriginalUnlinked: nextOriginal,
 		AltGroupMembersOrdered:         reorderSelfFirst(rels.AltGroupMembers, id),
-		BackQ:                          r.URL.Query().Get("back_q"),
-		BackSort:                       r.URL.Query().Get("back_sort"),
-		BackOrder:                      r.URL.Query().Get("back_order"),
-		BackSeed:                       r.URL.Query().Get("back_seed"),
-		BackPage:                       r.URL.Query().Get("back_page"),
+		BackQ:                          back.Q,
+		BackSort:                       back.Sort,
+		BackOrder:                      back.Order,
+		BackSeed:                       back.Seed,
+		BackPage:                       back.Page,
 	}
 	if rels.DupGroup != nil {
 		pageData.DupGroupMembersOrdered = reorderSelfFirst(rels.DupGroup.Members, id)
@@ -443,44 +455,6 @@ func collectionWithSelf(siblings []collectionSibling, self models.Image) []colle
 	return merged
 }
 
-// filterCollectionSiblings drops every sibling that is already named in
-// one of the declared relation slots so the see-all page can render the
-// collection strip alongside the relation sections without duplicating
-// any thumbnail.
-func filterCollectionSiblings(siblings []collectionSibling, rels *relations.ImageRelations) []collectionSibling {
-	if len(siblings) == 0 || rels == nil {
-		return siblings
-	}
-	taken := map[int64]bool{}
-	if rels.DupGroup != nil {
-		for _, m := range rels.DupGroup.Members {
-			taken[m] = true
-		}
-	}
-	for _, m := range rels.AltGroupMembers {
-		taken[m] = true
-	}
-	if rels.VersionParent != nil {
-		taken[*rels.VersionParent] = true
-	}
-	if rels.VersionChild != nil {
-		taken[*rels.VersionChild] = true
-	}
-	if rels.DerivativeSource != nil {
-		taken[*rels.DerivativeSource] = true
-	}
-	for _, m := range rels.Derivatives {
-		taken[m] = true
-	}
-	out := siblings[:0]
-	for _, sib := range siblings {
-		if taken[sib.ID] {
-			continue
-		}
-		out = append(out, sib)
-	}
-	return out
-}
 
 type relationsImagePageData struct {
 	baseData
@@ -572,20 +546,19 @@ func (s *Server) recomputePhashPost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cx := s.Active()
-	if cx == nil || cx.DB == nil {
-		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+	cx, ok := s.requireActive(w)
+	if !ok {
 		return
 	}
 	if err := gallery.RecomputeAndStorePhash(r.Context(), cx.DB, id, cx.ThumbnailsPath); err != nil {
 		logx.Warnf("recompute phash %d: %v", id, err)
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`<div class="flash flash-err">phash recompute failed (is the thumbnail present?)</div>`))
+		writeInlineFlash(w, "err", "phash recompute failed (is the thumbnail present?)")
 		return
 	}
 	cx.InvalidatePhashMissing()
 	setFlashHeader(w, "phash recomputed.", "ok", nil)
-	w.Write([]byte(`<div class="flash flash-ok">phash recomputed.</div>`))
+	writeInlineFlash(w, "ok", "phash recomputed.")
 }
 
 // addRelationPost installs a relation between two images. Form fields:
@@ -654,7 +627,7 @@ func (s *Server) addRelationPost(w http.ResponseWriter, r *http.Request) {
 		err = cx.RelationsSvc.AddNotRelated(a, b)
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Unknown relation type.</div>`))
+		writeInlineFlash(w, "err", "Unknown relation type.")
 		return
 	}
 	if err != nil {
@@ -662,7 +635,7 @@ func (s *Server) addRelationPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setFlashHeader(w, "Relation added.", "ok", nil)
-	w.Write([]byte(`<div class="flash flash-ok">Relation added.</div>`))
+	writeInlineFlash(w, "ok", "Relation added.")
 }
 
 // removeRelationPost / removeRelationDelete unlinks a relation. Form
@@ -683,6 +656,7 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	relType := r.FormValue("type")
+	msg := "Relation removed."
 	switch relType {
 	case "duplicate":
 		// "duplicate" unlink takes one image_id and removes it from its
@@ -741,6 +715,7 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 			writeRelationError(w, err)
 			return
 		}
+		msg = "Group dissolved."
 	case "dissolve-alt":
 		gid, ok := formInt64(w, r, "group_id")
 		if !ok {
@@ -750,6 +725,7 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 			writeRelationError(w, err)
 			return
 		}
+		msg = "Group dissolved."
 	case "dissolve-version":
 		rootID, ok := formInt64(w, r, "root_id")
 		if !ok {
@@ -759,6 +735,7 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 			writeRelationError(w, err)
 			return
 		}
+		msg = "Version chain dissolved."
 	case "dissolve-derivative":
 		rootID, ok := formInt64(w, r, "root_id")
 		if !ok {
@@ -768,6 +745,7 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 			writeRelationError(w, err)
 			return
 		}
+		msg = "Derivative tree dissolved."
 	case "promote-original":
 		gid, ok := formInt64(w, r, "group_id")
 		if !ok {
@@ -781,6 +759,7 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 			writeRelationError(w, err)
 			return
 		}
+		msg = "Original updated."
 	case "review-again":
 		// "review-again" undoes a 2-member relation and pushes the
 		// same pair back into the session queue so the operator can
@@ -792,13 +771,14 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 		if !reviewAgainPost(w, r, cx) {
 			return
 		}
+		msg = "Pair queued for re-review."
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Unknown relation type.</div>`))
+		writeInlineFlash(w, "err", "Unknown relation type.")
 		return
 	}
-	setFlashHeader(w, "Relation removed.", "ok", nil)
-	w.Write([]byte(`<div class="flash flash-ok">Relation removed.</div>`))
+	setFlashHeader(w, msg, "ok", nil)
+	writeInlineFlash(w, "ok", msg)
 }
 
 // reviewAgainPost dissolves a 2-member relation, clears any matching
@@ -826,7 +806,7 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) boo
 		}
 		if ar == 0 || br == 0 || ar == br {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`<div class="flash flash-err">Group must have exactly two members.</div>`))
+			writeInlineFlash(w, "err", "Group must have exactly two members.")
 			return false
 		}
 		a, b = ar, br
@@ -863,7 +843,7 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) boo
 		a, b = ar, br
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Unknown review-again kind.</div>`))
+		writeInlineFlash(w, "err", "Unknown review-again kind.")
 		return false
 	}
 	// not_related_pairs is keyed (a,b) without canonical ordering;
@@ -920,9 +900,8 @@ type copyTagsPreviewGroup struct {
 // original. Used by the marked-duplicates walker's preview dialog so
 // the operator sees what they are about to merge before confirming.
 func (s *Server) copyTagsToOriginalPreview(w http.ResponseWriter, r *http.Request) {
-	cx := s.Active()
-	if cx == nil || cx.DB == nil {
-		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+	cx, ok := s.requireActive(w)
+	if !ok {
 		return
 	}
 	gid, ok := pathInt64(w, r, "id")
@@ -1029,10 +1008,10 @@ func (s *Server) reverseRelationPost(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Unknown relation type.</div>`))
+		writeInlineFlash(w, "err", "Unknown relation type.")
 		return
 	}
-	w.Write([]byte(`<div class="flash flash-ok">Edge reversed.</div>`))
+	writeInlineFlash(w, "ok", "Edge reversed.")
 }
 
 // mergeGroupsPost merges N alt or dup groups into one. Form fields:
@@ -1061,7 +1040,7 @@ func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if kind != "alt" && kind != "dup" {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Unknown merge kind.</div>`))
+		writeInlineFlash(w, "err", "Unknown merge kind.")
 		return
 	}
 	raw := r.Form["group_id"]
@@ -1077,7 +1056,7 @@ func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(ids) < 2 {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`<div class="flash flash-err">Pick at least two groups to merge.</div>`))
+		writeInlineFlash(w, "err", "Pick at least two groups to merge.")
 		return
 	}
 	switch kind {
@@ -1092,7 +1071,7 @@ func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
 			v, err := strconv.ParseInt(raw, 10, 64)
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
-				w.Write([]byte(`<div class="flash flash-err">Invalid keep_original_from.</div>`))
+				writeInlineFlash(w, "err", "Invalid keep_original_from.")
 				return
 			}
 			inSet := false
@@ -1104,7 +1083,7 @@ func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
 			}
 			if !inSet {
 				w.WriteHeader(http.StatusBadRequest)
-				w.Write([]byte(`<div class="flash flash-err">keep_original_from must be one of the merging groups.</div>`))
+				writeInlineFlash(w, "err", "keep_original_from must be one of the merging groups.")
 				return
 			}
 			keep = v
@@ -1127,6 +1106,124 @@ func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
+// dissolveGroupsPost is the batch counterpart to removeRelationPost.
+// One request dissolves every group / chain / tree / pair the operator
+// ticked in the browse-page toolbar. Form fields per kind mirror the
+// per-row dissolve forms:
+//   - duplicate / alternate: group_id (repeated)
+//   - version / derivative:  root_id  (repeated)
+//   - not_related:           pair     (repeated, "a:b")
+//
+// Each dissolve runs in its own transaction (matching the service API);
+// a mid-batch error leaves prior rows committed and surfaces the error
+// flash so the operator can retry. On success the response carries
+// HX-Redirect back to the same tab so the toolbar repaints.
+func (s *Server) dissolveGroupsPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	cx := s.Active()
+	if cx == nil || cx.RelationsSvc == nil {
+		http.Error(w, "no gallery", http.StatusServiceUnavailable)
+		return
+	}
+	kind := r.URL.Query().Get("kind")
+	if kind == "" {
+		kind = r.FormValue("kind")
+	}
+	switch kind {
+	case "duplicate", "alternate", "version", "derivative", "not_related":
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		writeInlineFlash(w, "err", "Unknown dissolve kind.")
+		return
+	}
+	switch kind {
+	case "duplicate":
+		for _, gid := range parseIDList(r.Form["group_id"]) {
+			if err := cx.RelationsSvc.DissolveDupGroup(gid); err != nil {
+				writeRelationError(w, err)
+				return
+			}
+		}
+	case "alternate":
+		for _, gid := range parseIDList(r.Form["group_id"]) {
+			if err := cx.RelationsSvc.DissolveAltGroup(gid); err != nil {
+				writeRelationError(w, err)
+				return
+			}
+		}
+	case "version":
+		for _, rid := range parseIDList(r.Form["root_id"]) {
+			if err := cx.RelationsSvc.DissolveVersionChain(rid); err != nil {
+				writeRelationError(w, err)
+				return
+			}
+		}
+	case "derivative":
+		for _, rid := range parseIDList(r.Form["root_id"]) {
+			if err := cx.RelationsSvc.DissolveDerivativeTree(rid); err != nil {
+				writeRelationError(w, err)
+				return
+			}
+		}
+	case "not_related":
+		for _, raw := range r.Form["pair"] {
+			a, b, ok := parsePairValue(raw)
+			if !ok {
+				continue
+			}
+			if err := cx.RelationsSvc.RemoveNotRelated(a, b); err != nil {
+				writeRelationError(w, err)
+				return
+			}
+		}
+	}
+	target := "/relations/browse?kind=" + kind
+	if isHTMXRequest(r) {
+		w.Header().Set("HX-Redirect", target)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+// parseIDList trims, parses, and de-duplicates a repeated int64 form
+// field. Values that fail to parse are silently dropped (the operator
+// just ticks rows; there is no hand-edited input here).
+func parseIDList(raw []string) []int64 {
+	seen := map[int64]bool{}
+	out := make([]int64, 0, len(raw))
+	for _, s := range raw {
+		v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+// parsePairValue decodes the "a:b" shape the not_related checkbox
+// carries (the only kind that needs two ids per row, since the others
+// reduce to a group or chain root).
+func parsePairValue(raw string) (int64, int64, bool) {
+	colon := strings.IndexByte(raw, ':')
+	if colon <= 0 || colon == len(raw)-1 {
+		return 0, 0, false
+	}
+	a, err := strconv.ParseInt(strings.TrimSpace(raw[:colon]), 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	b, err := strconv.ParseInt(strings.TrimSpace(raw[colon+1:]), 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return a, b, true
+}
+
 // copyTagsToOriginalPost runs CopyTagsFromDuplicatesToOriginal for a
 // duplicate group. Wired to the per-card button on the Relations page.
 func (s *Server) copyTagsToOriginalPost(w http.ResponseWriter, r *http.Request) {
@@ -1147,7 +1244,7 @@ func (s *Server) copyTagsToOriginalPost(w http.ResponseWriter, r *http.Request) 
 		writeRelationError(w, err)
 		return
 	}
-	w.Write([]byte(fmt.Sprintf(`<div class="flash flash-ok">Copied %d tag(s) to the original.</div>`, added)))
+	writeInlineFlash(w, "ok", fmt.Sprintf("Copied %d tag(s) to the original.", added))
 }
 
 // parseRelationPair reads form fields a and b, returning the validated
@@ -1168,32 +1265,10 @@ func parseRelationPair(w http.ResponseWriter, r *http.Request) (int64, int64, bo
 		// see no feedback at all.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<div class="flash flash-err">Cannot relate an image to itself.</div>`))
+		writeInlineFlash(w, "err", "Cannot relate an image to itself.")
 		return 0, 0, false
 	}
 	return a, b, true
-}
-
-// formInt64 parses an integer form field, writing the error flash on
-// failure. Status 200 (rather than 400) so HTMX picks the body up and
-// swaps it into the dialog target the caller hands it; default config
-// drops 4xx swaps and the operator would otherwise see no feedback.
-func formInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
-	raw := strings.TrimSpace(r.FormValue(name))
-	if raw == "" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fmt.Sprintf(`<div class="flash flash-err">Missing %s.</div>`, html.EscapeString(name))))
-		return 0, false
-	}
-	v, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fmt.Sprintf(`<div class="flash flash-err">Invalid %s.</div>`, html.EscapeString(name))))
-		return 0, false
-	}
-	return v, true
 }
 
 // writeRelationError maps a relations.Service error to a friendly
@@ -1207,16 +1282,6 @@ func writeRelationError(w http.ResponseWriter, err error) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`<div class="flash flash-err">` + html.EscapeString(msg) + `</div>`))
+	writeInlineFlash(w, "err", msg)
 }
 
-// pathInt64 parses a numeric path segment, writing 404 on failure.
-func pathInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
-	raw := r.PathValue(name)
-	v, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return 0, false
-	}
-	return v, true
-}
