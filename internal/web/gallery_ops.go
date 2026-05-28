@@ -274,17 +274,13 @@ type galleryRow struct {
 	Tags   int
 }
 
-// galleryRows returns the same name-sorted list as galleryList plus per-row
-// counts. Counts come from the per-gallery atomic caches so the warm steady
-// state is two atomic loads per row; cold rows pay one query each, then stay
-// warm until InvalidateCaches drops them. Errors degrade to zero so a
-// transient failure on one gallery never blanks the whole table.
-func (s *Server) galleryRows() []galleryRow {
-	return s.galleryRowsWithSnapshot("", 0, 0)
-}
-
-// galleryRowsWithSnapshot is galleryRows with the active gallery's row
-// pinned to the supplied baseData snapshot. Without this, a cache
+// galleryRowsWithSnapshot returns the same name-sorted list as
+// galleryList plus per-row counts, with the active gallery's row pinned
+// to the supplied baseData snapshot. Counts come from the per-gallery
+// atomic caches so the warm steady state is two atomic loads per row;
+// cold rows pay one query each, then stay warm until InvalidateCaches
+// drops them. Errors degrade to zero so a transient failure on one
+// gallery never blanks the whole table. Without the snapshot pin, a cache
 // invalidation racing between the footer's read (in s.base) and the
 // per-row read here can land the two surfaces on different counts for
 // the same gallery; the operator sees a footer "47 img" next to a

@@ -29,9 +29,9 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 // every page except the login one.
 func (s *Server) loginPageData(extra map[string]any) map[string]any {
 	data := map[string]any{
-		"CSRFToken": s.csrfToken("anon"),
-		"BooruName": s.booruName(),
-		"BooruLogo": s.booruLogoURL(),
+		"CSRFToken":    s.csrfToken("anon"),
+		"BooruName":    s.booruName(),
+		"BooruFavicon": s.booruFaviconURL(),
 	}
 	for k, v := range extra {
 		data[k] = v

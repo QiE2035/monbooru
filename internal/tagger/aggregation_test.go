@@ -236,6 +236,24 @@ func TestAggregation_PerCategoryThreshold(t *testing.T) {
 	}
 }
 
+func TestAggregation_DisabledCategorySuppressed(t *testing.T) {
+	// A category in DisabledCategories emits nothing regardless of score;
+	// labels routed to other categories are unaffected.
+	labels := []CandidateLabel{
+		{Name: "miku", CatID: 2, CatName: "character"},
+		{Name: "blue_eyes", CatID: 1, CatName: "general"},
+	}
+	perFrame := [][]float32{{0.95, 0.95}}
+	cands := AggregateInferenceScores(perFrame, labels, AggregateOpts{
+		MinHits:            1,
+		GlobalThreshold:    0.35,
+		DisabledCategories: []string{"general"},
+	})
+	if len(cands) != 1 || cands[0].Name != "miku" {
+		t.Errorf("got %+v, want one survivor miku (general disabled)", cands)
+	}
+}
+
 func TestAggregation_TopKExplicitZeroIsUncapped(t *testing.T) {
 	// PerCategoryTopK[general] = 0 disables the cap on this tagger;
 	// every survivor lands instead of clipping to 25.

@@ -1,5 +1,21 @@
 # Changelog
 
+## [v1.9.2] - 2026-05-28
+### Added
+- API: create, edit, delete, alias, and merge tags.
+- API: manage tag categories and implications.
+- API: edit image fields and set source/url/collection on upload.
+- API: serve image, thumbnail, and manga-page bytes under token auth.
+- API: list galleries with image and tag counts.
+- Auto-tagger: Configure checkbox to mute categories.
+
+### Changed
+- Upload summary links each duplicate to the existing image it collided with.
+
+### Fixed
+- Topbar logo falls back to the bundled logo, not the favicon, when `server.logo` is unset.
+- Auto-tagger: per-row Reset restores the catalog default, not a blank cell.
+
 ## [v1.9.1] - 2026-05-26
 ### Added
 - Relations browse: [Remove selected] selection toolbar.

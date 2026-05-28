@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/png"
 	"io"
@@ -176,12 +177,22 @@ func TestUploadPost_SameShaReturnsDuplicate(t *testing.T) {
 	png := makePNGBytes(t, 8, 8, 1, 1, 1)
 	// Upload once.
 	srv.Handler().ServeHTTP(httptest.NewRecorder(), makeUploadReq(t, srv, map[string][]byte{"x.png": png}, "", ""))
+	var id int64
+	if err := srv.Active().DB.Read.QueryRow(`SELECT id FROM images ORDER BY id LIMIT 1`).Scan(&id); err != nil {
+		t.Fatalf("look up ingested image: %v", err)
+	}
 	// Upload same bytes under a different name.
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, makeUploadReq(t, srv, map[string][]byte{"y.png": png}, "", ""))
 	body := w.Body.String()
 	if !strings.Contains(body, "duplicate") {
 		t.Errorf("expected 'duplicate' flash, got: %s", body)
+	}
+	// The flash links the duplicate to the existing row so the operator
+	// can jump straight to it.
+	want := fmt.Sprintf(`<a href="/images/%d">#%d</a>`, id, id)
+	if !strings.Contains(body, want) {
+		t.Errorf("expected duplicate link %s, got: %s", want, body)
 	}
 }
 

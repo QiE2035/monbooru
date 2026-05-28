@@ -172,63 +172,6 @@ func (s *Service) RemoveImplication(parentID, impliedID int64) error {
 	return nil
 }
 
-// ImpliedTagIDs returns the transitive set implied by the input parents
-// (parents themselves excluded). Depth-bounded by MaxImplicationDepth.
-func (s *Service) ImpliedTagIDs(parents []int64) ([]int64, error) {
-	if len(parents) == 0 {
-		return nil, nil
-	}
-	seen := make(map[int64]struct{}, len(parents))
-	for _, p := range parents {
-		seen[p] = struct{}{}
-	}
-	frontier := append([]int64(nil), parents...)
-	var out []int64
-	for depth := 0; depth < MaxImplicationDepth && len(frontier) > 0; depth++ {
-		next, err := s.directImplied(frontier)
-		if err != nil {
-			return nil, err
-		}
-		frontier = frontier[:0]
-		for _, id := range next {
-			if _, ok := seen[id]; ok {
-				continue
-			}
-			seen[id] = struct{}{}
-			out = append(out, id)
-			frontier = append(frontier, id)
-		}
-	}
-	return out, nil
-}
-
-// directImplied returns the union of implied_tag_id rows for the given
-// parents. Chunks the IN-list to stay under SQLite's parameter cap.
-func (s *Service) directImplied(parents []int64) ([]int64, error) {
-	var out []int64
-	err := db.Chunked(parents, 500, func(batch []int64) error {
-		placeholders, args := db.InPlaceholders(batch)
-		rows, err := s.db.Read.Query(
-			`SELECT DISTINCT implied_tag_id FROM tag_implications WHERE parent_tag_id IN (`+placeholders+`)`,
-			args...,
-		)
-		if err != nil {
-			return err
-		}
-		ids, err := db.ScanIDs(rows)
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		out = append(out, ids...)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // implicationReachesTx returns whether a directed path from start
 // reaches target through tag_implications. Used for cycle detection
 // inside AddImplication's transaction.

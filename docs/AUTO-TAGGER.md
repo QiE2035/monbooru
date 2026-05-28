@@ -44,8 +44,12 @@ emit for that category on one image after thresholding. Empty Max tags
 cells fall back to the built-in defaults (`character` 8, `copyright`
 4, `artist` 4, `general` 25, `rating` 1, anything else 10); `0` keeps
 every tag that survives the threshold. Empty per-category threshold
-cells fall back to the global threshold; click Reset to drop an
-override.
+cells fall back to the global threshold.
+
+Tick **Disable** on a category to mute it entirely: the tagger emits no
+tags for that category regardless of score, so you can run a tagger for
+only the categories you want (e.g. disable everything except `medium`
+and `meta`).
 
 ## Frame-merge gate (videos and archive only)
 

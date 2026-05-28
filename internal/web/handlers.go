@@ -48,6 +48,17 @@ func writeInlineFlash(w http.ResponseWriter, kind, text string) {
 	w.Write([]byte(`<div class="flash flash-` + kind + `">` + html.EscapeString(text) + `</div>`))
 }
 
+// writeInlineFlashHTML mirrors writeInlineFlash but takes a body that is
+// already valid HTML; escaping is the caller's responsibility. Used by
+// the few flashes that carry markup (e.g. links to affected rows) which
+// the plain-text escaper would render as literal angle brackets.
+func writeInlineFlashHTML(w http.ResponseWriter, kind, body string) {
+	if kind == "" {
+		kind = "ok"
+	}
+	w.Write([]byte(`<div class="flash flash-` + kind + `">` + body + `</div>`))
+}
+
 func (s *Server) helpHandler(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "help.html", s.base(r, "help", "Help - "+s.booruName()).AsMap())
 }

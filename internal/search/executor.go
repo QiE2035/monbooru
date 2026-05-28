@@ -3687,35 +3687,3 @@ func (b *whereBuilder) relationNoneClauseForPresence() string {
 	}
 	return "i.id NOT IN (\n\t\t" + strings.Join(unions, "\n\t\tUNION ") + "\n\t)"
 }
-
-// relationAnyClause is the union "this image carries any kind of
-// declared relation". Used by `relation:any` directly. The OR of
-// EXISTS subqueries can short-circuit on the first carrier so an
-// image that participates in any relation drops out cheaply.
-func relationAnyClause() string {
-	return strings.Join([]string{
-		"EXISTS (SELECT 1 FROM dup_group_members m WHERE m.image_id = i.id)",
-		"EXISTS (SELECT 1 FROM alt_group_members m WHERE m.image_id = i.id)",
-		"EXISTS (SELECT 1 FROM version_edges v WHERE v.child_image_id = i.id OR v.parent_image_id = i.id)",
-		"EXISTS (SELECT 1 FROM derivative_edges d WHERE d.derivative_image_id = i.id OR d.source_image_id = i.id)",
-		"(i.series IS NOT NULL AND i.series != '')",
-	}, " OR ")
-}
-
-// relationNoneClause is the negation of relationAnyClause, rewritten
-// to a single NOT IN (UNION ...) probe against the materialised set
-// of image ids carried by any relation, plus the series-empty leg.
-// The NOT IN form materialises the relation-id set once and the
-// per-row check is a binary search; a `NOT (EXISTS OR ...)` shape
-// would force every visible row to evaluate all five subqueries
-// because OR's short-circuit cannot prove a row's negation early.
-func relationNoneClause() string {
-	return `i.id NOT IN (
-		SELECT image_id FROM dup_group_members
-		UNION SELECT image_id FROM alt_group_members
-		UNION SELECT child_image_id FROM version_edges
-		UNION SELECT parent_image_id FROM version_edges
-		UNION SELECT derivative_image_id FROM derivative_edges
-		UNION SELECT source_image_id FROM derivative_edges
-	) AND (i.series IS NULL OR i.series = '')`
-}

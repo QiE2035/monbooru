@@ -117,6 +117,13 @@ type TaggerInstance struct {
 	// copyright=4, artist=4, general=25, rating=1, other=10).
 	// Operator-managed via Settings → Auto-Tagger → Configure.
 	PerCategoryTopK map[string]int `toml:"per_category_top_k,omitempty"`
+	// DisabledCategories names categories this tagger must not emit. A
+	// label whose resolved category appears here is dropped during
+	// aggregation regardless of its score, so the operator can run a
+	// tagger for only a subset of its categories. Empty / missing means
+	// every emitted category is kept.
+	// Operator-managed via Settings → Auto-Tagger → Configure.
+	DisabledCategories []string `toml:"disabled_categories,omitempty"`
 	// Galleries restricts this tagger to a named subset of galleries.
 	// Three persisted shapes:
 	//   - missing in TOML (decodes to nil) - applies to every gallery,

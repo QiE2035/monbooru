@@ -3,6 +3,7 @@ package web
 import (
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"os"
 	"strconv"
@@ -124,6 +125,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var addedIDs []int64
+	var dupeIDs []int64
 	var tagWarnings []string
 	added, dupes, errors, oversized := 0, 0, 0, 0
 	for _, fh := range files {
@@ -173,6 +175,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if isDup {
+			dupeIDs = append(dupeIDs, img.ID)
 			dupes++
 			continue
 		}
@@ -195,18 +198,33 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		s.Active().InvalidateCaches()
 	}
 
-	msg := fmt.Sprintf("%d added", added)
+	// The flash carries links to the duplicate rows, so it is assembled
+	// as HTML; the int counts and ids are safe, and the operator/file
+	// supplied substrings (tag warnings, tagger-selection error) are
+	// escaped before they go in.
+	var msg strings.Builder
+	fmt.Fprintf(&msg, "%d added", added)
 	if dupes > 0 {
-		msg += fmt.Sprintf(", %d duplicate(s)", dupes)
+		fmt.Fprintf(&msg, ", %d duplicate(s)", dupes)
+		if len(dupeIDs) > 0 {
+			msg.WriteString(" (")
+			for i, id := range dupeIDs {
+				if i > 0 {
+					msg.WriteString(", ")
+				}
+				fmt.Fprintf(&msg, `<a href="/images/%d">#%d</a>`, id, id)
+			}
+			msg.WriteString(")")
+		}
 	}
 	if oversized > 0 {
-		msg += fmt.Sprintf(", %d skipped (exceeds %d MB)", oversized, s.cfg.Gallery.MaxFileSizeMB)
+		fmt.Fprintf(&msg, ", %d skipped (exceeds %d MB)", oversized, s.cfg.Gallery.MaxFileSizeMB)
 	}
 	if errors > 0 {
-		msg += fmt.Sprintf(", %d error(s)", errors)
+		fmt.Fprintf(&msg, ", %d error(s)", errors)
 	}
 	if len(tagWarnings) > 0 {
-		msg += fmt.Sprintf(" (%d tag warning(s): %s)", len(tagWarnings), strings.Join(tagWarnings, "; "))
+		fmt.Fprintf(&msg, " (%d tag warning(s): %s)", len(tagWarnings), html.EscapeString(strings.Join(tagWarnings, "; ")))
 	}
 	cssClass := "flash-ok"
 	if added == 0 && (errors > 0 || oversized > 0) {
@@ -217,19 +235,19 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	if autotagAfter && len(addedIDs) > 0 && tagger.IsAvailable(s.cfg) {
 		selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName)
 		if selErr != nil {
-			msg += " (autotag skipped: " + selErr.Error() + ")"
+			fmt.Fprintf(&msg, " (autotag skipped: %s)", html.EscapeString(selErr.Error()))
 		} else if err := s.jobs.Start(models.JobTypeAutotag); err != nil {
-			msg += " (autotag skipped: a job is already running)"
+			msg.WriteString(" (autotag skipped: a job is already running)")
 		} else {
 			s.spawnAutoTagJob(addedIDs, selected, "upload", "uploaded ")
-			msg += fmt.Sprintf(", auto-tagging %d image(s)", len(addedIDs))
+			fmt.Fprintf(&msg, ", auto-tagging %d image(s)", len(addedIDs))
 		}
 	}
 	kind := "ok"
 	if cssClass == "flash-err" {
 		kind = "err"
 	}
-	writeInlineFlash(w, kind, msg)
+	writeInlineFlashHTML(w, kind, msg.String())
 }
 
 func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {

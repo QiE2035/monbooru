@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,13 +43,21 @@ type taggerRow struct {
 // empty Override falls back to the global threshold and the input
 // renders a placeholder instead of a value. MaxTags is the live
 // per_category_top_k value formatted as a string ("" = use default,
-// "0" = uncapped).
+// "0" = uncapped). Disabled mirrors disabled_categories membership; a
+// disabled category emits nothing regardless of its threshold.
+// DefaultThreshold / DefaultMaxTags are the catalog-seeded values for
+// this category (empty when the catalog seeds none); the per-row Reset
+// restores the inputs to these so it lands on the same state the
+// dialog-level "Reset to defaults" would, instead of blanking the cell.
 type thresholdRow struct {
-	Category   string
-	Override   string // "" when no override; formatted "%.2f" otherwise
-	MaxTags    string // "" when no override; integer string otherwise
-	MaxDefault int    // default cap surfaced as the input placeholder
-	Color      string // tag_categories.color, surfaced as a 1px dot
+	Category         string
+	Override         string // "" when no override; formatted "%.2f" otherwise
+	MaxTags          string // "" when no override; integer string otherwise
+	MaxDefault       int    // default cap surfaced as the input placeholder
+	Color            string // tag_categories.color, surfaced as a 1px dot
+	Disabled         bool   // category is muted (in disabled_categories)
+	DefaultThreshold string // catalog default threshold; "" = no catalog override
+	DefaultMaxTags   string // catalog default top-K; "" = no catalog override
 }
 
 // taggerGalleryRow is the per-gallery render shape for the per-tagger
@@ -222,6 +231,7 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 	}
 	overrides := map[string]float64{}
 	topK := map[string]int{}
+	var disabled []string
 	for _, cat := range r.Form["category"] {
 		cat = strings.TrimSpace(cat)
 		if cat == "" {
@@ -245,6 +255,9 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 			}
 			topK[cat] = n
 		}
+		if r.FormValue("disable_"+cat) != "" {
+			disabled = append(disabled, cat)
+		}
 	}
 	if err := s.updateTagger(name, func(t *config.TaggerInstance) {
 		t.ConfidenceThreshold = global
@@ -258,12 +271,13 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 		} else {
 			t.PerCategoryTopK = nil
 		}
+		t.DisabledCategories = disabled
 	}); err != nil {
 		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
-	logx.Infof("settings: tagger %q thresholds updated (global=%.2f, %d threshold overrides, %d top-K overrides)", name, global, len(overrides), len(topK))
-	summary := taggerThresholdSummary(global, overrides)
+	logx.Infof("settings: tagger %q thresholds updated (global=%.2f, %d threshold overrides, %d top-K overrides, %d disabled)", name, global, len(overrides), len(topK), len(disabled))
+	summary := taggerThresholdSummary(global, overrides, disabled)
 	setTaggerSavedTrigger(w, "tagger-thresh-"+name)
 	fmt.Fprintf(w,
 		`<span id="tagger-thresh-summary-%s" hx-swap-oob="true">%s</span>`+
@@ -302,6 +316,7 @@ func (s *Server) settingsTaggerThresholdsResetPost(w http.ResponseWriter, r *htt
 		t.ConfidenceThreshold = defaults.ConfidenceThreshold
 		t.CategoryThresholds = defaults.CategoryThresholds
 		t.PerCategoryTopK = defaults.PerCategoryTopK
+		t.DisabledCategories = defaults.DisabledCategories
 	}); err != nil {
 		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
@@ -313,7 +328,7 @@ func (s *Server) settingsTaggerThresholdsResetPost(w http.ResponseWriter, r *htt
 		return
 	}
 	csrf := s.csrfToken(sessionFromContext(r.Context()))
-	summary := taggerThresholdSummary(global, defaults.CategoryThresholds)
+	summary := taggerThresholdSummary(global, defaults.CategoryThresholds, defaults.DisabledCategories)
 	fmt.Fprintf(w, `<span id="tagger-thresh-summary-%s" hx-swap-oob="true">%s</span>`,
 		html.EscapeString(name), html.EscapeString(summary))
 	s.renderTemplate(w, "partials/tagger_thresholds_dialog.html", map[string]any{
@@ -367,6 +382,11 @@ func (s *Server) thresholdDialogData(name string) (rows []thresholdRow, global f
 
 	colors := s.categoryColors()
 
+	// Catalog-seeded defaults drive the per-row Reset so it restores the
+	// same per-category values the dialog-level "Reset to defaults" would
+	// (see settingsTaggerThresholdsResetPost).
+	defaults := tagger.SeedTaggerInstance(name, false, catalogEntryByName(modelPath, name))
+
 	seen := map[string]bool{}
 	appendRow := func(cat string) {
 		if seen[cat] {
@@ -374,23 +394,39 @@ func (s *Server) thresholdDialogData(name string) (rows []thresholdRow, global f
 		}
 		seen[cat] = true
 		rows = append(rows, thresholdRow{
-			Category:   cat,
-			Override:   formatOverride(inst.CategoryThresholds, cat),
-			MaxTags:    formatTopKOverride(inst.PerCategoryTopK, cat),
-			MaxDefault: tagger.ResolveTopK(nil, cat),
-			Color:      colors[cat],
+			Category:         cat,
+			Override:         formatOverride(inst.CategoryThresholds, cat),
+			MaxTags:          formatTopKOverride(inst.PerCategoryTopK, cat),
+			MaxDefault:       tagger.ResolveTopK(nil, cat),
+			Color:            colors[cat],
+			Disabled:         slices.Contains(inst.DisabledCategories, cat),
+			DefaultThreshold: formatOverride(defaults.CategoryThresholds, cat),
+			DefaultMaxTags:   formatTopKOverride(defaults.PerCategoryTopK, cat),
 		})
 	}
 	for _, cat := range emit {
 		appendRow(cat)
 	}
-	// Extra overrides (threshold or top-K) not in the profile's emitted
-	// set still render so the operator can edit / clear them (dispatch
-	// rules can land a label in any category).
+	// Categories the tagger only reaches through dispatch routing (e.g.
+	// wd-swinv2 sends some general labels into medium / meta / year) are
+	// emittable too, so surface them - restricted to categories that
+	// exist on the gallery, since a rule pointing at a missing one is
+	// skipped at inference time anyway.
+	for _, cat := range tagger.DispatchTargetCategories(modelPath, name) {
+		if _, ok := colors[cat]; ok {
+			appendRow(cat)
+		}
+	}
+	// Extra overrides (threshold, top-K, or disabled) not in the
+	// profile's emitted set still render so the operator can edit /
+	// clear them (dispatch rules can land a label in any category).
 	for cat := range inst.CategoryThresholds {
 		appendRow(cat)
 	}
 	for cat := range inst.PerCategoryTopK {
+		appendRow(cat)
+	}
+	for _, cat := range inst.DisabledCategories {
 		appendRow(cat)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Category < rows[j].Category })
@@ -416,13 +452,12 @@ func formatTopKOverride(m map[string]int, key string) string {
 
 // taggerThresholdSummary renders the inline summary the table cell
 // shows next to the Configure button: "global 0.40" or "global 0.40,
-// character 0.85, copyright 0.50". Sorted by category name so two
-// equivalent maps render the same string.
-func taggerThresholdSummary(global float64, overrides map[string]float64) string {
+// character 0.85, copyright 0.50". Disabled categories trail in a
+// "(disabled: ...)" group so a muted category is visible without
+// opening the dialog. Both lists are sorted by category name so two
+// equivalent configs render the same string.
+func taggerThresholdSummary(global float64, overrides map[string]float64, disabled []string) string {
 	out := fmt.Sprintf("global %.2f", global)
-	if len(overrides) == 0 {
-		return out
-	}
 	keys := make([]string, 0, len(overrides))
 	for k := range overrides {
 		keys = append(keys, k)
@@ -430,6 +465,11 @@ func taggerThresholdSummary(global float64, overrides map[string]float64) string
 	sort.Strings(keys)
 	for _, k := range keys {
 		out += fmt.Sprintf(", %s %.2f", k, overrides[k])
+	}
+	if len(disabled) > 0 {
+		d := append([]string(nil), disabled...)
+		sort.Strings(d)
+		out += " (disabled: " + strings.Join(d, ", ") + ")"
 	}
 	return out
 }

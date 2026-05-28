@@ -142,7 +142,7 @@
                     data-id="{{.ID}}" data-name="{{.Name}}">Rename</button>
             <button class="btn-sm btn-merge-trigger"
                     title="{{if .IsAlias}}Repoint this alias to a different canonical{{else}}Make this tag an alias of another{{end}}"
-                    data-id="{{.ID}}" data-name="{{.Name}}" data-is-alias="{{if .IsAlias}}1{{end}}">{{if .IsAlias}}Repoint→{{else}}Alias→{{end}}</button>
+                    data-id="{{.ID}}" data-name="{{.Name}}" data-is-alias="{{if .IsAlias}}1{{end}}">{{if .IsAlias}}Repoint→{{else}}Alias →{{end}}</button>
             {{end}}
             {{if not .IsAlias}}
             <button class="btn-sm btn-implications-trigger"

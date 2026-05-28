@@ -12,6 +12,10 @@ Designed for organizing your local media collection, including AI-generated imag
     <td><img src="/.github/assets/sd.webp" width="400"/></td>
     <td><img src="/.github/assets/tags.webp" width="400"/></td>
   </tr>
+  <tr>
+    <td><img src="/.github/assets/inbox.webp" width="400"/></td>
+    <td><img src="/.github/assets/compare.webp" width="400"/></td>
+  </tr>
 </table>
 
 ---

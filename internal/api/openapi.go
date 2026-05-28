@@ -14,7 +14,7 @@ func buildSpec(baseURL string) map[string]any {
 		"info": map[string]any{
 			"title":       "Monbooru API",
 			"description": "REST API for monbooru image library",
-			"version":     "1.0.0",
+			"version":     "1.1.0",
 		},
 		"servers": []map[string]any{
 			{"url": baseURL + "/api/v1", "description": "This server"},
@@ -54,6 +54,33 @@ func buildSpec(baseURL string) map[string]any {
 						"color":       map[string]any{"type": "string"},
 						"usage_count": map[string]any{"type": "integer"},
 						"is_alias":    map[string]any{"type": "boolean"},
+					},
+				},
+				"Implication": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"parent_id":        map[string]any{"type": "integer"},
+						"implied_id":       map[string]any{"type": "integer"},
+						"implied_name":     map[string]any{"type": "string"},
+						"implied_category": map[string]any{"type": "string"},
+					},
+				},
+				"Category": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id":         map[string]any{"type": "integer"},
+						"name":       map[string]any{"type": "string"},
+						"color":      map[string]any{"type": "string"},
+						"is_builtin": map[string]any{"type": "boolean"},
+					},
+				},
+				"Gallery": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"name":   map[string]any{"type": "string"},
+						"images": map[string]any{"type": "integer", "description": "Visible (non-missing) image count"},
+						"tags":   map[string]any{"type": "integer", "description": "Non-alias tag count"},
+						"active": map[string]any{"type": "boolean", "description": "True for the gallery used when no ?gallery= selector is given"},
 					},
 				},
 				"PaginatedTags": map[string]any{
@@ -120,11 +147,11 @@ func buildSpec(baseURL string) map[string]any {
 						"auto_tagged_at": map[string]any{"type": "string", "format": "date-time", "nullable": true},
 						"source_type":    map[string]any{"type": "string", "description": "Generation-tool source: 'a1111', 'comfyui', 'a1111,comfyui', or 'none'. Filtered by the search keyword 'ai:'."},
 						"origin":         map[string]any{"type": "string", "description": "How the image got into the gallery: 'ingest' for watcher/sync, 'upload' for the web UI, or any caller-supplied string (app name, URL...) set via POST /images with 'via'"},
-						"source":         map[string]any{"type": "string", "description": "Operator-edited free-form provenance label (site name, scraper, ...). Empty string when unset. Edited from the detail page; filtered by the search keyword 'source:' (exact match). Read-only via the API in this revision."},
-						"url":            map[string]any{"type": "string", "description": "Operator-edited canonical web URL the image came from. Empty string when unset. Must start with http:// or https://. Read-only via the API in this revision."},
+						"source":         map[string]any{"type": "string", "description": "Operator-edited free-form provenance label (site name, scraper, ...). Empty string when unset. Filtered by the search keyword 'source:' (exact match). Settable on create and via PATCH /images/{id}."},
+						"url":            map[string]any{"type": "string", "description": "Operator-edited canonical web URL the image came from. Empty string when unset. Must start with http:// or https://. Settable on create and via PATCH /images/{id}."},
 						"page_count":     map[string]any{"type": "integer", "nullable": true, "description": "Number of pages for cbz / manga rows; null on every other file type."},
-						"collection":     map[string]any{"type": "string", "description": "Operator-edited collection label (the comic / manga grouping field). Empty string when unset. Filtered by the search keyword 'collection:' (exact match). Read-only via the API in this revision."},
-						"collection_order": map[string]any{"type": "integer", "nullable": true, "description": "Operator-edited 1-based position within collection. Null when unset. Read-only via the API in this revision."},
+						"collection":     map[string]any{"type": "string", "description": "Operator-edited collection label (the comic / manga grouping field). Empty string when unset. Filtered by the search keyword 'collection:' (exact match). Settable on create and via PATCH /images/{id}."},
+						"collection_order": map[string]any{"type": "integer", "nullable": true, "description": "Operator-edited 1-based position within collection. Null when unset. Settable on create and via PATCH /images/{id}."},
 						"ingested_at":    map[string]any{"type": "string", "format": "date-time"},
 						"thumbnail_url":  map[string]any{"type": "string"},
 						"phash":          map[string]any{"type": "string", "nullable": true, "description": "16-char hex perceptual hash; null until the phash backfill or ingest has populated it."},
@@ -193,6 +220,10 @@ func buildSpec(baseURL string) map[string]any {
 										"autotag":     map[string]any{"type": "string", "description": "Set to \"true\" to kick off an auto-tag job on the new image"},
 										"tagger_name": map[string]any{"type": "string", "description": "Optional auto-tagger name; when set with autotag, restricts the job to that tagger"},
 										"via":         map[string]any{"type": "string", "description": "Optional caller-supplied identifier (app name, URL...). Stored as images.origin and attached to each initial tag via image_tags.tagger_name. Blank defaults images.origin to 'upload' for multipart mode."},
+										"source":      map[string]any{"type": "string", "description": "Optional operator-edited provenance label (site name, scraper...). Written to images.source on the new row; ignored on a duplicate-SHA insert."},
+										"url":         map[string]any{"type": "string", "description": "Optional canonical web URL the image came from. Must start with http:// or https://. Written to images.url on the new row."},
+										"collection":  map[string]any{"type": "string", "description": "Optional collection label (images.series). Written on the new row."},
+										"collection_order": map[string]any{"type": "string", "description": "Optional 1-based position within the collection. Requires a non-empty collection in the same request."},
 									},
 								},
 							},
@@ -207,6 +238,10 @@ func buildSpec(baseURL string) map[string]any {
 										"autotag":     map[string]any{"type": "boolean", "description": "Kick off an auto-tag job on the new image"},
 										"tagger_name": map[string]any{"type": "string", "description": "Optional auto-tagger name"},
 										"via":         map[string]any{"type": "string", "description": "Optional caller-supplied identifier. Stored as images.origin and attached to each initial tag. Blank defaults images.origin to 'ingest' for JSON path-reference mode."},
+										"source":      map[string]any{"type": "string", "description": "Optional operator-edited provenance label (site name, scraper...). Written to images.source on the new row; ignored on a duplicate-SHA insert."},
+										"url":         map[string]any{"type": "string", "description": "Optional canonical web URL the image came from. Must start with http:// or https://. Written to images.url on the new row."},
+										"collection":  map[string]any{"type": "string", "description": "Optional collection label (images.series). Written on the new row."},
+										"collection_order": map[string]any{"type": "integer", "description": "Optional 1-based position within the collection. Requires a non-empty collection in the same request."},
 									},
 								},
 							},
@@ -245,6 +280,35 @@ func buildSpec(baseURL string) map[string]any {
 					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Image metadata", "content": jsonContent("#/components/schemas/Image")},
+						"404": map[string]any{"description": "Not found", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+				"patch": map[string]any{
+					"summary":     "Edit image fields",
+					"operationId": "patchImage",
+					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"application/json": map[string]any{
+								"schema": map[string]any{
+									"type":        "object",
+									"description": "Any subset of the editable fields. An absent or null field is left unchanged; an empty string clears a text field. Clearing collection also clears collection_order unless one is supplied in the same request; to clear collection_order on its own, clear the collection.",
+									"properties": map[string]any{
+										"source":           map[string]any{"type": "string", "description": "Operator-edited provenance label (<=200 chars). Empty clears."},
+										"url":              map[string]any{"type": "string", "description": "Canonical web URL (<=2048 chars, http:// or https://). Empty clears."},
+										"collection":       map[string]any{"type": "string", "description": "Collection label (images.series). Empty clears."},
+										"collection_order": map[string]any{"type": "integer", "description": "1-based position within the collection. Requires a non-empty collection (incoming or already stored)."},
+										"is_favorited":     map[string]any{"type": "boolean"},
+										"is_inbox":         map[string]any{"type": "boolean", "description": "true = sits in the inbox (needs triage); false = curated."},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Updated image", "content": jsonContent("#/components/schemas/Image")},
+						"400": map[string]any{"description": "Invalid request (bad url, order without a collection, or no editable fields supplied)", "content": jsonContent("#/components/schemas/Error")},
 						"404": map[string]any{"description": "Not found", "content": jsonContent("#/components/schemas/Error")},
 					},
 				},
@@ -348,6 +412,52 @@ func buildSpec(baseURL string) map[string]any {
 					},
 				},
 			},
+			"/images/{id}/file": map[string]any{
+				"get": map[string]any{
+					"summary":     "Download original image/video bytes",
+					"operationId": "getImageFile",
+					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Original file bytes", "content": binaryContent("application/octet-stream")},
+						"404": map[string]any{"description": "Not found", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
+			"/images/{id}/thumbnail": map[string]any{
+				"get": map[string]any{
+					"summary":     "Download the static thumbnail",
+					"operationId": "getImageThumbnail",
+					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "JPEG thumbnail", "content": binaryContent("image/jpeg")},
+						"404": map[string]any{"description": "Image or thumbnail not found", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
+			"/images/{id}/page/{n}": map[string]any{
+				"get": map[string]any{
+					"summary":     "Download a manga page (cbz rows)",
+					"operationId": "getMangaPage",
+					"parameters":  []map[string]any{pathParam("id", "Image ID"), pathParam("n", "1-based page number"), galleryParam()},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Page bytes (lazily extracted from the archive)", "content": binaryContent("application/octet-stream")},
+						"400": map[string]any{"description": "Invalid page number", "content": jsonContent("#/components/schemas/Error")},
+						"404": map[string]any{"description": "Not a manga row, or page out of range", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
+			"/images/{id}/page/{n}/thumb": map[string]any{
+				"get": map[string]any{
+					"summary":     "Download a manga page thumbnail (cbz rows)",
+					"operationId": "getMangaPageThumb",
+					"parameters":  []map[string]any{pathParam("id", "Image ID"), pathParam("n", "1-based page number"), galleryParam()},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Page thumbnail (JPEG)", "content": binaryContent("image/jpeg")},
+						"400": map[string]any{"description": "Invalid page number", "content": jsonContent("#/components/schemas/Error")},
+						"404": map[string]any{"description": "Not a manga row, or page out of range", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
 			"/images/{id}/relations": map[string]any{
 				"get": map[string]any{
 					"summary":     "Get declared relations for an image",
@@ -434,6 +544,266 @@ func buildSpec(baseURL string) map[string]any {
 						"200": map[string]any{"description": "Paginated tag list", "content": jsonContent("#/components/schemas/PaginatedTags")},
 					},
 				},
+				"post": map[string]any{
+					"summary":     "Create a tag (get-or-create)",
+					"operationId": "createTag",
+					"parameters":  []map[string]any{galleryParam()},
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"application/json": map[string]any{
+								"schema": map[string]any{
+									"type":     "object",
+									"required": []string{"name"},
+									"properties": map[string]any{
+										"name":     map[string]any{"type": "string"},
+										"category": map[string]any{"type": "string", "description": "Category name; defaults to general."},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"201": map[string]any{"description": "The tag (created, or the existing row when the name already exists in the category)", "content": jsonContent("#/components/schemas/TagRow")},
+						"400": map[string]any{"description": "Missing name, unknown category, or invalid tag name", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
+			"/tags/{id}": map[string]any{
+				"patch": map[string]any{
+					"summary":     "Rename a tag and/or move it to another category",
+					"operationId": "patchTag",
+					"parameters":  []map[string]any{pathParam("id", "Tag ID"), galleryParam()},
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"application/json": map[string]any{
+								"schema": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"name":     map[string]any{"type": "string", "description": "New name."},
+										"category": map[string]any{"type": "string", "description": "Move to this category by name."},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Updated tag", "content": jsonContent("#/components/schemas/TagRow")},
+						"400": map[string]any{"description": "No fields supplied, or a rating-tag edit", "content": jsonContent("#/components/schemas/Error")},
+						"404": map[string]any{"description": "Tag not found", "content": jsonContent("#/components/schemas/Error")},
+						"409": map[string]any{"description": "A tag with the new name already exists in the target category", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+				"delete": map[string]any{
+					"summary":     "Delete a tag",
+					"operationId": "deleteTag",
+					"parameters":  []map[string]any{pathParam("id", "Tag ID"), galleryParam()},
+					"responses": map[string]any{
+						"204": map[string]any{"description": "Deleted (rating-category rows are usage-stripped; the catalog row stays)"},
+						"404": map[string]any{"description": "Tag not found", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
+			"/tags/aliases": map[string]any{
+				"post": map[string]any{
+					"summary":     "Create an alias",
+					"operationId": "createAlias",
+					"parameters":  []map[string]any{galleryParam()},
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"application/json": map[string]any{
+								"schema": map[string]any{
+									"type":     "object",
+									"required": []string{"name", "canonical_id"},
+									"properties": map[string]any{
+										"name":         map[string]any{"type": "string", "description": "Alias name."},
+										"category":     map[string]any{"type": "string", "description": "Category for the alias; defaults to general."},
+										"canonical_id": map[string]any{"type": "integer", "description": "The tag this alias resolves to."},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"201": map[string]any{"description": "The alias row", "content": jsonContent("#/components/schemas/TagRow")},
+						"400": map[string]any{"description": "Missing fields or an invalid alias target", "content": jsonContent("#/components/schemas/Error")},
+						"404": map[string]any{"description": "Canonical tag not found", "content": jsonContent("#/components/schemas/Error")},
+						"409": map[string]any{"description": "The name already names a tag with image_tags rows; merge it instead", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
+			"/tags/merge": map[string]any{
+				"post": map[string]any{
+					"summary":     "Merge one tag into another",
+					"operationId": "mergeTags",
+					"parameters":  []map[string]any{galleryParam()},
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"application/json": map[string]any{
+								"schema": map[string]any{
+									"type":     "object",
+									"required": []string{"alias_id", "canonical_id"},
+									"properties": map[string]any{
+										"alias_id":     map[string]any{"type": "integer", "description": "Tag to retire; becomes an alias of canonical_id and its image_tags move onto it."},
+										"canonical_id": map[string]any{"type": "integer", "description": "Surviving tag."},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "The canonical tag", "content": jsonContent("#/components/schemas/TagRow")},
+						"400": map[string]any{"description": "Self-merge, missing ids, or a merge into an alias", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
+			"/tags/{id}/implications": map[string]any{
+				"get": map[string]any{
+					"summary":     "List a tag's implications",
+					"operationId": "listImplications",
+					"parameters":  []map[string]any{pathParam("id", "Parent tag ID"), galleryParam()},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Direct implications", "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/Implication"}}}}},
+						"404": map[string]any{"description": "Parent tag not found", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+				"post": map[string]any{
+					"summary":     "Declare an implication",
+					"operationId": "addImplication",
+					"description": "Declares parent -> implied. The edge is effective immediately for future tag adds; the historical fan-out across images already carrying the parent (the web background job) is not run from the API.",
+					"parameters":  []map[string]any{pathParam("id", "Parent tag ID"), galleryParam()},
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"application/json": map[string]any{
+								"schema": map[string]any{
+									"type":     "object",
+									"required": []string{"implied_id"},
+									"properties": map[string]any{
+										"implied_id": map[string]any{"type": "integer", "description": "Existing tag id the parent implies. Both sides must be canonical (non-alias)."},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Edge already declared (no-op)"},
+						"201": map[string]any{"description": "Edge created"},
+						"400": map[string]any{"description": "Missing implied_id, self-implication, or an alias on either side", "content": jsonContent("#/components/schemas/Error")},
+						"404": map[string]any{"description": "Parent or implied tag not found", "content": jsonContent("#/components/schemas/Error")},
+						"409": map[string]any{"description": "Edge would close a cycle", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
+			"/tags/{id}/implications/{impliedID}": map[string]any{
+				"delete": map[string]any{
+					"summary":     "Remove an implication",
+					"operationId": "removeImplication",
+					"description": "Drops the edge only; the image-side sweep of rows implied solely by this edge is the web background job and is not run from the API.",
+					"parameters":  []map[string]any{pathParam("id", "Parent tag ID"), pathParam("impliedID", "Implied tag ID"), galleryParam()},
+					"responses": map[string]any{
+						"204": map[string]any{"description": "Removed"},
+						"404": map[string]any{"description": "Edge not found", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
+			"/categories": map[string]any{
+				"get": map[string]any{
+					"summary":     "List tag categories",
+					"operationId": "listCategories",
+					"parameters":  []map[string]any{galleryParam()},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Categories", "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/Category"}}}}},
+					},
+				},
+				"post": map[string]any{
+					"summary":     "Create a category",
+					"operationId": "createCategory",
+					"parameters":  []map[string]any{galleryParam()},
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"application/json": map[string]any{
+								"schema": map[string]any{
+									"type":     "object",
+									"required": []string{"name"},
+									"properties": map[string]any{
+										"name":  map[string]any{"type": "string", "description": "Lowercase letters, digits, underscore, or hyphen. Search-filter keywords are reserved."},
+										"color": map[string]any{"type": "string", "description": "#rgb or #rrggbb; defaults to #888888 when blank."},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"201": map[string]any{"description": "Created category", "content": jsonContent("#/components/schemas/Category")},
+						"400": map[string]any{"description": "Invalid or reserved name, or invalid colour", "content": jsonContent("#/components/schemas/Error")},
+						"409": map[string]any{"description": "A category with this name already exists", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
+			"/categories/{id}": map[string]any{
+				"patch": map[string]any{
+					"summary":     "Rename and/or recolor a category",
+					"operationId": "patchCategory",
+					"parameters":  []map[string]any{pathParam("id", "Category ID"), galleryParam()},
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"application/json": map[string]any{
+								"schema": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"name":  map[string]any{"type": "string", "description": "New name. Built-in categories refuse a rename."},
+										"color": map[string]any{"type": "string", "description": "#rgb or #rrggbb. Allowed on built-in categories."},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Updated category", "content": jsonContent("#/components/schemas/Category")},
+						"400": map[string]any{"description": "No fields, invalid colour, reserved/invalid name, or a built-in rename", "content": jsonContent("#/components/schemas/Error")},
+						"404": map[string]any{"description": "Category not found", "content": jsonContent("#/components/schemas/Error")},
+						"409": map[string]any{"description": "A category with the new name already exists", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+				"delete": map[string]any{
+					"summary":     "Delete a category",
+					"operationId": "deleteCategory",
+					"parameters":  []map[string]any{pathParam("id", "Category ID"), galleryParam()},
+					"requestBody": map[string]any{
+						"required": false,
+						"content": map[string]any{
+							"application/json": map[string]any{
+								"schema": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"action":    map[string]any{"type": "string", "description": "'move' (default; reparent the category's tags) or 'delete_all' (drop the tags too)."},
+										"target_id": map[string]any{"type": "integer", "description": "Move target category id; defaults to general when omitted."},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"204": map[string]any{"description": "Deleted"},
+						"400": map[string]any{"description": "Built-in category, or an unknown action", "content": jsonContent("#/components/schemas/Error")},
+						"404": map[string]any{"description": "Category not found", "content": jsonContent("#/components/schemas/Error")},
+					},
+				},
+			},
+			"/galleries": map[string]any{
+				"get": map[string]any{
+					"summary":     "List configured galleries",
+					"operationId": "listGalleries",
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Galleries with counts and the active flag", "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/Gallery"}}}}},
+					},
+				},
 			},
 		},
 	}
@@ -444,6 +814,12 @@ func jsonContent(ref string) map[string]any {
 		"application/json": map[string]any{
 			"schema": map[string]any{"$ref": ref},
 		},
+	}
+}
+
+func binaryContent(mime string) map[string]any {
+	return map[string]any{
+		mime: map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}},
 	}
 }
 
@@ -723,7 +1099,7 @@ var docsTemplate = template.Must(template.New("api-docs").Parse(`<!DOCTYPE html>
  .muted { color:#666; font-size:12px; }
  .method { display:inline-block; padding:1px 6px; border:1px solid; font-weight:bold; margin-right:8px; font-size:12px; min-width:52px; text-align:center; }
  .method-get    { color:#22aa44; border-color:#22aa44; }
- .method-post   { color:#9d2235; border-color:#9d2235; }
+ .method-post   { color:#3d90e3; border-color:#3d90e3; }
  .method-put    { color:#ffaa00; border-color:#ffaa00; }
  .method-patch  { color:#ffaa00; border-color:#ffaa00; }
  .method-delete { color:#cc3333; border-color:#cc3333; }

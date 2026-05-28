@@ -361,6 +361,41 @@ func TestBooruLogo_DefaultsToBundledFavicon(t *testing.T) {
 	}
 }
 
+// Regression: an unset server.logo must render the bundled logo in the
+// topbar, not the favicon. The brand feature collapsed the favicon link
+// and the topbar logo onto one URL whose fallback was the favicon, so
+// the topbar showed the small tab icon. The favicon-link tests above
+// never inspected the topbar <img src>, which is why it slipped through.
+func TestBooruLogo_TopbarUsesBundledLogoWhenUnset(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `src="/static/logo.png"`) {
+		t.Error("topbar logo should default to /static/logo.png when server.logo unset")
+	}
+	if strings.Contains(body, `src="/static/favicon.png"`) {
+		t.Error("topbar logo must not render the favicon as the logo")
+	}
+}
+
+func TestBooruLogo_TopbarUsesOverrideWhenConfigured(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.Server.BooruLogo = "/some/path/logo.png"
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `src="/custom.logo"`) {
+		t.Error("topbar logo should point at /custom.logo when server.logo configured")
+	}
+}
+
 func TestBooruName_DefaultsToMonbooru(t *testing.T) {
 	srv := newTestServer(t)
 

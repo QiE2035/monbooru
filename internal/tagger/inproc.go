@@ -522,6 +522,7 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 				GlobalThreshold:    float32(lt.cfg.ConfidenceThreshold),
 				CategoryThresholds: lt.cfg.CategoryThresholds,
 				PerCategoryTopK:    lt.cfg.PerCategoryTopK,
+				DisabledCategories: lt.cfg.DisabledCategories,
 			})
 			for _, c := range cands {
 				mk := TagKey{Name: c.Name, CatID: c.CatID}

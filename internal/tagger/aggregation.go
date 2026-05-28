@@ -112,13 +112,15 @@ type AggregatedCandidate struct {
 // AggregateOpts collects the per-merge knobs the pure aggregator
 // needs. GlobalThreshold and CategoryThresholds gate which labels
 // survive; PerCategoryTopK caps how many of the survivors land per
-// category. MinHits is the resolved frame-count gate from
+// category; DisabledCategories drops whole categories before any
+// scoring. MinHits is the resolved frame-count gate from
 // ResolveMinHits.
 type AggregateOpts struct {
 	MinHits            int
 	GlobalThreshold    float32
 	CategoryThresholds map[string]float64
 	PerCategoryTopK    map[string]int
+	DisabledCategories []string
 }
 
 // AggregateInferenceScores applies the §2 merge to per-frame label
@@ -153,6 +155,14 @@ func AggregateInferenceScores(perFrame [][]float32, labels []CandidateLabel, opt
 		}
 	}
 
+	var disabled map[string]bool
+	if len(opts.DisabledCategories) > 0 {
+		disabled = make(map[string]bool, len(opts.DisabledCategories))
+		for _, c := range opts.DisabledCategories {
+			disabled[c] = true
+		}
+	}
+
 	byCat := map[int64][]AggregatedCandidate{}
 	for idx, e := range agg {
 		if idx >= len(labels) {
@@ -160,6 +170,9 @@ func AggregateInferenceScores(perFrame [][]float32, labels []CandidateLabel, opt
 		}
 		lbl := labels[idx]
 		if lbl.Placeholder {
+			continue
+		}
+		if disabled[lbl.CatName] {
 			continue
 		}
 		if e.hits < opts.MinHits {

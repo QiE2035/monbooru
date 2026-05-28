@@ -154,7 +154,7 @@ func (s *Server) relationsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ceiling := resolveCeiling(r, cx)
-	counts := loadRelationsCounts(s, cx, ceiling, nil)
+	counts := loadRelationsCounts(s, cx, ceiling)
 	s.renderTemplate(w, "relations.html", relationsPageData{
 		baseData:      s.base(r, "relations", "Relations - "+s.booruName()),
 		Counts:        counts,
@@ -186,16 +186,6 @@ func (s *Server) browseGroupsRedirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusMovedPermanently)
 }
 
-// relationsCountOverrides lets the caller skip the version_edges /
-// derivative_edges walk when it has already counted those rows for a
-// matching card build. A nil pointer field means "walk normally". Used
-// by /relations/browse?kind=version|derivative to avoid reading the
-// edge tables twice per render.
-type relationsCountOverrides struct {
-	VersionChains   *int
-	DerivativeTrees *int
-}
-
 // loadRelationsCounts runs the seven small count queries the header
 // renders. Errors during the rollup degrade to a zero count on that
 // row - the page still renders the rest. Every counter is ceiling-
@@ -204,9 +194,8 @@ type relationsCountOverrides struct {
 // any member is hidden, edge / pair counters drop a row when either
 // side is hidden, PhashMissing skips hidden rows. This keeps the
 // /relations hub consistent with /relations/browse, whose cards apply
-// the same filters. ov is optional precomputed counts; a nil pointer
-// field means "walk normally".
-func loadRelationsCounts(s *Server, cx *galleryCtx, ceiling *Ceiling, ov *relationsCountOverrides) relationsCounts {
+// the same filters.
+func loadRelationsCounts(s *Server, cx *galleryCtx, ceiling *Ceiling) relationsCounts {
 	var c relationsCounts
 	get := func(q string, dst *int, args ...any) {
 		if err := cx.DB.Read.QueryRow(q, args...).Scan(dst); err != nil {
@@ -237,17 +226,13 @@ func loadRelationsCounts(s *Server, cx *galleryCtx, ceiling *Ceiling, ov *relati
 	} else {
 		get(`SELECT COUNT(*) FROM alt_groups`, &c.AltGroups)
 	}
-	if ov != nil && ov.VersionChains != nil {
-		c.VersionChains = *ov.VersionChains
-	} else if n, err := countVersionChains(cx, ceiling); err == nil {
-		c.VersionChains = n
+	if _, total, err := loadVersionChainCards(cx, 0, ceiling); err == nil {
+		c.VersionChains = total
 	} else {
 		logx.Debugf("relations counts version chains: %v", err)
 	}
-	if ov != nil && ov.DerivativeTrees != nil {
-		c.DerivativeTrees = *ov.DerivativeTrees
-	} else if n, err := countDerivativeTrees(cx, ceiling); err == nil {
-		c.DerivativeTrees = n
+	if _, total, err := loadDerivativeTreeCards(cx, 0, ceiling); err == nil {
+		c.DerivativeTrees = total
 	} else {
 		logx.Debugf("relations counts derivative trees: %v", err)
 	}
@@ -538,111 +523,6 @@ func humanISODate(s string) string {
 		return s
 	}
 	return t.UTC().Format("2006-01-02")
-}
-
-// countVersionChains mirrors loadVersionChainCards but skips card
-// construction and the limit cap: the chain-count counter on the
-// /relations hub and on /relations/browse?kind=version must equal the
-// number of chain cards the browse list would render, so the same
-// AnyTainted filter that drops a card here drops it from the count.
-func countVersionChains(cx *galleryCtx, ceiling *Ceiling) (int, error) {
-	rows, err := cx.DB.Read.Query(`SELECT child_image_id, parent_image_id FROM version_edges`)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	parentOf := map[int64]int64{} // child -> parent
-	childOf := map[int64]int64{}  // parent -> child (UNIQUE per schema)
-	for rows.Next() {
-		var c, p int64
-		if scanErr := rows.Scan(&c, &p); scanErr != nil {
-			return 0, scanErr
-		}
-		parentOf[c] = p
-		childOf[p] = c
-	}
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	if _, err := ceiling.TaintedImageIDs(); err != nil {
-		return 0, err
-	}
-	rootSet := map[int64]bool{}
-	for _, p := range parentOf {
-		if _, hasParent := parentOf[p]; !hasParent {
-			rootSet[p] = true
-		}
-	}
-	n := 0
-	for root := range rootSet {
-		members := []int64{root}
-		cur := root
-		for {
-			next, ok := childOf[cur]
-			if !ok {
-				break
-			}
-			members = append(members, next)
-			cur = next
-		}
-		if !ceiling.AnyTainted(members) {
-			n++
-		}
-	}
-	return n, nil
-}
-
-// countDerivativeTrees mirrors loadDerivativeTreeCards: each tree is
-// walked from its root (a source that is not itself a derivative)
-// and counted when no member exceeds the ceiling. The counter must
-// equal the number of derivative-tree cards the browse list renders.
-func countDerivativeTrees(cx *galleryCtx, ceiling *Ceiling) (int, error) {
-	rows, err := cx.DB.Read.Query(`SELECT derivative_image_id, source_image_id FROM derivative_edges`)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	derivativesOf := map[int64][]int64{}
-	sourceOf := map[int64]int64{}
-	for rows.Next() {
-		var d, src int64
-		if scanErr := rows.Scan(&d, &src); scanErr != nil {
-			return 0, scanErr
-		}
-		derivativesOf[src] = append(derivativesOf[src], d)
-		sourceOf[d] = src
-	}
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	if _, err := ceiling.TaintedImageIDs(); err != nil {
-		return 0, err
-	}
-	rootSet := map[int64]bool{}
-	for src := range derivativesOf {
-		if _, isDeriv := sourceOf[src]; !isDeriv {
-			rootSet[src] = true
-		}
-	}
-	n := 0
-	for root := range rootSet {
-		members := []int64{}
-		collectDerivativeMembers(root, derivativesOf, &members)
-		if !ceiling.AnyTainted(members) {
-			n++
-		}
-	}
-	return n, nil
-}
-
-// collectDerivativeMembers appends node + every descendant under it
-// to members in DFS order. Mirrors the traversal dfsDerivativeTree
-// uses for the card builder.
-func collectDerivativeMembers(node int64, derivativesOf map[int64][]int64, members *[]int64) {
-	*members = append(*members, node)
-	for _, child := range derivativesOf[node] {
-		collectDerivativeMembers(child, derivativesOf, members)
-	}
 }
 
 // loadVersionChainCards reads every version_edge into memory, walks
@@ -949,7 +829,7 @@ func (s *Server) browseRelationsPage(w http.ResponseWriter, r *http.Request) {
 	// version/derivative kinds the kind-total override lands after
 	// the loader finishes its in-Go walk (the same walk drives the
 	// card list, so the count rides the same data).
-	counts := loadRelationsCounts(s, cx, ceiling, nil)
+	counts := loadRelationsCounts(s, cx, ceiling)
 	total := kindTotal(counts, kind)
 	totalPages := 1
 	if total > 0 {

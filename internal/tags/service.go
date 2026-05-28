@@ -247,10 +247,6 @@ func RecalcDBCount(database *db.DB) (int64, error) {
 	return updated, nil
 }
 
-func (s *Service) Recalc() {
-	RecalcDB(s.db)
-}
-
 func (s *Service) RecalcCount() (int64, error) {
 	return RecalcDBCount(s.db)
 }
@@ -1160,16 +1156,15 @@ func addTagToImageTxReportingDup(tx *sql.Tx, imageID, tagID int64, isAuto bool, 
 // TransitiveImpliedTx is the exported entrypoint for callers outside
 // the tags package (the implication propagation job in internal/web)
 // that need to walk the implication graph inside the same transaction
-// they already hold open. Mirrors Service.ImpliedTagIDs but tx-bound
-// so a freshly-added edge is visible to the walk.
+// they already hold open, so a freshly-added edge is visible to the
+// walk.
 func TransitiveImpliedTx(tx *sql.Tx, parents []int64) ([]int64, error) {
 	return transitiveImpliedTx(tx, parents)
 }
 
-// transitiveImpliedTx is the package-internal twin of
-// Service.ImpliedTagIDs: the implication graph walked inside the same
-// transaction the caller already holds open, so a freshly-added edge
-// is visible.
+// transitiveImpliedTx walks the transitive implied-tag closure of
+// parents inside the transaction the caller already holds open, so a
+// freshly-added edge is visible.
 func transitiveImpliedTx(tx *sql.Tx, parents []int64) ([]int64, error) {
 	if len(parents) == 0 {
 		return nil, nil

@@ -1681,7 +1681,7 @@ section#tagger .tagger-table tr.tagger-sep td { color: var(--fg-dim); font-size:
 /* Per-tagger Thresholds dialog: width-bound, single table covering global
    and per-category rows. The fixed dialog max-width keeps the help line
    from forcing the dialog wider than its content. */
-.tagger-thresh-dialog { max-width: 480px; }
+.tagger-thresh-dialog { max-width: 600px; }
 .tagger-thresh-dialog .field-hint { margin-bottom: 8px; }
 .tagger-thresh-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
 .tagger-thresh-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: normal; color: var(--fg-dim); font-size: 12px; }
@@ -1690,13 +1690,17 @@ section#tagger .tagger-table tr.tagger-sep td { color: var(--fg-dim); font-size:
 .tagger-thresh-table td:nth-child(2),
 .tagger-thresh-table th:nth-child(3),
 .tagger-thresh-table td:nth-child(3) { width: 9em; }
+.tagger-thresh-table th:nth-child(4),
+.tagger-thresh-table td:nth-child(4) { width: 4.5em; text-align: center; }
 .tagger-thresh-table input[type=number] { width: 8em; }
 .tagger-thresh-table tr.tagger-thresh-global td { border-bottom: 1px solid var(--border); }
 /* Per-row Reset clears every input on its row. Hidden until the row carries
-   a value; :placeholder-shown flips as the operator types, so the link
-   appears live without the dialog body re-rendering after Save. */
+   a value or is disabled; :placeholder-shown and :checked flip live, so the
+   link appears as the operator types or ticks Disable without the dialog
+   body re-rendering after Save. */
 .tagger-thresh-table .reset-thresh { visibility: hidden; }
-.tagger-thresh-table tr:has(input[type=number]:not(:placeholder-shown)) .reset-thresh { visibility: visible; }
+.tagger-thresh-table tr:has(input[type=number]:not(:placeholder-shown)) .reset-thresh,
+.tagger-thresh-table tr:has(input[type=checkbox]:checked) .reset-thresh { visibility: visible; }
 
 /* Per-tagger Galleries dialog: tight checkbox list. */
 .tagger-gal-dialog { max-width: 480px; }

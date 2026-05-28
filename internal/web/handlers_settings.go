@@ -46,7 +46,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 				Reason:              t.Reason,
 				Enabled:             t.Enabled,
 				ConfidenceThreshold: t.ConfidenceThreshold,
-				ThresholdSummary:    taggerThresholdSummary(t.ConfidenceThreshold, t.CategoryThresholds),
+				ThresholdSummary:    taggerThresholdSummary(t.ConfidenceThreshold, t.CategoryThresholds, t.DisabledCategories),
 				GallerySummary:      taggerGallerySummary(t.Galleries, totalGalleries),
 				Installed:           true,
 				Supported:           true,
@@ -76,7 +76,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 			Reason:              t.Reason,
 			Enabled:             t.Enabled,
 			ConfidenceThreshold: t.ConfidenceThreshold,
-			ThresholdSummary:    taggerThresholdSummary(t.ConfidenceThreshold, t.CategoryThresholds),
+			ThresholdSummary:    taggerThresholdSummary(t.ConfidenceThreshold, t.CategoryThresholds, t.DisabledCategories),
 			GallerySummary:      taggerGallerySummary(t.Galleries, totalGalleries),
 			Installed:           true,
 		})

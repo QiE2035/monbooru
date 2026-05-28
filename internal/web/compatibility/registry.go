@@ -80,14 +80,6 @@ func Register(p Provider) {
 	providers = append(providers, p)
 }
 
-// Providers returns a snapshot of the registered providers in
-// registration order. Mostly useful for tests.
-func Providers() []Provider {
-	out := make([]Provider, len(providers))
-	copy(out, providers)
-	return out
-}
-
 // Detect returns the name of the matching provider, or "" when no
 // application's signal is present. Caller routes through Translate(...,
 // returnedName) on a hit.

@@ -117,7 +117,6 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 			return template.URL(uppercasePercentEscapes(url.QueryEscape(s)))
 		},
 		"sub": func(a, b int) int { return a - b },
-		"mul": func(a, b int) int { return a * b },
 		"dict": func(pairs ...any) map[string]any {
 			m := make(map[string]any, len(pairs)/2)
 			for i := 0; i+1 < len(pairs); i += 2 {
@@ -142,13 +141,6 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 				out = append(out, *groups[k])
 			}
 			return out
-		},
-		"folderCount": func(nodes []gallery.FolderNode) int {
-			total := 0
-			for _, n := range nodes {
-				total += n.Count
-			}
-			return total
 		},
 		"deref": func(p *int) int {
 			if p == nil {
@@ -874,11 +866,13 @@ type baseData struct {
 	// and the login screen so a deployment that wants a different name
 	// only edits monbooru.toml.
 	BooruName string
-	// BooruLogo is the resolved URL for the favicon link + topbar logo:
-	// "/custom.logo" when server.logo is set, the bundled favicon
-	// otherwise. Both surfaces ride the same key so a configured logo
-	// replaces the topbar mark in lockstep with the tab icon.
+	// BooruLogo is the resolved URL for the topbar logo: "/custom.logo"
+	// when server.logo is set, the bundled logo.png otherwise.
+	// BooruFavicon is the same for the favicon <link>, falling back to
+	// the bundled favicon.png. A configured server.logo drives both, so
+	// they only diverge on their unset defaults.
 	BooruLogo     string
+	BooruFavicon  string
 	ActiveGallery string
 	Galleries     []config.Gallery
 	// Counts surfaced on the footer status bar. Populated per-request;
@@ -925,6 +919,7 @@ func (b baseData) AsMap() map[string]any {
 		"CustomCSS":        b.CustomCSS,
 		"BooruName":        b.BooruName,
 		"BooruLogo":        b.BooruLogo,
+		"BooruFavicon":     b.BooruFavicon,
 		"ActiveGallery":    b.ActiveGallery,
 		"Galleries":        b.Galleries,
 		"VisibleCount":     b.VisibleCount,
@@ -979,6 +974,7 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 		CustomCSS:     s.cfg.Server.CustomCSS != "",
 		BooruName:     s.booruName(),
 		BooruLogo:     s.booruLogoURL(),
+		BooruFavicon:  s.booruFaviconURL(),
 		ActiveGallery: s.activeName,
 		Galleries:     galleries,
 		VisibleCount:     visible,
@@ -1066,7 +1062,7 @@ func (s *Server) serveCustomCSS(w http.ResponseWriter, r *http.Request) {
 
 // serveCustomLogo serves the operator-supplied logo/favicon pointed at by
 // server.logo. Same shape and trust gate as serveCustomCSS - an empty
-// config 404s so the layout falls back to the bundled favicon.
+// config 404s so the layout falls back to the bundled logo and favicon.
 func (s *Server) serveCustomLogo(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Server.BooruLogo == "" {
 		http.NotFound(w, r)
@@ -1085,9 +1081,22 @@ func (s *Server) booruName() string {
 	return "Monbooru"
 }
 
-// booruLogoURL points the favicon link and topbar logo at /custom.logo
-// when an override is configured, the bundled favicon otherwise.
+// booruLogoURL points the topbar logo at /custom.logo when an override
+// is configured, the bundled logo otherwise. The bundled default is the
+// logo, not the favicon - the two surfaces share the override but have
+// distinct fallbacks (see booruFaviconURL).
 func (s *Server) booruLogoURL() string {
+	if s.cfg.Server.BooruLogo != "" {
+		return "/custom.logo"
+	}
+	return "/static/logo.png"
+}
+
+// booruFaviconURL points the favicon link at /custom.logo when an
+// override is configured, the bundled favicon otherwise. A configured
+// server.logo replaces both the favicon and the topbar logo; only the
+// unset fallback differs from booruLogoURL.
+func (s *Server) booruFaviconURL() string {
 	if s.cfg.Server.BooruLogo != "" {
 		return "/custom.logo"
 	}

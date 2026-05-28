@@ -1429,3 +1429,270 @@ func TestDeleteImage_DeleteEmptyFolder(t *testing.T) {
 		t.Errorf("sub-folder should have been removed, stat err = %v", err)
 	}
 }
+
+// createImageJSON posts a JSON-mode create and returns the decoded
+// response envelope. Used by the provenance tests to assert the
+// fields round-trip onto the new row.
+func createImageJSON(t *testing.T, env *testEnv, body map[string]any, wantStatus int) map[string]any {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/v1/images", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != wantStatus {
+		t.Fatalf("create: expected %d, got %d: %s", wantStatus, w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if w.Body.Len() > 0 {
+		json.NewDecoder(w.Body).Decode(&resp)
+	}
+	return resp
+}
+
+func TestCreateImage_SetsProvenanceFields(t *testing.T) {
+	env := newTestEnv(t)
+
+	img := image.NewRGBA(image.Rect(0, 0, 9, 9))
+	path := filepath.Join(env.galleryDir, "prov.png")
+	f, _ := os.Create(path)
+	png.Encode(f, img)
+	f.Close()
+
+	resp := createImageJSON(t, env, map[string]any{
+		"path":             path,
+		"source":           "danbooru",
+		"url":              "https://example.com/post/1",
+		"collection":       "my_series",
+		"collection_order": 3,
+	}, http.StatusCreated)
+
+	id := int64(resp["id"].(float64))
+	getReq := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/images/%d", id), nil)
+	gw := httptest.NewRecorder()
+	env.mux.ServeHTTP(gw, getReq)
+	if gw.Code != http.StatusOK {
+		t.Fatalf("get: expected 200, got %d", gw.Code)
+	}
+	var got map[string]any
+	json.NewDecoder(gw.Body).Decode(&got)
+	if got["source"] != "danbooru" {
+		t.Errorf("source = %v, want danbooru", got["source"])
+	}
+	if got["url"] != "https://example.com/post/1" {
+		t.Errorf("url = %v, want the posted URL", got["url"])
+	}
+	if got["collection"] != "my_series" {
+		t.Errorf("collection = %v, want my_series", got["collection"])
+	}
+	if got["collection_order"] != float64(3) {
+		t.Errorf("collection_order = %v, want 3", got["collection_order"])
+	}
+}
+
+func TestCreateImage_Multipart_SetsProvenanceFields(t *testing.T) {
+	env := newTestEnv(t)
+
+	var imgBuf bytes.Buffer
+	png.Encode(&imgBuf, image.NewRGBA(image.Rect(0, 0, 14, 14)))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "mp_prov.png")
+	part.Write(imgBuf.Bytes())
+	writer.WriteField("source", "scraper_v2")
+	writer.WriteField("collection", "set_a")
+	writer.WriteField("collection_order", "5")
+	writer.Close()
+
+	req := httptest.NewRequest("POST", "/api/v1/images", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("multipart create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["source"] != "scraper_v2" {
+		t.Errorf("source = %v, want scraper_v2", resp["source"])
+	}
+	if resp["collection"] != "set_a" {
+		t.Errorf("collection = %v, want set_a", resp["collection"])
+	}
+	if resp["collection_order"] != float64(5) {
+		t.Errorf("collection_order = %v, want 5", resp["collection_order"])
+	}
+}
+
+func TestCreateImage_RejectsBadURL(t *testing.T) {
+	env := newTestEnv(t)
+	img := image.NewRGBA(image.Rect(0, 0, 9, 9))
+	path := filepath.Join(env.galleryDir, "badurl.png")
+	f, _ := os.Create(path)
+	png.Encode(f, img)
+	f.Close()
+
+	createImageJSON(t, env, map[string]any{
+		"path": path,
+		"url":  "ftp://nope",
+	}, http.StatusBadRequest)
+}
+
+func TestCreateImage_RejectsOrderWithoutCollection(t *testing.T) {
+	env := newTestEnv(t)
+	img := image.NewRGBA(image.Rect(0, 0, 9, 9))
+	path := filepath.Join(env.galleryDir, "orphan_order.png")
+	f, _ := os.Create(path)
+	png.Encode(f, img)
+	f.Close()
+
+	createImageJSON(t, env, map[string]any{
+		"path":             path,
+		"collection_order": 2,
+	}, http.StatusBadRequest)
+}
+
+// A duplicate-SHA re-push must not overwrite the provenance the first
+// insert recorded; the alias path returns before applyCreateProvenance.
+func TestCreateImage_DuplicateKeepsOriginalProvenance(t *testing.T) {
+	env := newTestEnv(t)
+	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	path := filepath.Join(env.galleryDir, "dup_prov.png")
+	f, _ := os.Create(path)
+	png.Encode(f, img)
+	f.Close()
+
+	first := createImageJSON(t, env, map[string]any{
+		"path":   path,
+		"source": "first_source",
+	}, http.StatusCreated)
+	id := int64(first["id"].(float64))
+
+	resp := createImageJSON(t, env, map[string]any{
+		"path":   path,
+		"source": "second_source",
+	}, http.StatusOK)
+	if resp["alias_added"] != true {
+		t.Fatalf("expected alias_added=true on duplicate, got %v", resp["alias_added"])
+	}
+
+	getReq := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/images/%d", id), nil)
+	gw := httptest.NewRecorder()
+	env.mux.ServeHTTP(gw, getReq)
+	var got map[string]any
+	json.NewDecoder(gw.Body).Decode(&got)
+	if got["source"] != "first_source" {
+		t.Errorf("source = %v, want first_source (duplicate must not overwrite)", got["source"])
+	}
+}
+
+// patchImage PATCHes the image and returns the decoded response.
+func patchImage(t *testing.T, env *testEnv, id int64, body map[string]any, wantStatus int) map[string]any {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest("PATCH", fmt.Sprintf("/api/v1/images/%d", id), bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != wantStatus {
+		t.Fatalf("patch: expected %d, got %d: %s", wantStatus, w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if w.Body.Len() > 0 {
+		json.NewDecoder(w.Body).Decode(&resp)
+	}
+	return resp
+}
+
+func TestPatchImage_UpdatesFields(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "patch_all.png", 10, 10)
+
+	resp := patchImage(t, env, id, map[string]any{
+		"source":           "booru",
+		"url":              "https://example.com/x",
+		"collection":       "vol1",
+		"collection_order": 4,
+		"is_favorited":     true,
+		"is_inbox":         false,
+	}, http.StatusOK)
+
+	if resp["source"] != "booru" {
+		t.Errorf("source = %v, want booru", resp["source"])
+	}
+	if resp["url"] != "https://example.com/x" {
+		t.Errorf("url = %v", resp["url"])
+	}
+	if resp["collection"] != "vol1" {
+		t.Errorf("collection = %v, want vol1", resp["collection"])
+	}
+	if resp["collection_order"] != float64(4) {
+		t.Errorf("collection_order = %v, want 4", resp["collection_order"])
+	}
+	if resp["is_favorited"] != true {
+		t.Errorf("is_favorited = %v, want true", resp["is_favorited"])
+	}
+	if resp["is_inbox"] != false {
+		t.Errorf("is_inbox = %v, want false", resp["is_inbox"])
+	}
+}
+
+// An absent field is left alone; only the supplied field changes.
+func TestPatchImage_PartialLeavesOthers(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "patch_partial.png", 10, 10)
+
+	patchImage(t, env, id, map[string]any{"source": "keep_me", "collection": "set_x"}, http.StatusOK)
+	resp := patchImage(t, env, id, map[string]any{"url": "https://only.example.com"}, http.StatusOK)
+
+	if resp["source"] != "keep_me" {
+		t.Errorf("source = %v, want keep_me (untouched)", resp["source"])
+	}
+	if resp["collection"] != "set_x" {
+		t.Errorf("collection = %v, want set_x (untouched)", resp["collection"])
+	}
+	if resp["url"] != "https://only.example.com" {
+		t.Errorf("url = %v", resp["url"])
+	}
+}
+
+// Clearing the collection nulls a stranded collection_order in the same
+// write so a `#N` chip is never left next to "(none)".
+func TestPatchImage_ClearCollectionNullsOrder(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "patch_clear.png", 10, 10)
+
+	patchImage(t, env, id, map[string]any{"collection": "temp", "collection_order": 2}, http.StatusOK)
+	resp := patchImage(t, env, id, map[string]any{"collection": ""}, http.StatusOK)
+
+	if resp["collection"] != "" {
+		t.Errorf("collection = %v, want empty", resp["collection"])
+	}
+	if resp["collection_order"] != nil {
+		t.Errorf("collection_order = %v, want null after clearing collection", resp["collection_order"])
+	}
+}
+
+func TestPatchImage_OrderRequiresCollection(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "patch_order_orphan.png", 10, 10)
+	patchImage(t, env, id, map[string]any{"collection_order": 3}, http.StatusBadRequest)
+}
+
+func TestPatchImage_RejectsBadURL(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "patch_badurl.png", 10, 10)
+	patchImage(t, env, id, map[string]any{"url": "ftp://nope"}, http.StatusBadRequest)
+}
+
+func TestPatchImage_NoFields(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "patch_empty.png", 10, 10)
+	patchImage(t, env, id, map[string]any{}, http.StatusBadRequest)
+}
+
+func TestPatchImage_NotFound(t *testing.T) {
+	env := newTestEnv(t)
+	patchImage(t, env, 99999, map[string]any{"source": "x"}, http.StatusNotFound)
+}

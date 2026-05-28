@@ -48,6 +48,103 @@ func validateVia(via string) error {
 	return nil
 }
 
+const (
+	maxImageSourceLen = 200
+	maxImageURLLen    = 2048
+)
+
+// validateImageSource / validateImageURL / validateImageCollection
+// mirror the web detail-page editor's rules (internal/web
+// updateExternal) so the operator-editable provenance fields land
+// under the same caps and the URL stays a renderable target=_blank
+// link. Callers pass the already-trimmed value. Shared by the create
+// (POST /images) and edit (PATCH /images/{id}) paths.
+func validateImageSource(s string) error {
+	if len(s) > maxImageSourceLen {
+		return fmt.Errorf("source must be %d characters or less", maxImageSourceLen)
+	}
+	return nil
+}
+
+func validateImageURL(s string) error {
+	if s == "" {
+		return nil
+	}
+	if len(s) > maxImageURLLen {
+		return fmt.Errorf("url must be %d characters or less", maxImageURLLen)
+	}
+	lower := strings.ToLower(s)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		return fmt.Errorf("url must start with http:// or https://")
+	}
+	return nil
+}
+
+func validateImageCollection(s string) error {
+	if len(s) > maxImageSourceLen {
+		return fmt.Errorf("collection must be %d characters or less", maxImageSourceLen)
+	}
+	return nil
+}
+
+// validateCreateProvenance checks the optional provenance fields a
+// caller may set when adding an image. A collection_order is only
+// meaningful next to a non-empty collection label (the detail page
+// renders "(none) #5" otherwise and collection: search never surfaces
+// the row), so it is refused without one. Values arrive trimmed.
+func validateCreateProvenance(source, url, collection string, order *int) error {
+	if err := validateImageSource(source); err != nil {
+		return err
+	}
+	if err := validateImageURL(url); err != nil {
+		return err
+	}
+	if err := validateImageCollection(collection); err != nil {
+		return err
+	}
+	if order != nil {
+		if *order < 1 {
+			return fmt.Errorf("collection_order must be 1 or higher")
+		}
+		if collection == "" {
+			return fmt.Errorf("collection_order requires a non-empty collection")
+		}
+	}
+	return nil
+}
+
+// applyCreateProvenance writes the supplied provenance fields onto a
+// freshly-ingested row. Only non-empty values are written; the row's
+// empty-string / NULL defaults already cover the unset case, so a bare
+// create touches nothing. Validation has already run, so a failure here
+// is a DB-level error.
+func applyCreateProvenance(g Gallery, imageID int64, source, url, collection string, order *int) error {
+	updates := []string{}
+	args := []any{}
+	if source != "" {
+		updates = append(updates, "source = ?")
+		args = append(args, source)
+	}
+	if url != "" {
+		updates = append(updates, "url = ?")
+		args = append(args, url)
+	}
+	if collection != "" {
+		updates = append(updates, "series = ?")
+		args = append(args, collection)
+	}
+	if order != nil {
+		updates = append(updates, "series_order = ?")
+		args = append(args, *order)
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	args = append(args, imageID)
+	_, err := g.DB.Write.Exec(`UPDATE images SET `+strings.Join(updates, ", ")+` WHERE id = ?`, args...)
+	return err
+}
+
 // canDecodeImage opens path and runs image.DecodeConfig on the first
 // few bytes. Used as a fast post-DetectFileType guard so a text file
 // with an image extension is rejected before the row reaches the DB
@@ -240,12 +337,148 @@ func (h *Handler) getImage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// patchImage handles PATCH /api/v1/images/{id}: edits the operator-
+// editable fields source, url, collection, collection_order,
+// is_favorited, and is_inbox. Pointer fields carry presence: an absent
+// (or JSON null) field is left alone, a present one is written. An empty
+// string clears a text field; clearing collection nulls a stranded
+// collection_order in the same write (mirroring the detail-page editor)
+// unless an order is supplied alongside. To clear collection_order on
+// its own, clear the collection. Returns the updated image object.
+func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
+	g, ok := h.resolveGallery(w, r)
+	if !ok {
+		return
+	}
+	id, ok := apiPathInt64(w, r, "id")
+	if !ok {
+		return
+	}
+	if !imageExists(g, id) {
+		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return
+	}
+
+	var body struct {
+		Source          *string `json:"source"`
+		URL             *string `json:"url"`
+		Collection      *string `json:"collection"`
+		CollectionOrder *int    `json:"collection_order"`
+		IsFavorited     *bool   `json:"is_favorited"`
+		IsInbox         *bool   `json:"is_inbox"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+
+	updates := []string{}
+	args := []any{}
+	cacheAffecting := false
+
+	if body.Source != nil {
+		s := strings.TrimSpace(*body.Source)
+		if err := validateImageSource(s); err != nil {
+			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		updates = append(updates, "source = ?")
+		args = append(args, s)
+	}
+	if body.URL != nil {
+		u := strings.TrimSpace(*body.URL)
+		if err := validateImageURL(u); err != nil {
+			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		updates = append(updates, "url = ?")
+		args = append(args, u)
+	}
+	if body.Collection != nil {
+		c := strings.TrimSpace(*body.Collection)
+		if err := validateImageCollection(c); err != nil {
+			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		updates = append(updates, "series = ?")
+		args = append(args, c)
+		cacheAffecting = true
+		// A stranded order next to "(none)" never surfaces in collection:
+		// search; null it in the same write when the collection is being
+		// cleared and no replacement order is supplied.
+		if c == "" && body.CollectionOrder == nil {
+			updates = append(updates, "series_order = ?")
+			args = append(args, nil)
+		}
+	}
+	if body.CollectionOrder != nil {
+		n := *body.CollectionOrder
+		if n < 1 {
+			apiError(w, http.StatusBadRequest, "invalid_request", "collection_order must be 1 or higher")
+			return
+		}
+		// An order is only meaningful next to a non-empty collection: take
+		// the incoming label when one is supplied, else the stored one.
+		anchor := ""
+		if body.Collection != nil {
+			anchor = strings.TrimSpace(*body.Collection)
+		} else if err := g.DB.Read.QueryRow(`SELECT series FROM images WHERE id = ?`, id).Scan(&anchor); err != nil {
+			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		if strings.TrimSpace(anchor) == "" {
+			apiError(w, http.StatusBadRequest, "invalid_request", "collection_order requires a non-empty collection")
+			return
+		}
+		updates = append(updates, "series_order = ?")
+		args = append(args, n)
+		cacheAffecting = true
+	}
+	if body.IsFavorited != nil {
+		updates = append(updates, "is_favorited = ?")
+		args = append(args, boolToInt(*body.IsFavorited))
+		cacheAffecting = true
+	}
+	if body.IsInbox != nil {
+		updates = append(updates, "is_inbox = ?")
+		args = append(args, boolToInt(*body.IsInbox))
+		cacheAffecting = true
+	}
+	if len(updates) == 0 {
+		apiError(w, http.StatusBadRequest, "invalid_request", "no editable fields supplied")
+		return
+	}
+
+	args = append(args, id)
+	if _, err := g.DB.Write.Exec(`UPDATE images SET `+strings.Join(updates, ", ")+` WHERE id = ?`, args...); err != nil {
+		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	// source / url don't feed the cached aggregates, but collection,
+	// favorite, and inbox do (sidebar collection list, fav/inbox counts,
+	// and the match-id cache keyed on fav:/inbox:).
+	if cacheAffecting && g.InvalidateCaches != nil {
+		g.InvalidateCaches()
+	}
+
+	resp, err := h.buildImageResponse(g, id)
+	if err != nil {
+		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // createImage handles POST /api/v1/images. Accepts either multipart
 // (with `file`, `tags`, `folder`, `autotag`, `tagger_name`, `via`) or
 // JSON (with `path`, `tags`, `folder`, `autotag`, `tagger_name`,
 // `via`). In JSON mode `folder` only applies to relative paths;
 // absolute paths are used verbatim. `via` lands on `images.origin` and
-// is attached to each initial tag's `image_tags.tagger_name`.
+// is attached to each initial tag's `image_tags.tagger_name`. The
+// optional provenance fields `source`, `url`, `collection`, and
+// `collection_order` are written onto the new row; they are ignored on
+// a duplicate-SHA insert so re-pushing a known file never overwrites
+// the existing row's operator-edited values.
 func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 	g, ok := h.resolveGallery(w, r)
 	if !ok {
@@ -254,13 +487,17 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 	ct := r.Header.Get("Content-Type")
 
 	var (
-		imgPath        string
-		initialTags    []string
-		folder         string
-		autotag        bool
-		taggerName     string
-		via            string // caller-supplied label; stored on images.origin and inherited by initial tags
-		uploadedToDisk bool   // true when we wrote the file ourselves (multipart)
+		imgPath         string
+		initialTags     []string
+		folder          string
+		autotag         bool
+		taggerName      string
+		via             string // caller-supplied label; stored on images.origin and inherited by initial tags
+		source          string // operator-edited provenance label; set on the new row when non-empty
+		url             string // canonical web URL; set on the new row when non-empty
+		collection      string // collection label (images.series); set on the new row when non-empty
+		collectionOrder *int   // 1-based position within collection; nil = unset
+		uploadedToDisk  bool   // true when we wrote the file ourselves (multipart)
 	)
 
 	if isMultipart(ct) {
@@ -282,6 +519,21 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		taggerName = strings.TrimSpace(r.FormValue("tagger_name"))
 		via = strings.TrimSpace(r.FormValue("via"))
 		if err := validateVia(via); err != nil {
+			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		source = strings.TrimSpace(r.FormValue("source"))
+		url = strings.TrimSpace(r.FormValue("url"))
+		collection = strings.TrimSpace(r.FormValue("collection"))
+		if raw := strings.TrimSpace(r.FormValue("collection_order")); raw != "" {
+			n, convErr := strconv.Atoi(raw)
+			if convErr != nil {
+				apiError(w, http.StatusBadRequest, "invalid_request", "collection_order must be an integer")
+				return
+			}
+			collectionOrder = &n
+		}
+		if err := validateCreateProvenance(source, url, collection, collectionOrder); err != nil {
 			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
@@ -320,12 +572,16 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		uploadedToDisk = true
 	} else {
 		var body struct {
-			Path       string   `json:"path"`
-			Tags       []string `json:"tags"`
-			Folder     string   `json:"folder"`
-			Autotag    bool     `json:"autotag"`
-			TaggerName string   `json:"tagger_name"`
-			Via        string   `json:"via"`
+			Path            string   `json:"path"`
+			Tags            []string `json:"tags"`
+			Folder          string   `json:"folder"`
+			Autotag         bool     `json:"autotag"`
+			TaggerName      string   `json:"tagger_name"`
+			Via             string   `json:"via"`
+			Source          string   `json:"source"`
+			URL             string   `json:"url"`
+			Collection      string   `json:"collection"`
+			CollectionOrder *int     `json:"collection_order"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
@@ -342,6 +598,14 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		taggerName = strings.TrimSpace(body.TaggerName)
 		via = strings.TrimSpace(body.Via)
 		if err := validateVia(via); err != nil {
+			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		source = strings.TrimSpace(body.Source)
+		url = strings.TrimSpace(body.URL)
+		collection = strings.TrimSpace(body.Collection)
+		collectionOrder = body.CollectionOrder
+		if err := validateCreateProvenance(source, url, collection, collectionOrder); err != nil {
 			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
@@ -467,6 +731,15 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Provenance lands only on a freshly-created row; the duplicate path
+	// above returns first so re-pushing a known file never overwrites the
+	// existing row's operator-edited source / url / collection.
+	if err := applyCreateProvenance(g, img.ID, source, url, collection, collectionOrder); err != nil {
+		logx.Warnf("api createImage provenance: %v", err)
+		apiError(w, http.StatusInternalServerError, "internal_error", "failed to set provenance fields")
+		return
+	}
+
 	tagWarnings := h.applyInitialTags(g, img.ID, initialTags, via)
 
 	var autotagNote string
@@ -547,6 +820,13 @@ func isTrue(v string) bool {
 		return true
 	}
 	return false
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (h *Handler) deleteImage(w http.ResponseWriter, r *http.Request) {

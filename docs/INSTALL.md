@@ -53,7 +53,8 @@ empty falls back to `Monbooru`.
 
 `logo` is an absolute path to an image file (PNG works; any format the
 browser handles is fine). When set, the file is served at `/custom.logo`
-and used for both the favicon and the topbar logo. Missing or empty falls back to the bundled favicon.
+and used for both the favicon and the topbar logo. Missing or empty
+falls back to the bundled defaults.
 
 ## Environment variables
 
