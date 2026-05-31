@@ -322,3 +322,17 @@ func unescapeQuoted(s string) string {
 	return b.String()
 }
 
+// QuoteValue is the inverse of unescapeQuoted: it backslash-escapes the
+// characters that would otherwise end or corrupt a quoted run, so a
+// label interpolated into a `key:"<value>"` search term round-trips
+// back to itself through the parser. Backslash is escaped first so an
+// already-present backslash isn't mistaken for an escape of the quote.
+func QuoteValue(s string) string {
+	if !strings.ContainsAny(s, "\\\"") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	return s
+}
+

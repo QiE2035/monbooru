@@ -404,14 +404,7 @@ func insertMangaMeta(tx *sql.Tx, m *models.MangaMetadata) error {
 		toNullInt(m.Year), toNullInt(m.Month), toNullInt(m.Day),
 		m.Writer, m.Penciller, m.Inker, m.Colorist, m.Letterer, m.CoverArtist, m.Editor, m.Publisher,
 		m.Imprint, m.Genre, m.Web, m.LanguageISO, m.Format, m.Manga, m.AgeRating,
-		toNullPtrFloat(m.CommunityRating), toNullInt(m.XMLPageCount), m.RawXML,
+		toNullFloat(m.CommunityRating), toNullInt(m.XMLPageCount), m.RawXML,
 	)
 	return err
-}
-
-func toNullPtrFloat(v *float64) interface{} {
-	if v == nil {
-		return nil
-	}
-	return *v
 }

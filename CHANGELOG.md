@@ -1,5 +1,25 @@
 # Changelog
 
+## [v1.9.3] - 2026-05-31
+### Added
+- Tags page: API-applied tags show an "api" origin badge.
+
+### Changed
+- Auto-tagger: the Configure dialog's per-category column is now Enable, ticked by default, instead of Disable.
+
+### Fixed
+- Detail page: confirm before deleting a duplicate file or removing all of an image's user tags.
+- API: manga-page serving is restricted to images inside the active gallery.
+- Search: the rating-ceiling hidden count is exact for images carrying multiple ratings.
+- Relations: declaring two images as duplicates no longer also records them as alternates.
+- Collection and source chips with a quote in the name now link to the right search.
+- Reader: editing a CBZ in place drops its cached manga pages.
+- Relations: find-pairs computes every perceptual hash before probing, so no near-duplicate is missed.
+- Tag-removal and batch-delete failures surface an error instead of silently succeeding.
+- Settings: the page-size slider can select values below 20.
+- Auto-tagger: the per-row threshold Reset shows only when a row is off its default.
+- Relations session: swapping the pair swaps the comparison-table columns too.
+
 ## [v1.9.2] - 2026-05-28
 ### Added
 - API: create, edit, delete, alias, and merge tags.

@@ -123,6 +123,42 @@ func FindPairs(ctx context.Context, database *db.DB, tree *BKTree, opts FindPair
 		return nil
 	}
 
+	// Pass 1: compute every missing phash up front so the tree holds all
+	// rows before any probe. Probing inline as phashes were computed
+	// missed pairs whose higher-id member hadn't been inserted yet - the
+	// lower-id member was probed first with the higher id still absent,
+	// and when the higher-id member was later probed the lower id was
+	// dropped by the a < b canonicalisation in pass 2.
+	for idx := range entries {
+		if ctx.Err() != nil {
+			return added, ctx.Err()
+		}
+		if entries[idx].phash.Valid {
+			continue
+		}
+		if progress != nil {
+			progress(idx, total, "phashing")
+		}
+		if err := gallery.RecomputeAndStorePhash(ctx, database, entries[idx].id, opts.ThumbnailsPath); err != nil {
+			logx.Debugf("find-pairs phash %d: %v", entries[idx].id, err)
+			continue
+		}
+		var phash sql.NullInt64
+		if err := database.Read.QueryRow(`SELECT phash FROM images WHERE id = ?`, entries[idx].id).Scan(&phash); err != nil {
+			logx.Debugf("find-pairs reread %d: %v", entries[idx].id, err)
+			continue
+		}
+		if !phash.Valid {
+			continue
+		}
+		entries[idx].phash = phash
+		// The OnStored hook already inserts into a built tree; Insert is
+		// idempotent on the id, so this also covers a tree not wired to
+		// the hook (no registry entry, e.g. in tests).
+		tree.Insert(entries[idx].id, phash.Int64)
+	}
+
+	// Pass 2: probe every row against the now fully-populated tree.
 	for idx, e := range entries {
 		if ctx.Err() != nil {
 			if flushErr := flush(); flushErr != nil {
@@ -130,40 +166,16 @@ func FindPairs(ctx context.Context, database *db.DB, tree *BKTree, opts FindPair
 			}
 			return added, ctx.Err()
 		}
-		// Lazy phash compute when the row's still NULL.
-		phash := e.phash
-		if !phash.Valid {
-			if progress != nil {
-				progress(idx, total, "phashing")
-			}
-			if err := gallery.RecomputeAndStorePhash(ctx, database, e.id, opts.ThumbnailsPath); err != nil {
-				logx.Debugf("find-pairs phash %d: %v", e.id, err)
-				continue
-			}
-			// Re-read so the BK-tree probe below sees what was just
-			// stored. The OnStored hook has already added the entry to
-			// the tree if it was built before the row ran through.
-			if err := database.Read.QueryRow(`SELECT phash FROM images WHERE id = ?`, e.id).Scan(&phash); err != nil {
-				logx.Debugf("find-pairs reread %d: %v", e.id, err)
-				continue
-			}
-			if !phash.Valid {
-				continue
-			}
-			// EnsureBuilt was called above before the OnStored hook
-			// could have fired, but a row whose phash was NULL at the
-			// scan time wouldn't have been in the just-built tree.
-			// Insert now so it participates in subsequent probes inside
-			// this same job.
-			tree.Insert(e.id, phash.Int64)
+		if !e.phash.Valid {
+			continue // phash compute failed in pass 1
 		}
 		if progress != nil && idx%64 == 0 {
 			progress(idx, total, "probing")
 		}
-		candidates := tree.SearchWithinDistance(phash.Int64, opts.Distance)
+		candidates := tree.SearchWithinDistance(e.phash.Int64, opts.Distance)
 		for _, cid := range candidates {
 			if cid <= e.id {
-				continue // canonicalise a < b; the symmetric pair will surface when we hit b
+				continue // canonicalise a < b; the symmetric pair surfaces when we reach a
 			}
 			// Skip if pair already carries a real relation or is on
 			// the not-related list. Cheap correlated COUNTs that ride
@@ -176,7 +188,7 @@ func FindPairs(ctx context.Context, database *db.DB, tree *BKTree, opts FindPair
 				continue
 			}
 			pending = append(pending, pairToInsert{
-				a: e.id, b: cid, distance: hammingDistance(phash.Int64, lookupPhashFromTree(tree, cid)),
+				a: e.id, b: cid, distance: hammingDistance(e.phash.Int64, lookupPhashFromTree(tree, cid)),
 			})
 			added++
 			if len(pending) >= txChunk {
@@ -250,10 +262,7 @@ func incrementalProbe(database *db.DB, tree *BKTree, id, phash int64, distance i
 		if cid == id {
 			continue
 		}
-		lo, hi := id, cid
-		if hi < lo {
-			lo, hi = hi, lo
-		}
+		lo, hi := canonicalPair(id, cid)
 		known, err := pairAlreadyKnown(ctx, database, lo, hi)
 		if err != nil {
 			return err

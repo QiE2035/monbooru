@@ -23,7 +23,9 @@
                 hx-delete="/images/{{$.ImageID}}/aliases/{{.ID}}"
                 hx-target="closest .duplicates-entry"
                 hx-swap="outerHTML"
-                hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'>Remove</button>
+                hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+                hx-confirm="Delete this duplicate file from disk? The canonical path stays."
+                data-confirm-ok="Delete">Delete</button>
         {{end}}
       </div>
     </li>
@@ -49,8 +51,8 @@
            onerror="this.parentElement.innerHTML='<span class=thumb-fail title=&quot;preview unavailable&quot;>?</span>'">
       {{if .Series}}
         <span class="series-pill" title="Collection: {{.Series}}{{if .SeriesOrder}} #{{deref64 .SeriesOrder}}{{end}}">
-          {{if .SeriesOrder}}<span class="series-pill-order">#{{deref64 .SeriesOrder}}</span>{{end}}
           <span class="series-pill-name">{{.Series}}</span>
+          {{if .SeriesOrder}}<span class="series-pill-order">#{{deref64 .SeriesOrder}}</span>{{end}}
         </span>
         <span class="relation-marker" title="Same collection">Same collection</span>
       {{else}}

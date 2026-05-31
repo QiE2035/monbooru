@@ -634,68 +634,46 @@ func adjacencyTotalEstimate(database *db.DB, expr Expr) (int, bool) {
 // fastCountCeiling matches the cookie-ceiling AST shape: a chain of
 // NotExpr{FilterExpr{Key:"rating"}} ANDed together, optionally wrapped
 // as AndExpr{userExpr, chain} when the cookie is combined with a user
-// search. The chain bound is visible_count minus the sum of usage_count
-// over the excluded rating tags. Exact when each image carries at most
-// one rating tag (the durable invariant PruneLowerRatingsTx now upholds
-// on every write); a lower bound on the chain count if pre-existing
-// data violates it, in which case pagination drops a trailing edge -
-// same off-by-N direction the rest of fastTagTotal already accepts.
+// search. For the bare chain it counts the visible images whose
+// effective rating passes the ceiling straight off the maintained
+// images.rating_rank column (the highest rank an image carries, -1 when
+// unrated). Counting that single per-image rank stays exact when an
+// image carries more than one rating tag - summing the excluded tags'
+// usage_count would subtract such a row once per excluded level it
+// carries and under-report the total. The render path filters the same
+// `rating_rank <= ?` predicate, so the count and the rendered page agree.
 //
-// The sum-of-usage form replaces the prior COUNT(DISTINCT image_id)
-// over `tag_id IN (excluded) AND is_missing = 0`, which scanned ~900k
-// image_tags rows at large-fixture scale. Reading four tags rows is
-// constant time.
+// A user search ANDed onto the ceiling defers to the slow exact COUNT:
+// the chain count says nothing about how the user predicate intersects
+// it, and a loose bound would advertise phantom trailing pages. The
+// slow COUNT then seeds the adjacency cache so later renders ride the
+// fast path with no SQL.
 func fastCountCeiling(database *db.DB, expr Expr) (int, bool) {
 	user, excluded, ok := extractCeilingShape(expr)
 	if !ok || len(excluded) == 0 {
 		return 0, false
 	}
-	rows, err := database.Read.Query(
-		`SELECT t.name, t.usage_count FROM tags t
-		 JOIN tag_categories tc ON tc.id = t.category_id
-		 WHERE tc.name = 'rating' AND t.is_alias = 0
-		   AND t.name IN ('general','sensitive','questionable','explicit')`,
-	)
-	if err != nil {
+	if user != nil {
 		return 0, false
 	}
-	usageByName := make(map[string]int, 4)
-	for rows.Next() {
-		var name string
-		var usage int
-		if err := rows.Scan(&name, &usage); err == nil {
-			usageByName[name] = usage
-		}
-	}
-	rows.Close()
-
-	hidden := 0
-	for _, name := range excluded {
-		hidden += usageByName[name]
-	}
-	visible, ok := fastVisibleCount(database)
-	if !ok {
+	rank := ceilingRankFromExcluded(excluded)
+	if rank < -1 {
 		return 0, false
 	}
-	chainBound := visible - hidden
-	if chainBound < 0 {
-		chainBound = 0
+	// Pin idx_images_rating_rank_visible: rating_rank has only five
+	// distinct values, so the sampled sqlite_stat1 (analysis_limit=400)
+	// underestimates its per-value cardinality and the planner otherwise
+	// counts through the wider idx_images_missing, reading every visible
+	// images row (seconds on a cold million-row library). The covering
+	// partial index answers the range from a few MB of index pages.
+	var total int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM images INDEXED BY idx_images_rating_rank_visible
+		 WHERE is_missing = 0 AND rating_rank <= ?`, rank,
+	).Scan(&total); err != nil {
+		return 0, false
 	}
-	if user == nil {
-		return chainBound, true
-	}
-	// Both userCount and chainBound are valid upper bounds on
-	// count(userExpr AND chain), so min(userCount, chainBound) is too -
-	// but the bound has no relationship to the actual intersection
-	// density. A general-category tag carried mostly by NSFW images
-	// under a SFW ceiling, or a SFW visible count dwarfed by a popular
-	// tag, both produce an order-of-magnitude overshoot that
-	// pagination then advertises as phantom trailing pages. Defer to
-	// the slow exact COUNT; cost is bounded by the user's match
-	// cardinality via idx_image_tags_tag_image, paid once per cache
-	// miss, and the resulting total seeds the adjacency cache so
-	// subsequent renders ride the fast path with no SQL.
-	return 0, false
+	return total, true
 }
 
 // extractCeilingShape splits an AST into a userExpr remainder and the
@@ -1058,13 +1036,13 @@ func resolveDriverCanonicals(database *db.DB, leaf TagExpr) ([]int64, int64, boo
 		arg = leaf.Tag
 	case "prefix":
 		pred = `t.name LIKE ? ESCAPE '\'`
-		arg = escapeLike(leaf.Tag) + "%"
+		arg = db.EscapeLike(leaf.Tag) + "%"
 	case "suffix":
 		pred = `t.name LIKE ? ESCAPE '\'`
-		arg = "%" + escapeLike(leaf.Tag)
+		arg = "%" + db.EscapeLike(leaf.Tag)
 	case "substring":
 		pred = `t.name LIKE ? ESCAPE '\'`
-		arg = "%" + escapeLike(leaf.Tag) + "%"
+		arg = "%" + db.EscapeLike(leaf.Tag) + "%"
 	default:
 		return nil, 0, false
 	}
@@ -1216,13 +1194,13 @@ func fastCountTag(database *db.DB, t TagExpr) (int, bool) {
 		arg = t.Tag
 	case "prefix":
 		pred = `name LIKE ? ESCAPE '\'`
-		arg = escapeLike(t.Tag) + "%"
+		arg = db.EscapeLike(t.Tag) + "%"
 	case "suffix":
 		pred = `name LIKE ? ESCAPE '\'`
-		arg = "%" + escapeLike(t.Tag)
+		arg = "%" + db.EscapeLike(t.Tag)
 	case "substring":
 		pred = `name LIKE ? ESCAPE '\'`
-		arg = "%" + escapeLike(t.Tag) + "%"
+		arg = "%" + db.EscapeLike(t.Tag) + "%"
 	default:
 		return 0, false
 	}
@@ -2532,19 +2510,8 @@ func (b *whereBuilder) categoryExists(name string) bool {
 }
 
 func buildWhereDB(expr Expr, database *db.DB) (string, []any, bool) {
-	b := &whereBuilder{db: database}
-	expr = b.peelCeilingForColumnRewrite(expr)
-	if expr != nil {
-		part := b.buildExpr(expr)
-		if part != "" {
-			b.parts = append(b.parts, part)
-		}
-	}
-	where := strings.Join(b.parts, " AND ")
-	if where == "" {
-		where = "1=1"
-	}
-	return where, b.args, b.hasMissingFilter
+	where, args, hasMissing, _ := buildWhereDBDriverFull(expr, database, nil)
+	return where, args, hasMissing
 }
 
 func (b *whereBuilder) buildExpr(expr Expr) string {
@@ -2596,27 +2563,18 @@ func (b *whereBuilder) buildTagExpr(e TagExpr) string {
 	}
 	switch e.Wildcard {
 	case "prefix":
-		b.args = append(b.args, escapeLike(e.Tag)+"%")
+		b.args = append(b.args, db.EscapeLike(e.Tag)+"%")
 		return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(canonical_tag_id, id) FROM tags WHERE name LIKE ? ESCAPE '\')`, false)
 	case "suffix":
-		b.args = append(b.args, "%"+escapeLike(e.Tag))
+		b.args = append(b.args, "%"+db.EscapeLike(e.Tag))
 		return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(canonical_tag_id, id) FROM tags WHERE name LIKE ? ESCAPE '\')`, false)
 	case "substring":
-		b.args = append(b.args, "%"+escapeLike(e.Tag)+"%")
+		b.args = append(b.args, "%"+db.EscapeLike(e.Tag)+"%")
 		return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(canonical_tag_id, id) FROM tags WHERE name LIKE ? ESCAPE '\')`, false)
 	default:
 		b.args = append(b.args, e.Tag)
 		return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(canonical_tag_id, id) FROM tags WHERE name = ?)`, false)
 	}
-}
-
-// escapeLike escapes the SQLite LIKE metacharacters (`_`, `%`) and the
-// escape character itself (`\`) so user-supplied input matches literally
-// when concatenated with `%`/`_` wildcards. Callers must pair this with
-// `ESCAPE '\'` on the LIKE clause.
-func escapeLike(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `_`, `\_`, `%`, `\%`)
-	return r.Replace(s)
 }
 
 // ratingLevels is the canonical rating vocabulary, ordered low to high.
@@ -2646,7 +2604,7 @@ func (b *whereBuilder) dualMetadataLike(sdCol, comfyCol, val string) string {
 	if val == "" {
 		return "1=0"
 	}
-	pat := "%" + escapeLike(val) + "%"
+	pat := "%" + db.EscapeLike(val) + "%"
 	b.args = append(b.args, pat, pat)
 	sm := b.imageIDExists("sd_metadata sm", "sm", "sm."+sdCol+` LIKE ? ESCAPE '\'`, false)
 	cm := b.imageIDExists("comfyui_metadata cm", "cm", "cm."+comfyCol+` LIKE ? ESCAPE '\'`, false)
@@ -2900,7 +2858,7 @@ func (b *whereBuilder) buildNameFilter(e FilterExpr) string {
 		return `(i.id IN (SELECT rowid FROM image_basename_canonical_fts WHERE image_basename_canonical_fts MATCH ?) ` +
 			`OR i.id IN (SELECT image_id FROM image_basename_alias_fts WHERE image_basename_alias_fts MATCH ?))`
 	}
-	pat := "%" + escapeLike(strings.ToLower(e.Val)) + "%"
+	pat := "%" + db.EscapeLike(strings.ToLower(e.Val)) + "%"
 	// image_paths.basename_lower is the VIRTUAL twin of
 	// images.basename_lower. The INDEXED BY hint pins the partial
 	// `is_canonical = 0` index so the EXISTS subquery rides a seek
@@ -3074,7 +3032,7 @@ func (b *whereBuilder) buildFolderFilter(e FilterExpr) string {
 	if e.Val == "" {
 		return "1=1"
 	}
-	b.args = append(b.args, e.Val, escapeLike(e.Val)+"/%")
+	b.args = append(b.args, e.Val, db.EscapeLike(e.Val)+"/%")
 	return `(i.folder_path = ? COLLATE NOCASE OR i.folder_path LIKE ? ESCAPE '\' COLLATE NOCASE)`
 }
 

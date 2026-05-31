@@ -524,10 +524,7 @@ func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
 			logx.Warnf("vacuum wal_checkpoint: %v", err)
 		}
 		afterSize := dbFileSize(s.dbPath())
-		freed := beforeSize - afterSize
-		if freed < 0 {
-			freed = 0
-		}
+		freed := max(beforeSize-afterSize, 0)
 		s.jobs.Complete(fmt.Sprintf("Vacuumed (reclaimed %s).", humanBytesFmt(freed)))
 	}()
 	writeInlineFlash(w, "ok", "Vacuum started. Watch the status bar for the reclaimed-space report.")

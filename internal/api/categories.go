@@ -186,8 +186,6 @@ func (h *Handler) deleteCategory(w http.ResponseWriter, r *http.Request) {
 		writeCategoryError(w, err)
 		return
 	}
-	if g.InvalidateCaches != nil {
-		g.InvalidateCaches()
-	}
+	g.invalidate()
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -102,6 +102,10 @@ func (h *Handler) serveMangaPagePath(
 		apiError(w, http.StatusNotFound, "not_found", "image is not a manga archive")
 		return
 	}
+	if !pathInsideGallery(g.GalleryPath, canonPath) {
+		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return
+	}
 	page, err := ensure(g.ThumbnailsPath, canonPath, id, n)
 	if err != nil {
 		apiError(w, http.StatusNotFound, "not_found", "page not found")

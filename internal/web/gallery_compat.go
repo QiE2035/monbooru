@@ -2,7 +2,8 @@ package web
 
 import (
 	"archive/zip"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/leqwin/monbooru/internal/web/compatibility"
 )
@@ -67,11 +68,7 @@ func toLightManifest(m compatibility.Manifest) lightManifest {
 }
 
 func translatedFilesFromCompat(in map[string]*zip.File) []translatedFile {
-	rels := make([]string, 0, len(in))
-	for r := range in {
-		rels = append(rels, r)
-	}
-	sort.Strings(rels)
+	rels := slices.Sorted(maps.Keys(in))
 	out := make([]translatedFile, 0, len(rels))
 	for _, r := range rels {
 		out = append(out, translatedFile{rel: r, file: in[r]})

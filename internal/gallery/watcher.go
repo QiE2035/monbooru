@@ -147,13 +147,15 @@ func (w *Watcher) Run(ctx context.Context) error {
 			}
 
 			// Slow writers (network copies, large archives) keep firing
-			// IN_MODIFY long after IN_CREATE; without extending the
-			// pending CREATE-timer, ingestFile reads a partial file and
-			// the archive parser bails on the missing central directory.
-			// Only extend - never start a fresh timer - so saves to
-			// already-ingested files don't re-trigger ingestion.
+			// IN_MODIFY long after IN_CREATE; debouncing the write extends
+			// the pending create-timer so ingestFile runs once on the
+			// settled bytes, not a partial file the archive parser would
+			// reject for a missing central directory. If the create-timer
+			// already fired on a partial archive, the late writes schedule
+			// a follow-up ingest that finds the now-complete file; a write
+			// to an already-ingested file re-ingests but dedups on SHA-256.
 			if event.Has(fsnotify.Write) {
-				w.extendDebounce(event.Name)
+				w.debounce(event.Name)
 			}
 
 			if event.Has(fsnotify.Remove) {
@@ -203,31 +205,6 @@ func (w *Watcher) debounce(path string) {
 		delete(w.timers, path)
 		w.mu.Unlock()
 
-		w.ingestFile(path)
-	})
-}
-
-// extendDebounce resets the create-side debounce timer when one is
-// already pending, or schedules a fresh ingest 500 ms out when one
-// isn't. Used by Write events: while a slow writer streams the file,
-// IN_MODIFY events extend the wait so ingestFile runs once on the
-// settled bytes. If the create-debounce already fired on a partial
-// file (large cbz where central-directory bytes arrive after the
-// 500 ms create window), the late writes schedule a follow-up
-// ingest that finds the now-complete archive. Saves to long-existing
-// files also schedule a re-ingest, which dedups on SHA-256 and is
-// a no-op past the hash cost.
-func (w *Watcher) extendDebounce(path string) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if t, ok := w.timers[path]; ok {
-		t.Reset(500 * time.Millisecond)
-		return
-	}
-	w.timers[path] = time.AfterFunc(500*time.Millisecond, func() {
-		w.mu.Lock()
-		delete(w.timers, path)
-		w.mu.Unlock()
 		w.ingestFile(path)
 	})
 }

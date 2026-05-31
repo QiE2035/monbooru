@@ -52,3 +52,12 @@ func InPlaceholders[T any](xs []T) (string, []any) {
 	}
 	return strings.Repeat("?,", len(xs)-1) + "?", args
 }
+
+// EscapeLike escapes the SQLite LIKE metacharacters (`_`, `%`) and the
+// escape character (`\`) so operator-supplied input matches literally
+// when concatenated with `%`/`_` wildcards. Callers must pair it with
+// `ESCAPE '\'` on the LIKE clause.
+func EscapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `_`, `\_`, `%`, `\%`)
+	return r.Replace(s)
+}

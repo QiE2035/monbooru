@@ -3,8 +3,9 @@ package compatibility
 import (
 	"archive/zip"
 	"bufio"
+	"maps"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/leqwin/monbooru/internal/logx"
@@ -59,11 +60,7 @@ func translateHydrus(entries []NormalizedEntry) (Result, error) {
 		}
 	}
 
-	rels := make([]string, 0, len(images))
-	for k := range images {
-		rels = append(rels, k)
-	}
-	sort.Strings(rels)
+	rels := slices.Sorted(maps.Keys(images))
 
 	out := Result{Files: map[string]*zip.File{}}
 	for _, rel := range rels {

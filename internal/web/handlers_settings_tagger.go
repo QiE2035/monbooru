@@ -255,7 +255,11 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 			}
 			topK[cat] = n
 		}
-		if r.FormValue("disable_"+cat) != "" {
+		// Every row submits its category hidden input; the per-row Enable
+		// checkbox is only present when ticked. A category whose Enable box
+		// is absent is muted. The dialog ships every category enabled by
+		// default, so disabling is the deliberate act.
+		if r.FormValue("enable_"+cat) == "" {
 			disabled = append(disabled, cat)
 		}
 	}

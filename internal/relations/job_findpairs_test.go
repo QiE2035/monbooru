@@ -2,6 +2,12 @@ package relations
 
 import (
 	"context"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -132,5 +138,59 @@ func TestFindPairsLazyPhashCompute(t *testing.T) {
 	}
 	if added != 0 {
 		t.Fatalf("added = %d, want 0 (no decodable thumbnails, lazy compute fails)", added)
+	}
+}
+
+// writeTestThumb writes a deterministic gradient JPEG at <dir>/<id>.jpg so
+// FindPairs' lazy phash compute has something to decode.
+func writeTestThumb(t *testing.T, dir string, id int64) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			v := uint8((x + y) * 255 / 126)
+			img.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
+		}
+	}
+	f, err := os.Create(filepath.Join(dir, strconv.FormatInt(id, 10)+".jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jpeg.Encode(f, img, &jpeg.Options{Quality: 85}); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+}
+
+// Two images with NULL phash and identical thumbnails must surface as a
+// pair. Their phashes are computed lazily during the run; the probe must
+// still find the match even though the higher-id member is phashed inside
+// the same run. Regression for the a < b canonicalisation dropping the
+// pair when both members started NULL.
+func TestFindPairsLazyComputeFindsPair(t *testing.T) {
+	database, _ := setupTestDB(t)
+	a := insertImage(t, database, "a", 1000)
+	b := insertImage(t, database, "b", 2000)
+	if _, err := database.Write.Exec(`UPDATE images SET phash = NULL WHERE id IN (?, ?)`, a, b); err != nil {
+		t.Fatal(err)
+	}
+	thumbs := t.TempDir()
+	writeTestThumb(t, thumbs, a)
+	writeTestThumb(t, thumbs, b)
+	tree := NewBKTree()
+	added, err := FindPairs(context.Background(), database, tree, FindPairsOptions{Distance: 4, ThumbnailsPath: thumbs}, nil)
+	if err != nil {
+		t.Fatalf("FindPairs: %v", err)
+	}
+	if added != 1 {
+		t.Fatalf("added = %d, want 1 (identical lazily-phashed thumbnails are a pair)", added)
+	}
+	var ai, bi int64
+	if err := database.Read.QueryRow(`SELECT a_image_id, b_image_id FROM potential_relation_pairs`).Scan(&ai, &bi); err != nil {
+		t.Fatal(err)
+	}
+	if ai != a || bi != b {
+		t.Fatalf("queue row = (%d, %d), want (%d, %d)", ai, bi, a, b)
 	}
 }

@@ -389,8 +389,8 @@ func reconcileExistingSHA(database *db.DB, galleryPath string, fi syncFileInfo, 
 		return
 	}
 	if _, wErr := database.Write.Exec(
-		`INSERT OR IGNORE INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 0)`,
-		row.id, fi.path,
+		`INSERT OR IGNORE INTO image_paths (image_id, path, is_canonical, mtime_unix) VALUES (?, ?, 0, ?)`,
+		row.id, fi.path, fi.mtime,
 	); wErr != nil {
 		logx.Warnf("sync: insert alias path %d: %v", row.id, wErr)
 	}
@@ -597,6 +597,15 @@ func applyInPlaceEdit(database *db.DB, galleryPath, thumbnailsPath, path, fileTy
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit in-place edit: %w", err)
+	}
+
+	// A cbz whose bytes changed can have a different page count or order,
+	// so the lazily-extracted raw page cache for the old contents is stale
+	// (the reader serves an existing page file without revalidating it).
+	// Drop the whole per-image cache; Generate below re-renders the page
+	// thumbnails and the raw pages re-extract on the next read.
+	if fileType == "cbz" {
+		RemoveMangaCache(thumbnailsPath, imageID)
 	}
 
 	if err := Generate(path, thumbnailsPath, imageID, fileType); err != nil {

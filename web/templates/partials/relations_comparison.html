@@ -3,7 +3,7 @@
 {{- $R := .Right -}}
 <table class="relations-compare-table">
   <thead>
-    <tr><th>Field</th><th>Left #{{$L.ImageID}}</th><th>Right #{{$R.ImageID}}</th></tr>
+    <tr><th>Field</th><th>Left <span class="cmp-col-id">#{{$L.ImageID}}</span></th><th>Right <span class="cmp-col-id">#{{$R.ImageID}}</span></th></tr>
   </thead>
   <tbody>
     {{- $lwin := and (gt $L.ResolutionW 0) (or (gt $L.ResolutionW $R.ResolutionW) (and (eq $L.ResolutionW $R.ResolutionW) (gt $L.ResolutionH $R.ResolutionH))) -}}

@@ -105,7 +105,7 @@ var schemaSQL string
 // and refreshed sqlite_stat1. Bump it when a migration adds a column or
 // index the planner needs stats for; Bootstrap then runs ANALYZE on the
 // next boot after the upgrade and skips it on every boot afterwards.
-const bootstrapSchemaVersion = 7
+const bootstrapSchemaVersion = 8
 
 // DB holds read and write connection pools for the SQLite database.
 // WAL mode allows concurrent readers but serialises writers, so the read
@@ -356,6 +356,12 @@ func Bootstrap(db *DB) error {
 	// the entries match the gallery's visible-only filter.
 	b.exec("create idx_images_ingested_rating_visible", `CREATE INDEX IF NOT EXISTS idx_images_ingested_rating_visible ON images(ingested_at DESC, id DESC, rating_rank) WHERE is_missing = 0`)
 	b.exec("create idx_images_filesize_rating_visible", `CREATE INDEX IF NOT EXISTS idx_images_filesize_rating_visible ON images(file_size DESC, id DESC, rating_rank) WHERE is_missing = 0`)
+	// Standalone covering partial index on the effective rating rank so
+	// the unfiltered-ceiling count rides a `rating_rank <= ?` range seek
+	// instead of scanning every visible row. The sort indexes above carry
+	// rating_rank only as a trailing key, which the planner can't seek on
+	// for a bare rank predicate.
+	b.exec("create idx_images_rating_rank_visible", `CREATE INDEX IF NOT EXISTS idx_images_rating_rank_visible ON images(rating_rank) WHERE is_missing = 0`)
 	// Maintain images.rating_rank with row-level triggers. The WHEN
 	// subquery short-circuits the trigger to rating-category writes only
 	// so per-image_tags inserts and deletes for non-rating tags stay free.

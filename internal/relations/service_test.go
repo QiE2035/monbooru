@@ -472,30 +472,72 @@ func TestAddNotRelated(t *testing.T) {
 	}
 }
 
-func TestAltPropagationOnDuplicate(t *testing.T) {
+// TestDuplicateDoesNotMergeAlternates pins §9.2: a pair carries at most
+// one relation type. Declaring a and b duplicates must not fold their
+// separate alternate groups together, which would also make a and b
+// alternates of each other on top of being duplicates.
+func TestDuplicateDoesNotMergeAlternates(t *testing.T) {
 	database, svc := setupTestDB(t)
 	a := insertImage(t, database, "a", 100)
 	b := insertImage(t, database, "b", 100)
 	c := insertImage(t, database, "c", 100)
 	d := insertImage(t, database, "d", 100)
-	// a is alternate to c
 	if err := svc.AddAlternate(a, c); err != nil {
 		t.Fatalf("a-c alt: %v", err)
 	}
-	// b is alternate to d (different alt group)
 	if err := svc.AddAlternate(b, d); err != nil {
 		t.Fatalf("b-d alt: %v", err)
 	}
-	// a and b become duplicates -> their alt groups must merge so c
-	// becomes alternate to d transitively.
 	if err := svc.AddDuplicate(a, b); err != nil {
 		t.Fatalf("AddDuplicate: %v", err)
 	}
-	gA := altGroupOf(t, database, a)
-	gC := altGroupOf(t, database, c)
-	gD := altGroupOf(t, database, d)
-	if !gA.Valid || gA.Int64 != gC.Int64 || gA.Int64 != gD.Int64 {
-		t.Fatalf("alt-group merge failed: a=%d c=%d d=%d", gA.Int64, gC.Int64, gD.Int64)
+	dA, _ := dupGroupOf(t, database, a)
+	dB, _ := dupGroupOf(t, database, b)
+	if !dA.Valid || dA.Int64 != dB.Int64 {
+		t.Fatalf("a and b should share a dup group: a=%v b=%v", dA, dB)
+	}
+	gA, gB := altGroupOf(t, database, a), altGroupOf(t, database, b)
+	gC, gD := altGroupOf(t, database, c), altGroupOf(t, database, d)
+	if gA.Int64 != gC.Int64 || gB.Int64 != gD.Int64 {
+		t.Fatalf("alt memberships should be untouched: a=%d c=%d b=%d d=%d", gA.Int64, gC.Int64, gB.Int64, gD.Int64)
+	}
+	if gA.Int64 == gB.Int64 {
+		t.Fatal("a and b must not share an alt group (they are duplicates, not alternates)")
+	}
+}
+
+// TestOverwriteAlternateWithDuplicate mirrors the detail-page "Overwrite
+// existing relation" path (ClearBetween then AddDuplicate) when the
+// existing relation is a multi-member alternate group. The overwritten
+// pair must end up duplicates only, never duplicates and alternates at
+// once.
+func TestOverwriteAlternateWithDuplicate(t *testing.T) {
+	database, svc := setupTestDB(t)
+	a := insertImage(t, database, "a", 100)
+	b := insertImage(t, database, "b", 100)
+	c := insertImage(t, database, "c", 100)
+	if err := svc.AddAlternate(a, b); err != nil {
+		t.Fatalf("a-b alt: %v", err)
+	}
+	if err := svc.AddAlternate(a, c); err != nil { // alt group {a, b, c}
+		t.Fatalf("a-c alt: %v", err)
+	}
+	if err := svc.ClearBetween(a, b); err != nil {
+		t.Fatalf("ClearBetween: %v", err)
+	}
+	if err := svc.AddDuplicate(a, b); err != nil {
+		t.Fatalf("AddDuplicate: %v", err)
+	}
+	dA, _ := dupGroupOf(t, database, a)
+	dB, _ := dupGroupOf(t, database, b)
+	if !dA.Valid || dA.Int64 != dB.Int64 {
+		t.Fatal("a and b should share a dup group")
+	}
+	if altGroupOf(t, database, b).Valid {
+		t.Fatal("b must not be in an alt group after being overwritten to a duplicate of a")
+	}
+	if altGroupOf(t, database, a).Int64 != altGroupOf(t, database, c).Int64 {
+		t.Fatal("c should remain an alternate of a")
 	}
 }
 

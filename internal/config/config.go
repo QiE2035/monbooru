@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -146,12 +147,7 @@ func (t TaggerInstance) AppliesToGallery(name string) bool {
 	if t.Galleries == nil {
 		return true
 	}
-	for _, g := range t.Galleries {
-		if g == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(t.Galleries, name)
 }
 
 type AuthConfig struct {

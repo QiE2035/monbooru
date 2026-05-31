@@ -2,6 +2,7 @@ package web
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/png"
@@ -89,6 +90,39 @@ func TestMoveImage_HappyPath(t *testing.T) {
 	}
 	if _, err := os.Stat(want); err != nil {
 		t.Errorf("file not at new path: %v", err)
+	}
+}
+
+// The move flash echoes the operator-supplied folder name, and the client
+// renders it via innerHTML, so the trigger text must arrive HTML-escaped.
+func TestMoveImage_FlashEscapesFolderName(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "esc.png", 10, 10)
+
+	form := url.Values{"_csrf": {srv.csrfToken("anon")}, "folder": {"<b>x</b>"}}
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/move", id), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var trig struct {
+		Flash struct {
+			Text string `json:"text"`
+		} `json:"monbooru:flash"`
+	}
+	if err := json.Unmarshal([]byte(w.Header().Get("HX-Trigger")), &trig); err != nil {
+		t.Fatalf("HX-Trigger not valid JSON: %v (%q)", err, w.Header().Get("HX-Trigger"))
+	}
+	if strings.Contains(trig.Flash.Text, "<b>") {
+		t.Errorf("flash text carries raw markup: %q", trig.Flash.Text)
+	}
+	if !strings.Contains(trig.Flash.Text, "&lt;b&gt;") {
+		t.Errorf("flash text not HTML-escaped: %q", trig.Flash.Text)
 	}
 }
 

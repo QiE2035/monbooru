@@ -820,6 +820,70 @@ func TestListTags_IsAutoOnly_ZeroUsageNotFlagged(t *testing.T) {
 	}
 }
 
+func TestListTags_APIOrigin(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	img1 := insertTestImage(t, database, "apiorigin_1")
+	img2 := insertTestImage(t, database, "apiorigin_2")
+	conf := 0.9
+
+	userTag, _ := svc.GetOrCreateTag("anon_user", catID)
+	apiTag, _ := svc.GetOrCreateTag("api_sourced", catID)
+	autoTag, _ := svc.GetOrCreateTag("auto_machine", catID)
+	mixedTag, _ := svc.GetOrCreateTag("anon_plus_api", catID)
+
+	// Anonymous UI add => user; a manual add carrying a source label =>
+	// api; an auto-tagged row => auto; an anon row on one image plus a
+	// labelled row on another => user (a human touched it).
+	svc.AddTagToImage(img1, userTag.ID, false, nil)
+	svc.AddTagToImageFromTagger(img1, apiTag.ID, false, nil, "scraper")
+	svc.AddTagToImage(img1, autoTag.ID, true, &conf)
+	svc.AddTagToImage(img1, mixedTag.ID, false, nil)
+	svc.AddTagToImageFromTagger(img2, mixedTag.ID, false, nil, "scraper")
+
+	for _, tc := range []struct {
+		prefix            string
+		wantAuto, wantAPI bool
+	}{
+		{"anon_user", false, false},
+		{"api_sourced", false, true},
+		{"auto_machine", true, false},
+		{"anon_plus_api", false, false},
+	} {
+		tags, _, err := svc.ListTags(TagFilter{Prefix: tc.prefix, Limit: 100})
+		if err != nil || len(tags) != 1 {
+			t.Fatalf("%s lookup: %v %+v", tc.prefix, err, tags)
+		}
+		if tags[0].IsAutoOnly != tc.wantAuto || tags[0].IsAPIOnly != tc.wantAPI {
+			t.Errorf("%s: IsAutoOnly=%v IsAPIOnly=%v, want %v/%v",
+				tc.prefix, tags[0].IsAutoOnly, tags[0].IsAPIOnly, tc.wantAuto, tc.wantAPI)
+		}
+	}
+
+	// The Origin filter buckets the same way (ListTags returns name-asc).
+	names := func(origin string) []string {
+		tags, _, err := svc.ListTags(TagFilter{Origin: origin, Limit: 100})
+		if err != nil {
+			t.Fatalf("filter %q: %v", origin, err)
+		}
+		out := []string{}
+		for _, tg := range tags {
+			out = append(out, tg.Name)
+		}
+		return out
+	}
+	if got := names("api"); !reflect.DeepEqual(got, []string{"api_sourced"}) {
+		t.Errorf("origin=api => %v, want [api_sourced]", got)
+	}
+	if got := names("user"); !reflect.DeepEqual(got, []string{"anon_plus_api", "anon_user"}) {
+		t.Errorf("origin=user => %v, want [anon_plus_api anon_user]", got)
+	}
+	if got := names("auto"); !reflect.DeepEqual(got, []string{"auto_machine"}) {
+		t.Errorf("origin=auto => %v, want [auto_machine]", got)
+	}
+}
+
 func TestUpdateCategoryColor(t *testing.T) {
 	_, svc := setupTestDB(t)
 

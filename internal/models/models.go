@@ -111,6 +111,7 @@ type Tag struct {
 	UsageCount            int
 	IsAlias               bool
 	IsAutoOnly            bool // true if all usages of this tag are auto-tagged (no manual usage)
+	IsAPIOnly             bool // true if every manual usage carries an API source label (no anonymous UI add)
 	CanonicalTagID        *int64
 	CanonicalName         string // populated on alias rows when ListTags joins the canonical
 	CanonicalCategoryName string
@@ -245,17 +246,6 @@ const (
 	JobTypePhash         = "phash"
 	JobTypeRelations     = "relations"
 )
-
-// JobTypes is the authoritative ordered list of every JobType the
-// runtime emits. Templates and docs key off this list so adding a new
-// type forces a one-line update here.
-func JobTypes() []string {
-	return []string{
-		JobTypeSync, JobTypeAutotag, JobTypeReExtract, JobTypeDelete,
-		JobTypeRebuildThumbs, JobTypeMove, JobTypeTag, JobTypeWatcher,
-		JobTypePruneThumbs, JobTypeVacuum, JobTypeFreeMemory, JobTypePhash, JobTypeRelations,
-	}
-}
 
 type JobState struct {
 	Running    bool

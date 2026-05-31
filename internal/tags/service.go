@@ -133,7 +133,7 @@ type TagFilter struct {
 	// one. ListTags multiplies by Limit to derive the SQL OFFSET.
 	PageIndex int
 	Limit     int
-	Origin    string // "" | "user" | "auto" | "alias"
+	Origin    string // "" | "user" | "auto" | "api" | "alias"
 	// ShowZero opts in to surfacing non-alias tags whose usage_count is 0.
 	// Default behaviour hides them so the listing reflects what is actually
 	// applied to images; alias rows always render regardless because their
@@ -657,7 +657,16 @@ func tagFilterWhere(filter TagFilter) (string, []any) {
 		// not silently classified as auto-only by the negative existential.
 		where += " AND t.is_alias = 0 AND t.usage_count > 0 AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.tag_id = t.id AND it.is_auto = 0)"
 	case "user":
-		where += " AND t.is_alias = 0 AND EXISTS (SELECT 1 FROM image_tags it WHERE it.tag_id = t.id AND it.is_auto = 0)"
+		// "user" is a manual add made anonymously through the UI, so it
+		// must carry a non-auto row with no source label. A tag whose
+		// manual rows are all API-labelled is "api", not "user".
+		where += " AND t.is_alias = 0 AND EXISTS (SELECT 1 FROM image_tags it WHERE it.tag_id = t.id AND it.is_auto = 0 AND (it.tagger_name IS NULL OR it.tagger_name = ''))"
+	case "api":
+		// Applied through the REST API: at least one labelled manual row
+		// (a source in tagger_name) and no anonymous UI add.
+		where += " AND t.is_alias = 0 AND t.usage_count > 0" +
+			" AND EXISTS (SELECT 1 FROM image_tags it WHERE it.tag_id = t.id AND it.is_auto = 0 AND it.tagger_name IS NOT NULL AND it.tagger_name <> '')" +
+			" AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.tag_id = t.id AND it.is_auto = 0 AND (it.tagger_name IS NULL OR it.tagger_name = ''))"
 	case "alias":
 		where += " AND t.is_alias = 1"
 	}
@@ -773,35 +782,58 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 		}
 	}
 	if len(ids) > 0 {
-		placeholders, args := db.InPlaceholders(ids)
-		userRows, err := s.db.Read.Query(
-			`SELECT DISTINCT tag_id FROM image_tags WHERE is_auto = 0 AND tag_id IN (`+placeholders+`)`,
-			args...,
-		)
+		// Two probes over the candidate rows decide the origin badge.
+		// hasManual: the tag carries any non-auto (`is_auto = 0`) row.
+		// hasAnon: at least one of those non-auto rows is an anonymous UI
+		// add (empty tagger_name). No manual row at all => "auto"; a
+		// manual row but none anonymous (every one API-labelled via
+		// tagger_name) => "api"; otherwise => "user".
+		hasManual, err := s.tagIDSet(ids, "is_auto = 0")
 		if err != nil {
 			return nil, 0, err
 		}
-		hasUser := map[int64]struct{}{}
-		for userRows.Next() {
-			var id int64
-			if err := userRows.Scan(&id); err != nil {
-				userRows.Close()
-				return nil, 0, err
-			}
-			hasUser[id] = struct{}{}
+		hasAnon, err := s.tagIDSet(ids, "is_auto = 0 AND (tagger_name IS NULL OR tagger_name = '')")
+		if err != nil {
+			return nil, 0, err
 		}
-		userRows.Close()
 		for i := range tagList {
 			if tagList[i].IsAlias || tagList[i].UsageCount == 0 {
 				continue
 			}
-			if _, ok := hasUser[tagList[i].ID]; !ok {
+			if _, manual := hasManual[tagList[i].ID]; !manual {
 				tagList[i].IsAutoOnly = true
+			} else if _, anon := hasAnon[tagList[i].ID]; !anon {
+				tagList[i].IsAPIOnly = true
 			}
 		}
 	}
 
 	return tagList, total, nil
+}
+
+// tagIDSet returns the subset of ids that have at least one image_tags
+// row matching cond (a trusted, caller-supplied SQL fragment). ListTags
+// uses it to derive the per-tag origin badge from the non-auto and
+// anonymous-vs-labelled row populations.
+func (s *Service) tagIDSet(ids []int64, cond string) (map[int64]struct{}, error) {
+	placeholders, args := db.InPlaceholders(ids)
+	rows, err := s.db.Read.Query(
+		`SELECT DISTINCT tag_id FROM image_tags WHERE `+cond+` AND tag_id IN (`+placeholders+`)`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	set := make(map[int64]struct{})
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		set[id] = struct{}{}
+	}
+	return set, rows.Err()
 }
 
 // ListTagIDs returns every tag id matching the filter, ignoring
@@ -1017,18 +1049,9 @@ func (s *Service) AddTagsToImageFromTagger(imageID int64, tagIDs []int64, isAuto
 		if addErr != nil {
 			return addErr
 		}
-		if (added || promoted) && s.ratingCatID != 0 {
-			var catID int64
-			if err := tx.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, tagID).Scan(&catID); err == nil && catID == s.ratingCatID {
-				if isAuto {
-					if err := pruneLowerRatingsTx(tx, s.ratingCatID, imageID); err != nil {
-						return err
-					}
-				} else {
-					if _, err := pruneOtherRatingsTx(tx, s.ratingCatID, imageID, tagID); err != nil {
-						return err
-					}
-				}
+		if added || promoted {
+			if _, err := pruneRatingsAfterAddTx(tx, s.ratingCatID, imageID, tagID, isAuto); err != nil {
+				return err
 			}
 		}
 	}
@@ -1061,28 +1084,12 @@ func (s *Service) AddTagToImageReportingDup(imageID, tagID int64, isAuto bool, c
 		return AddResult{}, err
 	}
 	var displaced []string
-	// At most one rating row per image, but the rule splits on origin: a
-	// manual add overwrites whatever rating was there (so the user's
-	// chosen level always wins, even when it ranks below a pre-existing
-	// auto-tagger value), while an auto-tagger add keeps the highest
-	// rank so a single inference emitting `sensitive` and `questionable`
-	// resolves the way search does. The PK lookup is cheap and the
-	// prune is a no-op when the image carries 0 or 1 rating tags.
-	if (added || promoted) && s.ratingCatID != 0 {
-		var catID int64
-		if err := tx.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, tagID).Scan(&catID); err == nil && catID == s.ratingCatID {
-			if isAuto {
-				if err := pruneLowerRatingsTx(tx, s.ratingCatID, imageID); err != nil {
-					return AddResult{}, err
-				}
-			} else {
-				names, err := pruneOtherRatingsTx(tx, s.ratingCatID, imageID, tagID)
-				if err != nil {
-					return AddResult{}, err
-				}
-				displaced = names
-			}
+	if added || promoted {
+		names, err := pruneRatingsAfterAddTx(tx, s.ratingCatID, imageID, tagID, isAuto)
+		if err != nil {
+			return AddResult{}, err
 		}
+		displaced = names
 	}
 	if err := tx.Commit(); err != nil {
 		return AddResult{}, err
@@ -1198,6 +1205,10 @@ func transitiveImpliedTx(tx *sql.Tx, parents []int64) ([]int64, error) {
 			next = append(next, id)
 			out = append(out, id)
 		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
 		rows.Close()
 		frontier = next
 	}
@@ -1231,17 +1242,12 @@ func (s *Service) AddTagsToOneImage(imageID int64, tagIDs []int64, via string) (
 			return nil, err
 		}
 		var displaced []string
-		if (added || promoted) && s.ratingCatID != 0 {
-			var catID int64
-			if scanErr := tx.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, tagID).Scan(&catID); scanErr == nil && catID == s.ratingCatID {
-				// Manual UI add: user-chosen rating always wins (mirrors
-				// AddTagToImageReportingDup's non-auto branch).
-				names, err := pruneOtherRatingsTx(tx, s.ratingCatID, imageID, tagID)
-				if err != nil {
-					return nil, err
-				}
-				displaced = names
+		if added || promoted {
+			names, err := pruneRatingsAfterAddTx(tx, s.ratingCatID, imageID, tagID, false)
+			if err != nil {
+				return nil, err
 			}
+			displaced = names
 		}
 		results = append(results, AddResult{Added: added, Promoted: promoted, DisplacedRatings: displaced})
 	}
@@ -1265,12 +1271,9 @@ func (s *Service) BatchAddTagsTx(tx *sql.Tx, imageIDs []int64, tagIDs []int64) (
 			if err != nil {
 				return added, err
 			}
-			if (a || p) && s.ratingCatID != 0 {
-				var catID int64
-				if err := tx.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, tagID).Scan(&catID); err == nil && catID == s.ratingCatID {
-					if _, err := pruneOtherRatingsTx(tx, s.ratingCatID, imageID, tagID); err != nil {
-						return added, err
-					}
+			if a || p {
+				if _, err := pruneRatingsAfterAddTx(tx, s.ratingCatID, imageID, tagID, false); err != nil {
+					return added, err
 				}
 			}
 			if a {
@@ -1555,6 +1558,29 @@ func PruneLowerRatingsTx(tx *sql.Tx, ratingCatID, imageID int64) error {
 	return pruneLowerRatingsTx(tx, ratingCatID, imageID)
 }
 
+// pruneRatingsAfterAddTx enforces the one-rating-per-image rule after a
+// rating tag is added. The rule splits on origin: a manual add overwrites
+// whatever rating was there so the user's chosen level always wins (even
+// when it ranks below a pre-existing auto-tagger value), returning the
+// names it swept off; an auto-tagger add keeps the highest rank so a
+// single inference emitting `sensitive` and `questionable` resolves the
+// way search does. No-ops when the rating category is unset or tagID is
+// not a rating tag; the PK lookup is cheap and the prune is a no-op on an
+// image carrying 0 or 1 rating tags.
+func pruneRatingsAfterAddTx(tx *sql.Tx, ratingCatID, imageID, tagID int64, isAuto bool) ([]string, error) {
+	if ratingCatID == 0 {
+		return nil, nil
+	}
+	var catID int64
+	if err := tx.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, tagID).Scan(&catID); err != nil || catID != ratingCatID {
+		return nil, nil
+	}
+	if isAuto {
+		return nil, pruneLowerRatingsTx(tx, ratingCatID, imageID)
+	}
+	return pruneOtherRatingsTx(tx, ratingCatID, imageID, tagID)
+}
+
 func pruneLowerRatingsTx(tx *sql.Tx, ratingCatID, imageID int64) error {
 	if ratingCatID == 0 {
 		return nil
@@ -1659,13 +1685,7 @@ func (s *Service) RatingTagIDsAbove(ceiling string) []int64 {
 	if s.ratingCatID == 0 {
 		return nil
 	}
-	rank := -1
-	for i, l := range RatingLevels {
-		if l == ceiling {
-			rank = i
-			break
-		}
-	}
+	rank := ratingRank(ceiling)
 	if rank < 0 || rank >= len(RatingLevels)-1 {
 		return nil
 	}
@@ -1806,22 +1826,13 @@ func SuggestUsageRanked(database *db.DB, prefix, categoryName string, requireUsa
 	return suggestUsageRanked(database, prefix, categoryName, requireUsage, limit)
 }
 
-// escapeLikeMeta escapes `_`, `%`, and `\` so an operator-typed value
-// can safely sit inside a LIKE pattern; the SQL must pair it with
-// `ESCAPE '\'`. Without this a stray `%` in the prefix turns the
-// autocomplete into match-all and a `_` matches any single character.
-func escapeLikeMeta(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `_`, `\_`, `%`, `\%`)
-	return r.Replace(s)
-}
-
 // suggestUsageRanked is the shared two-pass prefix→substring helper:
 // prefix matches first (sorted by usage_count DESC), then substring
 // matches that aren't already in the prefix set, until limit is hit.
 // categoryName, when non-empty, scopes both passes to that category;
 // requireUsage adds `usage_count > 0`.
 func suggestUsageRanked(database *db.DB, prefix, categoryName string, requireUsage bool, limit int) ([]models.Tag, error) {
-	prefix = escapeLikeMeta(prefix)
+	prefix = db.EscapeLike(prefix)
 	baseSQL := `SELECT t.id, t.name, tc.name, tc.color, t.usage_count
 	            FROM tags t
 	            JOIN tag_categories tc ON tc.id = t.category_id
@@ -1898,7 +1909,7 @@ func (s *Service) SuggestTagsInCategory(prefix, categoryName string, limit int) 
 		 WHERE tc.name = ? AND t.name LIKE ? ESCAPE '\' AND t.is_alias = 0
 		 ORDER BY t.usage_count DESC
 		 LIMIT ?`,
-		categoryName, escapeLikeMeta(prefix)+"%", limit,
+		categoryName, db.EscapeLike(prefix)+"%", limit,
 	)
 	if err != nil {
 		return nil, err

@@ -31,6 +31,33 @@ func TestParse_BasicTag(t *testing.T) {
 	}
 }
 
+// TestQuoteValueRoundTrip pins that a collection/source label survives
+// being interpolated into a quoted `key:"<value>"` term and parsed back:
+// QuoteValue escapes, the parser unescapes, so a label with an inner
+// double-quote no longer truncates the query (the link-generation bug).
+func TestQuoteValueRoundTrip(t *testing.T) {
+	for _, label := range []string{
+		`saga`,
+		`Tom & Jerry's "Big" <Adventure>`,
+		`back\slash`,
+		`日本語コレクション`,
+		`a "b" c`,
+	} {
+		q := `collection:"` + QuoteValue(label) + `"`
+		e, err := Parse(q)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", q, err)
+		}
+		f, ok := e.(FilterExpr)
+		if !ok {
+			t.Fatalf("label %q: expected FilterExpr, got %T", label, e)
+		}
+		if f.Key != "collection" || f.Val != label {
+			t.Errorf("label %q round-tripped to {Key:%q Val:%q}", label, f.Key, f.Val)
+		}
+	}
+}
+
 func TestParse_ImplicitAND(t *testing.T) {
 	e, _ := Parse("a b")
 	and, ok := e.(AndExpr)
@@ -943,6 +970,55 @@ func TestFastCountCeiling_MatchesSlowPath(t *testing.T) {
 	}
 	if got != 2 {
 		t.Errorf("fastCountCeiling = %d, want 2", got)
+	}
+}
+
+// TestFastCountCeiling_MultiRatingExact pins the count when an image
+// carries more than one rating tag (legacy data the write-path prune
+// can't retroactively clean). The effective rating is the highest, so
+// such a row is hidden once under a SFW ceiling; summing the excluded
+// tags' usage_count subtracts it once per excluded level it carries and
+// undercounts. Counting the maintained rating_rank stays exact.
+func TestFastCountCeiling_MultiRatingExact(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestImage(t, database, env, "mr_multi.png")
+	ingestTestImage(t, database, env, "mr_general.png")
+	ingestTestImage(t, database, env, "mr_untagged.png")
+
+	var multiID, genID int64
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%mr_multi.png'`).Scan(&multiID)
+	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%mr_general.png'`).Scan(&genID)
+	// mr_multi carries two rating tags; its effective rating is explicit.
+	attachTag(t, database, multiID, ratingTagID(t, database, "sensitive"))
+	attachTag(t, database, multiID, ratingTagID(t, database, "explicit"))
+	attachTag(t, database, genID, ratingTagID(t, database, "general"))
+
+	// SFW ceiling: exclude sensitive, questionable, explicit.
+	expr := AndExpr{
+		Left: NotExpr{Expr: FilterExpr{Key: "rating", Val: "sensitive"}},
+		Right: AndExpr{
+			Left:  NotExpr{Expr: FilterExpr{Key: "rating", Val: "questionable"}},
+			Right: NotExpr{Expr: FilterExpr{Key: "rating", Val: "explicit"}},
+		},
+	}
+	got, ok := fastCountCeiling(database, expr)
+	if !ok {
+		t.Fatal("fastCountCeiling should recognise the ceiling AST")
+	}
+	// The union-based exact count, independent of the fast helper: only
+	// mr_general and mr_untagged pass. The old usage-sum form returned 1.
+	var exact int
+	database.Read.QueryRow(`SELECT COUNT(*) FROM images
+		WHERE is_missing = 0 AND id NOT IN (
+			SELECT it.image_id FROM image_tags it
+			JOIN tags t ON t.id = it.tag_id
+			JOIN tag_categories tc ON tc.id = t.category_id
+			WHERE tc.name = 'rating' AND t.name IN ('sensitive','questionable','explicit'))`).Scan(&exact)
+	if exact != 2 {
+		t.Fatalf("fixture exact count = %d, want 2", exact)
+	}
+	if got != exact {
+		t.Errorf("fastCountCeiling = %d, want %d (exact, not the usage-sum undercount)", got, exact)
 	}
 }
 

@@ -115,9 +115,10 @@ func (s *Service) inWriteTx(work func(*sql.Tx) error) error {
 // AddDuplicate marks images a and b as duplicates. Handles the five
 // cases from §6.4 in a single transaction: both singletons, one
 // existing member, the other existing member, same group already, and
-// two different groups (merge). The same transaction merges the
-// operator's alternate-group state when needed because duplicate-of-A
-// implies alternate-of-everything-A-is-alternate-of.
+// two different groups (merge). Alternate-group state is left
+// untouched: §9.2 holds a pair to at most one relation type, so making
+// a and b duplicates must not also enrol them as alternates of each
+// other (which folding their alt groups together would do).
 func (s *Service) AddDuplicate(a, b int64) error {
 	if a == b {
 		return ErrSelfRelation
@@ -131,13 +132,7 @@ func (s *Service) AddDuplicate(a, b int64) error {
 		if err := mergeIntoDupGroupTx(tx, a, b); err != nil {
 			return err
 		}
-		if err := propagateAltOnDuplicateTx(tx, a, b); err != nil {
-			return err
-		}
-		if err := pruneQueueForGroupTx(tx, "dup_group_members", a); err != nil {
-			return err
-		}
-		return pruneQueueForGroupTx(tx, "alt_group_members", a)
+		return pruneQueueForGroupTx(tx, "dup_group_members", a)
 	})
 }
 
@@ -1192,45 +1187,6 @@ func mergeIntoAltGroupTx(tx *sql.Tx, a, b int64) error {
 		}
 	case groupA.Int64 == groupB.Int64:
 		// Same group; no-op.
-	default:
-		return mergeAltGroupsTx(tx, []int64{groupA.Int64, groupB.Int64})
-	}
-	return nil
-}
-
-// propagateAltOnDuplicateTx applies the §6.4 corollary: when a and b
-// become duplicates, any alternate-group state propagates so the new
-// duplicate set carries the same alternates. If one side is in an alt
-// group and the other is not, the other joins. If both are in
-// different alt groups, those groups merge.
-func propagateAltOnDuplicateTx(tx *sql.Tx, a, b int64) error {
-	groupA, err := lookupGroupIDTx(tx, "alt_group_members", a)
-	if err != nil {
-		return err
-	}
-	groupB, err := lookupGroupIDTx(tx, "alt_group_members", b)
-	if err != nil {
-		return err
-	}
-	switch {
-	case !groupA.Valid && !groupB.Valid:
-		// Neither is in an alt group - nothing to propagate.
-	case groupA.Valid && !groupB.Valid:
-		if _, err := tx.Exec(
-			`INSERT INTO alt_group_members (image_id, group_id, created_at) VALUES (?, ?, ?)`,
-			b, groupA.Int64, nowISO(),
-		); err != nil {
-			return err
-		}
-	case !groupA.Valid && groupB.Valid:
-		if _, err := tx.Exec(
-			`INSERT INTO alt_group_members (image_id, group_id, created_at) VALUES (?, ?, ?)`,
-			a, groupB.Int64, nowISO(),
-		); err != nil {
-			return err
-		}
-	case groupA.Int64 == groupB.Int64:
-		// Already in the same alt group.
 	default:
 		return mergeAltGroupsTx(tx, []int64{groupA.Int64, groupB.Int64})
 	}

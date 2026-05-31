@@ -2,7 +2,6 @@ package web
 
 import (
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/leqwin/monbooru/internal/db"
@@ -170,15 +169,7 @@ func (c *Ceiling) WhereOne(col string) (string, []any) {
 	if len(ids) == 0 {
 		return "", nil
 	}
-	placeholders := make([]string, len(ids))
-	for i := range ids {
-		placeholders[i] = "?"
-	}
-	in := strings.Join(placeholders, ",")
-	args := make([]any, 0, len(ids))
-	for _, id := range ids {
-		args = append(args, id)
-	}
+	in, args := db.InPlaceholders(ids)
 	return `NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = ` + col + ` AND it.tag_id IN (` + in + `))`, args
 }
 
@@ -190,21 +181,11 @@ func (c *Ceiling) WhereTwo(leftCol, rightCol string) (string, []any) {
 	if len(ids) == 0 {
 		return "", nil
 	}
-	placeholders := make([]string, len(ids))
-	for i := range ids {
-		placeholders[i] = "?"
-	}
-	in := strings.Join(placeholders, ",")
+	in, a := db.InPlaceholders(ids)
 	tmpl := func(col string) string {
 		return `NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = ` + col + ` AND it.tag_id IN (` + in + `))`
 	}
-	args := make([]any, 0, 2*len(ids))
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	for _, id := range ids {
-		args = append(args, id)
-	}
+	args := append(append([]any{}, a...), a...)
 	return tmpl(leftCol) + " AND " + tmpl(rightCol), args
 }
 
@@ -222,16 +203,11 @@ func (c *Ceiling) WhereGroupClean(membersTable, groupCol string) (string, []any)
 	if len(ids) == 0 {
 		return "", nil
 	}
-	placeholders := make([]string, len(ids))
-	args := make([]any, 0, len(ids))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
+	in, args := db.InPlaceholders(ids)
 	return `NOT EXISTS (
 		SELECT 1 FROM ` + membersTable + ` mr
 		JOIN image_tags it ON it.image_id = mr.image_id
-		WHERE mr.group_id = ` + groupCol + ` AND it.tag_id IN (` + strings.Join(placeholders, ",") + `)
+		WHERE mr.group_id = ` + groupCol + ` AND it.tag_id IN (` + in + `)
 	)`, args
 }
 
@@ -264,14 +240,9 @@ func (c *Ceiling) TaintedImageIDs() (map[int64]bool, error) {
 		c.mu.Unlock()
 		return nil, nil
 	}
-	placeholders := make([]string, len(ids))
-	args := make([]any, 0, len(ids))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
+	in, args := db.InPlaceholders(ids)
 	rows, err := c.cx.DB.Read.Query(
-		`SELECT DISTINCT image_id FROM image_tags WHERE tag_id IN (`+strings.Join(placeholders, ",")+`)`,
+		`SELECT DISTINCT image_id FROM image_tags WHERE tag_id IN (`+in+`)`,
 		args...,
 	)
 	if err != nil {

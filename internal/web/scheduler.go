@@ -36,10 +36,7 @@ func (s *Server) runScheduler() {
 				continue
 			}
 		}
-		d := time.Until(next)
-		if d < 0 {
-			d = 0
-		}
+		d := max(time.Until(next), 0)
 		logx.Infof("scheduler: next run at %s (in %s)", next.Format(time.RFC3339), d.Round(time.Second))
 		select {
 		case <-s.done:

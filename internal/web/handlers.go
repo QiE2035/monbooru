@@ -23,8 +23,13 @@ func setFlashHeader(w http.ResponseWriter, text, kind string, extras map[string]
 	if kind == "" {
 		kind = "ok"
 	}
+	// The client renders this through innerHTML (showActionFlash), so the
+	// text is escaped here at the single boundary, the same way
+	// writeInlineFlash escapes the body path. Without it an operator-
+	// supplied value spliced into the message (e.g. a folder name in the
+	// move flash) would land as live markup.
 	triggers := map[string]any{
-		"monbooru:flash": map[string]any{"text": text, "kind": kind},
+		"monbooru:flash": map[string]any{"text": html.EscapeString(text), "kind": kind},
 	}
 	for k, v := range extras {
 		triggers[k] = v

@@ -116,7 +116,13 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 		"urlQ": func(s string) template.URL {
 			return template.URL(uppercasePercentEscapes(url.QueryEscape(s)))
 		},
-		"sub": func(a, b int) int { return a - b },
+		// qval backslash-escapes a label so it survives interpolation
+		// into a quoted `key:"<value>"` search term (collection / source
+		// links). The parser's unescapeQuoted reverses it, so a label
+		// containing a double-quote round-trips instead of truncating the
+		// query at the inner quote.
+		"qval": search.QuoteValue,
+		"sub":  func(a, b int) int { return a - b },
 		"dict": func(pairs ...any) map[string]any {
 			m := make(map[string]any, len(pairs)/2)
 			for i := 0; i+1 < len(pairs); i += 2 {
@@ -781,6 +787,8 @@ func (s *Server) apiResolver(name string) (api.Gallery, bool) {
 		TagSvc:           cx.TagSvc,
 		RelationsSvc:     cx.RelationsSvc,
 		InvalidateCaches: cx.InvalidateCaches,
+		VisibleCount:     cx.VisibleCount,
+		TagCount:         cx.TagCount,
 	}, true
 }
 

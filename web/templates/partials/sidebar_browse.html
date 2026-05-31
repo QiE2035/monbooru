@@ -33,7 +33,7 @@
     </div>
     <ul id="series-tree-list" class="folder-tree" style="display:none">
       {{range .SeriesCounts}}
-      {{$active := printf `collection:"%s"` .Series}}
+      {{$active := printf `collection:"%s"` (qval .Series)}}
       <li class="folder-node-wrap">
         <div class="folder-node-row">
           <span class="folder-spacer"></span>
@@ -52,7 +52,7 @@
     </div>
     <ul id="source-labels-list" class="folder-tree" style="display:none">
       {{range .SourceLabelCounts}}
-      {{$active := printf `source:"%s"` .Source}}
+      {{$active := printf `source:"%s"` (qval .Source)}}
       <li class="folder-node-wrap">
         <div class="folder-node-row">
           <span class="folder-spacer"></span>

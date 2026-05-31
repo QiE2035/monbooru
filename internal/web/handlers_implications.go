@@ -21,6 +21,13 @@ func (s *Server) implicationsDialogHandler(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	// Opened as an htmx dialog from the /tags table; a non-htmx caller
+	// (refresh, bookmark, shared link) gets the tag's row on the tags
+	// page rather than a chrome-less fragment.
+	if !isHTMXRequest(r) {
+		http.Redirect(w, r, fmt.Sprintf("/tags#tag-row-%d", id), http.StatusSeeOther)
+		return
+	}
 	parent, err := s.tagSvc().GetTag(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)

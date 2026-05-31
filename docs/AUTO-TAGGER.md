@@ -46,10 +46,10 @@ cells fall back to the built-in defaults (`character` 8, `copyright`
 every tag that survives the threshold. Empty per-category threshold
 cells fall back to the global threshold.
 
-Tick **Disable** on a category to mute it entirely: the tagger emits no
-tags for that category regardless of score, so you can run a tagger for
-only the categories you want (e.g. disable everything except `medium`
-and `meta`).
+Every category is enabled by default. Untick **Enable** on a category to
+mute it entirely: the tagger emits no tags for that category regardless of
+score, so you can run a tagger for only the categories you want (e.g.
+disable everything except `medium` and `meta`).
 
 ## Frame-merge gate (videos and archive only)
 

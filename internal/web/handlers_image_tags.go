@@ -61,8 +61,7 @@ func (s *Server) parseTagInput(tagInput string) ([]catTag, string) {
 
 	var catTags []catTag
 	var rejected []string
-	for _, tok := range tokens {
-		name := tok.name
+	for _, name := range tokens {
 		if idx := strings.Index(name, ":"); idx > 0 {
 			catName := name[:idx]
 			tagName := name[idx+1:]
@@ -86,18 +85,13 @@ func (s *Server) parseTagInput(tagInput string) ([]catTag, string) {
 	return catTags, strings.Join(rejected, "; ")
 }
 
-// parsedTagToken is one tokenizer output: its resolved name.
-type parsedTagToken struct {
-	name string
-}
-
 // splitTagTokens splits tag-input into whitespace-separated tokens while
 // respecting double-quoted spans. Inside a quoted span, internal spaces
 // are replaced with underscores. Quoted spans may be preceded by a
 // category prefix (`artist:"john doe"`). Unterminated quotes return an
 // error.
-func splitTagTokens(s string) ([]parsedTagToken, error) {
-	var tokens []parsedTagToken
+func splitTagTokens(s string) ([]string, error) {
+	var tokens []string
 	var buf strings.Builder
 	quoted := false
 	inToken := false
@@ -106,7 +100,7 @@ func splitTagTokens(s string) ([]parsedTagToken, error) {
 		if !inToken {
 			return
 		}
-		tokens = append(tokens, parsedTagToken{name: buf.String()})
+		tokens = append(tokens, buf.String())
 		buf.Reset()
 		inToken = false
 	}
@@ -368,7 +362,7 @@ func (s *Server) removeAutoTagsFromImageHandler(w http.ResponseWriter, r *http.R
 		}
 	}
 	if err := s.tagSvc().RemoveAutoTagsFromImage(id, names); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.renderTagListWithSidebar(w, r, id, err.Error(), "", "", false)
 		return
 	}
 	s.Active().InvalidateCaches()
@@ -392,7 +386,7 @@ func (s *Server) removeImageTagsHandler(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if err := remove(id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.renderTagListWithSidebar(w, r, id, err.Error(), "", "", false)
 		return
 	}
 	s.Active().InvalidateCaches()
@@ -410,7 +404,7 @@ func (s *Server) removeTagFromImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.tagSvc().RemoveTagFromImage(id, tagID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.renderTagListWithSidebar(w, r, id, err.Error(), "", "", false)
 		return
 	}
 	s.Active().InvalidateCaches()

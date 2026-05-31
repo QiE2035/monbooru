@@ -91,7 +91,11 @@ func (s *Server) batchDelete(w http.ResponseWriter, r *http.Request) {
 		args...,
 	)
 	if err != nil {
-		s.startBulkDelete(w, nil)
+		// startBulkDelete(nil) would 202 with nothing queued, which the
+		// client reads as success - so surface the failure instead.
+		logx.Warnf("batch delete: load targets: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		writeInlineFlash(w, "err", "Could not load the selected images.")
 		return
 	}
 	defer rows.Close()
@@ -104,6 +108,12 @@ func (s *Server) batchDelete(w http.ResponseWriter, r *http.Request) {
 		}
 		t.IsMissing = isMissing == 1
 		byID[t.ID] = t
+	}
+	if err := rows.Err(); err != nil {
+		logx.Warnf("batch delete: scan targets: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		writeInlineFlash(w, "err", "Could not load the selected images.")
+		return
 	}
 	targets := make([]search.DeleteTarget, 0, len(ids))
 	for _, id := range ids {

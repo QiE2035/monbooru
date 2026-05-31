@@ -1043,17 +1043,7 @@ func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", "Unknown merge kind.")
 		return
 	}
-	raw := r.Form["group_id"]
-	ids := make([]int64, 0, len(raw))
-	seen := map[int64]bool{}
-	for _, s := range raw {
-		v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-		if err != nil || seen[v] {
-			continue
-		}
-		seen[v] = true
-		ids = append(ids, v)
-	}
+	ids := parseIDList(r.Form["group_id"])
 	if len(ids) < 2 {
 		w.WriteHeader(http.StatusBadRequest)
 		writeInlineFlash(w, "err", "Pick at least two groups to merge.")

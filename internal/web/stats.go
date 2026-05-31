@@ -253,17 +253,11 @@ func gatherMemStats() memStats {
 		out.Anon = int64(r.anon)
 		out.File = int64(r.file)
 		out.DB = int64(r.db)
-		out.OtherFile = out.File - out.DB
-		if out.OtherFile < 0 {
-			out.OtherFile = 0
-		}
+		out.OtherFile = max(out.File-out.DB, 0)
 		// Sys can briefly exceed Anon when Go reserves arenas it
 		// hasn't faulted yet; clamp to zero so the row never
 		// renders as a negative.
-		out.Native = out.Anon - out.Sys
-		if out.Native < 0 {
-			out.Native = 0
-		}
+		out.Native = max(out.Anon-out.Sys, 0)
 		out.Available = true
 	}
 	return out

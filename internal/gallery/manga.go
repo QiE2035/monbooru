@@ -179,8 +179,9 @@ func generateImageThumbFromAny(srcPath, dstPath string) error {
 
 // RemoveMangaCache removes the per-image cache directory. Called from
 // the per-image delete path so a deleted manga's pages and cover
-// disappear with the row, and from sync's same-path-different-SHA
-// branch before the new ingest.
+// disappear with the row, and from sync's in-place-edit branch so a cbz
+// whose bytes changed drops its stale page cache before the thumbnails
+// are regenerated.
 func RemoveMangaCache(thumbnailsPath string, imageID int64) {
 	dir := MangaImageDir(thumbnailsPath, imageID)
 	if dir == "" {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/search"
@@ -219,14 +220,6 @@ func (s *Server) queryNameBasenames(prefix string, limit int) []string {
 	return out
 }
 
-// likeEscape escapes `_`, `%`, and `\` so an operator-typed literal
-// survives a LIKE pattern. Paired with `ESCAPE '\\'` on the LIKE
-// clause itself.
-func likeEscape(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `_`, `\_`, `%`, `\%`)
-	return r.Replace(s)
-}
-
 // querySDStringField returns up to limit distinct values from the
 // matching SD / ComfyUI metadata columns whose value matches prefix.
 // substring=true switches to a `LIKE %prefix%` scan (used by `prompt:`
@@ -258,7 +251,7 @@ func (s *Server) querySDStringField(sdField, comfyField, prefix string, limit in
 				`SELECT DISTINCT `+t.field+` FROM `+t.table+`
 				 WHERE `+t.field+` LIKE ? ESCAPE '\'
 				 ORDER BY `+t.field+` LIMIT ?`,
-				"%"+likeEscape(prefix)+"%", limit,
+				"%"+db.EscapeLike(prefix)+"%", limit,
 			)
 		default:
 			rows, err = d.Read.Query(
@@ -549,7 +542,7 @@ func quotedSDLabelRows(key string, labels []string) []searchSuggestRow {
 	rows := make([]searchSuggestRow, 0, len(labels))
 	for _, lbl := range labels {
 		rows = append(rows, searchSuggestRow{
-			Name:     key + `:"` + lbl + `"`,
+			Name:     key + `:"` + search.QuoteValue(lbl) + `"`,
 			Category: "system",
 		})
 	}
@@ -577,29 +570,13 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
 	// collection labels may contain spaces; wrap each suggestion in
 	// double quotes so the parser still treats it as a single token.
 	if key == "collection" {
-		labels := s.queryCollectionLabels(valPrefix, 10)
-		rows := make([]searchSuggestRow, 0, len(labels))
-		for _, lbl := range labels {
-			rows = append(rows, searchSuggestRow{
-				Name:     `collection:"` + lbl + `"`,
-				Category: "system",
-			})
-		}
-		return rows
+		return quotedSDLabelRows("collection", s.queryCollectionLabels(valPrefix, 10))
 	}
 	// Source labels are operator-edited free text that frequently contains
 	// spaces; quote each suggestion so the parser still treats it as one
 	// token. Mirrors the collection: branch above.
 	if key == "source" {
-		labels := s.querySourceLabels(valPrefix, 10)
-		rows := make([]searchSuggestRow, 0, len(labels))
-		for _, lbl := range labels {
-			rows = append(rows, searchSuggestRow{
-				Name:     `source:"` + lbl + `"`,
-				Category: "system",
-			})
-		}
-		return rows
+		return quotedSDLabelRows("source", s.querySourceLabels(valPrefix, 10))
 	}
 	// name: surfaces distinct file basenames whose substring matches
 	// the prefix, mirroring the executor's `canonical_path LIKE '%/<val>%'`
@@ -612,15 +589,7 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
 		if valPrefix == "" {
 			return nil
 		}
-		names := s.queryNameBasenames(valPrefix, 10)
-		rows := make([]searchSuggestRow, 0, len(names))
-		for _, n := range names {
-			rows = append(rows, searchSuggestRow{
-				Name:     `name:"` + n + `"`,
-				Category: "system",
-			})
-		}
-		return rows
+		return quotedSDLabelRows("name", s.queryNameBasenames(valPrefix, 10))
 	}
 	// model: / sampler: are typically short low-cardinality identifiers
 	// (e.g. `sdxl_v1.0`, `Euler a`). Surface distinct values from both

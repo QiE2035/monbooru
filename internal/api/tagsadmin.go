@@ -107,9 +107,7 @@ func (h *Handler) createTag(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if g.InvalidateCaches != nil {
-		g.InvalidateCaches()
-	}
+	g.invalidate()
 	writeJSON(w, http.StatusCreated, toTagResponse(full))
 }
 
@@ -159,9 +157,7 @@ func (h *Handler) patchTag(w http.ResponseWriter, r *http.Request) {
 		writeTagError(w, err)
 		return
 	}
-	if g.InvalidateCaches != nil {
-		g.InvalidateCaches()
-	}
+	g.invalidate()
 	writeJSON(w, http.StatusOK, toTagResponse(full))
 }
 
@@ -181,9 +177,7 @@ func (h *Handler) deleteTag(w http.ResponseWriter, r *http.Request) {
 		writeTagError(w, err)
 		return
 	}
-	if g.InvalidateCaches != nil {
-		g.InvalidateCaches()
-	}
+	g.invalidate()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -222,9 +216,7 @@ func (h *Handler) createAlias(w http.ResponseWriter, r *http.Request) {
 		writeTagError(w, err)
 		return
 	}
-	if g.InvalidateCaches != nil {
-		g.InvalidateCaches()
-	}
+	g.invalidate()
 	writeJSON(w, http.StatusCreated, toTagResponse(alias))
 }
 
@@ -257,9 +249,7 @@ func (h *Handler) mergeTags(w http.ResponseWriter, r *http.Request) {
 		writeTagError(w, err)
 		return
 	}
-	if g.InvalidateCaches != nil {
-		g.InvalidateCaches()
-	}
+	g.invalidate()
 	writeJSON(w, http.StatusOK, toTagResponse(canon))
 }
 

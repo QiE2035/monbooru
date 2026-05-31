@@ -229,13 +229,7 @@ func (l *loginRateLimiter) check(ip string) bool {
 	// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s capped at 30s.
 	// Clamp the shift to >= 0 so a future caller seeding count=0 (or any
 	// negative) never trips Go's runtime panic on a negative shift amount.
-	shift := a.count - 1
-	if shift < 0 {
-		shift = 0
-	}
-	if shift > 5 {
-		shift = 5
-	}
+	shift := min(max(a.count-1, 0), 5)
 	delay := time.Duration(1<<shift) * time.Second
 	if delay > 30*time.Second {
 		delay = 30 * time.Second

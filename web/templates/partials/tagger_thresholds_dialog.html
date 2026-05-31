@@ -2,9 +2,9 @@
 <form hx-post="/settings/tagger/{{.Name}}/thresholds"
       hx-target="#flash-tagger-thresh-{{.Name}}" hx-swap="innerHTML">
   <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-  <p class="field-hint">Threshold and Max tags override the defaults per category. Leave Max tags blank to use the built-in cap; set it to 0 to keep every tag this tagger emits. Tick Disable to stop this tagger emitting a category at all.</p>
+  <p class="field-hint">Threshold sets the minimum confidence a tag in this category needs to be added. Max tags caps how many tags the auto-tagger adds in this category per image. Leave either blank to use the default shown in the field; set Max tags to 0 to keep every tag the tagger emits. Untick a category to stop this tagger emitting it at all.</p>
   <table class="tagger-thresh-table">
-    <thead><tr><th>Category</th><th>Threshold</th><th>Max tags</th><th>Disable</th><th></th></tr></thead>
+    <thead><tr><th>Category</th><th>Threshold</th><th>Max tags</th><th>Enable</th><th></th></tr></thead>
     <tbody>
       <tr class="tagger-thresh-global">
         <td><strong>Global</strong></td>
@@ -33,11 +33,11 @@
                  placeholder="({{.MaxDefault}})" min="0" step="1">
         </td>
         <td>
-          <input type="checkbox" name="disable_{{.Category}}" value="1"{{if .Disabled}} checked{{end}}>
+          <input type="checkbox" name="enable_{{.Category}}" value="1" data-default-checked="1"{{if not .Disabled}} checked{{end}}>
         </td>
         <td>
           <a href="#" class="reset-thresh"
-             onclick="var tr=this.closest('tr'); tr.querySelectorAll('input[type=number]').forEach(function(i){i.value=i.dataset.default||'';}); tr.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=false;}); return false;">Reset</a>
+             onclick="resetThreshRow(this); return false;">Reset</a>
         </td>
       </tr>
       {{end}}

@@ -59,9 +59,9 @@
             <label for="page_size">Page size</label>
             <output id="page_size_out">{{$cfg.UI.PageSize}}</output>
             <div class="range-slider-row">
-              <span class="range-bound range-bound-min">20</span>
+              <span class="range-bound range-bound-min">1</span>
               <input type="range" name="page_size" id="page_size"
-                     min="20" max="100" step="1" value="{{$cfg.UI.PageSize}}" list="page_size_ticks"
+                     min="1" max="100" step="1" value="{{$cfg.UI.PageSize}}" list="page_size_ticks"
                      oninput="document.getElementById('page_size_out').value=this.value">
               <span class="range-bound range-bound-max">100</span>
             </div>

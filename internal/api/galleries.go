@@ -29,9 +29,25 @@ func (h *Handler) listGalleries(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		entry := galleryListEntry{Name: gc.Name, Active: gc.Name == activeName}
-		_ = g.DB.Read.QueryRow(`SELECT COUNT(*) FROM images WHERE is_missing = 0`).Scan(&entry.Images)
-		_ = g.DB.Read.QueryRow(`SELECT COUNT(*) FROM tags WHERE is_alias = 0`).Scan(&entry.Tags)
+		entry.Images = galleryCount(g.VisibleCount, g, `SELECT COUNT(*) FROM images WHERE is_missing = 0`)
+		entry.Tags = galleryCount(g.TagCount, g, `SELECT COUNT(*) FROM tags WHERE is_alias = 0`)
 		out = append(out, entry)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// galleryCount returns the cached count when the accessor is wired - the
+// resolver populates it from the gallery's cached aggregates so this
+// endpoint matches what the Settings page shows without a fresh scan -
+// and falls back to a direct query otherwise (e.g. a hand-built test
+// Gallery). Counts are best-effort: a failure reports 0.
+func galleryCount(cached func() (int, error), g Gallery, fallback string) int {
+	if cached != nil {
+		if n, err := cached(); err == nil {
+			return n
+		}
+	}
+	var n int
+	_ = g.DB.Read.QueryRow(fallback).Scan(&n)
+	return n
 }

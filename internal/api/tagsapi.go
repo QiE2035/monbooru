@@ -61,14 +61,7 @@ func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {
 
 	results := make([]tagResponse, 0, len(tagList))
 	for _, t := range tagList {
-		results = append(results, tagResponse{
-			ID:         t.ID,
-			Name:       t.Name,
-			Category:   t.CategoryName,
-			Color:      t.CategoryColor,
-			UsageCount: t.UsageCount,
-			IsAlias:    t.IsAlias,
-		})
+		results = append(results, toTagResponse(&t))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

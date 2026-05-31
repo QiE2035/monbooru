@@ -340,6 +340,52 @@ func TestSync_DetectsSameSizeInPlaceEdit(t *testing.T) {
 	}
 }
 
+// TestSync_InPlaceCbzEditClearsPageCache: rewriting a cbz in place must
+// drop the stale per-page reader cache. The reader serves an extracted
+// page file without revalidating it against the archive, so a leftover
+// raw page from the old contents would be served until the idle TTL.
+func TestSync_InPlaceCbzEditClearsPageCache(t *testing.T) {
+	database, env, galleryDir := setupSyncTest(t)
+	path := writeTestZip(t, galleryDir, "book.cbz", map[string][]byte{
+		"001.png": solidPNG(t, 20, 20, [3]uint8{10, 20, 30}),
+		"002.png": solidPNG(t, 20, 20, [3]uint8{40, 50, 60}),
+	})
+
+	env.sync(t, database)
+	var id int64
+	if err := database.Read.QueryRow(`SELECT id FROM images`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a reader having extracted a raw page into the lazy cache.
+	stale := filepath.Join(MangaImageDir(env.thumbnailsPath, id), "page_0001.png")
+	if err := os.WriteFile(stale, []byte("stale page bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rewrite the archive with different page bytes (new SHA) and a fresh
+	// mtime so sync takes the in-place-edit branch.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestZip(t, galleryDir, "book.cbz", map[string][]byte{
+		"001.png": solidPNG(t, 30, 30, [3]uint8{200, 100, 0}),
+		"002.png": solidPNG(t, 30, 30, [3]uint8{0, 100, 200}),
+		"003.png": solidPNG(t, 30, 30, [3]uint8{100, 0, 100}),
+	})
+	future := info.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	env.sync(t, database)
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale raw page cache survived the in-place edit (err=%v)", err)
+	}
+}
+
 func TestSync_FileDeleted(t *testing.T) {
 	database, env, galleryDir := setupSyncTest(t)
 	path := createTestPNGFile(t, galleryDir, "test.png")
@@ -373,6 +419,37 @@ func TestSync_Duplicate(t *testing.T) {
 	}
 	if result.Duplicates != 1 {
 		t.Errorf("Duplicates = %d, want 1", result.Duplicates)
+	}
+}
+
+// TestSync_DuplicateAliasRecordsMtime: the alias path inserted for a
+// byte-identical copy must carry the file's mtime. Left at 0 it never
+// satisfies the (size, mtime) unchanged-shortcut, so the copy is
+// re-hashed on every later sync.
+func TestSync_DuplicateAliasRecordsMtime(t *testing.T) {
+	database, env, galleryDir := setupSyncTest(t)
+	subDir := filepath.Join(galleryDir, "sub")
+	os.MkdirAll(subDir, 0755)
+
+	original := createTestPNGFile(t, galleryDir, "original.png")
+	content, _ := os.ReadFile(original)
+	copyPath := filepath.Join(subDir, "copy.png")
+	os.WriteFile(copyPath, content, 0644)
+
+	env.sync(t, database)
+
+	info, err := os.Stat(copyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mtime int64
+	if err := database.Read.QueryRow(
+		`SELECT mtime_unix FROM image_paths WHERE path = ?`, copyPath,
+	).Scan(&mtime); err != nil {
+		t.Fatal(err)
+	}
+	if mtime != info.ModTime().Unix() {
+		t.Errorf("alias mtime_unix = %d, want %d (file mtime)", mtime, info.ModTime().Unix())
 	}
 }
 

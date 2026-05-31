@@ -522,7 +522,7 @@
         <table class="meta-table meta-editable">
           <tbody>
             <tr><th>Source</th><td>
-              {{if .Image.Source}}<a href="/?q={{urlQ (printf "source:\"%s\"" .Image.Source)}}" class="meta-source-value" title="Search this source">{{.Image.Source}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
+              {{if .Image.Source}}<a href="/?q={{urlQ (printf "source:\"%s\"" (qval .Image.Source))}}" class="meta-source-value" title="Search this source">{{.Image.Source}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
               <button type="button" class="btn-sm btn-edit-external" data-field="source" data-value="{{.Image.Source}}" title="Edit source">[edit]</button>
             </td></tr>
             <tr><th>URL</th><td>
@@ -530,7 +530,7 @@
               <button type="button" class="btn-sm btn-edit-external" data-field="url" data-value="{{.Image.URL}}" title="Edit URL">[edit]</button>
             </td></tr>
             <tr><th>Collection</th><td>
-              {{if .Image.Series}}<a href="/?q={{urlQ (printf "collection:\"%s\"" .Image.Series)}}" class="meta-source-value" title="Search this collection">{{.Image.Series}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
+              {{if .Image.Series}}<a href="/?q={{urlQ (printf "collection:\"%s\"" (qval .Image.Series))}}" class="meta-source-value" title="Search this collection">{{.Image.Series}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
               <button type="button" class="btn-sm btn-edit-external" data-field="collection" data-value="{{.Image.Series}}" title="Edit collection">[edit]</button>
             </td></tr>
             <tr><th>Order</th><td>

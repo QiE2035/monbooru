@@ -203,6 +203,10 @@ func implicationReachesTx(tx *sql.Tx, start, target int64) (bool, error) {
 				next = append(next, id)
 			}
 		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return false, err
+		}
 		rows.Close()
 		frontier = next
 	}

@@ -25,6 +25,19 @@ type Gallery struct {
 	TagSvc           *tags.Service
 	RelationsSvc     *relations.Service
 	InvalidateCaches func()
+	// VisibleCount / TagCount return the cached non-missing-image and
+	// non-alias-tag counts (the same values the Settings page shows). May
+	// be nil; listGalleries falls back to a direct query then.
+	VisibleCount func() (int, error)
+	TagCount     func() (int, error)
+}
+
+// invalidate runs the gallery's cache-invalidation hook when one is
+// wired (it is nil in the test harness).
+func (g Gallery) invalidate() {
+	if g.InvalidateCaches != nil {
+		g.InvalidateCaches()
+	}
 }
 
 // relationsOnDelete returns the OnImageDelete callback for the given
@@ -205,10 +218,7 @@ func parsePage(r *http.Request, defaultLimit, maxLimit int) (offset, limit int) 
 	}
 	if l != "" {
 		if n, err := strconv.Atoi(l); err == nil && n > 0 {
-			if n > maxLimit {
-				n = maxLimit
-			}
-			limit = n
+			limit = min(n, maxLimit)
 		}
 	}
 	return (page - 1) * limit, limit

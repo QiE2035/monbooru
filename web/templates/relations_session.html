@@ -199,6 +199,23 @@
     var newLeftSide = newLeftCell.dataset.side;
     var aID = pair.dataset.a, bID = pair.dataset.b;
     leftInput.value = (newLeftSide === 'A') ? aID : bID;
+    // Keep the comparison table oriented to the on-screen sides: swap its
+    // two header ids and each row's value cells so the fixed Left / Right
+    // labels still describe the images now under them. cmp-win / cmp-match
+    // markers ride along inside the value cells, so the highlight stays
+    // attached to the right value.
+    var table = pair.querySelector('.relations-compare-table');
+    if (table) {
+      var ids = table.querySelectorAll('thead .cmp-col-id');
+      if (ids.length === 2) {
+        var tmpID = ids[0].textContent;
+        ids[0].textContent = ids[1].textContent;
+        ids[1].textContent = tmpID;
+      }
+      table.querySelectorAll('tbody tr').forEach(function(tr) {
+        if (tr.children.length === 3) tr.insertBefore(tr.children[2], tr.children[1]);
+      });
+    }
   }
 
   var swap = document.getElementById('session-swap');

@@ -15,7 +15,9 @@
             hx-delete="/images/{{.ImageID}}/user-tags"
             hx-target="#image-tags"
             hx-swap="outerHTML"
-            hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'>Remove user tags</button>
+            hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
+            hx-confirm="Remove all user-added tags from this image?"
+            data-confirm-ok="Remove">Remove user tags</button>
     {{end}}
     {{if .ImageTaggers}}
     <button class="btn-warning-subtle" type="button"

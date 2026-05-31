@@ -93,10 +93,7 @@ func parseComfyPromptChunk(raw string) *models.ComfyUIMetadata {
 	// positive prompt.
 	positiveNodeID := ""
 	for _, node := range parsedNodes {
-		nodeType := node.ClassType
-		if nodeType == "" {
-			nodeType = node.Type
-		}
+		nodeType := node.typeName()
 		if nodeType == "KSampler" || nodeType == "KSamplerAdvanced" {
 			if posRaw, ok := node.Inputs["positive"]; ok {
 				var ref []json.RawMessage
@@ -113,10 +110,7 @@ func parseComfyPromptChunk(raw string) *models.ComfyUIMetadata {
 
 	// Second pass: apply node inputs.
 	for id, node := range parsedNodes {
-		nodeType := node.ClassType
-		if nodeType == "" {
-			nodeType = node.Type
-		}
+		nodeType := node.typeName()
 		// For CLIPTextEncode, only use it as the prompt when it's the
 		// positive reference; otherwise fall back to the first non-empty
 		// text when no KSampler reference was found.
@@ -141,10 +135,7 @@ func parseComfyPromptChunk(raw string) *models.ComfyUIMetadata {
 	// Fallback: PrimitiveStringMultiline as prompt source.
 	if meta.Prompt == "" {
 		for _, node := range parsedNodes {
-			nodeType := node.ClassType
-			if nodeType == "" {
-				nodeType = node.Type
-			}
+			nodeType := node.typeName()
 			if nodeType == "PrimitiveStringMultiline" {
 				if valRaw, ok := node.Inputs["value"]; ok {
 					var val string
@@ -204,6 +195,15 @@ type comfyAPINode struct {
 	ClassType string                     `json:"class_type"`
 	Type      string                     `json:"type"`
 	Inputs    map[string]json.RawMessage `json:"inputs"`
+}
+
+// typeName is the node's class_type, falling back to the workflow-format
+// "type" field when the API-format class_type is absent.
+func (n comfyAPINode) typeName() string {
+	if n.ClassType != "" {
+		return n.ClassType
+	}
+	return n.Type
 }
 
 // comfyNode is the format used in the "workflow" chunk (node graph format).
@@ -340,7 +340,7 @@ func ParseComfyWorkflowNodes(raw string) []models.ComfyNode {
 		for pk := range n.Inputs {
 			paramKeys = append(paramKeys, pk)
 		}
-		sortStringSlice(paramKeys)
+		slices.Sort(paramKeys)
 
 		for _, pk := range paramKeys {
 			raw := n.Inputs[pk]
@@ -431,10 +431,6 @@ func parseIntKey(s string) int {
 		n = n*10 + int(c-'0')
 	}
 	return n
-}
-
-func sortStringSlice(ss []string) {
-	slices.Sort(ss)
 }
 
 func applyComfyNodeInputs(nodeType string, inputs map[string]json.RawMessage, meta *models.ComfyUIMetadata, nodes map[string]comfyAPINode) {

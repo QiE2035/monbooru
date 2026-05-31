@@ -457,8 +457,8 @@ func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
 	// source / url don't feed the cached aggregates, but collection,
 	// favorite, and inbox do (sidebar collection list, fav/inbox counts,
 	// and the match-id cache keyed on fav:/inbox:).
-	if cacheAffecting && g.InvalidateCaches != nil {
-		g.InvalidateCaches()
+	if cacheAffecting {
+		g.invalidate()
 	}
 
 	resp, err := h.buildImageResponse(g, id)
@@ -711,9 +711,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if g.InvalidateCaches != nil {
-		g.InvalidateCaches()
-	}
+	g.invalidate()
 	if isDuplicate {
 		// gallery.Ingest already recorded the new file as an alias path
 		// on the existing canonical row; leaving the file on disk keeps
@@ -844,9 +842,7 @@ func (h *Handler) deleteImage(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "not_found", "image not found")
 		return
 	}
-	if g.InvalidateCaches != nil {
-		g.InvalidateCaches()
-	}
+	g.invalidate()
 
 	// Empty-source-folder cleanup mirrors the UI delete handler so the
 	// API doesn't leave the operator's tree with empty parent folders
@@ -1085,9 +1081,7 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tagWarnings := h.applyInitialTags(g, id, body.Tags, via)
-	if g.InvalidateCaches != nil {
-		g.InvalidateCaches()
-	}
+	g.invalidate()
 
 	resp, err := h.buildImageResponse(g, id)
 	if err != nil {
@@ -1120,6 +1114,14 @@ func imageExists(g Gallery, id int64) bool {
 // AddTagsToOneImage in one writer tx. Per-tag failures land in
 // warnings without aborting; the apply call's own failure does too.
 func (h *Handler) applyInitialTags(g Gallery, imgID int64, rawTags []string, via string) []string {
+	// Tags applied through the REST API are attributed to "api" when the
+	// caller gives no explicit source, so they read with an api origin on
+	// the tags page (and an api source group on the detail page) rather
+	// than looking like anonymous UI adds. A caller-supplied via still
+	// wins and is recorded verbatim.
+	if via == "" {
+		via = "api"
+	}
 	var warnings []string
 	tagIDs := make([]int64, 0, len(rawTags))
 	for _, tagName := range rawTags {
@@ -1220,9 +1222,7 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 			tagWarnings = append(tagWarnings, "remove tags: "+err.Error())
 		}
 	}
-	if g.InvalidateCaches != nil {
-		g.InvalidateCaches()
-	}
+	g.invalidate()
 
 	resp, err := h.buildImageResponse(g, id)
 	if err != nil {

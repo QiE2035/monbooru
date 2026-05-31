@@ -53,6 +53,8 @@
          href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin=user&show_zero={{$zero}}">User</a>
       <a class="filter-btn{{if eq $origin "auto"}} active{{end}}"
          href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin=auto&show_zero={{$zero}}">Auto</a>
+      <a class="filter-btn{{if eq $origin "api"}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin=api&show_zero={{$zero}}">Api</a>
       <a class="filter-btn{{if eq $origin "alias"}} active{{end}}"
          href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin=alias&show_zero={{$zero}}">Alias</a>
     </div>
@@ -113,6 +115,7 @@
           <span style="color:{{.CategoryColor}}">{{.CategoryName}}</span>
           {{else}}
           <select class="cat-select"
+                  aria-label="Category"
                   name="category_id"
                   hx-patch="/tags/{{.ID}}/category"
                   hx-trigger="change"
@@ -132,6 +135,7 @@
           {{if .IsAlias}}<span class="alias-badge">alias</span>
           {{else if eq .UsageCount 0}}<span class="origin-none">—</span>
           {{else if .IsAutoOnly}}<span class="auto-badge">auto</span>
+          {{else if .IsAPIOnly}}<span class="api-badge">api</span>
           {{else}}user{{end}}
         </td>
         <td>
@@ -454,7 +458,7 @@ function handleTagCreateResult(event) {
 function reloadImplicationsBody() {
   var body = document.getElementById('implications-dialog-body');
   if (!body || !body.dataset.tagId) return;
-  fetch('/tags/' + body.dataset.tagId + '/implications', {credentials: 'same-origin'})
+  fetch('/tags/' + body.dataset.tagId + '/implications', {credentials: 'same-origin', headers: {'HX-Request': 'true'}})
     .then(function(r) { return r.text(); })
     .then(function(html) {
       body.innerHTML = html;

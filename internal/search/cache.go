@@ -1,6 +1,7 @@
 package search
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -171,11 +172,8 @@ func AdjacencyCacheDropForGallery(gallery string) {
 }
 
 func removeFromOrder(key string) {
-	for i, k := range adjCacheOrder {
-		if k == key {
-			adjCacheOrder = append(adjCacheOrder[:i], adjCacheOrder[i+1:]...)
-			return
-		}
+	if i := slices.Index(adjCacheOrder, key); i >= 0 {
+		adjCacheOrder = slices.Delete(adjCacheOrder, i, i+1)
 	}
 }
 

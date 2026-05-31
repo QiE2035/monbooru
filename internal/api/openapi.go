@@ -3,8 +3,9 @@ package api
 import (
 	"encoding/json"
 	"html/template"
+	"maps"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -83,24 +84,8 @@ func buildSpec(baseURL string) map[string]any {
 						"active": map[string]any{"type": "boolean", "description": "True for the gallery used when no ?gallery= selector is given"},
 					},
 				},
-				"PaginatedTags": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"page":    map[string]any{"type": "integer"},
-						"limit":   map[string]any{"type": "integer"},
-						"total":   map[string]any{"type": "integer"},
-						"results": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/TagRow"}},
-					},
-				},
-				"PaginatedImages": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"page":    map[string]any{"type": "integer"},
-						"limit":   map[string]any{"type": "integer"},
-						"total":   map[string]any{"type": "integer"},
-						"results": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/Image"}},
-					},
-				},
+				"PaginatedTags":   paginatedSchema("#/components/schemas/TagRow"),
+				"PaginatedImages": paginatedSchema("#/components/schemas/Image"),
 				"APIInfo": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -133,29 +118,29 @@ func buildSpec(baseURL string) map[string]any {
 				"Image": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"id":             map[string]any{"type": "integer"},
-						"sha256":         map[string]any{"type": "string"},
-						"canonical_path": map[string]any{"type": "string"},
-						"aliases":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-						"file_type":      map[string]any{"type": "string"},
-						"width":          map[string]any{"type": "integer", "nullable": true},
-						"height":         map[string]any{"type": "integer", "nullable": true},
-						"file_size":      map[string]any{"type": "integer"},
-						"is_favorited":   map[string]any{"type": "boolean"},
-						"is_inbox":       map[string]any{"type": "boolean", "description": "true = needs triage (sits in the inbox); false = curated. New ingests default to true."},
-						"is_missing":     map[string]any{"type": "boolean"},
-						"auto_tagged_at": map[string]any{"type": "string", "format": "date-time", "nullable": true},
-						"source_type":    map[string]any{"type": "string", "description": "Generation-tool source: 'a1111', 'comfyui', 'a1111,comfyui', or 'none'. Filtered by the search keyword 'ai:'."},
-						"origin":         map[string]any{"type": "string", "description": "How the image got into the gallery: 'ingest' for watcher/sync, 'upload' for the web UI, or any caller-supplied string (app name, URL...) set via POST /images with 'via'"},
-						"source":         map[string]any{"type": "string", "description": "Operator-edited free-form provenance label (site name, scraper, ...). Empty string when unset. Filtered by the search keyword 'source:' (exact match). Settable on create and via PATCH /images/{id}."},
-						"url":            map[string]any{"type": "string", "description": "Operator-edited canonical web URL the image came from. Empty string when unset. Must start with http:// or https://. Settable on create and via PATCH /images/{id}."},
-						"page_count":     map[string]any{"type": "integer", "nullable": true, "description": "Number of pages for cbz / manga rows; null on every other file type."},
-						"collection":     map[string]any{"type": "string", "description": "Operator-edited collection label (the comic / manga grouping field). Empty string when unset. Filtered by the search keyword 'collection:' (exact match). Settable on create and via PATCH /images/{id}."},
+						"id":               map[string]any{"type": "integer"},
+						"sha256":           map[string]any{"type": "string"},
+						"canonical_path":   map[string]any{"type": "string"},
+						"aliases":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+						"file_type":        map[string]any{"type": "string"},
+						"width":            map[string]any{"type": "integer", "nullable": true},
+						"height":           map[string]any{"type": "integer", "nullable": true},
+						"file_size":        map[string]any{"type": "integer"},
+						"is_favorited":     map[string]any{"type": "boolean"},
+						"is_inbox":         map[string]any{"type": "boolean", "description": "true = needs triage (sits in the inbox); false = curated. New ingests default to true."},
+						"is_missing":       map[string]any{"type": "boolean"},
+						"auto_tagged_at":   map[string]any{"type": "string", "format": "date-time", "nullable": true},
+						"source_type":      map[string]any{"type": "string", "description": "Generation-tool source: 'a1111', 'comfyui', 'a1111,comfyui', or 'none'. Filtered by the search keyword 'ai:'."},
+						"origin":           map[string]any{"type": "string", "description": "How the image got into the gallery: 'ingest' for watcher/sync, 'upload' for the web UI, or any caller-supplied string (app name, URL...) set via POST /images with 'via'"},
+						"source":           map[string]any{"type": "string", "description": "Operator-edited free-form provenance label (site name, scraper, ...). Empty string when unset. Filtered by the search keyword 'source:' (exact match). Settable on create and via PATCH /images/{id}."},
+						"url":              map[string]any{"type": "string", "description": "Operator-edited canonical web URL the image came from. Empty string when unset. Must start with http:// or https://. Settable on create and via PATCH /images/{id}."},
+						"page_count":       map[string]any{"type": "integer", "nullable": true, "description": "Number of pages for cbz / manga rows; null on every other file type."},
+						"collection":       map[string]any{"type": "string", "description": "Operator-edited collection label (the comic / manga grouping field). Empty string when unset. Filtered by the search keyword 'collection:' (exact match). Settable on create and via PATCH /images/{id}."},
 						"collection_order": map[string]any{"type": "integer", "nullable": true, "description": "Operator-edited 1-based position within collection. Null when unset. Settable on create and via PATCH /images/{id}."},
-						"ingested_at":    map[string]any{"type": "string", "format": "date-time"},
-						"thumbnail_url":  map[string]any{"type": "string"},
-						"phash":          map[string]any{"type": "string", "nullable": true, "description": "16-char hex perceptual hash; null until the phash backfill or ingest has populated it."},
-						"tags":           map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/Tag"}},
+						"ingested_at":      map[string]any{"type": "string", "format": "date-time"},
+						"thumbnail_url":    map[string]any{"type": "string"},
+						"phash":            map[string]any{"type": "string", "nullable": true, "description": "16-char hex perceptual hash; null until the phash backfill or ingest has populated it."},
+						"tags":             map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/Tag"}},
 					},
 				},
 				"ImageRelations": map[string]any{
@@ -196,8 +181,8 @@ func buildSpec(baseURL string) map[string]any {
 					"summary":     "API info",
 					"operationId": "apiInfo",
 					"responses": map[string]any{
-						"200": map[string]any{"description": "API metadata", "content": jsonContent("#/components/schemas/APIInfo")},
-						"503": map[string]any{"description": "API disabled (no token configured)", "content": jsonContent("#/components/schemas/Error")},
+						"200": resp("API metadata", "#/components/schemas/APIInfo"),
+						"503": resp("API disabled (no token configured)", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -214,15 +199,15 @@ func buildSpec(baseURL string) map[string]any {
 									"type":     "object",
 									"required": []string{"file"},
 									"properties": map[string]any{
-										"file":        map[string]any{"type": "string", "format": "binary", "description": "Image or video file"},
-										"tags":        map[string]any{"type": "string", "description": "JSON-encoded array of tag names"},
-										"folder":      map[string]any{"type": "string", "description": "Destination subfolder under the gallery root; missing directories are created. Leave blank for the gallery root."},
-										"autotag":     map[string]any{"type": "string", "description": "Set to \"true\" to kick off an auto-tag job on the new image"},
-										"tagger_name": map[string]any{"type": "string", "description": "Optional auto-tagger name; when set with autotag, restricts the job to that tagger"},
-										"via":         map[string]any{"type": "string", "description": "Optional caller-supplied identifier (app name, URL...). Stored as images.origin and attached to each initial tag via image_tags.tagger_name. Blank defaults images.origin to 'upload' for multipart mode."},
-										"source":      map[string]any{"type": "string", "description": "Optional operator-edited provenance label (site name, scraper...). Written to images.source on the new row; ignored on a duplicate-SHA insert."},
-										"url":         map[string]any{"type": "string", "description": "Optional canonical web URL the image came from. Must start with http:// or https://. Written to images.url on the new row."},
-										"collection":  map[string]any{"type": "string", "description": "Optional collection label (images.series). Written on the new row."},
+										"file":             map[string]any{"type": "string", "format": "binary", "description": "Image or video file"},
+										"tags":             map[string]any{"type": "string", "description": "JSON-encoded array of tag names"},
+										"folder":           map[string]any{"type": "string", "description": "Destination subfolder under the gallery root; missing directories are created. Leave blank for the gallery root."},
+										"autotag":          map[string]any{"type": "string", "description": "Set to \"true\" to kick off an auto-tag job on the new image"},
+										"tagger_name":      map[string]any{"type": "string", "description": "Optional auto-tagger name; when set with autotag, restricts the job to that tagger"},
+										"via":              map[string]any{"type": "string", "description": "Optional caller-supplied identifier (app name, URL...). Stored as images.origin and attached to each initial tag via image_tags.tagger_name. Blank defaults images.origin to 'upload' for multipart mode."},
+										"source":           map[string]any{"type": "string", "description": "Optional operator-edited provenance label (site name, scraper...). Written to images.source on the new row; ignored on a duplicate-SHA insert."},
+										"url":              map[string]any{"type": "string", "description": "Optional canonical web URL the image came from. Must start with http:// or https://. Written to images.url on the new row."},
+										"collection":       map[string]any{"type": "string", "description": "Optional collection label (images.series). Written on the new row."},
 										"collection_order": map[string]any{"type": "string", "description": "Optional 1-based position within the collection. Requires a non-empty collection in the same request."},
 									},
 								},
@@ -232,15 +217,15 @@ func buildSpec(baseURL string) map[string]any {
 									"type":     "object",
 									"required": []string{"path"},
 									"properties": map[string]any{
-										"path":        map[string]any{"type": "string", "description": "Path to a file already on disk. Absolute paths are used verbatim; relative paths are resolved under gallery/<folder> when folder is set, otherwise under the gallery root. WARNING: absolute paths give a token holder read access to anything the monbooru process can stat."},
-										"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-										"folder":      map[string]any{"type": "string", "description": "Destination subfolder for relative paths"},
-										"autotag":     map[string]any{"type": "boolean", "description": "Kick off an auto-tag job on the new image"},
-										"tagger_name": map[string]any{"type": "string", "description": "Optional auto-tagger name"},
-										"via":         map[string]any{"type": "string", "description": "Optional caller-supplied identifier. Stored as images.origin and attached to each initial tag. Blank defaults images.origin to 'ingest' for JSON path-reference mode."},
-										"source":      map[string]any{"type": "string", "description": "Optional operator-edited provenance label (site name, scraper...). Written to images.source on the new row; ignored on a duplicate-SHA insert."},
-										"url":         map[string]any{"type": "string", "description": "Optional canonical web URL the image came from. Must start with http:// or https://. Written to images.url on the new row."},
-										"collection":  map[string]any{"type": "string", "description": "Optional collection label (images.series). Written on the new row."},
+										"path":             map[string]any{"type": "string", "description": "Path to a file already on disk. Absolute paths are used verbatim; relative paths are resolved under gallery/<folder> when folder is set, otherwise under the gallery root. WARNING: absolute paths give a token holder read access to anything the monbooru process can stat."},
+										"tags":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+										"folder":           map[string]any{"type": "string", "description": "Destination subfolder for relative paths"},
+										"autotag":          map[string]any{"type": "boolean", "description": "Kick off an auto-tag job on the new image"},
+										"tagger_name":      map[string]any{"type": "string", "description": "Optional auto-tagger name"},
+										"via":              map[string]any{"type": "string", "description": "Optional caller-supplied identifier. Stored as images.origin and attached to each initial tag. Blank defaults images.origin to 'ingest' for JSON path-reference mode."},
+										"source":           map[string]any{"type": "string", "description": "Optional operator-edited provenance label (site name, scraper...). Written to images.source on the new row; ignored on a duplicate-SHA insert."},
+										"url":              map[string]any{"type": "string", "description": "Optional canonical web URL the image came from. Must start with http:// or https://. Written to images.url on the new row."},
+										"collection":       map[string]any{"type": "string", "description": "Optional collection label (images.series). Written on the new row."},
 										"collection_order": map[string]any{"type": "integer", "description": "Optional 1-based position within the collection. Requires a non-empty collection in the same request."},
 									},
 								},
@@ -248,11 +233,11 @@ func buildSpec(baseURL string) map[string]any {
 						},
 					},
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Duplicate SHA-256: existing image returned with alias_added=true; the posted path is registered against the existing image", "content": jsonContent("#/components/schemas/DuplicateImageResponse")},
-						"201": map[string]any{"description": "Image created", "content": jsonContent("#/components/schemas/CreateImageResponse")},
-						"400": map[string]any{"description": "Invalid request or unsupported file type", "content": jsonContent("#/components/schemas/Error")},
-						"413": map[string]any{"description": "File exceeds max size", "content": jsonContent("#/components/schemas/Error")},
-						"500": map[string]any{"description": "Ingest failure", "content": jsonContent("#/components/schemas/Error")},
+						"200": resp("Duplicate SHA-256: existing image returned with alias_added=true; the posted path is registered against the existing image", "#/components/schemas/DuplicateImageResponse"),
+						"201": resp("Image created", "#/components/schemas/CreateImageResponse"),
+						"400": resp("Invalid request or unsupported file type", "#/components/schemas/Error"),
+						"413": resp("File exceeds max size", "#/components/schemas/Error"),
+						"500": resp("Ingest failure", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -263,13 +248,13 @@ func buildSpec(baseURL string) map[string]any {
 					"parameters": []map[string]any{
 						galleryParam(),
 						queryParam("q", "Search query (tag list, filters, wildcards)"),
-						queryParam("sort", "Sort field: newest, filesize, random"),
+						queryParam("sort", "Sort field: newest, filesize, order, random"),
 						queryParam("order", "Sort order: asc, desc"),
 						queryParam("page", "Page number (1-based)"),
 						queryParam("limit", "Results per page (max 200)"),
 					},
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Paginated image list", "content": jsonContent("#/components/schemas/PaginatedImages")},
+						"200": resp("Paginated image list", "#/components/schemas/PaginatedImages"),
 					},
 				},
 			},
@@ -279,37 +264,30 @@ func buildSpec(baseURL string) map[string]any {
 					"operationId": "getImage",
 					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Image metadata", "content": jsonContent("#/components/schemas/Image")},
-						"404": map[string]any{"description": "Not found", "content": jsonContent("#/components/schemas/Error")},
+						"200": resp("Image metadata", "#/components/schemas/Image"),
+						"404": resp("Not found", "#/components/schemas/Error"),
 					},
 				},
 				"patch": map[string]any{
 					"summary":     "Edit image fields",
 					"operationId": "patchImage",
 					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
-					"requestBody": map[string]any{
-						"required": true,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type":        "object",
-									"description": "Any subset of the editable fields. An absent or null field is left unchanged; an empty string clears a text field. Clearing collection also clears collection_order unless one is supplied in the same request; to clear collection_order on its own, clear the collection.",
-									"properties": map[string]any{
-										"source":           map[string]any{"type": "string", "description": "Operator-edited provenance label (<=200 chars). Empty clears."},
-										"url":              map[string]any{"type": "string", "description": "Canonical web URL (<=2048 chars, http:// or https://). Empty clears."},
-										"collection":       map[string]any{"type": "string", "description": "Collection label (images.series). Empty clears."},
-										"collection_order": map[string]any{"type": "integer", "description": "1-based position within the collection. Requires a non-empty collection (incoming or already stored)."},
-										"is_favorited":     map[string]any{"type": "boolean"},
-										"is_inbox":         map[string]any{"type": "boolean", "description": "true = sits in the inbox (needs triage); false = curated."},
-									},
-								},
-							},
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"type":        "object",
+						"description": "Any subset of the editable fields. An absent or null field is left unchanged; an empty string clears a text field. Clearing collection also clears collection_order unless one is supplied in the same request; to clear collection_order on its own, clear the collection.",
+						"properties": map[string]any{
+							"source":           map[string]any{"type": "string", "description": "Operator-edited provenance label (<=200 chars). Empty clears."},
+							"url":              map[string]any{"type": "string", "description": "Canonical web URL (<=2048 chars, http:// or https://). Empty clears."},
+							"collection":       map[string]any{"type": "string", "description": "Collection label (images.series). Empty clears."},
+							"collection_order": map[string]any{"type": "integer", "description": "1-based position within the collection. Requires a non-empty collection (incoming or already stored)."},
+							"is_favorited":     map[string]any{"type": "boolean"},
+							"is_inbox":         map[string]any{"type": "boolean", "description": "true = sits in the inbox (needs triage); false = curated."},
 						},
-					},
+					}),
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Updated image", "content": jsonContent("#/components/schemas/Image")},
-						"400": map[string]any{"description": "Invalid request (bad url, order without a collection, or no editable fields supplied)", "content": jsonContent("#/components/schemas/Error")},
-						"404": map[string]any{"description": "Not found", "content": jsonContent("#/components/schemas/Error")},
+						"200": resp("Updated image", "#/components/schemas/Image"),
+						"400": resp("Invalid request (bad url, order without a collection, or no editable fields supplied)", "#/components/schemas/Error"),
+						"404": resp("Not found", "#/components/schemas/Error"),
 					},
 				},
 				"delete": map[string]any{
@@ -323,7 +301,7 @@ func buildSpec(baseURL string) map[string]any {
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Deleted (folder also removed)"},
 						"204": map[string]any{"description": "Deleted"},
-						"404": map[string]any{"description": "Not found", "content": jsonContent("#/components/schemas/Error")},
+						"404": resp("Not found", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -333,36 +311,29 @@ func buildSpec(baseURL string) map[string]any {
 					"operationId": "listImageTags",
 					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Image tag list", "content": jsonContent("#/components/schemas/TagArray")},
-						"404": map[string]any{"description": "Not found", "content": jsonContent("#/components/schemas/Error")},
+						"200": resp("Image tag list", "#/components/schemas/TagArray"),
+						"404": resp("Not found", "#/components/schemas/Error"),
 					},
 				},
 				"post": map[string]any{
 					"summary":     "Add tags to image",
 					"operationId": "addImageTags",
 					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
-					"requestBody": map[string]any{
-						"required": true,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type":     "object",
-									"required": []string{"tags"},
-									"properties": map[string]any{
-										"tags": map[string]any{
-											"type":        "array",
-											"items":       map[string]any{"type": "string"},
-											"description": "Tag names to add",
-										},
-										"via": map[string]any{
-											"type":        "string",
-											"description": "Optional caller-supplied identifier attached to each added tag (app name, URL...); stored in image_tags.tagger_name so the detail page can surface which third party contributed them",
-										},
-									},
-								},
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"type":     "object",
+						"required": []string{"tags"},
+						"properties": map[string]any{
+							"tags": map[string]any{
+								"type":        "array",
+								"items":       map[string]any{"type": "string"},
+								"description": "Tag names to add",
+							},
+							"via": map[string]any{
+								"type":        "string",
+								"description": "Optional caller-supplied identifier attached to each added tag (app name, URL...); stored in image_tags.tagger_name so the detail page can surface which third party contributed them",
 							},
 						},
-					},
+					}),
 					"responses": map[string]any{
 						"200": map[string]any{
 							"description": "Bare TagArray on success; wrapped in {tags, tag_warnings} when any tag failed validation.",
@@ -389,26 +360,19 @@ func buildSpec(baseURL string) map[string]any {
 					"summary":     "Remove tags from image",
 					"operationId": "removeImageTags",
 					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
-					"requestBody": map[string]any{
-						"required": true,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type":     "object",
-									"required": []string{"tags"},
-									"properties": map[string]any{
-										"tags": map[string]any{
-											"type":        "array",
-											"items":       map[string]any{"type": "string"},
-											"description": "Tag names to remove",
-										},
-									},
-								},
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"type":     "object",
+						"required": []string{"tags"},
+						"properties": map[string]any{
+							"tags": map[string]any{
+								"type":        "array",
+								"items":       map[string]any{"type": "string"},
+								"description": "Tag names to remove",
 							},
 						},
-					},
+					}),
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Updated tag list", "content": jsonContent("#/components/schemas/TagArray")},
+						"200": resp("Updated tag list", "#/components/schemas/TagArray"),
 					},
 				},
 			},
@@ -419,7 +383,7 @@ func buildSpec(baseURL string) map[string]any {
 					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Original file bytes", "content": binaryContent("application/octet-stream")},
-						"404": map[string]any{"description": "Not found", "content": jsonContent("#/components/schemas/Error")},
+						"404": resp("Not found", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -430,7 +394,7 @@ func buildSpec(baseURL string) map[string]any {
 					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
 					"responses": map[string]any{
 						"200": map[string]any{"description": "JPEG thumbnail", "content": binaryContent("image/jpeg")},
-						"404": map[string]any{"description": "Image or thumbnail not found", "content": jsonContent("#/components/schemas/Error")},
+						"404": resp("Image or thumbnail not found", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -441,8 +405,8 @@ func buildSpec(baseURL string) map[string]any {
 					"parameters":  []map[string]any{pathParam("id", "Image ID"), pathParam("n", "1-based page number"), galleryParam()},
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Page bytes (lazily extracted from the archive)", "content": binaryContent("application/octet-stream")},
-						"400": map[string]any{"description": "Invalid page number", "content": jsonContent("#/components/schemas/Error")},
-						"404": map[string]any{"description": "Not a manga row, or page out of range", "content": jsonContent("#/components/schemas/Error")},
+						"400": resp("Invalid page number", "#/components/schemas/Error"),
+						"404": resp("Not a manga row, or page out of range", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -453,8 +417,8 @@ func buildSpec(baseURL string) map[string]any {
 					"parameters":  []map[string]any{pathParam("id", "Image ID"), pathParam("n", "1-based page number"), galleryParam()},
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Page thumbnail (JPEG)", "content": binaryContent("image/jpeg")},
-						"400": map[string]any{"description": "Invalid page number", "content": jsonContent("#/components/schemas/Error")},
-						"404": map[string]any{"description": "Not a manga row, or page out of range", "content": jsonContent("#/components/schemas/Error")},
+						"400": resp("Invalid page number", "#/components/schemas/Error"),
+						"404": resp("Not a manga row, or page out of range", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -464,8 +428,8 @@ func buildSpec(baseURL string) map[string]any {
 					"operationId": "getImageRelations",
 					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Declared relations", "content": jsonContent("#/components/schemas/ImageRelations")},
-						"404": map[string]any{"description": "Image not found", "content": jsonContent("#/components/schemas/Error")},
+						"200": resp("Declared relations", "#/components/schemas/ImageRelations"),
+						"404": resp("Image not found", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -474,55 +438,41 @@ func buildSpec(baseURL string) map[string]any {
 					"summary":     "Declare a relation",
 					"operationId": "addRelation",
 					"parameters":  []map[string]any{galleryParam()},
-					"requestBody": map[string]any{
-						"required": true,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type":     "object",
-									"required": []string{"type", "a", "b"},
-									"properties": map[string]any{
-										"type":      map[string]any{"type": "string", "description": "One of: duplicate, alternate, version, derivative, not_related"},
-										"a":         map[string]any{"type": "integer", "description": "Left image id. For directed types (version, derivative), `a` is the parent / source (older revision, derived-from)."},
-										"b":         map[string]any{"type": "integer", "description": "Right image id. For directed types, the child / derivative."},
-										"direction": map[string]any{"type": "string", "description": "Optional `ba` swaps left/right; default `ab` treats `a` as the parent/source side."},
-									},
-								},
-							},
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"type":     "object",
+						"required": []string{"type", "a", "b"},
+						"properties": map[string]any{
+							"type":      map[string]any{"type": "string", "description": "One of: duplicate, alternate, version, derivative, not_related"},
+							"a":         map[string]any{"type": "integer", "description": "Left image id. For directed types (version, derivative), `a` is the parent / source (older revision, derived-from)."},
+							"b":         map[string]any{"type": "integer", "description": "Right image id. For directed types, the child / derivative."},
+							"direction": map[string]any{"type": "string", "description": "Optional `ba` swaps left/right; default `ab` treats `a` as the parent/source side."},
 						},
-					},
+					}),
 					"responses": map[string]any{
 						"201": map[string]any{"description": "Relation created"},
-						"400": map[string]any{"description": "Invalid request (self-relation, unknown type, missing ids)", "content": jsonContent("#/components/schemas/Error")},
-						"409": map[string]any{"description": "Pair carries a conflicting relation already; remove it first.", "content": jsonContent("#/components/schemas/Error")},
+						"400": resp("Invalid request (self-relation, unknown type, missing ids)", "#/components/schemas/Error"),
+						"409": resp("Pair carries a conflicting relation already; remove it first.", "#/components/schemas/Error"),
 					},
 				},
 				"delete": map[string]any{
 					"summary":     "Remove a declared relation",
 					"operationId": "removeRelation",
 					"parameters":  []map[string]any{galleryParam()},
-					"requestBody": map[string]any{
-						"required": true,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type":     "object",
-									"required": []string{"type"},
-									"properties": map[string]any{
-										"type":     map[string]any{"type": "string", "description": "One of: duplicate, alternate, version, derivative, not_related, dissolve_dup, dissolve_alt, dissolve_version, dissolve_derivative"},
-										"image_id": map[string]any{"type": "integer", "description": "Required for duplicate / alternate (the member to unlink)."},
-										"a":        map[string]any{"type": "integer", "description": "Required for version / derivative / not_related; either order is accepted."},
-										"b":        map[string]any{"type": "integer", "description": "Pair partner for a."},
-										"group_id": map[string]any{"type": "integer", "description": "Required for dissolve_dup / dissolve_alt."},
-										"root_id":  map[string]any{"type": "integer", "description": "Required for dissolve_version / dissolve_derivative; any chain or tree member id (the walker locates the root)."},
-									},
-								},
-							},
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"type":     "object",
+						"required": []string{"type"},
+						"properties": map[string]any{
+							"type":     map[string]any{"type": "string", "description": "One of: duplicate, alternate, version, derivative, not_related, dissolve_dup, dissolve_alt, dissolve_version, dissolve_derivative"},
+							"image_id": map[string]any{"type": "integer", "description": "Required for duplicate / alternate (the member to unlink)."},
+							"a":        map[string]any{"type": "integer", "description": "Required for version / derivative / not_related; either order is accepted."},
+							"b":        map[string]any{"type": "integer", "description": "Pair partner for a."},
+							"group_id": map[string]any{"type": "integer", "description": "Required for dissolve_dup / dissolve_alt."},
+							"root_id":  map[string]any{"type": "integer", "description": "Required for dissolve_version / dissolve_derivative; any chain or tree member id (the walker locates the root)."},
 						},
-					},
+					}),
 					"responses": map[string]any{
 						"204": map[string]any{"description": "Removed (idempotent)"},
-						"400": map[string]any{"description": "Invalid request", "content": jsonContent("#/components/schemas/Error")},
+						"400": resp("Invalid request", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -541,31 +491,24 @@ func buildSpec(baseURL string) map[string]any {
 						queryParam("origin", "Filter by tag origin: 'user' (any image_tags row with is_auto=0), 'auto' (only auto-tagger rows), 'alias'. Empty (default) returns every tag."),
 					},
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Paginated tag list", "content": jsonContent("#/components/schemas/PaginatedTags")},
+						"200": resp("Paginated tag list", "#/components/schemas/PaginatedTags"),
 					},
 				},
 				"post": map[string]any{
 					"summary":     "Create a tag (get-or-create)",
 					"operationId": "createTag",
 					"parameters":  []map[string]any{galleryParam()},
-					"requestBody": map[string]any{
-						"required": true,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type":     "object",
-									"required": []string{"name"},
-									"properties": map[string]any{
-										"name":     map[string]any{"type": "string"},
-										"category": map[string]any{"type": "string", "description": "Category name; defaults to general."},
-									},
-								},
-							},
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"type":     "object",
+						"required": []string{"name"},
+						"properties": map[string]any{
+							"name":     map[string]any{"type": "string"},
+							"category": map[string]any{"type": "string", "description": "Category name; defaults to general."},
 						},
-					},
+					}),
 					"responses": map[string]any{
-						"201": map[string]any{"description": "The tag (created, or the existing row when the name already exists in the category)", "content": jsonContent("#/components/schemas/TagRow")},
-						"400": map[string]any{"description": "Missing name, unknown category, or invalid tag name", "content": jsonContent("#/components/schemas/Error")},
+						"201": resp("The tag (created, or the existing row when the name already exists in the category)", "#/components/schemas/TagRow"),
+						"400": resp("Missing name, unknown category, or invalid tag name", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -574,25 +517,18 @@ func buildSpec(baseURL string) map[string]any {
 					"summary":     "Rename a tag and/or move it to another category",
 					"operationId": "patchTag",
 					"parameters":  []map[string]any{pathParam("id", "Tag ID"), galleryParam()},
-					"requestBody": map[string]any{
-						"required": true,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type": "object",
-									"properties": map[string]any{
-										"name":     map[string]any{"type": "string", "description": "New name."},
-										"category": map[string]any{"type": "string", "description": "Move to this category by name."},
-									},
-								},
-							},
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"name":     map[string]any{"type": "string", "description": "New name."},
+							"category": map[string]any{"type": "string", "description": "Move to this category by name."},
 						},
-					},
+					}),
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Updated tag", "content": jsonContent("#/components/schemas/TagRow")},
-						"400": map[string]any{"description": "No fields supplied, or a rating-tag edit", "content": jsonContent("#/components/schemas/Error")},
-						"404": map[string]any{"description": "Tag not found", "content": jsonContent("#/components/schemas/Error")},
-						"409": map[string]any{"description": "A tag with the new name already exists in the target category", "content": jsonContent("#/components/schemas/Error")},
+						"200": resp("Updated tag", "#/components/schemas/TagRow"),
+						"400": resp("No fields supplied, or a rating-tag edit", "#/components/schemas/Error"),
+						"404": resp("Tag not found", "#/components/schemas/Error"),
+						"409": resp("A tag with the new name already exists in the target category", "#/components/schemas/Error"),
 					},
 				},
 				"delete": map[string]any{
@@ -601,7 +537,7 @@ func buildSpec(baseURL string) map[string]any {
 					"parameters":  []map[string]any{pathParam("id", "Tag ID"), galleryParam()},
 					"responses": map[string]any{
 						"204": map[string]any{"description": "Deleted (rating-category rows are usage-stripped; the catalog row stays)"},
-						"404": map[string]any{"description": "Tag not found", "content": jsonContent("#/components/schemas/Error")},
+						"404": resp("Tag not found", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -610,27 +546,20 @@ func buildSpec(baseURL string) map[string]any {
 					"summary":     "Create an alias",
 					"operationId": "createAlias",
 					"parameters":  []map[string]any{galleryParam()},
-					"requestBody": map[string]any{
-						"required": true,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type":     "object",
-									"required": []string{"name", "canonical_id"},
-									"properties": map[string]any{
-										"name":         map[string]any{"type": "string", "description": "Alias name."},
-										"category":     map[string]any{"type": "string", "description": "Category for the alias; defaults to general."},
-										"canonical_id": map[string]any{"type": "integer", "description": "The tag this alias resolves to."},
-									},
-								},
-							},
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"type":     "object",
+						"required": []string{"name", "canonical_id"},
+						"properties": map[string]any{
+							"name":         map[string]any{"type": "string", "description": "Alias name."},
+							"category":     map[string]any{"type": "string", "description": "Category for the alias; defaults to general."},
+							"canonical_id": map[string]any{"type": "integer", "description": "The tag this alias resolves to."},
 						},
-					},
+					}),
 					"responses": map[string]any{
-						"201": map[string]any{"description": "The alias row", "content": jsonContent("#/components/schemas/TagRow")},
-						"400": map[string]any{"description": "Missing fields or an invalid alias target", "content": jsonContent("#/components/schemas/Error")},
-						"404": map[string]any{"description": "Canonical tag not found", "content": jsonContent("#/components/schemas/Error")},
-						"409": map[string]any{"description": "The name already names a tag with image_tags rows; merge it instead", "content": jsonContent("#/components/schemas/Error")},
+						"201": resp("The alias row", "#/components/schemas/TagRow"),
+						"400": resp("Missing fields or an invalid alias target", "#/components/schemas/Error"),
+						"404": resp("Canonical tag not found", "#/components/schemas/Error"),
+						"409": resp("The name already names a tag with image_tags rows; merge it instead", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -639,24 +568,17 @@ func buildSpec(baseURL string) map[string]any {
 					"summary":     "Merge one tag into another",
 					"operationId": "mergeTags",
 					"parameters":  []map[string]any{galleryParam()},
-					"requestBody": map[string]any{
-						"required": true,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type":     "object",
-									"required": []string{"alias_id", "canonical_id"},
-									"properties": map[string]any{
-										"alias_id":     map[string]any{"type": "integer", "description": "Tag to retire; becomes an alias of canonical_id and its image_tags move onto it."},
-										"canonical_id": map[string]any{"type": "integer", "description": "Surviving tag."},
-									},
-								},
-							},
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"type":     "object",
+						"required": []string{"alias_id", "canonical_id"},
+						"properties": map[string]any{
+							"alias_id":     map[string]any{"type": "integer", "description": "Tag to retire; becomes an alias of canonical_id and its image_tags move onto it."},
+							"canonical_id": map[string]any{"type": "integer", "description": "Surviving tag."},
 						},
-					},
+					}),
 					"responses": map[string]any{
-						"200": map[string]any{"description": "The canonical tag", "content": jsonContent("#/components/schemas/TagRow")},
-						"400": map[string]any{"description": "Self-merge, missing ids, or a merge into an alias", "content": jsonContent("#/components/schemas/Error")},
+						"200": resp("The canonical tag", "#/components/schemas/TagRow"),
+						"400": resp("Self-merge, missing ids, or a merge into an alias", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -667,7 +589,7 @@ func buildSpec(baseURL string) map[string]any {
 					"parameters":  []map[string]any{pathParam("id", "Parent tag ID"), galleryParam()},
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Direct implications", "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/Implication"}}}}},
-						"404": map[string]any{"description": "Parent tag not found", "content": jsonContent("#/components/schemas/Error")},
+						"404": resp("Parent tag not found", "#/components/schemas/Error"),
 					},
 				},
 				"post": map[string]any{
@@ -675,26 +597,19 @@ func buildSpec(baseURL string) map[string]any {
 					"operationId": "addImplication",
 					"description": "Declares parent -> implied. The edge is effective immediately for future tag adds; the historical fan-out across images already carrying the parent (the web background job) is not run from the API.",
 					"parameters":  []map[string]any{pathParam("id", "Parent tag ID"), galleryParam()},
-					"requestBody": map[string]any{
-						"required": true,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type":     "object",
-									"required": []string{"implied_id"},
-									"properties": map[string]any{
-										"implied_id": map[string]any{"type": "integer", "description": "Existing tag id the parent implies. Both sides must be canonical (non-alias)."},
-									},
-								},
-							},
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"type":     "object",
+						"required": []string{"implied_id"},
+						"properties": map[string]any{
+							"implied_id": map[string]any{"type": "integer", "description": "Existing tag id the parent implies. Both sides must be canonical (non-alias)."},
 						},
-					},
+					}),
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Edge already declared (no-op)"},
 						"201": map[string]any{"description": "Edge created"},
-						"400": map[string]any{"description": "Missing implied_id, self-implication, or an alias on either side", "content": jsonContent("#/components/schemas/Error")},
-						"404": map[string]any{"description": "Parent or implied tag not found", "content": jsonContent("#/components/schemas/Error")},
-						"409": map[string]any{"description": "Edge would close a cycle", "content": jsonContent("#/components/schemas/Error")},
+						"400": resp("Missing implied_id, self-implication, or an alias on either side", "#/components/schemas/Error"),
+						"404": resp("Parent or implied tag not found", "#/components/schemas/Error"),
+						"409": resp("Edge would close a cycle", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -706,7 +621,7 @@ func buildSpec(baseURL string) map[string]any {
 					"parameters":  []map[string]any{pathParam("id", "Parent tag ID"), pathParam("impliedID", "Implied tag ID"), galleryParam()},
 					"responses": map[string]any{
 						"204": map[string]any{"description": "Removed"},
-						"404": map[string]any{"description": "Edge not found", "content": jsonContent("#/components/schemas/Error")},
+						"404": resp("Edge not found", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -723,25 +638,18 @@ func buildSpec(baseURL string) map[string]any {
 					"summary":     "Create a category",
 					"operationId": "createCategory",
 					"parameters":  []map[string]any{galleryParam()},
-					"requestBody": map[string]any{
-						"required": true,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type":     "object",
-									"required": []string{"name"},
-									"properties": map[string]any{
-										"name":  map[string]any{"type": "string", "description": "Lowercase letters, digits, underscore, or hyphen. Search-filter keywords are reserved."},
-										"color": map[string]any{"type": "string", "description": "#rgb or #rrggbb; defaults to #888888 when blank."},
-									},
-								},
-							},
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"type":     "object",
+						"required": []string{"name"},
+						"properties": map[string]any{
+							"name":  map[string]any{"type": "string", "description": "Lowercase letters, digits, underscore, or hyphen. Search-filter keywords are reserved."},
+							"color": map[string]any{"type": "string", "description": "#rgb or #rrggbb; defaults to #888888 when blank."},
 						},
-					},
+					}),
 					"responses": map[string]any{
-						"201": map[string]any{"description": "Created category", "content": jsonContent("#/components/schemas/Category")},
-						"400": map[string]any{"description": "Invalid or reserved name, or invalid colour", "content": jsonContent("#/components/schemas/Error")},
-						"409": map[string]any{"description": "A category with this name already exists", "content": jsonContent("#/components/schemas/Error")},
+						"201": resp("Created category", "#/components/schemas/Category"),
+						"400": resp("Invalid or reserved name, or invalid colour", "#/components/schemas/Error"),
+						"409": resp("A category with this name already exists", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -750,49 +658,35 @@ func buildSpec(baseURL string) map[string]any {
 					"summary":     "Rename and/or recolor a category",
 					"operationId": "patchCategory",
 					"parameters":  []map[string]any{pathParam("id", "Category ID"), galleryParam()},
-					"requestBody": map[string]any{
-						"required": true,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type": "object",
-									"properties": map[string]any{
-										"name":  map[string]any{"type": "string", "description": "New name. Built-in categories refuse a rename."},
-										"color": map[string]any{"type": "string", "description": "#rgb or #rrggbb. Allowed on built-in categories."},
-									},
-								},
-							},
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"name":  map[string]any{"type": "string", "description": "New name. Built-in categories refuse a rename."},
+							"color": map[string]any{"type": "string", "description": "#rgb or #rrggbb. Allowed on built-in categories."},
 						},
-					},
+					}),
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Updated category", "content": jsonContent("#/components/schemas/Category")},
-						"400": map[string]any{"description": "No fields, invalid colour, reserved/invalid name, or a built-in rename", "content": jsonContent("#/components/schemas/Error")},
-						"404": map[string]any{"description": "Category not found", "content": jsonContent("#/components/schemas/Error")},
-						"409": map[string]any{"description": "A category with the new name already exists", "content": jsonContent("#/components/schemas/Error")},
+						"200": resp("Updated category", "#/components/schemas/Category"),
+						"400": resp("No fields, invalid colour, reserved/invalid name, or a built-in rename", "#/components/schemas/Error"),
+						"404": resp("Category not found", "#/components/schemas/Error"),
+						"409": resp("A category with the new name already exists", "#/components/schemas/Error"),
 					},
 				},
 				"delete": map[string]any{
 					"summary":     "Delete a category",
 					"operationId": "deleteCategory",
 					"parameters":  []map[string]any{pathParam("id", "Category ID"), galleryParam()},
-					"requestBody": map[string]any{
-						"required": false,
-						"content": map[string]any{
-							"application/json": map[string]any{
-								"schema": map[string]any{
-									"type": "object",
-									"properties": map[string]any{
-										"action":    map[string]any{"type": "string", "description": "'move' (default; reparent the category's tags) or 'delete_all' (drop the tags too)."},
-										"target_id": map[string]any{"type": "integer", "description": "Move target category id; defaults to general when omitted."},
-									},
-								},
-							},
+					"requestBody": jsonBodySchema(false, map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"action":    map[string]any{"type": "string", "description": "'move' (default; reparent the category's tags) or 'delete_all' (drop the tags too)."},
+							"target_id": map[string]any{"type": "integer", "description": "Move target category id; defaults to general when omitted."},
 						},
-					},
+					}),
 					"responses": map[string]any{
 						"204": map[string]any{"description": "Deleted"},
-						"400": map[string]any{"description": "Built-in category, or an unknown action", "content": jsonContent("#/components/schemas/Error")},
-						"404": map[string]any{"description": "Category not found", "content": jsonContent("#/components/schemas/Error")},
+						"400": resp("Built-in category, or an unknown action", "#/components/schemas/Error"),
+						"404": resp("Category not found", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -805,6 +699,29 @@ func buildSpec(baseURL string) map[string]any {
 					},
 				},
 			},
+		},
+	}
+}
+
+func resp(desc, ref string) map[string]any {
+	return map[string]any{"description": desc, "content": jsonContent(ref)}
+}
+
+func jsonBodySchema(required bool, schema map[string]any) map[string]any {
+	return map[string]any{
+		"required": required,
+		"content":  map[string]any{"application/json": map[string]any{"schema": schema}},
+	}
+}
+
+func paginatedSchema(itemRef string) map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"page":    map[string]any{"type": "integer"},
+			"limit":   map[string]any{"type": "integer"},
+			"total":   map[string]any{"type": "integer"},
+			"results": map[string]any{"type": "array", "items": map[string]any{"$ref": itemRef}},
 		},
 	}
 }
@@ -932,11 +849,7 @@ func extractDocsView(spec map[string]any) docsView {
 	}
 
 	paths, _ := spec["paths"].(map[string]any)
-	sortedPaths := make([]string, 0, len(paths))
-	for p := range paths {
-		sortedPaths = append(sortedPaths, p)
-	}
-	sort.Strings(sortedPaths)
+	sortedPaths := slices.Sorted(maps.Keys(paths))
 	for _, p := range sortedPaths {
 		methods, _ := paths[p].(map[string]any)
 		for _, m := range methodOrder {
@@ -972,11 +885,7 @@ func extractDocsView(spec map[string]any) docsView {
 
 	if comps, ok := spec["components"].(map[string]any); ok {
 		if schemas, ok := comps["schemas"].(map[string]any); ok {
-			names := make([]string, 0, len(schemas))
-			for n := range schemas {
-				names = append(names, n)
-			}
-			sort.Strings(names)
+			names := slices.Sorted(maps.Keys(schemas))
 			for _, n := range names {
 				s, _ := schemas[n].(map[string]any)
 				sv := schemaView{Name: n, Anchor: anchorize(n)}
@@ -997,11 +906,7 @@ func extractRequest(body map[string]any) *requestView {
 	if !ok {
 		return rv
 	}
-	cts := make([]string, 0, len(content))
-	for ct := range content {
-		cts = append(cts, ct)
-	}
-	sort.Strings(cts)
+	cts := slices.Sorted(maps.Keys(content))
 	for _, ct := range cts {
 		mt, _ := content[ct].(map[string]any)
 		schema, _ := mt["schema"].(map[string]any)
@@ -1023,11 +928,7 @@ func extractRequest(body map[string]any) *requestView {
 }
 
 func extractResponses(resps map[string]any) []responseView {
-	codes := make([]string, 0, len(resps))
-	for c := range resps {
-		codes = append(codes, c)
-	}
-	sort.Strings(codes)
+	codes := slices.Sorted(maps.Keys(resps))
 	out := make([]responseView, 0, len(codes))
 	for _, c := range codes {
 		r, _ := resps[c].(map[string]any)
@@ -1049,11 +950,7 @@ func extractResponses(resps map[string]any) []responseView {
 }
 
 func extractProps(props map[string]any) []propertyView {
-	names := make([]string, 0, len(props))
-	for n := range props {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(props))
 	out := make([]propertyView, 0, len(names))
 	for _, n := range names {
 		p, _ := props[n].(map[string]any)

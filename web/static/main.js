@@ -1047,6 +1047,63 @@ function taggerGalSelect(btn, on) {
   });
 }
 
+// Per-tagger threshold dialog: the per-row Reset link only does something
+// when the row differs from its catalog default, so hide it otherwise -
+// a row already at its default would otherwise show a no-op control. "At
+// default" means every number input equals its data-default (empty when
+// the catalog seeds none) and the checkbox matches its data-default-checked
+// state.
+function threshRowAtDefault(row) {
+  var atDefault = true;
+  row.querySelectorAll('input[type=number]').forEach(function(inp) {
+    if (inp.value !== (inp.dataset.default || '')) atDefault = false;
+  });
+  var cb = row.querySelector('input[type=checkbox]');
+  if (cb && cb.checked !== (cb.dataset.defaultChecked === '1')) atDefault = false;
+  return atDefault;
+}
+
+function syncThreshRow(row) {
+  if (!row) return;
+  var reset = row.querySelector('.reset-thresh');
+  // Show the Reset only when the row differs from its catalog default
+  // (any number off its default, or the category disabled). Toggle a
+  // visibility class rather than the hidden attribute so the cell keeps
+  // reserving the link's width and the column doesn't reflow.
+  if (reset) reset.classList.toggle('reset-thresh-shown', !threshRowAtDefault(row));
+}
+
+// Reset one row to its catalog defaults, then re-sync so the link hides
+// itself now that the row sits back at its default.
+function resetThreshRow(link) {
+  var row = link.closest('tr');
+  if (!row) return;
+  row.querySelectorAll('input[type=number]').forEach(function(inp) {
+    inp.value = inp.dataset.default || '';
+  });
+  var cb = row.querySelector('input[type=checkbox]');
+  if (cb) cb.checked = cb.dataset.defaultChecked === '1';
+  syncThreshRow(row);
+}
+
+// Re-sync a row as the operator edits it, and run an initial pass when the
+// dialog body lazy-loads (or re-renders after "Reset to defaults"): htmx
+// swaps the table into #tagger-thresh-<name>-body.
+document.body.addEventListener('input', function(e) {
+  var row = e.target.closest && e.target.closest('.tagger-thresh-table tbody tr');
+  if (row) syncThreshRow(row);
+});
+document.body.addEventListener('change', function(e) {
+  var row = e.target.closest && e.target.closest('.tagger-thresh-table tbody tr');
+  if (row) syncThreshRow(row);
+});
+document.body.addEventListener('htmx:afterSwap', function(e) {
+  var t = e.detail && e.detail.target;
+  if (!t) return;
+  var table = t.querySelector && t.querySelector('.tagger-thresh-table');
+  if (table) table.querySelectorAll('tbody tr').forEach(syncThreshRow);
+});
+
 // Returning from a detail page via a back-link with #img-N restores the
 // arrow-key cursor on the matching thumbnail.
 function restoreGalleryFocusFromHash() {

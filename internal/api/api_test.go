@@ -763,6 +763,33 @@ func TestAddImageTags_CarriesSource(t *testing.T) {
 	}
 }
 
+func TestAddImageTags_DefaultsSourceToAPI(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "tag_no_via.png", 10, 10)
+
+	// No via: the tag still attributes to "api" so it reads with an api
+	// origin on the tags page rather than as an anonymous UI add.
+	body, _ := json.Marshal(map[string]any{"tags": []string{"no_via_tag"}})
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/tags", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var taggerName *string
+	if err := env.database.Read.QueryRow(`
+		SELECT it.tagger_name FROM image_tags it
+		JOIN tags t ON t.id = it.tag_id
+		WHERE it.image_id = ? AND t.name = 'no_via_tag'`, id).Scan(&taggerName); err != nil {
+		t.Fatalf("scan image_tags: %v", err)
+	}
+	if taggerName == nil || *taggerName != "api" {
+		t.Errorf("tagger_name = %v, want %q", taggerName, "api")
+	}
+}
+
 func TestAddImageTags_InvalidID(t *testing.T) {
 	mux := newTestMux(t)
 	body, _ := json.Marshal(map[string]any{"tags": []string{"red"}})
