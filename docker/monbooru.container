@@ -28,3 +28,6 @@ HealthRetries=3
 HealthStartPeriod=10s
 HealthTimeout=5s
 HealthOnFailure=restart
+
+# To install monloader, check https://github.com/leqwin/monloader
+# install it alongside this unit to pull from supported booru sites.

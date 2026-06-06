@@ -15,17 +15,9 @@ RUN VERSION=$(cat VERSION.md 2>/dev/null | tr -d '[:space:]') && \
     -ldflags="-s -w -X 'github.com/leqwin/monbooru/internal/web.Version=${VERSION}' -X 'github.com/leqwin/monbooru/internal/web.Variant=cuda'" \
     -o /monbooru ./cmd/monbooru
 
-# Stage 2: Runtime - NVIDIA CUDA 12 + cuDNN 9 runtime (x86_64 only; NVIDIA does
-# not publish a general-purpose arm64 base for this image).
+# Stage 2: Runtime - NVIDIA CUDA 12 + cuDNN 9 runtime (x86_64 only;
 FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
 
-# The CUDA runtime image installs the cuda-compat-* package, which pre-creates
-# libcuda.so and its SONAME symlinks under /usr/local/cuda/compat/. When
-# AddDevice=nvidia.com/gpu=all (CDI) is passed, the NVIDIA create-symlinks and
-# enable-cuda-compat hooks try to write those same symlinks and crun aborts
-# with "read status from sync socket: File exists" before the entrypoint runs.
-# The host driver provides libcuda.so via CDI at runtime, so the compat shim
-# is not needed here.
 RUN apt-get update && apt-get remove -y --purge 'cuda-compat-*' && \
     rm -rf /usr/local/cuda/compat /var/lib/apt/lists/*
 

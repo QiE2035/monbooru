@@ -1,5 +1,9 @@
 # Changelog
 
+## [v1.9.4] - 2026-06-06
+### Fixed
+- Upload: a valid JPEG the image decoder rejected is now re-encoded and accepted.
+
 ## [v1.9.3] - 2026-05-31
 ### Added
 - Tags page: API-applied tags show an "api" origin badge.

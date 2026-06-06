@@ -683,11 +683,20 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 	// video frames decode later via ffmpeg, so both buckets skip this.
 	if !gallery.IsVideoType(fileType) && fileType != models.FileTypeCBZ {
 		if !canDecodeImage(imgPath) {
-			if uploadedToDisk {
-				os.Remove(imgPath)
+			// ffmpeg decodes JPEGs with a chroma subsampling ratio Go's
+			// image/jpeg refuses (some CDN resizers emit these); re-encode the
+			// uploaded file in place so the dimension probe, thumbnail, and
+			// phash that follow can read it. Only a file we just wrote is
+			// rewritten, never an operator's path-referenced original.
+			rescued := uploadedToDisk && fileType == models.FileTypeJPEG &&
+				gallery.NormalizeImage(imgPath) == nil && canDecodeImage(imgPath)
+			if !rescued {
+				if uploadedToDisk {
+					os.Remove(imgPath)
+				}
+				apiError(w, http.StatusUnsupportedMediaType, "unsupported_type", "file does not decode as an image")
+				return
 			}
-			apiError(w, http.StatusUnsupportedMediaType, "unsupported_type", "file does not decode as an image")
-			return
 		}
 	}
 

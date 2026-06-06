@@ -24,6 +24,47 @@ func ffmpegAvailable() bool {
 	return ffmpegOK
 }
 
+// NormalizeImage re-encodes srcPath in place to a baseline JPEG via
+// ffmpeg. Some CDN image resizers emit JPEGs with a luma/chroma
+// subsampling ratio Go's image/jpeg refuses ("unsupported JPEG
+// feature"); ffmpeg decodes them, and the re-encode lands a file the
+// stdlib decode path - dimension probe, thumbnail, phash - can read.
+// The caller passes only a freshly uploaded file it owns, so no
+// operator file on disk is rewritten. Returns an error when ffmpeg is
+// absent or the re-encode fails, leaving the original in place.
+func NormalizeImage(srcPath string) error {
+	if !ffmpegAvailable() {
+		return fmt.Errorf("ffmpeg not available")
+	}
+
+	dir := filepath.Dir(srcPath)
+	tmp, err := os.CreateTemp(dir, ".normalize.*.jpg")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmp.Close()
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	// `-update 1` writes a single still image rather than a numbered
+	// sequence; `--` keeps a tmpName beginning with `-` positional.
+	args := []string{
+		"-y",
+		"-i", srcPath,
+		"-update", "1",
+		"-frames:v", "1",
+		"-q:v", "2",
+		"--",
+		tmpName,
+	}
+	cmd := exec.Command("ffmpeg", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ffmpeg normalize: %w\n%s", err, string(out))
+	}
+
+	return os.Rename(tmpName, srcPath)
+}
+
 // generateVideoThumb extracts a frame at ~10% of the video's duration.
 func generateVideoThumb(srcPath, dstPath string) error {
 	if !ffmpegAvailable() {

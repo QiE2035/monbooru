@@ -2,6 +2,7 @@ package gallery
 
 import (
 	"database/sql"
+	"image"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,43 @@ func generateTinyMP4(t *testing.T, dst string) {
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("ffmpeg generate mp4: %v\n%s", err, out)
+	}
+}
+
+func TestNormalizeImage(t *testing.T) {
+	if !ffmpegAvailable() {
+		t.Skip("ffmpeg not available")
+	}
+	dir := t.TempDir()
+
+	// The re-encode lands a baseline JPEG the stdlib decode path can read,
+	// at the same dimensions. This is the rescue applied to an upload whose
+	// original chroma subsampling Go's image/jpeg refuses.
+	src := createTestJPEG(t, dir, "in.jpg", 320, 240)
+	if err := NormalizeImage(src); err != nil {
+		t.Fatalf("NormalizeImage: %v", err)
+	}
+	f, err := os.Open(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		t.Fatalf("normalized file does not decode with the stdlib: %v", err)
+	}
+	if cfg.Width != 320 || cfg.Height != 240 {
+		t.Errorf("normalized dimensions = %dx%d, want 320x240", cfg.Width, cfg.Height)
+	}
+
+	// A non-image cannot be rescued: ffmpeg fails so the call errors and the
+	// caller still rejects the upload.
+	bad := filepath.Join(dir, "bad.jpg")
+	if err := os.WriteFile(bad, []byte("not an image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := NormalizeImage(bad); err == nil {
+		t.Error("NormalizeImage on a non-image should return an error")
 	}
 }
 

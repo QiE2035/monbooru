@@ -47,3 +47,26 @@ services:
       start_period: 10s
       timeout: 5s
     restart: unless-stopped
+
+  ## monloader - companion downloader for monbooru (https://github.com/leqwin/monloader).
+  ## Uncomment to pull images from supported booru sites into monbooru. 
+  ## Set MONBOORU_API_TOKEN in your environment to a token generated in monbooru Settings -> Authentication.
+  # monloader:
+  #   image: ghcr.io/leqwin/monloader:latest
+  #   container_name: monloader
+  #   user: "1000:1000"
+  #   ports:
+  #     - "127.0.0.1:8081:8081"
+  #   security_opt:
+  #     - no-new-privileges:true
+  #   cap_drop:
+  #     - ALL
+  #   volumes:
+  #     - /path/to/monloader/config:/config 
+  #   environment:
+  #     - MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8081
+  #     - MONLOADER_MONBOORU_API_URL=http://monbooru:8080
+  #     - MONLOADER_MONBOORU_API_TOKEN=${MONBOORU_API_TOKEN}
+  #   depends_on:
+  #     - monbooru
+  #   restart: unless-stopped
