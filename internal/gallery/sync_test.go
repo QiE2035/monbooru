@@ -27,9 +27,13 @@ func setupSyncTest(t *testing.T) (*db.DB, *syncEnv, string) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	galleryDir := filepath.Join(tmpDir, "gallery")
-	os.MkdirAll(galleryDir, 0755)
+	if err := os.MkdirAll(galleryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	thumbDir := filepath.Join(tmpDir, "thumbs")
-	os.MkdirAll(thumbDir, 0755)
+	if err := os.MkdirAll(thumbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	database, err := db.Open(filepath.Join(tmpDir, "test.db"))
 	if err != nil {
@@ -38,7 +42,7 @@ func setupSyncTest(t *testing.T) (*db.DB, *syncEnv, string) {
 	if err := db.Bootstrap(database); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	env := &syncEnv{
 		galleryPath:    galleryDir,
@@ -70,8 +74,10 @@ func createTestPNGFileSize(t *testing.T, dir, name string, w, h int) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	png.Encode(f, img)
+	defer func() { _ = f.Close() }()
+	if err := png.Encode(f, img); err != nil {
+		t.Fatal(err)
+	}
 	return path
 }
 
@@ -226,8 +232,8 @@ func TestIngest_PromotesAliasWhenCanonicalGone(t *testing.T) {
 	}
 
 	var newRow, oldRow int
-	database.Read.QueryRow(`SELECT is_canonical FROM image_paths WHERE path = ?`, newPath).Scan(&newRow)
-	database.Read.QueryRow(`SELECT is_canonical FROM image_paths WHERE path = ?`, oldPath).Scan(&oldRow)
+	_ = database.Read.QueryRow(`SELECT is_canonical FROM image_paths WHERE path = ?`, newPath).Scan(&newRow)
+	_ = database.Read.QueryRow(`SELECT is_canonical FROM image_paths WHERE path = ?`, oldPath).Scan(&oldRow)
 	if newRow != 1 {
 		t.Errorf("new path is_canonical = %d, want 1", newRow)
 	}
@@ -247,20 +253,19 @@ func TestSync_NoChange(t *testing.T) {
 	}
 }
 
-// TestSync_MovePreservesPriorPathAsAlias: the previous canonical
-// entry must be demoted to an alias so the move history isn't
-// silently overwritten. Counts both image_paths rows after the move
-// and asserts the prior path is still in the table.
-func TestSync_MovePreservesPriorPathAsAlias(t *testing.T) {
+// TestSync_MoveDropsPriorPath: when a file moves on disk, sync repoints
+// the canonical row and drops the vanished old path so it can't surface
+// as a phantom duplicate on the detail page.
+func TestSync_MoveDropsPriorPath(t *testing.T) {
 	database, env, galleryDir := setupSyncTest(t)
 	subDir := filepath.Join(galleryDir, "moved")
-	os.MkdirAll(subDir, 0755)
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	original := createTestPNGFile(t, galleryDir, "wander.png")
 	env.sync(t, database)
 
-	// Move the file to the new folder; sync must record the new path
-	// as canonical and keep the old one as a non-canonical alias.
 	newPath := filepath.Join(subDir, "wander.png")
 	if err := os.Rename(original, newPath); err != nil {
 		t.Fatal(err)
@@ -273,7 +278,7 @@ func TestSync_MovePreservesPriorPathAsAlias(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var paths []string
 	canonicals := 0
 	for rows.Next() {
@@ -287,11 +292,118 @@ func TestSync_MovePreservesPriorPathAsAlias(t *testing.T) {
 			canonicals++
 		}
 	}
-	if len(paths) != 2 {
-		t.Errorf("image_paths rows = %d, want 2 (canonical + alias); got paths = %v", len(paths), paths)
+	if len(paths) != 1 {
+		t.Errorf("image_paths rows = %d, want 1 (old path dropped); got paths = %v", len(paths), paths)
 	}
 	if canonicals != 1 {
 		t.Errorf("canonical rows = %d, want exactly 1; paths = %v", canonicals, paths)
+	}
+	if len(paths) == 1 && paths[0] != newPath {
+		t.Errorf("surviving path = %q, want %q", paths[0], newPath)
+	}
+}
+
+// TestSync_PrunesStaleAliasPath: a non-canonical path whose file is
+// deleted on disk is removed from image_paths on the next sync, while
+// the canonical row and the image itself survive.
+func TestSync_PrunesStaleAliasPath(t *testing.T) {
+	database, env, galleryDir := setupSyncTest(t)
+	canonical := createTestPNGFile(t, galleryDir, "keep.png")
+	// A byte-identical copy lands as a second, non-canonical path.
+	data, err := os.ReadFile(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(galleryDir, "copy.png"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env.sync(t, database)
+
+	var imgID int64
+	if err := database.Read.QueryRow(`SELECT id FROM images`).Scan(&imgID); err != nil {
+		t.Fatal(err)
+	}
+	// Walk order decides which path is canonical; prune the one that isn't.
+	var aliasPath, canonPath string
+	if err := database.Read.QueryRow(`SELECT path FROM image_paths WHERE is_canonical = 0`).Scan(&aliasPath); err != nil {
+		t.Fatalf("expected one non-canonical alias after sync: %v", err)
+	}
+	if err := database.Read.QueryRow(`SELECT path FROM image_paths WHERE is_canonical = 1`).Scan(&canonPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(aliasPath); err != nil {
+		t.Fatal(err)
+	}
+	env.sync(t, database)
+
+	var remaining int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM image_paths WHERE path = ?`, aliasPath).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Errorf("stale alias row survived sync: %d rows for %q", remaining, aliasPath)
+	}
+	var canonCount, isMissing int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM image_paths WHERE path = ? AND is_canonical = 1`, canonPath).Scan(&canonCount); err != nil {
+		t.Fatal(err)
+	}
+	if canonCount != 1 {
+		t.Errorf("canonical row count = %d, want 1", canonCount)
+	}
+	if err := database.Read.QueryRow(`SELECT is_missing FROM images WHERE id = ?`, imgID).Scan(&isMissing); err != nil {
+		t.Fatal(err)
+	}
+	if isMissing != 0 {
+		t.Errorf("image marked missing = %d, want 0 (canonical still on disk)", isMissing)
+	}
+}
+
+// TestPruneStaleAliasPaths_KeepsPresentButUnwalked: a non-canonical path
+// the walk didn't report but whose file is still on disk (over the size
+// cap, transiently unreadable) must keep its row; only a genuinely-gone
+// path is dropped.
+func TestPruneStaleAliasPaths_KeepsPresentButUnwalked(t *testing.T) {
+	database, env, galleryDir := setupSyncTest(t)
+	canonical := createTestPNGFile(t, galleryDir, "keep.png")
+	env.sync(t, database)
+
+	var imgID int64
+	if err := database.Read.QueryRow(`SELECT id FROM images`).Scan(&imgID); err != nil {
+		t.Fatal(err)
+	}
+	present := filepath.Join(galleryDir, "present-dup.png")
+	if err := os.WriteFile(present, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(galleryDir, "gone-dup.png") // never written to disk
+	for _, p := range []string{present, gone} {
+		if _, err := database.Write.Exec(
+			`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 0)`, imgID, p,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// foundPaths omits both aliases, as if the walk skipped the present file
+	// and never saw the gone one. Only the gone path may be pruned.
+	foundPaths := map[string]struct{}{canonical: {}}
+	if err := pruneStaleAliasPaths(context.Background(), database, foundPaths); err != nil {
+		t.Fatal(err)
+	}
+
+	var presentCount, goneCount int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM image_paths WHERE path = ?`, present).Scan(&presentCount); err != nil {
+		t.Fatal(err)
+	}
+	if presentCount != 1 {
+		t.Errorf("present alias row count = %d, want 1 (file still on disk)", presentCount)
+	}
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM image_paths WHERE path = ?`, gone).Scan(&goneCount); err != nil {
+		t.Fatal(err)
+	}
+	if goneCount != 0 {
+		t.Errorf("gone alias row count = %d, want 0", goneCount)
 	}
 }
 
@@ -306,7 +418,9 @@ func TestSync_DetectsSameSizeInPlaceEdit(t *testing.T) {
 
 	env.sync(t, database)
 	var origSHA string
-	database.Read.QueryRow(`SELECT sha256 FROM images`).Scan(&origSHA)
+	if err := database.Read.QueryRow(`SELECT sha256 FROM images`).Scan(&origSHA); err != nil {
+		t.Fatal(err)
+	}
 
 	// Stat the seeded file, build a new payload of the same byte length
 	// (different content), and write it back with a fresh mtime so the
@@ -331,7 +445,9 @@ func TestSync_DetectsSameSizeInPlaceEdit(t *testing.T) {
 	env.sync(t, database)
 
 	var nextSHA string
-	database.Read.QueryRow(`SELECT sha256 FROM images`).Scan(&nextSHA)
+	if err := database.Read.QueryRow(`SELECT sha256 FROM images`).Scan(&nextSHA); err != nil {
+		t.Fatal(err)
+	}
 	if nextSHA == origSHA {
 		// Either the row stayed pinned to the old SHA, or re-ingest
 		// landed in a state where SHA isn't refreshed in-row. Both
@@ -391,14 +507,18 @@ func TestSync_FileDeleted(t *testing.T) {
 	path := createTestPNGFile(t, galleryDir, "test.png")
 
 	env.sync(t, database)
-	os.Remove(path)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
 	result := env.sync(t, database)
 	if result.Removed != 1 {
 		t.Errorf("Removed = %d, want 1", result.Removed)
 	}
 
 	var isMissing int
-	database.Read.QueryRow(`SELECT is_missing FROM images`).Scan(&isMissing)
+	if err := database.Read.QueryRow(`SELECT is_missing FROM images`).Scan(&isMissing); err != nil {
+		t.Fatal(err)
+	}
 	if isMissing != 1 {
 		t.Error("image not marked as missing")
 	}
@@ -407,11 +527,15 @@ func TestSync_FileDeleted(t *testing.T) {
 func TestSync_Duplicate(t *testing.T) {
 	database, env, galleryDir := setupSyncTest(t)
 	subDir := filepath.Join(galleryDir, "sub")
-	os.MkdirAll(subDir, 0755)
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	original := createTestPNGFile(t, galleryDir, "original.png")
 	content, _ := os.ReadFile(original)
-	os.WriteFile(filepath.Join(subDir, "copy.png"), content, 0644)
+	if err := os.WriteFile(filepath.Join(subDir, "copy.png"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	result := env.sync(t, database)
 	if result.Added != 1 {
@@ -429,12 +553,16 @@ func TestSync_Duplicate(t *testing.T) {
 func TestSync_DuplicateAliasRecordsMtime(t *testing.T) {
 	database, env, galleryDir := setupSyncTest(t)
 	subDir := filepath.Join(galleryDir, "sub")
-	os.MkdirAll(subDir, 0755)
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	original := createTestPNGFile(t, galleryDir, "original.png")
 	content, _ := os.ReadFile(original)
 	copyPath := filepath.Join(subDir, "copy.png")
-	os.WriteFile(copyPath, content, 0644)
+	if err := os.WriteFile(copyPath, content, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	env.sync(t, database)
 
@@ -468,10 +596,12 @@ func TestSync_SkipsLargeFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := png.Encode(bf, big); err != nil {
-		bf.Close()
+		_ = bf.Close()
 		t.Fatal(err)
 	}
-	bf.Close()
+	if err := bf.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if fi, err := os.Stat(bigPath); err != nil || fi.Size() <= 1024*1024 {
 		t.Skipf("big PNG unexpectedly compressed below 1 MiB (%d bytes); cannot exercise cap", fi.Size())
 	}
@@ -527,9 +657,13 @@ func TestSync_FileMoved(t *testing.T) {
 	}
 
 	subDir := filepath.Join(galleryDir, "sub")
-	os.MkdirAll(subDir, 0755)
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	dstPath := filepath.Join(subDir, "original.png")
-	os.Rename(srcPath, dstPath)
+	if err := os.Rename(srcPath, dstPath); err != nil {
+		t.Fatal(err)
+	}
 
 	r2 := env.sync(t, database)
 	if r2.Moved != 1 {
@@ -563,7 +697,9 @@ func TestFolderTree_WithImages(t *testing.T) {
 
 	// Sub-folder image (distinct size to ensure different SHA-256)
 	subDir := filepath.Join(galleryDir, "sub")
-	os.MkdirAll(subDir, 0755)
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	createTestPNGFileSize(t, subDir, "sub.png", 11, 10)
 
 	env.sync(t, database)
@@ -608,8 +744,12 @@ func TestFolderTree_RecursiveCount(t *testing.T) {
 	parentDir := filepath.Join(galleryDir, "parent")
 	subA := filepath.Join(parentDir, "a")
 	subB := filepath.Join(parentDir, "b")
-	os.MkdirAll(subA, 0755)
-	os.MkdirAll(subB, 0755)
+	if err := os.MkdirAll(subA, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(subB, 0755); err != nil {
+		t.Fatal(err)
+	}
 	createTestPNGFileSize(t, subA, "a.png", 10, 10)
 	createTestPNGFileSize(t, subB, "b.png", 11, 10)
 
@@ -697,7 +837,7 @@ func TestWatcher_IngestsFile(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	go w.Run(ctx)
+	go func() { _ = w.Run(ctx) }()
 
 	// Drop a file; poll the DB for arrival instead of assuming a fixed
 	// debounce + IO budget.
@@ -705,14 +845,14 @@ func TestWatcher_IngestsFile(t *testing.T) {
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		var count int
-		database.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&count)
+		_ = database.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&count)
 		if count == 1 {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	var count int
-	database.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&count)
+	_ = database.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&count)
 	t.Errorf("watcher did not ingest within 8 s; count = %d", count)
 }
 
@@ -733,7 +873,7 @@ func TestWatcher_DecrementsTagsOnMissing(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	go w.Run(ctx)
+	go func() { _ = w.Run(ctx) }()
 
 	path := createTestPNGFile(t, galleryDir, "tagged.png")
 	deadline := time.Now().Add(8 * time.Second)
@@ -773,7 +913,7 @@ func TestWatcher_DecrementsTagsOnMissing(t *testing.T) {
 	deadline = time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		var isMissing int
-		database.Read.QueryRow(`SELECT is_missing FROM images WHERE id = ?`, imgID).Scan(&isMissing)
+		_ = database.Read.QueryRow(`SELECT is_missing FROM images WHERE id = ?`, imgID).Scan(&isMissing)
 		if isMissing == 1 {
 			break
 		}
@@ -813,7 +953,7 @@ func TestWatcher_AliasPathRemovalDoesNotMarkMissing(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	go w.Run(ctx)
+	go func() { _ = w.Run(ctx) }()
 
 	canonicalPath := createTestPNGFile(t, galleryDir, "canonical.png")
 	deadline := time.Now().Add(8 * time.Second)

@@ -48,8 +48,8 @@ var pageImageExts = map[string]struct{}{
 // have folded into the zip but that aren't comic content. Folded out at
 // the page-list build step so they never reach the reader UI.
 var pageSkipBasenames = map[string]struct{}{
-	".ds_store":  {},
-	"thumbs.db":  {},
+	".ds_store":   {},
+	"thumbs.db":   {},
 	"desktop.ini": {},
 }
 
@@ -89,7 +89,7 @@ func OpenManga(path string) (*Manga, error) {
 		return naturalLess(strings.ToLower(pages[i].Path), strings.ToLower(pages[j].Path))
 	})
 	if len(pages) == 0 {
-		zr.Close()
+		_ = zr.Close()
 		return nil, ErrEmptyManga
 	}
 	return &Manga{Pages: pages, zr: zr, byPath: byPath}, nil
@@ -133,7 +133,7 @@ func (m *Manga) ExtractPage(n int, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	dir := filepath.Dir(dst)
 	tmp, err := os.CreateTemp(dir, ".page.*")
 	if err != nil {
@@ -141,16 +141,16 @@ func (m *Manga) ExtractPage(n int, dst string) error {
 	}
 	tmpName := tmp.Name()
 	if _, err := io.Copy(tmp, rc); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("write page %d: %w", n+1, err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return err
 	}
 	if err := os.Rename(tmpName, dst); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("rename page %d: %w", n+1, err)
 	}
 	return nil
@@ -163,7 +163,7 @@ func (m *Manga) CoverImage() (image.Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	img, err := DecodeImageWithCap(rc)
 	if err != nil {
 		return nil, fmt.Errorf("decode cover: %w", err)
@@ -179,7 +179,7 @@ func (m *Manga) CoverDimensions() (int, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	cfg, _, err := image.DecodeConfig(rc)
 	if err != nil {
 		return 0, 0, err

@@ -99,7 +99,7 @@ func readHydrusSidecar(f *zip.File) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	var tagsList []string
 	sc := bufio.NewScanner(rc)
 	for sc.Scan() {

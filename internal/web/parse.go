@@ -41,14 +41,14 @@ func formInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool
 	if raw == "" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `<div class="flash flash-err">Missing %s.</div>`, html.EscapeString(name))
+		_, _ = fmt.Fprintf(w, `<div class="flash flash-err">Missing %s.</div>`, html.EscapeString(name))
 		return 0, false
 	}
 	v, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `<div class="flash flash-err">Invalid %s.</div>`, html.EscapeString(name))
+		_, _ = fmt.Fprintf(w, `<div class="flash flash-err">Invalid %s.</div>`, html.EscapeString(name))
 		return 0, false
 	}
 	return v, true

@@ -27,7 +27,9 @@ func TestPhashAllZeroBlack(t *testing.T) {
 // computePhash on the same image is deterministic.
 func TestPhashDeterministic(t *testing.T) {
 	img := newGradient(64, 64)
-	if computePhash(img) != computePhash(img) {
+	a := computePhash(img)
+	b := computePhash(img)
+	if a != b {
 		t.Fatal("computePhash is non-deterministic")
 	}
 }
@@ -71,10 +73,12 @@ func TestComputePhashFromThumbRoundTrip(t *testing.T) {
 		t.Fatalf("create temp jpeg: %v", err)
 	}
 	if err := jpeg.Encode(f, img, &jpeg.Options{Quality: 85}); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("encode jpeg: %v", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("close jpeg: %v", err)
+	}
 
 	h, err := ComputePhashFromThumb(path)
 	if err != nil {
@@ -88,7 +92,7 @@ func TestComputePhashFromThumbRoundTrip(t *testing.T) {
 		t.Fatalf("reopen temp jpeg: %v", err)
 	}
 	dec, err := jpeg.Decode(f2)
-	f2.Close()
+	_ = f2.Close()
 	if err != nil {
 		t.Fatalf("decode temp jpeg: %v", err)
 	}

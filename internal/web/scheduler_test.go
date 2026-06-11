@@ -128,10 +128,10 @@ func seedImage(t *testing.T, srv *Server, name string, w, h int) int64 {
 		t.Fatal(err)
 	}
 	if err := png.Encode(f, img); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 	rec, _, err := gallery.Ingest(cx.DB, cx.GalleryPath, cx.ThumbnailsPath, path, "png", "")
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
@@ -159,7 +159,9 @@ func TestScheduledRemoveOrphans_RemovesStrayFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv.scheduledRemoveOrphans(cx)
+	if err := srv.scheduledRemoveOrphans(cx); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := os.Stat(orphanJpg); !os.IsNotExist(err) {
 		t.Error("orphan .jpg should have been removed")
@@ -190,7 +192,9 @@ func TestScheduledRemoveOrphans_ReportsViaJobManager(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv.scheduledRemoveOrphans(cx)
+	if err := srv.scheduledRemoveOrphans(cx); err != nil {
+		t.Fatal(err)
+	}
 
 	state := srv.jobs.Get()
 	if state == nil {
@@ -216,13 +220,15 @@ func TestScheduledSync_IngestsNewFiles(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
 	path := filepath.Join(cx.GalleryPath, "dropped.png")
 	f, _ := os.Create(path)
-	png.Encode(f, img)
-	f.Close()
+	_ = png.Encode(f, img)
+	_ = f.Close()
 
-	srv.scheduledSync(cx)
+	if err := srv.scheduledSync(cx); err != nil {
+		t.Fatal(err)
+	}
 
 	var count int
-	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images WHERE canonical_path = ?`, path).Scan(&count)
+	_ = cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images WHERE canonical_path = ?`, path).Scan(&count)
 	if count != 1 {
 		t.Errorf("scheduled sync did not ingest dropped file, count = %d", count)
 	}
@@ -354,12 +360,14 @@ func TestRunScheduledActions_ExecutesEnabledPhases(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
 	syncPath := filepath.Join(cx.GalleryPath, "phase_sync.png")
 	f, _ := os.Create(syncPath)
-	png.Encode(f, img)
-	f.Close()
+	_ = png.Encode(f, img)
+	_ = f.Close()
 
 	// Phase 2 (orphan sweep): seed one unreferenced thumb.
 	orphan := filepath.Join(cx.ThumbnailsPath, "424242.jpg")
-	os.MkdirAll(cx.ThumbnailsPath, 0o755)
+	if err := os.MkdirAll(cx.ThumbnailsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(orphan, []byte("zz"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +376,7 @@ func TestRunScheduledActions_ExecutesEnabledPhases(t *testing.T) {
 
 	// Phase 1 should have ingested the file.
 	var count int
-	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images WHERE canonical_path = ?`, syncPath).Scan(&count)
+	_ = cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images WHERE canonical_path = ?`, syncPath).Scan(&count)
 	if count != 1 {
 		t.Error("scheduler's sync phase didn't ingest phase_sync.png")
 	}

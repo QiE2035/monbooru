@@ -43,20 +43,6 @@ func ResolveTopK(overrides map[string]int, cat string) int {
 	return DefaultTopKFallback
 }
 
-// catNameByID reverses a name→id map for the top-K lookup. The map
-// is small (tag_categories rarely exceeds a couple dozen rows) so a
-// linear scan beats maintaining a parallel inverse map. Returns ""
-// when the id is unknown; the caller then falls through to the
-// fallback cap.
-func catNameByID(catIDs map[string]int64, id int64) string {
-	for name, cid := range catIDs {
-		if cid == id {
-			return name
-		}
-	}
-	return ""
-}
-
 // ResolveMinHits returns the minimum number of pages/frames a label
 // must score above the pre-floor on for it to survive the merge. Given
 // the global min_hit_fraction and the frame count for this row:

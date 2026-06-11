@@ -127,7 +127,8 @@ func (s *Server) settingsSchedulePost(w http.ResponseWriter, r *http.Request) {
 
 // settingsGeneralPost saves the unified Settings → General form: the Files
 // subsection (watch toggle + max file size) and the UI subsection (page
-// size). One submit covers both so the page has a single Save button.
+// size + thumbnail fit). One submit covers both so the page has a single
+// Save button.
 func (s *Server) settingsGeneralPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
@@ -140,12 +141,30 @@ func (s *Server) settingsGeneralPost(w http.ResponseWriter, r *http.Request) {
 	if n, err := strconv.Atoi(r.FormValue("page_size")); err == nil && n > 0 {
 		s.cfg.UI.PageSize = n
 	}
+	if fit := r.FormValue("thumbnail_fit"); fit == "square" || fit == "natural" {
+		s.cfg.UI.ThumbnailFit = fit
+	}
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
 		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
 	logx.Infof("settings: general updated")
+	writeInlineFlash(w, "ok", "Saved.")
+}
+
+func (s *Server) settingsMonloaderPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	s.cfgMu.Lock()
+	s.cfg.Server.MonloaderURL = strings.TrimSpace(r.FormValue("monloader_url"))
+	s.cfgMu.Unlock()
+	if err := s.saveConfig(); err != nil {
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
+		return
+	}
+	logx.Infof("settings: monloader link updated")
 	writeInlineFlash(w, "ok", "Saved.")
 }
 

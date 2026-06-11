@@ -38,19 +38,19 @@ func seedManga(t *testing.T, srv *Server, name string, pages [][]byte) int64 {
 	for i, body := range pages {
 		w, err := zw.Create(fmt.Sprintf("page_%03d.png", i+1))
 		if err != nil {
-			f.Close()
+			_ = f.Close()
 			t.Fatalf("zip create: %v", err)
 		}
 		if _, err := w.Write(body); err != nil {
-			f.Close()
+			_ = f.Close()
 			t.Fatalf("zip write: %v", err)
 		}
 	}
 	if err := zw.Close(); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("zip close: %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 	rec, _, err := gallery.Ingest(cx.DB, cx.GalleryPath, cx.ThumbnailsPath, cbzPath, "cbz", "")
 	if err != nil {
 		t.Fatalf("Ingest cbz: %v", err)
@@ -489,4 +489,3 @@ func TestReaderNavHrefs_DoNotURLEncodeBackParams(t *testing.T) {
 		t.Errorf("next-chevron href missing `?page=3&amp;…back_q=foo`. extract: %s", extract)
 	}
 }
-

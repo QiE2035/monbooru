@@ -127,7 +127,7 @@ func imageTagNames(t *testing.T, srv *Server, gallery string, imgID int64) []str
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []string
 	for rows.Next() {
 		var n string
@@ -341,7 +341,7 @@ func TestMergeGallery_Zip_HydrusBuiltinNamespacesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	got := map[string]string{}
 	for rows.Next() {
 		var name, cat string
@@ -391,7 +391,7 @@ func TestMergeGallery_Zip_RejectsTraversalEntry(t *testing.T) {
 	if w, _ := zw.Create("tags.json"); w != nil {
 		_, _ = w.Write(manifestJSON)
 	}
-	zw.Close()
+	_ = zw.Close()
 
 	// Merging shouldn't blow up; it should just skip the unsafe entry.
 	if err := srv.MergeGallery("stock", "zip", bytes.NewReader(zipBuf.Bytes())); err != nil {

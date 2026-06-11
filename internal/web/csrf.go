@@ -50,7 +50,7 @@ func parseFormOK(w http.ResponseWriter, r *http.Request) bool {
 		if isHTMXRequest(r) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, `<div class="flash flash-err">Bad form data: %s</div>`, html.EscapeString(err.Error()))
+			_, _ = fmt.Fprintf(w, `<div class="flash flash-err">Bad form data: %s</div>`, html.EscapeString(err.Error()))
 			return false
 		}
 		http.Error(w, "bad form: "+err.Error(), http.StatusBadRequest)

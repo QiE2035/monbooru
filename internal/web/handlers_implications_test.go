@@ -183,7 +183,6 @@ func TestRunImplicationPropagation_ChunkedAcrossBoundary(t *testing.T) {
 	// hashes when their content stays mostly zeros. Real ingest is
 	// already exercised by sibling tests; here the contract under
 	// test is the chunked propagation loop, not the ingest pipeline.
-	var ids []int64
 	for i := 0; i < carriers; i++ {
 		sha := fmt.Sprintf("%064x", i+1)
 		path := fmt.Sprintf("img%03d.png", i)
@@ -199,7 +198,6 @@ func TestRunImplicationPropagation_ChunkedAcrossBoundary(t *testing.T) {
 		if err := srv.tagSvc().AddTagToImage(id, parent.ID, false, nil); err != nil {
 			t.Fatal(err)
 		}
-		ids = append(ids, id)
 	}
 	implied, err := srv.tagSvc().GetOrCreateTag("implied", srv.Active().GeneralCategoryID)
 	if err != nil {

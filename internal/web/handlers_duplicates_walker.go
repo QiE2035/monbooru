@@ -69,7 +69,7 @@ func (s *Server) sha256WalkerPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load duplicates", http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []sha256DuplicateRow
 	for rows.Next() {
 		var dr sha256DuplicateRow
@@ -119,7 +119,7 @@ func (s *Server) markedWalkerPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load duplicates", http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []markedDuplicateRow
 	for rows.Next() {
 		var dr markedDuplicateRow
@@ -173,7 +173,7 @@ func annotateTagsToCopy(cx *galleryCtx, rows []markedDuplicateRow) error {
 	if err != nil {
 		return err
 	}
-	defer q.Close()
+	defer func() { _ = q.Close() }()
 	for q.Next() {
 		var gid int64
 		if err := q.Scan(&gid); err != nil {
@@ -280,7 +280,7 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	victims, scanErr := db.ScanIDs(rows)
-	rows.Close()
+	_ = rows.Close()
 	if scanErr != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		writeInlineFlash(w, "err", scanErr.Error())

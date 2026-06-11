@@ -70,11 +70,15 @@ func TestMoveImage_FilenameCollisionAutosuffixes(t *testing.T) {
 	// Pre-seed an existing distinct file at the destination with the same
 	// filename so UniqueDestPath must take the `_1` branch.
 	dstDir := filepath.Join(galleryDir, "dst")
-	os.MkdirAll(dstDir, 0o755)
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	createTestPNGFileSize(t, dstDir, "pic.png", 11, 10)
 
 	var id int64
-	database.Read.QueryRow(`SELECT id FROM images ORDER BY id LIMIT 1`).Scan(&id)
+	if err := database.Read.QueryRow(`SELECT id FROM images ORDER BY id LIMIT 1`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
 
 	res, err := MoveImage(database, galleryDir, id, "dst")
 	if err != nil {
@@ -99,7 +103,9 @@ func TestMoveImage_RenameFailureRollsBackTx(t *testing.T) {
 		t.Fatalf("ingest: %v", err)
 	}
 	var id int64
-	database.Read.QueryRow(`SELECT id FROM images`).Scan(&id)
+	if err := database.Read.QueryRow(`SELECT id FROM images`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
 
 	// Pre-create the destination dir without write permission so the
 	// rename inside MoveImage fails; the in-flight tx must roll back and
@@ -108,7 +114,7 @@ func TestMoveImage_RenameFailureRollsBackTx(t *testing.T) {
 	if err := os.MkdirAll(dstDir, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(dstDir, 0o755) })
+	t.Cleanup(func() { _ = os.Chmod(dstDir, 0o755) })
 
 	if _, err := MoveImage(database, galleryDir, id, "ro"); err == nil {
 		t.Fatal("expected MoveImage to fail when destination is not writable")
@@ -151,7 +157,9 @@ func TestMoveImage_RejectsAliasPathCollision(t *testing.T) {
 		t.Fatalf("ingest src: %v", err)
 	}
 	var srcID int64
-	database.Read.QueryRow(`SELECT id FROM images ORDER BY id LIMIT 1`).Scan(&srcID)
+	if err := database.Read.QueryRow(`SELECT id FROM images ORDER BY id LIMIT 1`).Scan(&srcID); err != nil {
+		t.Fatal(err)
+	}
 
 	// Seed a stale alias row on a different image whose path is exactly
 	// where MoveImage would land (`<galleryDir>/dst/src.png`).
@@ -164,7 +172,9 @@ func TestMoveImage_RejectsAliasPathCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 	var otherID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE id != ?`, srcID).Scan(&otherID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE id != ?`, srcID).Scan(&otherID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 0)`,
 		otherID, filepath.Join(dstDir, "src.png"),
@@ -184,13 +194,17 @@ func TestMoveImage_RejectsAliasPathCollision(t *testing.T) {
 func TestMoveImage_SameFolderIsNoop(t *testing.T) {
 	database, env, galleryDir := setupSyncTest(t)
 	sub := filepath.Join(galleryDir, "here")
-	os.MkdirAll(sub, 0o755)
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	srcPath := createTestPNGFile(t, sub, "x.png")
 	if _, _, err := Ingest(database, galleryDir, env.thumbnailsPath, srcPath, "png", ""); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
 	var id int64
-	database.Read.QueryRow(`SELECT id FROM images`).Scan(&id)
+	if err := database.Read.QueryRow(`SELECT id FROM images`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
 
 	res, err := MoveImage(database, galleryDir, id, "here")
 	if err != nil {

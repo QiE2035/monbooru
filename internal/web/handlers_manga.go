@@ -23,14 +23,14 @@ import (
 // encoded and emits them verbatim into the URL attribute.
 type readerData struct {
 	baseData
-	Image        models.Image
-	Filename     string
-	Page         int
-	PageCount    int
-	NextPage     int          // 0 when on the last page; drives the prefetch link
-	BackQS       template.URL // "?back_q=...&..." or ""; safe to append to a path with no query
-	BackKVQS     template.URL // "&back_q=...&..." or ""; safe to append after `?page=N`
-	BackToPages  bool         // true when the reader was opened from /images/{id}/pages; flips the back-link target to that page
+	Image       models.Image
+	Filename    string
+	Page        int
+	PageCount   int
+	NextPage    int          // 0 when on the last page; drives the prefetch link
+	BackQS      template.URL // "?back_q=...&..." or ""; safe to append to a path with no query
+	BackKVQS    template.URL // "&back_q=...&..." or ""; safe to append after `?page=N`
+	BackToPages bool         // true when the reader was opened from /images/{id}/pages; flips the back-link target to that page
 }
 
 // pagesGridData drives pages.html.

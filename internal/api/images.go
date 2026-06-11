@@ -157,7 +157,7 @@ func canDecodeImage(path string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, _, err = image.DecodeConfig(f)
 	return err == nil
 }
@@ -243,7 +243,7 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 				aliases = append(aliases, p)
 			}
 		}
-		aliasRows.Close()
+		_ = aliasRows.Close()
 	}
 
 	tags := []imageTagJSON{}
@@ -257,7 +257,7 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 	if err != nil {
 		logx.Warnf("buildImageResponse tags: %v", err)
 	} else {
-		defer tagRows.Close()
+		defer func() { _ = tagRows.Close() }()
 		for tagRows.Next() {
 			var tj imageTagJSON
 			var tn *string
@@ -512,7 +512,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 			apiError(w, http.StatusBadRequest, "invalid_request", "missing file field")
 			return
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 
 		folder = strings.TrimSpace(r.FormValue("folder"))
 		autotag = isTrue(r.FormValue("autotag"))
@@ -558,15 +558,15 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := io.Copy(dst, file); err != nil {
-			dst.Close()
-			os.Remove(dstPath)
+			_ = dst.Close()
+			_ = os.Remove(dstPath)
 			apiError(w, http.StatusInternalServerError, "internal_error", "failed to save upload")
 			return
 		}
-		dst.Close()
+		_ = dst.Close()
 
 		if tagsJSON := r.FormValue("tags"); tagsJSON != "" {
-			json.Unmarshal([]byte(tagsJSON), &initialTags)
+			_ = json.Unmarshal([]byte(tagsJSON), &initialTags)
 		}
 		imgPath = dstPath
 		uploadedToDisk = true
@@ -660,7 +660,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		if info, err := os.Stat(imgPath); err == nil {
 			if info.Size() > int64(maxMB)*1024*1024 {
 				if uploadedToDisk {
-					os.Remove(imgPath)
+					_ = os.Remove(imgPath)
 				}
 				apiError(w, http.StatusRequestEntityTooLarge, "file_too_large",
 					fmt.Sprintf("file exceeds max size (%d MB)", maxMB))
@@ -672,7 +672,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 	fileType, ftErr := gallery.DetectFileType(imgPath)
 	if ftErr != nil {
 		if uploadedToDisk {
-			os.Remove(imgPath)
+			_ = os.Remove(imgPath)
 		}
 		apiError(w, http.StatusBadRequest, "unsupported_type", "unsupported or unrecognised file type")
 		return
@@ -692,7 +692,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 				gallery.NormalizeImage(imgPath) == nil && canDecodeImage(imgPath)
 			if !rescued {
 				if uploadedToDisk {
-					os.Remove(imgPath)
+					_ = os.Remove(imgPath)
 				}
 				apiError(w, http.StatusUnsupportedMediaType, "unsupported_type", "file does not decode as an image")
 				return
@@ -714,7 +714,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 	img, isDuplicate, err := gallery.Ingest(g.DB, g.GalleryPath, g.ThumbnailsPath, imgPath, fileType, origin)
 	if err != nil {
 		if uploadedToDisk {
-			os.Remove(imgPath)
+			_ = os.Remove(imgPath)
 		}
 		logx.Warnf("api createImage ingest: %v", err)
 		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -978,7 +978,7 @@ func loadAliasesForImages(g Gallery, ids []int64) (map[int64][]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var imageID int64
 		var path string
@@ -1009,7 +1009,7 @@ func loadTagsForImages(g Gallery, ids []int64) (map[int64][]imageTagJSON, error)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var imageID int64
 		var tj imageTagJSON
@@ -1288,7 +1288,7 @@ func (h *Handler) resolveImageTagID(g Gallery, imageID int64, tagName string) (i
 	if err != nil {
 		return 0, fmt.Errorf("tag lookup failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids, err := db.ScanIDs(rows)
 	if err != nil {
 		return 0, err

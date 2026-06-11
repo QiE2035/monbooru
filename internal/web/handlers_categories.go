@@ -35,7 +35,7 @@ func (s *Server) categoryColors() map[string]string {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := map[string]string{}
 	for rows.Next() {
 		var name, color string
@@ -58,7 +58,7 @@ func (s *Server) categoryCountHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"count":%d}`, count)
+	_, _ = fmt.Fprintf(w, `{"count":%d}`, count)
 }
 
 func (s *Server) createCategoryPost(w http.ResponseWriter, r *http.Request) {

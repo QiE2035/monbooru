@@ -45,7 +45,7 @@ func (s *Service) CreateAlias(name string, categoryID, canonicalID int64) (*mode
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var canonIsAlias int
 	if err := tx.QueryRow(`SELECT is_alias FROM tags WHERE id = ?`, canonicalID).Scan(&canonIsAlias); err == sql.ErrNoRows {
@@ -127,7 +127,7 @@ func (s *Service) MergeTags(aliasID, canonicalID int64) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Refuse merge-into-alias: the alias resolver only follows one hop
 	// (COALESCE(canonical_tag_id, id) and GetOrCreateTag's single lookup),
@@ -160,7 +160,7 @@ func (s *Service) MergeTags(aliasID, canonicalID int64) error {
 		return fmt.Errorf("merge enumerate alias-only images: %w", err)
 	}
 	newCarrierIDs, scanErr := db.ScanIDs(rows)
-	rows.Close()
+	_ = rows.Close()
 	if scanErr != nil {
 		return fmt.Errorf("merge scan alias-only images: %w", scanErr)
 	}

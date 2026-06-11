@@ -55,7 +55,7 @@ func (s *Server) foldersSuggest(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var folders []string
 	for rows.Next() {
 		var fp string
@@ -166,7 +166,7 @@ func (s *Server) pagedDistinctIndexedLabels(col, index, where, prefix string, li
 		logx.Warnf("%s: %v", logLabel, err)
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []string
 	for rows.Next() {
 		var sv string
@@ -205,7 +205,7 @@ func (s *Server) queryNameBasenames(prefix string, limit int) []string {
 		logx.Warnf("name suggest: %v", err)
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]string, 0, limit)
 	for rows.Next() {
 		var base string
@@ -279,7 +279,7 @@ func (s *Server) querySDStringField(sdField, comfyField, prefix string, limit in
 			seen[v] = struct{}{}
 			out = append(out, v)
 		}
-		rows.Close()
+		_ = rows.Close()
 		if len(out) >= limit {
 			out = out[:limit]
 			break
@@ -674,7 +674,7 @@ func (s *Server) systemCategoryRows() []systemCategoryRow {
 	if err != nil {
 		return nil
 	}
-	defer dbrows.Close()
+	defer func() { _ = dbrows.Close() }()
 	var out []systemCategoryRow
 	for dbrows.Next() {
 		var name, color string

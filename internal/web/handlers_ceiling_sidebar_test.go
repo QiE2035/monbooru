@@ -151,7 +151,7 @@ func TestGallery_HiddenByCeilingIndicator_FilteredQuery(t *testing.T) {
 	safe, explicit := seedRatedPair(t, srv)
 	// Add a shared tag so a filtered search matches both rows.
 	var generalCat int64
-	srv.db().Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalCat)
+	_ = srv.db().Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalCat)
 	tag, err := cx.TagSvc.GetOrCreateTag("shared", generalCat)
 	if err != nil {
 		t.Fatal(err)

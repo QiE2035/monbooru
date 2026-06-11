@@ -128,7 +128,7 @@ func ensureMangaPageInDir(imageDir, canonPath string, n int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer archive.Close()
+	defer func() { _ = archive.Close() }()
 	if n < 1 || n > len(archive.Pages) {
 		return "", fmt.Errorf("page %d out of range [1,%d]", n, len(archive.Pages))
 	}

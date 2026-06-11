@@ -242,16 +242,16 @@ func loadNextPair(cx *galleryCtx, order string, ceiling *Ceiling) (*sessionPairV
 // does not; UniqueTagsTotal is the full count (the template caps the
 // visible names and shows "+N more").
 type relationCompareFacts struct {
-	ImageID          int64
-	ResolutionW      int64
-	ResolutionH      int64
-	FileSize         int64
-	AddedAt          string
-	TagCount         int
-	UniqueTags       []string
-	UniqueTagsTotal  int
-	Format           string
-	Collection       string
+	ImageID         int64
+	ResolutionW     int64
+	ResolutionH     int64
+	FileSize        int64
+	AddedAt         string
+	TagCount        int
+	UniqueTags      []string
+	UniqueTagsTotal int
+	Format          string
+	Collection      string
 }
 
 // loadCompareFacts loads the comparison table data for two image ids.
@@ -342,16 +342,17 @@ func loadTagDelta(cx *galleryCtx, leftID, rightID int64) (left []string, right [
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var owner int64
 		var name string
 		if scanErr := rows.Scan(&owner, &name); scanErr != nil {
 			return nil, nil, scanErr
 		}
-		if owner == leftID {
+		switch owner {
+		case leftID:
 			left = append(left, name)
-		} else if owner == rightID {
+		case rightID:
 			right = append(right, name)
 		}
 	}
@@ -495,7 +496,7 @@ func writeDuplicatePostDecideHeaders(w http.ResponseWriter, cx *galleryCtx, left
 		return false
 	}
 	var hasUnique int
-	cx.DB.Read.QueryRow(`
+	if err := cx.DB.Read.QueryRow(`
 		SELECT COUNT(*) FROM (
 			SELECT it.tag_id
 			FROM image_tags it
@@ -508,7 +509,9 @@ func writeDuplicatePostDecideHeaders(w http.ResponseWriter, cx *galleryCtx, left
 			  )
 			LIMIT 1
 		)`, nonOriginal, original,
-	).Scan(&hasUnique)
+	).Scan(&hasUnique); err != nil {
+		logx.Debugf("dup post-decide unique tags: %v", err)
+	}
 	w.Header().Set("X-Relations-Post-Decision", "duplicate-cleanup")
 	w.Header().Set("X-Relations-Duplicate-ID", strconv.FormatInt(nonOriginal, 10))
 	w.Header().Set("X-Relations-Duplicate-OriginalID", strconv.FormatInt(original, 10))

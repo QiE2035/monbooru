@@ -76,7 +76,7 @@ func (s *Server) settingsRelationsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	applyRelationsConfig(rc)
 	logx.Infof("settings: relations { distance=%d order=%s }", d, order)
-	w.Write([]byte(fmt.Sprintf(`<div class="flash flash-ok">Saved. distance=%d order=%s</div>`, d, order)))
+	_, _ = fmt.Fprintf(w, `<div class="flash flash-ok">Saved. distance=%d order=%s</div>`, d, order)
 }
 
 // relationsCounts is the cheap rollup the Relations page header
@@ -135,9 +135,10 @@ type browseCard struct {
 //   - "line"  : ancestor at this depth still has more siblings below
 //   - "empty" : ancestor at this depth was the last child (no trunk)
 //   - "tee"   : this row is not the last child of its parent (the
-//               parent's vertical continues past this row)
+//     parent's vertical continues past this row)
 //   - "elbow" : this row is the last child of its parent (the vertical
-//               stops at the row centre)
+//     stops at the row centre)
+//
 // The connector (tee / elbow) sits at the last index; earlier indices
 // are the ancestor trunks. Root rows carry no trunks.
 type treeRow struct {
@@ -280,7 +281,7 @@ func loadBrowseCardsByKind(cx *galleryCtx, kind, sort string, limit, offset int,
 		if err != nil {
 			return nil, 0, err
 		}
-		defer dupRows.Close()
+		defer func() { _ = dupRows.Close() }()
 		for dupRows.Next() {
 			var id, original int64
 			var createdAt string
@@ -306,7 +307,7 @@ func loadBrowseCardsByKind(cx *galleryCtx, kind, sort string, limit, offset int,
 		if err != nil {
 			return nil, 0, err
 		}
-		defer altRows.Close()
+		defer func() { _ = altRows.Close() }()
 		for altRows.Next() {
 			var id int64
 			var createdAt string
@@ -358,7 +359,7 @@ func loadBrowseCardsByKind(cx *galleryCtx, kind, sort string, limit, offset int,
 		if err != nil {
 			return nil, 0, err
 		}
-		defer nrRows.Close()
+		defer func() { _ = nrRows.Close() }()
 		for nrRows.Next() {
 			var a, b int64
 			var createdAt string
@@ -473,7 +474,7 @@ func annotateBrowseCardIngestedAt(cx *galleryCtx, cards []browseCard) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	dates := map[int64]string{}
 	for rows.Next() {
 		var id int64
@@ -541,7 +542,7 @@ func loadVersionChainCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]brows
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	type edgeMeta struct {
 		parent    int64
 		createdAt string
@@ -628,7 +629,7 @@ func loadDerivativeTreeCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]bro
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	derivativesOf := map[int64][]int64{} // source -> derivatives (sorted by id ASC)
 	sourceOf := map[int64]int64{}        // derivative -> source
 	derivCreated := map[int64]string{}   // derivative -> edge's created_at
@@ -755,7 +756,7 @@ func scanGroupMembers(cx *galleryCtx, table string, groupID int64) ([]int64, err
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return db.ScanIDs(rows)
 }
 

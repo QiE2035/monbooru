@@ -234,7 +234,7 @@ func (cx *galleryCtx) TagCount() (int, error) {
 // CollectionsCount returns the cached count of distinct non-empty
 // collection labels (the `series` column) across non-missing images.
 // Surfaced in the layout footer. Reads off idx_images_series (partial
-// on `series != ''`) so the GROUP BY scans only labelled rows.
+// on `series != ”`) so the GROUP BY scans only labelled rows.
 func (cx *galleryCtx) CollectionsCount() (int, error) {
 	return cx.cachedCount(&cx.collectionsCount,
 		`SELECT COUNT(*) FROM (SELECT 1 FROM images WHERE is_missing = 0 AND series != '' GROUP BY series)`)
@@ -353,13 +353,17 @@ func (cx *galleryCtx) SourceCountsUnder(c *Ceiling) (gallery.SourceCounts, error
 // SeriesCountsUnder returns the ceiling-aware top-25 collection labels.
 func (cx *galleryCtx) SeriesCountsUnder(c *Ceiling) ([]gallery.SeriesCount, error) {
 	return ceilingCached(c, cx.SeriesCounts, &cx.seriesCountsUnder,
-		func() ([]gallery.SeriesCount, error) { return gallery.SeriesCountsUnderQuery(cx.DB, 25, c.ExcludedTagIDs()) })
+		func() ([]gallery.SeriesCount, error) {
+			return gallery.SeriesCountsUnderQuery(cx.DB, 25, c.ExcludedTagIDs())
+		})
 }
 
 // SourceLabelCountsUnder returns the ceiling-aware top-25 source labels.
 func (cx *galleryCtx) SourceLabelCountsUnder(c *Ceiling) ([]gallery.SourceLabelCount, error) {
 	return ceilingCached(c, cx.SourceLabelCounts, &cx.sourceLabelCountsUnder,
-		func() ([]gallery.SourceLabelCount, error) { return gallery.SourceLabelCountsUnderQuery(cx.DB, 25, c.ExcludedTagIDs()) })
+		func() ([]gallery.SourceLabelCount, error) {
+			return gallery.SourceLabelCountsUnderQuery(cx.DB, 25, c.ExcludedTagIDs())
+		})
 }
 
 // warmCaches primes the per-gallery aggregations so the first user-facing
@@ -394,11 +398,11 @@ func openGalleryCtx(g config.Gallery) (*galleryCtx, error) {
 		return nil, fmt.Errorf("gallery %q: open db: %w", g.Name, err)
 	}
 	if err := db.Bootstrap(database); err != nil {
-		database.Close()
+		_ = database.Close()
 		return nil, fmt.Errorf("gallery %q: bootstrap db: %w", g.Name, err)
 	}
 	if err := os.MkdirAll(g.ThumbnailsPath, 0o755); err != nil {
-		database.Close()
+		_ = database.Close()
 		return nil, fmt.Errorf("gallery %q: create thumbnails dir: %w", g.Name, err)
 	}
 	degraded := false
@@ -410,7 +414,7 @@ func openGalleryCtx(g config.Gallery) (*galleryCtx, error) {
 	if err := database.Read.QueryRow(
 		`SELECT id FROM tag_categories WHERE name = 'general'`,
 	).Scan(&generalID); err != nil {
-		database.Close()
+		_ = database.Close()
 		return nil, fmt.Errorf("gallery %q: resolve general category: %w", g.Name, err)
 	}
 	tree := relations.NewBKTree()
@@ -449,7 +453,7 @@ func (cx *galleryCtx) close() {
 	cx.stopMangaReclaim()
 	if cx.DB != nil {
 		relations.DefaultRegistry.Unregister(cx.DB)
-		cx.DB.Close()
+		_ = cx.DB.Close()
 	}
 }
 

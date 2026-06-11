@@ -4,9 +4,9 @@ import (
 	"os"
 	"sort"
 
+	"github.com/leqwin/monbooru/internal/models"
 	"github.com/rwcarlsen/goexif/exif"
 	"github.com/rwcarlsen/goexif/tiff"
-	"github.com/leqwin/monbooru/internal/models"
 )
 
 // Extract reads SD and/or ComfyUI metadata from a file. Either return
@@ -49,7 +49,7 @@ func genericFromPNG(path string) []models.SDParam {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	chunks, err := readPNGTextChunks(f)
 	if err != nil {
 		return nil
@@ -75,7 +75,7 @@ func genericFromEXIF(path string) []models.SDParam {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	x, err := exif.Decode(f)
 	if err != nil {
 		return nil
@@ -88,7 +88,7 @@ func genericFromEXIF(path string) []models.SDParam {
 func collectEXIFTags(x *exif.Exif) []models.SDParam {
 	type kv struct{ k, v string }
 	var pairs []kv
-	x.Walk(walkFunc(func(name exif.FieldName, tag *tiff.Tag) error {
+	_ = x.Walk(walkFunc(func(name exif.FieldName, tag *tiff.Tag) error {
 		if name == exif.UserComment {
 			return nil
 		}

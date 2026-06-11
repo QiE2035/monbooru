@@ -103,20 +103,20 @@ type ImagePath struct {
 }
 
 type Tag struct {
-	ID                    int64
-	Name                  string
-	CategoryID            int64
-	CategoryName          string
-	CategoryColor         string
-	UsageCount            int
-	IsAlias               bool
-	IsAutoOnly            bool // true if all usages of this tag are auto-tagged (no manual usage)
-	IsAPIOnly             bool // true if every manual usage carries an API source label (no anonymous UI add)
-	CanonicalTagID        *int64
-	CanonicalName         string // populated on alias rows when ListTags joins the canonical
-	CanonicalCategoryName string
+	ID                     int64
+	Name                   string
+	CategoryID             int64
+	CategoryName           string
+	CategoryColor          string
+	UsageCount             int
+	IsAlias                bool
+	IsAutoOnly             bool // true if all usages of this tag are auto-tagged (no manual usage)
+	IsAPIOnly              bool // true if every manual usage carries an API source label (no anonymous UI add)
+	CanonicalTagID         *int64
+	CanonicalName          string // populated on alias rows when ListTags joins the canonical
+	CanonicalCategoryName  string
 	CanonicalCategoryColor string
-	CreatedAt             time.Time
+	CreatedAt              time.Time
 }
 
 type TagCategory struct {
@@ -143,15 +143,15 @@ type ImageTag struct {
 // Implication is one edge of the tag implication graph: adding ParentID
 // to an image fans out an implied row for ImpliedID.
 type Implication struct {
-	ParentID            int64
-	ImpliedID           int64
-	ParentName          string
-	ParentCategoryName  string
-	ParentCategoryColor string
-	ImpliedName         string
-	ImpliedCategoryName string
+	ParentID             int64
+	ImpliedID            int64
+	ParentName           string
+	ParentCategoryName   string
+	ParentCategoryColor  string
+	ImpliedName          string
+	ImpliedCategoryName  string
 	ImpliedCategoryColor string
-	CreatedAt           time.Time
+	CreatedAt            time.Time
 }
 
 // SDParam is a single parsed key-value pair from A1111 generation parameters.
@@ -269,4 +269,3 @@ type SearchResult struct {
 	Total   int
 	Results []Image
 }
-

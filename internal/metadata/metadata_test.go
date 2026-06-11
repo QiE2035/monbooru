@@ -333,7 +333,9 @@ func TestExtractFromPNG_WithParameters(t *testing.T) {
 	// Write to a temp file so we can call extractFromPNG (file-based)
 	dir := t.TempDir()
 	path := dir + "/test_sd.png"
-	os.WriteFile(path, buf, 0644)
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		t.Fatal(err)
+	}
 	sd, _, err := extractFromPNG(path)
 	if err != nil {
 		t.Fatal(err)
@@ -350,7 +352,9 @@ func TestExtractFromPNG_NoParameters(t *testing.T) {
 	buf := makePNGWithTextChunk("other_key", "some value")
 	dir := t.TempDir()
 	path := dir + "/test_nosd.png"
-	os.WriteFile(path, buf, 0644)
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		t.Fatal(err)
+	}
 	sd, _, err := extractFromPNG(path)
 	if err != nil {
 		t.Fatal(err)
@@ -483,16 +487,26 @@ func makeJPEGWithUserComment(t *testing.T, exifType uint16, comment string) stri
 	// offset 8 (header is 8 bytes long).
 	var tiff bytes.Buffer
 	tiff.WriteString("II")
-	binary.Write(&tiff, binary.LittleEndian, uint16(0x002A))
-	binary.Write(&tiff, binary.LittleEndian, uint32(8))
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(0x002A)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint32(8)); err != nil {
+		t.Fatal(err)
+	}
 
 	// IFD0: 1 entry (UserComment), then 4-byte next-IFD = 0.
-	binary.Write(&tiff, binary.LittleEndian, uint16(1)) // entry count
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(1)); err != nil { // entry count
+		t.Fatal(err)
+	}
 
 	// UserComment IFD entry. Tag 0x9286, type 7 (UNDEFINED) with an
 	// 8-byte charset prefix per EXIF 2.2 spec, OR type 2 (ASCII).
-	binary.Write(&tiff, binary.LittleEndian, uint16(0x9286)) // tag
-	binary.Write(&tiff, binary.LittleEndian, exifType)       // type
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(0x9286)); err != nil { // tag
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, exifType); err != nil { // type
+		t.Fatal(err)
+	}
 	var payload []byte
 	switch exifType {
 	case 2: // ASCII - raw text + NUL terminator, no charset prefix
@@ -502,12 +516,18 @@ func makeJPEGWithUserComment(t *testing.T, exifType uint16, comment string) stri
 	default:
 		t.Fatalf("unsupported EXIF type %d", exifType)
 	}
-	binary.Write(&tiff, binary.LittleEndian, uint32(len(payload))) // count
+	if err := binary.Write(&tiff, binary.LittleEndian, uint32(len(payload))); err != nil { // count
+		t.Fatal(err)
+	}
 	// IFD0 ends at offset 8+2+12+4 = 26 bytes from the TIFF start;
 	// drop the payload immediately after the next-IFD marker.
 	dataOffset := uint32(8 + 2 + 12 + 4)
-	binary.Write(&tiff, binary.LittleEndian, dataOffset)
-	binary.Write(&tiff, binary.LittleEndian, uint32(0)) // next IFD
+	if err := binary.Write(&tiff, binary.LittleEndian, dataOffset); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint32(0)); err != nil { // next IFD
+		t.Fatal(err)
+	}
 	tiff.Write(payload)
 
 	// APP1 segment = "Exif\0\0" + TIFF blob. Length field is big-endian
@@ -519,7 +539,9 @@ func makeJPEGWithUserComment(t *testing.T, exifType uint16, comment string) stri
 	var jpeg bytes.Buffer
 	jpeg.Write([]byte{0xFF, 0xD8}) // SOI
 	jpeg.Write([]byte{0xFF, 0xE1}) // APP1 marker
-	binary.Write(&jpeg, binary.BigEndian, app1Len)
+	if err := binary.Write(&jpeg, binary.BigEndian, app1Len); err != nil {
+		t.Fatal(err)
+	}
 	jpeg.Write(exif)
 	jpeg.Write([]byte{0xFF, 0xD9}) // EOI
 
@@ -530,7 +552,7 @@ func makeJPEGWithUserComment(t *testing.T, exifType uint16, comment string) stri
 	if _, err := tmp.Write(jpeg.Bytes()); err != nil {
 		t.Fatal(err)
 	}
-	tmp.Close()
+	_ = tmp.Close()
 	return tmp.Name()
 }
 
@@ -578,16 +600,32 @@ func makeWebPWithExifChunk(t *testing.T, includeMagic bool, comment string) stri
 	// the JPEG fixture above.
 	var tiff bytes.Buffer
 	tiff.WriteString("II")
-	binary.Write(&tiff, binary.LittleEndian, uint16(0x002A))
-	binary.Write(&tiff, binary.LittleEndian, uint32(8))
-	binary.Write(&tiff, binary.LittleEndian, uint16(1))
-	binary.Write(&tiff, binary.LittleEndian, uint16(0x9286)) // UserComment
-	binary.Write(&tiff, binary.LittleEndian, uint16(2))      // ASCII
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(0x002A)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint32(8)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(0x9286)); err != nil { // UserComment
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(2)); err != nil { // ASCII
+		t.Fatal(err)
+	}
 	payload := append([]byte(comment), 0)
-	binary.Write(&tiff, binary.LittleEndian, uint32(len(payload)))
+	if err := binary.Write(&tiff, binary.LittleEndian, uint32(len(payload))); err != nil {
+		t.Fatal(err)
+	}
 	dataOffset := uint32(8 + 2 + 12 + 4)
-	binary.Write(&tiff, binary.LittleEndian, dataOffset)
-	binary.Write(&tiff, binary.LittleEndian, uint32(0))
+	if err := binary.Write(&tiff, binary.LittleEndian, dataOffset); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint32(0)); err != nil {
+		t.Fatal(err)
+	}
 	tiff.Write(payload)
 
 	exifChunk := tiff.Bytes()
@@ -599,7 +637,9 @@ func makeWebPWithExifChunk(t *testing.T, includeMagic bool, comment string) stri
 	var inner bytes.Buffer
 	inner.WriteString("WEBP")
 	inner.WriteString("EXIF")
-	binary.Write(&inner, binary.LittleEndian, uint32(len(exifChunk)))
+	if err := binary.Write(&inner, binary.LittleEndian, uint32(len(exifChunk))); err != nil {
+		t.Fatal(err)
+	}
 	inner.Write(exifChunk)
 	if len(exifChunk)%2 == 1 {
 		inner.WriteByte(0)
@@ -607,7 +647,9 @@ func makeWebPWithExifChunk(t *testing.T, includeMagic bool, comment string) stri
 
 	var webp bytes.Buffer
 	webp.WriteString("RIFF")
-	binary.Write(&webp, binary.LittleEndian, uint32(inner.Len()))
+	if err := binary.Write(&webp, binary.LittleEndian, uint32(inner.Len())); err != nil {
+		t.Fatal(err)
+	}
 	webp.Write(inner.Bytes())
 
 	tmp, err := os.CreateTemp(t.TempDir(), "*.webp")
@@ -617,7 +659,7 @@ func makeWebPWithExifChunk(t *testing.T, includeMagic bool, comment string) stri
 	if _, err := tmp.Write(webp.Bytes()); err != nil {
 		t.Fatal(err)
 	}
-	tmp.Close()
+	_ = tmp.Close()
 	return tmp.Name()
 }
 

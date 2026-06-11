@@ -17,7 +17,7 @@ func createTestJPEG(t *testing.T, dir, name string, w, h int) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := jpeg.Encode(f, img, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func createTestPNG(t *testing.T, dir, name string, w, h int) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := png.Encode(f, img); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestGenerate_JPEG(t *testing.T) {
 
 	// Verify dimensions ≤ 300px
 	f, _ := os.Open(dstPath)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	img, err := jpeg.Decode(f)
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestGenerate_SmallImage_NoUpscale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open thumbnail: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	img, err := jpeg.Decode(f)
 	if err != nil {
 		t.Fatalf("decode thumbnail: %v", err)

@@ -37,9 +37,9 @@ const (
 // ipcRequest is the parent → child envelope. Only one of the
 // method-specific fields is populated per call.
 type ipcRequest struct {
-	Method      ipcMethod
-	Run         *RunRequest
-	IdleAfter   time.Duration
+	Method    ipcMethod
+	Run       *RunRequest
+	IdleAfter time.Duration
 }
 
 // ipcResponse is the child → parent envelope. Errors travel as a

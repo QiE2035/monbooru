@@ -92,4 +92,3 @@ func TestResolveProfile_CamieEmbedded(t *testing.T) {
 		t.Errorf("camie-v2 profile drift:\n got %+v\nwant %+v", got, want)
 	}
 }
-

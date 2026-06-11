@@ -252,7 +252,7 @@ func (c *Ceiling) TaintedImageIDs() (map[int64]bool, error) {
 		c.mu.Unlock()
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids, scanErr := db.ScanIDs(rows)
 	if scanErr != nil {
 		c.mu.Lock()
@@ -287,4 +287,3 @@ func (c *Ceiling) AnyTainted(ids []int64) bool {
 	}
 	return false
 }
-

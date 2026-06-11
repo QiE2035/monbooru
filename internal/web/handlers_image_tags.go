@@ -56,7 +56,7 @@ func (s *Server) parseTagInput(tagInput string) ([]catTag, string) {
 				categories[n] = id
 			}
 		}
-		rows.Close()
+		_ = rows.Close()
 	}
 
 	var catTags []catTag

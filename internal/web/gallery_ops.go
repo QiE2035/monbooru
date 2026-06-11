@@ -389,7 +389,7 @@ func (s *Server) settingsGalleriesPost(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", "Gallery created. Import failed reading upload: "+err.Error())
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if fh.Size == 0 {
 		if switchErr := s.SwitchGallery(name); switchErr != nil {
 			logx.Infof("gallery %q: post-add switch skipped: %v", name, switchErr)

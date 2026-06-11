@@ -160,7 +160,7 @@ func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string)
 		return
 	}
 	ids, err := db.ScanIDs(rows)
-	rows.Close()
+	_ = rows.Close()
 	if err != nil {
 		s.jobs.Fail(err.Error())
 		return
@@ -184,7 +184,7 @@ func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string)
 			return
 		}
 		removeClosure, err = tags.TransitiveImpliedTx(closureTx, []int64{impliedID})
-		closureTx.Rollback()
+		_ = closureTx.Rollback()
 		if err != nil {
 			s.jobs.Fail(err.Error())
 			return
@@ -201,12 +201,12 @@ func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string)
 		for _, imageID := range chunk {
 			if op == "add" {
 				if err := propagateAddImplication(tx, imageID, parentID, ratingCatID); err != nil {
-					tx.Rollback()
+					_ = tx.Rollback()
 					return err
 				}
 			} else {
 				if err := propagateRemoveImplication(tx, imageID, parentID, removeClosure); err != nil {
-					tx.Rollback()
+					_ = tx.Rollback()
 					return err
 				}
 			}

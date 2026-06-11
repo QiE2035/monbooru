@@ -55,6 +55,10 @@ type ServerConfig struct {
 	// and the topbar logo on every page. Path scope is gated at config
 	// load against the same trusted-roots check as CustomCSS.
 	BooruLogo string `toml:"logo"`
+	// MonloaderURL is the browser-facing base of the companion monloader
+	// instance; when set, a "Go to monloader" link shows in the top bar.
+	// Empty hides it.
+	MonloaderURL string `toml:"monloader_url"`
 }
 
 // PathsConfig holds process-wide paths. Per-gallery DB and thumbnails
@@ -79,8 +83,8 @@ type GalleryConfig struct {
 }
 
 type TaggerConfig struct {
-	UseCUDA  bool             `toml:"use_cuda"`
-	Parallel int              `toml:"parallel"`
+	UseCUDA  bool `toml:"use_cuda"`
+	Parallel int  `toml:"parallel"`
 	// IdleReleaseAfterMinutes is how long the cached ORT session may sit
 	// idle before the reclaim loop tears it down. 0 disables caching, so
 	// every run loads the model fresh. Default 30.
@@ -158,7 +162,8 @@ type AuthConfig struct {
 }
 
 type UIConfig struct {
-	PageSize int `toml:"page_size"`
+	PageSize     int    `toml:"page_size"`
+	ThumbnailFit string `toml:"thumbnail_fit"` // "square" (cropped) | "natural" (real aspect ratio)
 }
 
 // LogConfig controls log verbosity: "warn" (default), "info", "debug".
@@ -205,7 +210,8 @@ func Default() *Config {
 			SessionLifetimeDays: 7,
 		},
 		UI: UIConfig{
-			PageSize: 40,
+			PageSize:     40,
+			ThumbnailFit: "square",
 		},
 		Log: LogConfig{
 			Level: "warn",
@@ -274,16 +280,16 @@ func Save(cfg *Config, path string) error {
 	}
 	tmpName := tmpFile.Name()
 	if err := toml.NewEncoder(tmpFile).Encode(cfg); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpName)
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("encoding config: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("closing temp file: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("renaming temp file: %w", err)
 	}
 	return nil
@@ -434,6 +440,11 @@ func validate(cfg *Config) error {
 	// config typo.
 	if cfg.UI.PageSize <= 0 {
 		cfg.UI.PageSize = 40
+	}
+	// ThumbnailFit gates the gallery grid CSS; an unknown value would
+	// leave the template class blank. Snap to the default.
+	if cfg.UI.ThumbnailFit != "natural" {
+		cfg.UI.ThumbnailFit = "square"
 	}
 	// MaxAge=0 in net/http means "session cookie", so a hand-edited TOML
 	// with session_lifetime_days = 0 would expire the user's session at

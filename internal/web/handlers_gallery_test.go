@@ -105,11 +105,11 @@ func TestComputeInboxClusters_MixedSizes(t *testing.T) {
 
 func TestInboxClustersActive(t *testing.T) {
 	cases := []struct {
-		name string
-		q    string
-		sort string
+		name  string
+		q     string
+		sort  string
 		order string
-		want bool
+		want  bool
 	}{
 		{"newest desc + inbox:true", "inbox:true", "newest", "desc", true},
 		{"newest desc + inbox:true with extra leaf", "inbox:true cat:character", "newest", "desc", true},
@@ -145,6 +145,29 @@ func TestInboxFilterActive(t *testing.T) {
 	for _, c := range cases {
 		expr, _ := search.Parse(c.q)
 		if got := inboxFilterActive(expr); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestCollectionFilterActive(t *testing.T) {
+	cases := []struct {
+		name string
+		q    string
+		want bool
+	}{
+		{"bare collection", `collection:"my comic"`, true},
+		{"collection with extra leaf", `collection:"my comic" 1girl`, true},
+		{"extra leaf first", `1girl collection:"my comic"`, true},
+		{"negated collection", `-collection:"my comic"`, false},
+		{"collection under OR", `collection:"my comic" OR fav:true`, false},
+		{"empty value", "collection:", false},
+		{"empty query", "", false},
+		{"unrelated query", "1girl", false},
+	}
+	for _, c := range cases {
+		expr, _ := search.Parse(c.q)
+		if got := collectionFilterActive(expr); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}

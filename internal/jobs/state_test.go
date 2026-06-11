@@ -19,7 +19,9 @@ func TestStart_ReturnsErrorIfRunning(t *testing.T) {
 
 func TestUpdate_SetsFields(t *testing.T) {
 	m := NewManager()
-	m.Start("sync")
+	if err := m.Start("sync"); err != nil {
+		t.Fatal(err)
+	}
 	m.Update(5, 10, "processing…")
 
 	state := m.Get()
@@ -36,7 +38,9 @@ func TestUpdate_SetsFields(t *testing.T) {
 
 func TestComplete_SetsFinishedAt(t *testing.T) {
 	m := NewManager()
-	m.Start("sync")
+	if err := m.Start("sync"); err != nil {
+		t.Fatal(err)
+	}
 	m.Complete("done: 5 added")
 
 	state := m.Get()
@@ -53,7 +57,9 @@ func TestComplete_SetsFinishedAt(t *testing.T) {
 
 func TestConcurrentUpdate_NoRace(t *testing.T) {
 	m := NewManager()
-	m.Start("autotag")
+	if err := m.Start("autotag"); err != nil {
+		t.Fatal(err)
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
@@ -70,7 +76,9 @@ func TestConcurrentUpdate_NoRace(t *testing.T) {
 
 func TestFail_SetsError(t *testing.T) {
 	m := NewManager()
-	m.Start("sync")
+	if err := m.Start("sync"); err != nil {
+		t.Fatal(err)
+	}
 	m.Fail("something went wrong")
 
 	state := m.Get()
@@ -84,7 +92,9 @@ func TestFail_SetsError(t *testing.T) {
 
 func TestDismiss_ClearsState(t *testing.T) {
 	m := NewManager()
-	m.Start("sync")
+	if err := m.Start("sync"); err != nil {
+		t.Fatal(err)
+	}
 	m.Complete("done")
 	m.Dismiss()
 
@@ -95,7 +105,9 @@ func TestDismiss_ClearsState(t *testing.T) {
 
 func TestDismiss_NopWhenRunning(t *testing.T) {
 	m := NewManager()
-	m.Start("sync")
+	if err := m.Start("sync"); err != nil {
+		t.Fatal(err)
+	}
 	m.Dismiss() // should not clear running job
 
 	state := m.Get()
@@ -122,7 +134,9 @@ func TestSetWatcherMessage(t *testing.T) {
 
 func TestCancel_FiresContext(t *testing.T) {
 	m := NewManager()
-	m.Start("autotag")
+	if err := m.Start("autotag"); err != nil {
+		t.Fatal(err)
+	}
 	ctx := m.Context()
 	if ctx.Err() != nil {
 		t.Fatal("context should be live right after Start")
@@ -135,7 +149,9 @@ func TestCancel_FiresContext(t *testing.T) {
 
 func TestSetWatcherMessage_NopWhenRunning(t *testing.T) {
 	m := NewManager()
-	m.Start("sync")
+	if err := m.Start("sync"); err != nil {
+		t.Fatal(err)
+	}
 	m.SetWatcherMessage("should be ignored")
 
 	state := m.Get()
@@ -146,7 +162,9 @@ func TestSetWatcherMessage_NopWhenRunning(t *testing.T) {
 
 func TestSetWatcherMessage_BumpsCounterWhileRunning(t *testing.T) {
 	m := NewManager()
-	m.Start("autotag")
+	if err := m.Start("autotag"); err != nil {
+		t.Fatal(err)
+	}
 	m.SetWatcherMessage("added a.png")
 	m.SetWatcherMessage("added b.png")
 
@@ -181,7 +199,9 @@ func TestBeginSchedule_BlocksUserStart(t *testing.T) {
 
 func TestBeginSchedule_RefusesWhileJobRunning(t *testing.T) {
 	m := NewManager()
-	m.Start("sync")
+	if err := m.Start("sync"); err != nil {
+		t.Fatal(err)
+	}
 	if err := m.BeginSchedule(); err != ErrJobRunning {
 		t.Errorf("BeginSchedule with active job = %v, want ErrJobRunning", err)
 	}
@@ -225,7 +245,9 @@ func TestCancel_ReleasesScheduleHeld(t *testing.T) {
 // auto-dismiss never fire the short timer).
 func TestMarkViewed_NopBeforeComplete(t *testing.T) {
 	m := NewManager()
-	m.Start("sync")
+	if err := m.Start("sync"); err != nil {
+		t.Fatal(err)
+	}
 	m.MarkViewed()
 	m.Complete("done")
 	// The auto-dismiss timer is now the 30s "unviewed" cap. Call MarkViewed
@@ -242,7 +264,9 @@ func TestMarkViewed_NopBeforeComplete(t *testing.T) {
 // the default 30s (exact firing isn't asserted to keep the test fast).
 func TestMarkViewed_ShortensDismiss(t *testing.T) {
 	m := NewManager()
-	m.Start("sync")
+	if err := m.Start("sync"); err != nil {
+		t.Fatal(err)
+	}
 	m.Complete("done")
 
 	m.MarkViewed()
@@ -264,7 +288,9 @@ func TestMarkViewed_ShortensDismiss(t *testing.T) {
 
 func TestEndSchedule_ReleasesUserStart(t *testing.T) {
 	m := NewManager()
-	m.BeginSchedule()
+	if err := m.BeginSchedule(); err != nil {
+		t.Fatal(err)
+	}
 	m.EndSchedule()
 	if err := m.Start("sync"); err != nil {
 		t.Errorf("Start after EndSchedule = %v, want nil", err)

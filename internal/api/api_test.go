@@ -51,8 +51,12 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	galleryDir := filepath.Join(dir, "gallery")
 	thumbDir := filepath.Join(dir, "thumbs")
-	os.MkdirAll(galleryDir, 0755)
-	os.MkdirAll(thumbDir, 0755)
+	if err := os.MkdirAll(galleryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(thumbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	database, err := db.Open(filepath.Join(dir, "test.db"))
 	if err != nil {
@@ -61,7 +65,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err := db.Bootstrap(database); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	cfg := config.Default()
 	cfg.Galleries[0].GalleryPath = galleryDir
@@ -78,7 +82,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		TagSvc:         tags.New(database),
 		RelationsSvc:   relations.New(database),
 	}
-	h := New(cfg, jobs.NewManager(), fixedResolver(g))
+	h := New(cfg, jobs.NewManager(), fixedResolver(g), "v-test")
 	raw := http.NewServeMux()
 	h.Mount(raw)
 	// Wrap the mux so every request carries the bearer token by default.
@@ -106,7 +110,7 @@ func (e *testEnv) createTestImage(t *testing.T, name string, w, h int) int64 {
 		t.Fatal(err)
 	}
 	if err := png.Encode(f, img); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
 	if err := f.Close(); err != nil {
@@ -227,11 +231,11 @@ func TestAPIDisabledWhenNoToken(t *testing.T) {
 	if err := db.Bootstrap(database); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	cfg := config.Default()
 	cfg.Auth.APIToken = ""
-	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}))
+	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
@@ -256,11 +260,11 @@ func TestBearerAuthRejectsInvalidToken(t *testing.T) {
 	if err := db.Bootstrap(database); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	cfg := config.Default()
 	cfg.Auth.APIToken = "secret-token"
-	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}))
+	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
@@ -283,11 +287,11 @@ func TestBearerAuthAcceptsValidToken(t *testing.T) {
 	if err := db.Bootstrap(database); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	cfg := config.Default()
 	cfg.Auth.APIToken = "secret-token"
-	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}))
+	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
@@ -337,7 +341,9 @@ func TestGetImage_ValidID(t *testing.T) {
 		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
 	if resp["id"] == nil {
 		t.Error("response missing 'id'")
 	}
@@ -364,7 +370,7 @@ func TestCreateImage_JSONPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := png.Encode(f, img); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
 	if err := f.Close(); err != nil {
@@ -392,7 +398,9 @@ func TestCreateImage_JSONPath_Duplicate(t *testing.T) {
 
 	// Try to ingest the same file again
 	var canonPath string
-	env.database.Read.QueryRow(`SELECT canonical_path FROM images LIMIT 1`).Scan(&canonPath)
+	if err := env.database.Read.QueryRow(`SELECT canonical_path FROM images LIMIT 1`).Scan(&canonPath); err != nil {
+		t.Fatal(err)
+	}
 
 	body, _ := json.Marshal(map[string]any{"path": canonPath})
 	req := httptest.NewRequest("POST", "/api/v1/images", bytes.NewReader(body))
@@ -443,10 +451,10 @@ func TestCreateImage_JSONPath_OutsideGalleryRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := png.Encode(f, img); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	body, _ := json.Marshal(map[string]any{"path": imgPath})
 	req := httptest.NewRequest("POST", "/api/v1/images", bytes.NewReader(body))
@@ -569,7 +577,9 @@ func TestAddImageTags(t *testing.T) {
 	}
 	// Response should be a tag array
 	var tags []any
-	json.NewDecoder(w.Body).Decode(&tags)
+	if err := json.NewDecoder(w.Body).Decode(&tags); err != nil {
+		t.Fatal(err)
+	}
 	if len(tags) < 2 {
 		t.Errorf("expected >= 2 tags in response, got %d", len(tags))
 	}
@@ -582,8 +592,11 @@ func TestCreateImage_JSONOriginRoundTrip(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
 	path := filepath.Join(env.galleryDir, "ext_source.png")
 	f, _ := os.Create(path)
-	png.Encode(f, img)
-	f.Close()
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
 
 	body, _ := json.Marshal(map[string]any{
 		"path": path,
@@ -612,7 +625,9 @@ func TestCreateImage_JSONOriginRoundTrip(t *testing.T) {
 		t.Fatalf("get: expected 200, got %d", gw.Code)
 	}
 	var got map[string]any
-	json.NewDecoder(gw.Body).Decode(&got)
+	if err := json.NewDecoder(gw.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
 	if got["origin"] != "https://danbooru/12345" {
 		t.Errorf("origin on GET = %v, want %q", got["origin"], "https://danbooru/12345")
 	}
@@ -910,7 +925,7 @@ func findImageTag(t *testing.T, env *testEnv, id int64, want string) (string, st
 	if err != nil {
 		t.Fatalf("query image tags: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var n, c string
 		if err := rows.Scan(&n, &c); err != nil {
@@ -1243,11 +1258,11 @@ func TestCORSRejectsBadOrigin(t *testing.T) {
 	if err := db.Bootstrap(database); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	cfg := config.Default()
 	cfg.Server.BaseURL = "https://myapp.example.com"
-	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}))
+	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
@@ -1267,11 +1282,11 @@ func TestBearerAuth_MissingHeader(t *testing.T) {
 	if err := db.Bootstrap(database); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	cfg := config.Default()
 	cfg.Auth.APIToken = "required-token"
-	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}))
+	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
@@ -1303,11 +1318,17 @@ func TestCreateImage_Multipart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	part.Write(imgBuf.Bytes())
+	if _, err := part.Write(imgBuf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
 
 	// Add tags field
-	writer.WriteField("tags", `["multipart_tag"]`)
-	writer.Close()
+	if err := writer.WriteField("tags", `["multipart_tag"]`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest("POST", "/api/v1/images", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -1325,8 +1346,12 @@ func TestCreateImage_Multipart_MissingFile(t *testing.T) {
 	// Multipart body without a "file" field
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	writer.WriteField("other_field", "value")
-	writer.Close()
+	if err := writer.WriteField("other_field", "value"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest("POST", "/api/v1/images", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -1384,10 +1409,10 @@ func TestDeleteImage_EmptyFolderCleanedUpByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := png.Encode(f, img); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 	record, _, err := gallery.Ingest(env.database, env.galleryDir, env.thumbDir, imgPath, "png", "")
 	if err != nil {
 		t.Fatal(err)
@@ -1418,10 +1443,10 @@ func TestDeleteImage_DeleteEmptyFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := png.Encode(f, img); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	record, _, err := gallery.Ingest(env.database, env.galleryDir, env.thumbDir, imgPath, "png", "")
 	if err != nil {
@@ -1472,7 +1497,9 @@ func createImageJSON(t *testing.T, env *testEnv, body map[string]any, wantStatus
 	}
 	var resp map[string]any
 	if w.Body.Len() > 0 {
-		json.NewDecoder(w.Body).Decode(&resp)
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return resp
 }
@@ -1483,8 +1510,11 @@ func TestCreateImage_SetsProvenanceFields(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 9, 9))
 	path := filepath.Join(env.galleryDir, "prov.png")
 	f, _ := os.Create(path)
-	png.Encode(f, img)
-	f.Close()
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
 
 	resp := createImageJSON(t, env, map[string]any{
 		"path":             path,
@@ -1502,7 +1532,9 @@ func TestCreateImage_SetsProvenanceFields(t *testing.T) {
 		t.Fatalf("get: expected 200, got %d", gw.Code)
 	}
 	var got map[string]any
-	json.NewDecoder(gw.Body).Decode(&got)
+	if err := json.NewDecoder(gw.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
 	if got["source"] != "danbooru" {
 		t.Errorf("source = %v, want danbooru", got["source"])
 	}
@@ -1521,16 +1553,28 @@ func TestCreateImage_Multipart_SetsProvenanceFields(t *testing.T) {
 	env := newTestEnv(t)
 
 	var imgBuf bytes.Buffer
-	png.Encode(&imgBuf, image.NewRGBA(image.Rect(0, 0, 14, 14)))
+	if err := png.Encode(&imgBuf, image.NewRGBA(image.Rect(0, 0, 14, 14))); err != nil {
+		t.Fatal(err)
+	}
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	part, _ := writer.CreateFormFile("file", "mp_prov.png")
-	part.Write(imgBuf.Bytes())
-	writer.WriteField("source", "scraper_v2")
-	writer.WriteField("collection", "set_a")
-	writer.WriteField("collection_order", "5")
-	writer.Close()
+	if _, err := part.Write(imgBuf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("source", "scraper_v2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("collection", "set_a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("collection_order", "5"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest("POST", "/api/v1/images", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -1540,7 +1584,9 @@ func TestCreateImage_Multipart_SetsProvenanceFields(t *testing.T) {
 		t.Fatalf("multipart create: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
 	if resp["source"] != "scraper_v2" {
 		t.Errorf("source = %v, want scraper_v2", resp["source"])
 	}
@@ -1557,8 +1603,11 @@ func TestCreateImage_RejectsBadURL(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 9, 9))
 	path := filepath.Join(env.galleryDir, "badurl.png")
 	f, _ := os.Create(path)
-	png.Encode(f, img)
-	f.Close()
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
 
 	createImageJSON(t, env, map[string]any{
 		"path": path,
@@ -1571,8 +1620,11 @@ func TestCreateImage_RejectsOrderWithoutCollection(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 9, 9))
 	path := filepath.Join(env.galleryDir, "orphan_order.png")
 	f, _ := os.Create(path)
-	png.Encode(f, img)
-	f.Close()
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
 
 	createImageJSON(t, env, map[string]any{
 		"path":             path,
@@ -1587,8 +1639,11 @@ func TestCreateImage_DuplicateKeepsOriginalProvenance(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
 	path := filepath.Join(env.galleryDir, "dup_prov.png")
 	f, _ := os.Create(path)
-	png.Encode(f, img)
-	f.Close()
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
 
 	first := createImageJSON(t, env, map[string]any{
 		"path":   path,
@@ -1608,7 +1663,9 @@ func TestCreateImage_DuplicateKeepsOriginalProvenance(t *testing.T) {
 	gw := httptest.NewRecorder()
 	env.mux.ServeHTTP(gw, getReq)
 	var got map[string]any
-	json.NewDecoder(gw.Body).Decode(&got)
+	if err := json.NewDecoder(gw.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
 	if got["source"] != "first_source" {
 		t.Errorf("source = %v, want first_source (duplicate must not overwrite)", got["source"])
 	}
@@ -1627,7 +1684,9 @@ func patchImage(t *testing.T, env *testEnv, id int64, body map[string]any, wantS
 	}
 	var resp map[string]any
 	if w.Body.Len() > 0 {
-		json.NewDecoder(w.Body).Decode(&resp)
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return resp
 }

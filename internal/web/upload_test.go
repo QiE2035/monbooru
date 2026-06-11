@@ -26,15 +26,23 @@ func makeUploadReq(t *testing.T, srv *Server, files map[string][]byte, folder, t
 		if err != nil {
 			t.Fatal(err)
 		}
-		part.Write(contents)
+		if _, err := part.Write(contents); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if folder != "" {
-		mw.WriteField("folder", folder)
+		if err := mw.WriteField("folder", folder); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if tagsLine != "" {
-		mw.WriteField("tags", tagsLine)
+		if err := mw.WriteField("tags", tagsLine); err != nil {
+			t.Fatal(err)
+		}
 	}
-	mw.WriteField("_csrf", srv.csrfToken("anon"))
+	if err := mw.WriteField("_csrf", srv.csrfToken("anon")); err != nil {
+		t.Fatal(err)
+	}
 	if err := mw.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +93,7 @@ func TestUploadPost_IngestsSinglePNG(t *testing.T) {
 	}
 	// Image row made it into the DB.
 	var count int
-	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&count)
+	_ = cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&count)
 	if count != 1 {
 		t.Errorf("image count = %d, want 1", count)
 	}
@@ -108,7 +116,7 @@ func TestUploadPost_IngestsIntoSubfolder(t *testing.T) {
 		t.Errorf("file not at %s: %v", want, err)
 	}
 	var folderPath string
-	cx.DB.Read.QueryRow(`SELECT folder_path FROM images LIMIT 1`).Scan(&folderPath)
+	_ = cx.DB.Read.QueryRow(`SELECT folder_path FROM images LIMIT 1`).Scan(&folderPath)
 	if folderPath != "2026/april" {
 		t.Errorf("folder_path = %q, want 2026/april", folderPath)
 	}
@@ -129,7 +137,7 @@ func TestUploadPost_AppliesTagsToEveryFile(t *testing.T) {
 	cx := srv.Active()
 	var n int
 	// Both images should share the `shared_tag` tag.
-	cx.DB.Read.QueryRow(`
+	_ = cx.DB.Read.QueryRow(`
 		SELECT COUNT(*) FROM image_tags it
 		JOIN tags t ON t.id = it.tag_id WHERE t.name = 'shared_tag'
 	`).Scan(&n)
@@ -138,7 +146,7 @@ func TestUploadPost_AppliesTagsToEveryFile(t *testing.T) {
 	}
 	// `charname` should live in the character category.
 	var category string
-	cx.DB.Read.QueryRow(`
+	_ = cx.DB.Read.QueryRow(`
 		SELECT tc.name FROM tags t JOIN tag_categories tc ON tc.id = t.category_id WHERE t.name = 'charname'
 	`).Scan(&category)
 	if category != "character" {
@@ -211,7 +219,7 @@ func TestUploadPost_RejectsAbsoluteFolder(t *testing.T) {
 	// No file should have been written anywhere on disk.
 	cx := srv.Active()
 	var count int
-	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&count)
+	_ = cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&count)
 	if count != 0 {
 		t.Errorf("images table should be empty after rejected upload, got %d", count)
 	}
@@ -253,8 +261,12 @@ func TestUploadPost_NoFilesRejected(t *testing.T) {
 	// Empty body but with CSRF in form data.
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	mw.WriteField("_csrf", srv.csrfToken("anon"))
-	mw.Close()
+	if err := mw.WriteField("_csrf", srv.csrfToken("anon")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
 	req := httptest.NewRequest("POST", "/upload", &body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
@@ -318,9 +330,15 @@ func TestUploadPost_EnforcesMaxFileSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.Copy(part, &buf)
-	mw.WriteField("_csrf", srv.csrfToken("anon"))
-	mw.Close()
+	if _, err := io.Copy(part, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.WriteField("_csrf", srv.csrfToken("anon")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest("POST", "/upload", &body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
@@ -351,10 +369,18 @@ func TestCSRFMiddleware_RejectsMultipartWithoutHeader(t *testing.T) {
 	srv := newTestServer(t)
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	mw.WriteField("_csrf", srv.csrfToken("anon"))
-	mw.WriteField("name", "newgal")
-	mw.WriteField("gallery_path", t.TempDir())
-	mw.Close()
+	if err := mw.WriteField("_csrf", srv.csrfToken("anon")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.WriteField("name", "newgal"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.WriteField("gallery_path", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest("POST", "/settings/galleries", &body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
@@ -365,4 +391,3 @@ func TestCSRFMiddleware_RejectsMultipartWithoutHeader(t *testing.T) {
 		t.Errorf("expected 403, got %d", w.Code)
 	}
 }
-

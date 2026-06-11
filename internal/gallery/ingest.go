@@ -83,7 +83,7 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 			if txErr != nil {
 				return nil, false, fmt.Errorf("begin reactivation tx: %w", txErr)
 			}
-			defer tx.Rollback()
+			defer func() { _ = tx.Rollback() }()
 			if _, err := tx.Exec(
 				`UPDATE images SET is_missing = 0, canonical_path = ?, folder_path = ? WHERE id = ?`,
 				path, newFolder, existingID,
@@ -116,7 +116,7 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 			if err := tx.Commit(); err != nil {
 				return nil, false, fmt.Errorf("commit reactivation: %w", err)
 			}
-			Generate(path, thumbnailsPath, existingID, img.FileType)
+			_ = Generate(path, thumbnailsPath, existingID, img.FileType)
 			img.IsMissing = false
 			img.CanonicalPath = path
 			img.FolderPath = newFolder
@@ -126,16 +126,16 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 
 		// Watcher-observed mv inside the gallery: fsnotify emits a Create
 		// for the new path while the old canonical_path is already gone
-		// from disk. Without promotion the row would stay pinned to the
-		// vanished location and the file would disappear from folder
-		// filters. Mirrors the alias-promotion branch in Sync.
+		// from disk. Promote the new path and drop the old one - a path
+		// whose file no longer exists must not linger as an alias, or it
+		// resurfaces as a phantom duplicate on the detail page.
 		if _, statErr := os.Stat(img.CanonicalPath); statErr != nil {
 			newFolder := FolderPath(galleryPath, path)
 			tx, txErr := database.Write.Begin()
 			if txErr != nil {
 				return nil, false, fmt.Errorf("begin promote tx: %w", txErr)
 			}
-			defer tx.Rollback()
+			defer func() { _ = tx.Rollback() }()
 			if _, err := tx.Exec(
 				`UPDATE images SET canonical_path = ?, folder_path = ? WHERE id = ?`,
 				path, newFolder, existingID,
@@ -143,10 +143,10 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 				return nil, false, fmt.Errorf("promote canonical path: %w", err)
 			}
 			if _, err := tx.Exec(
-				`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ? AND path = ?`,
+				`DELETE FROM image_paths WHERE image_id = ? AND path = ?`,
 				existingID, img.CanonicalPath,
 			); err != nil {
-				return nil, false, fmt.Errorf("demote old canonical: %w", err)
+				return nil, false, fmt.Errorf("drop old canonical: %w", err)
 			}
 			if _, err := tx.Exec(
 				`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 1)
@@ -223,7 +223,7 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 		}
 		pcVal := len(archive.Pages)
 		pageCount = &pcVal
-		archive.Close()
+		_ = archive.Close()
 	} else if !IsVideoType(fileType) {
 		f, openErr := os.Open(path)
 		if openErr == nil {
@@ -231,7 +231,7 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 				w, h := cfg2.Width, cfg2.Height
 				imgWidth, imgHeight = &w, &h
 			}
-			f.Close()
+			_ = f.Close()
 		}
 	}
 
@@ -256,7 +256,7 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 	if err != nil {
 		return nil, false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var imgID int64
 	insertErr := tx.QueryRow(

@@ -104,7 +104,7 @@ func SourceCountsUnderQuery(database *db.DB, excludeIDs []int64) (SourceCounts, 
 	if err != nil {
 		return SourceCounts{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return aggregateSourceCounts(rows)
 }
 
@@ -132,7 +132,7 @@ func topLabelCountsUnder[T any](
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []T
 	for rows.Next() {
 		var label string
@@ -146,7 +146,7 @@ func topLabelCountsUnder[T any](
 }
 
 // SeriesCountsUnderQuery mirrors SeriesCountsQuery with the ceiling
-// predicate. The partial index on `series != ''` still seeds the seek;
+// predicate. The partial index on `series != ”` still seeds the seek;
 // the NOT EXISTS predicate adds the per-row taint check.
 func SeriesCountsUnderQuery(database *db.DB, limit int, excludeIDs []int64) ([]SeriesCount, error) {
 	return topLabelCountsUnder(database, "series", excludeIDs, limit,
@@ -179,7 +179,7 @@ func FolderTreeUnder(database *db.DB, excludeIDs []int64) ([]FolderNode, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	flat, err := scanFolderRows(rows)
 	if err != nil {
 		return nil, err

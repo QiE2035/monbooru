@@ -157,10 +157,10 @@ func writeTestThumb(t *testing.T, dir string, id int64) {
 		t.Fatal(err)
 	}
 	if err := jpeg.Encode(f, img, &jpeg.Options{Quality: 85}); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 }
 
 // Two images with NULL phash and identical thumbnails must surface as a

@@ -106,7 +106,7 @@ func loadCollectionSiblings(cx *galleryCtx, imageID int64) ([]collectionSibling,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []collectionSibling
 	for rows.Next() {
 		var sib collectionSibling
@@ -400,16 +400,16 @@ func dfsDerivativeChildren(cx *galleryCtx, parent int64, depth int, ancestorTrun
 	for children.Next() {
 		var d int64
 		if scanErr := children.Scan(&d); scanErr != nil {
-			children.Close()
+			_ = children.Close()
 			return scanErr
 		}
 		ids = append(ids, d)
 	}
 	if err := children.Err(); err != nil {
-		children.Close()
+		_ = children.Close()
 		return err
 	}
-	children.Close()
+	_ = children.Close()
 	for i, id := range ids {
 		isLast := i == len(ids)-1
 		*rows = append(*rows, treeRow{ID: id, Depth: depth, Trunks: rowTrunks(ancestorTrunks, depth, isLast)})
@@ -455,7 +455,6 @@ func collectionWithSelf(siblings []collectionSibling, self models.Image) []colle
 	return merged
 }
 
-
 type relationsImagePageData struct {
 	baseData
 	Image        models.Image
@@ -497,11 +496,11 @@ type relationsImagePageData struct {
 	// current image and its two neighbours; chain nodes further away
 	// (non-adjacent) carry no inline button.
 	VersionActions map[int64]string
-	BackQ             string
-	BackSort          string
-	BackOrder         string
-	BackSeed          string
-	BackPage          string
+	BackQ          string
+	BackSort       string
+	BackOrder      string
+	BackSeed       string
+	BackPage       string
 }
 
 // derivativeActionMap returns the per-row inline-action label for the
@@ -641,8 +640,8 @@ func (s *Server) addRelationPost(w http.ResponseWriter, r *http.Request) {
 // removeRelationPost / removeRelationDelete unlinks a relation. Form
 // fields:
 //   - type: duplicate | alternate | version | derivative | not_related |
-//           promote-original | dissolve-dup | dissolve-alt |
-//           dissolve-version | dissolve-derivative
+//     promote-original | dissolve-dup | dissolve-alt |
+//     dissolve-version | dissolve-derivative
 //   - a, b: image ids (most types); group_id for dup / alt dissolve and
 //     promote; root_id for version / derivative dissolve
 //   - image_id for promote-original (the new original)
@@ -932,7 +931,7 @@ func (s *Server) copyTagsToOriginalPreview(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "load preview", http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	type row struct {
 		name     string
 		category string
@@ -1274,4 +1273,3 @@ func writeRelationError(w http.ResponseWriter, err error) {
 	w.WriteHeader(http.StatusOK)
 	writeInlineFlash(w, "err", msg)
 }
-

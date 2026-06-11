@@ -21,8 +21,10 @@
             {{if not .IsBuiltin}}
             <button class="btn-sm btn-cat-rename-trigger"
                     data-id="{{.ID}}" data-name="{{.Name}}">Rename</button>
+            {{end}}
             <button class="btn-sm btn-cat-recolor-trigger"
                     data-id="{{.ID}}" data-name="{{.Name}}" data-color="{{.Color}}">Recolor</button>
+            {{if not .IsBuiltin}}
             <button class="btn-sm btn-danger btn-delete-category"
                     data-id="{{.ID}}" data-name="{{.Name}}"
                     data-csrf="{{$csrf}}">Delete</button>

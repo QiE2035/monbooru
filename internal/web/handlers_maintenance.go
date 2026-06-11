@@ -29,7 +29,7 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	ids, scanErr := db.ScanIDs(rows)
-	rows.Close()
+	_ = rows.Close()
 	if scanErr != nil {
 		writeInlineFlash(w, "err", "Error: "+scanErr.Error())
 		return
@@ -65,8 +65,8 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 			},
 			func(chunk []int64) {
 				for _, id := range chunk {
-					os.Remove(gallery.ThumbnailPath(thumbnailsPath, id))
-					os.Remove(gallery.HoverPath(thumbnailsPath, id))
+					_ = os.Remove(gallery.ThumbnailPath(thumbnailsPath, id))
+					_ = os.Remove(gallery.HoverPath(thumbnailsPath, id))
 					gallery.RemoveMangaCache(thumbnailsPath, id)
 				}
 				done += len(chunk)
@@ -154,7 +154,7 @@ func (s *Server) duplicatesListHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type aliasRow struct {
 		ImageID       int64
@@ -254,7 +254,7 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 		}
 		paths = append(paths, p)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if iterErr := rows.Err(); iterErr != nil {
 		writeInlineFlash(w, "err", iterErr.Error())
 		return
@@ -341,7 +341,7 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", err.Error())
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var imageID int64
 	var newPath string
 	var alreadyCanonical int
@@ -352,6 +352,11 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if alreadyCanonical == 1 {
 		writeInlineFlash(w, "ok", "Already canonical.")
+		return
+	}
+	if _, statErr := os.Stat(newPath); statErr != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeInlineFlash(w, "err", "Cannot promote: file is missing on disk.")
 		return
 	}
 	if _, err := tx.Exec(`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ?`, imageID); err != nil {
@@ -407,12 +412,12 @@ func (s *Server) startRebuildThumbsJob(cx *galleryCtx) error {
 	for rows.Next() {
 		var img imgRow
 		if err := rows.Scan(&img.ID, &img.Path, &img.FileType); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		imgs = append(imgs, img)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
 	}
@@ -634,7 +639,7 @@ func (s *Server) reExtractMetadataPost(w http.ResponseWriter, r *http.Request) {
 		}
 		imgs = append(imgs, img)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		writeInlineFlash(w, "err", err.Error())
 		return
@@ -738,7 +743,7 @@ func reExtractApply(ctx context.Context, database *db.DB, imageID int64, sourceT
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `UPDATE images SET source_type = ? WHERE id = ?`, sourceType, imageID); err != nil {
 		return fmt.Errorf("update source_type: %w", err)
 	}

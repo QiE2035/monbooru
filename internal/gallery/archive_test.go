@@ -4,9 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"errors"
-	"image/png"
 	"image"
 	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,7 +38,7 @@ func writeTestZip(t *testing.T, dir, name string, entries map[string][]byte) str
 	if err != nil {
 		t.Fatalf("create zip: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	zw := zip.NewWriter(f)
 	for k, v := range entries {
 		w, err := zw.Create(k)
@@ -85,7 +85,7 @@ func TestOpenManga_PageListNaturalSort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenManga: %v", err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	want := []string{"1.png", "2.png", "10.png", "100.png"}
 	if len(m.Pages) != len(want) {
 		t.Fatalf("page count = %d, want %d", len(m.Pages), len(want))
@@ -101,17 +101,17 @@ func TestOpenManga_FilterMacOSX(t *testing.T) {
 	dir := t.TempDir()
 	pic := solidPNG(t, 4, 4, [3]uint8{0, 0, 0})
 	path := writeTestZip(t, dir, "m.cbz", map[string][]byte{
-		"01.png":             pic,
-		"__MACOSX/._01.png":  []byte("garbage"),
-		".DS_Store":          []byte{},
-		"Thumbs.db":          []byte{},
-		"chapter/02.png":     pic,
+		"01.png":            pic,
+		"__MACOSX/._01.png": []byte("garbage"),
+		".DS_Store":         []byte{},
+		"Thumbs.db":         []byte{},
+		"chapter/02.png":    pic,
 	})
 	m, err := OpenManga(path)
 	if err != nil {
 		t.Fatalf("OpenManga: %v", err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	if len(m.Pages) != 2 {
 		var names []string
 		for _, p := range m.Pages {
@@ -133,7 +133,7 @@ func TestOpenManga_DeepSubfolders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenManga: %v", err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	if len(m.Pages) != 3 {
 		t.Fatalf("got %d pages, want 3", len(m.Pages))
 	}
@@ -172,7 +172,7 @@ func TestOpenManga_SinglePage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenManga: %v", err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	if len(m.Pages) != 1 {
 		t.Fatalf("got %d pages, want 1", len(m.Pages))
 	}
@@ -186,7 +186,7 @@ func TestExtractPage_AtomicRename(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenManga: %v", err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	cacheDir := t.TempDir()
 	dst := filepath.Join(cacheDir, "page_0001.png")
@@ -213,7 +213,7 @@ func TestCoverImage_DecodesPageOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenManga: %v", err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	w, h, err := m.CoverDimensions()
 	if err != nil {
 		t.Fatalf("CoverDimensions: %v", err)

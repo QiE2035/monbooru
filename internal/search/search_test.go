@@ -525,7 +525,9 @@ func setupSearchDB(t *testing.T) (*db.DB, *searchEnv) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	galleryDir := filepath.Join(tmpDir, "gallery")
-	os.MkdirAll(galleryDir, 0755)
+	if err := os.MkdirAll(galleryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	database, err := db.Open(filepath.Join(tmpDir, "test.db"))
 	if err != nil {
@@ -534,7 +536,7 @@ func setupSearchDB(t *testing.T) (*db.DB, *searchEnv) {
 	if err := db.Bootstrap(database); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	return database, &searchEnv{
 		db:            database,
@@ -556,7 +558,7 @@ func ingestTestImage(t *testing.T, database *db.DB, env *searchEnv, name string)
 		t.Fatal(err)
 	}
 	if err := png.Encode(f, img); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
 	if err := f.Close(); err != nil {
@@ -585,7 +587,9 @@ func TestExecute_FolderFilter(t *testing.T) {
 	database, env := setupSearchDB(t)
 
 	subDir := filepath.Join(env.galleryDir, "2024")
-	os.MkdirAll(subDir, 0755)
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	ingestTestImage(t, database, env, "root.png")
 
 	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
@@ -595,10 +599,12 @@ func TestExecute_FolderFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := png.Encode(f, img); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := gallery.Ingest(database, env.galleryDir, env.thumbnailsDir, path, "png", ""); err != nil {
 		t.Fatalf("ingest sub.png: %v", err)
 	}
@@ -628,18 +634,20 @@ func ingestTestManga(t *testing.T, database *db.DB, env *searchEnv, name string,
 	zw := zip.NewWriter(f)
 	w, err := zw.Create("01.png")
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
 	if err := png.Encode(w, pic); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
 	if err := zw.Close(); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 	rec, _, err := gallery.Ingest(database, env.galleryDir, env.thumbnailsDir, cbzPath, "cbz", "")
 	if err != nil {
 		t.Fatalf("Ingest cbz: %v", err)
@@ -658,8 +666,8 @@ func TestExecute_TypeArchive_FindsCBZRow(t *testing.T) {
 	ingestTestManga(t, database, env, "m.cbz", "")
 
 	res, err := Execute(database, Query{
-		Expr:  FilterExpr{Key: "type", Val: "archive"},
-		Page:  1, Limit: 40,
+		Expr: FilterExpr{Key: "type", Val: "archive"},
+		Page: 1, Limit: 40,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -678,8 +686,8 @@ func TestExecute_TypeImage_ExcludesManga(t *testing.T) {
 	ingestTestManga(t, database, env, "m.cbz", "")
 
 	res, err := Execute(database, Query{
-		Expr:  FilterExpr{Key: "type", Val: "image"},
-		Page:  1, Limit: 40,
+		Expr: FilterExpr{Key: "type", Val: "image"},
+		Page: 1, Limit: 40,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -698,8 +706,8 @@ func TestExecute_SystemFilter_NoMatch(t *testing.T) {
 	ingestTestImage(t, database, env, "b.png")
 
 	res, err := Execute(database, Query{
-		Expr:  FilterExpr{Key: "system", Val: ""},
-		Page:  1, Limit: 40,
+		Expr: FilterExpr{Key: "system", Val: ""},
+		Page: 1, Limit: 40,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -715,8 +723,8 @@ func TestExecute_CollectionExactMatch(t *testing.T) {
 	ingestTestManga(t, database, env, "bleach.cbz", "Bleach")
 
 	res, err := Execute(database, Query{
-		Expr:  FilterExpr{Key: "collection", Val: "Naruto"},
-		Page:  1, Limit: 40,
+		Expr: FilterExpr{Key: "collection", Val: "Naruto"},
+		Page: 1, Limit: 40,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -736,8 +744,8 @@ func TestExecute_PagesComparison(t *testing.T) {
 	}
 
 	res, err := Execute(database, Query{
-		Expr:  FilterExpr{Key: "pages", Val: ">=10"},
-		Page:  1, Limit: 40,
+		Expr: FilterExpr{Key: "pages", Val: ">=10"},
+		Page: 1, Limit: 40,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -765,8 +773,8 @@ func TestExecute_NumericRange(t *testing.T) {
 	}
 	for _, c := range cases {
 		res, err := Execute(database, Query{
-			Expr:  FilterExpr{Key: "pages", Val: c.val},
-			Page:  1, Limit: 40,
+			Expr: FilterExpr{Key: "pages", Val: c.val},
+			Page: 1, Limit: 40,
 		})
 		if err != nil {
 			t.Fatalf("%q: %v", c.val, err)
@@ -784,15 +792,23 @@ func TestExecute_TagAliasResolvesToCanonical(t *testing.T) {
 	ingestTestImage(t, database, env, "alias_search.png")
 
 	var imgID, generalID int64
-	database.Read.QueryRow(`SELECT id FROM images LIMIT 1`).Scan(&imgID)
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM images LIMIT 1`).Scan(&imgID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 
 	var canonID, aliasID int64
-	database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES (?, ?) RETURNING id`, "feline", generalID).Scan(&canonID)
-	database.Write.QueryRow(
+	if err := database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES (?, ?) RETURNING id`, "feline", generalID).Scan(&canonID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Write.QueryRow(
 		`INSERT INTO tags (name, category_id, is_alias, canonical_tag_id) VALUES (?, ?, 1, ?) RETURNING id`,
 		"cat", generalID, canonID,
-	).Scan(&aliasID)
+	).Scan(&aliasID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO image_tags (image_id, tag_id, is_auto) VALUES (?, ?, 0)`, imgID, canonID,
 	); err != nil {
@@ -877,8 +893,12 @@ func TestExecute_RatingHighestWins(t *testing.T) {
 	ingestTestImage(t, database, env, "rating_b.png")
 
 	var idA, idB int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%rating_a.png'`).Scan(&idA)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%rating_b.png'`).Scan(&idB)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%rating_a.png'`).Scan(&idA); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%rating_b.png'`).Scan(&idB); err != nil {
+		t.Fatal(err)
+	}
 
 	// idA carries general only; idB carries general+explicit. Only idB
 	// should match rating:explicit; only idA should match rating:general.
@@ -922,9 +942,15 @@ func TestExecute_RatingCeilingHidesHigher(t *testing.T) {
 	ingestTestImage(t, database, env, "ceil_untagged.png")
 
 	var safeID, expID, untagID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_safe.png'`).Scan(&safeID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_explicit.png'`).Scan(&expID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_untagged.png'`).Scan(&untagID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_safe.png'`).Scan(&safeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_explicit.png'`).Scan(&expID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_untagged.png'`).Scan(&untagID); err != nil {
+		t.Fatal(err)
+	}
 
 	attachTag(t, database, safeID, ratingTagID(t, database, "general"))
 	attachTag(t, database, expID, ratingTagID(t, database, "explicit"))
@@ -955,8 +981,12 @@ func TestFastCountCeiling_MatchesSlowPath(t *testing.T) {
 	ingestTestImage(t, database, env, "fc_untagged.png")
 
 	var genID, expID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fc_general.png'`).Scan(&genID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fc_explicit.png'`).Scan(&expID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fc_general.png'`).Scan(&genID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fc_explicit.png'`).Scan(&expID); err != nil {
+		t.Fatal(err)
+	}
 	attachTag(t, database, genID, ratingTagID(t, database, "general"))
 	attachTag(t, database, expID, ratingTagID(t, database, "explicit"))
 
@@ -986,8 +1016,12 @@ func TestFastCountCeiling_MultiRatingExact(t *testing.T) {
 	ingestTestImage(t, database, env, "mr_untagged.png")
 
 	var multiID, genID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%mr_multi.png'`).Scan(&multiID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%mr_general.png'`).Scan(&genID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%mr_multi.png'`).Scan(&multiID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%mr_general.png'`).Scan(&genID); err != nil {
+		t.Fatal(err)
+	}
 	// mr_multi carries two rating tags; its effective rating is explicit.
 	attachTag(t, database, multiID, ratingTagID(t, database, "sensitive"))
 	attachTag(t, database, multiID, ratingTagID(t, database, "explicit"))
@@ -1008,12 +1042,14 @@ func TestFastCountCeiling_MultiRatingExact(t *testing.T) {
 	// The union-based exact count, independent of the fast helper: only
 	// mr_general and mr_untagged pass. The old usage-sum form returned 1.
 	var exact int
-	database.Read.QueryRow(`SELECT COUNT(*) FROM images
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM images
 		WHERE is_missing = 0 AND id NOT IN (
 			SELECT it.image_id FROM image_tags it
 			JOIN tags t ON t.id = it.tag_id
 			JOIN tag_categories tc ON tc.id = t.category_id
-			WHERE tc.name = 'rating' AND t.name IN ('sensitive','questionable','explicit'))`).Scan(&exact)
+			WHERE tc.name = 'rating' AND t.name IN ('sensitive','questionable','explicit'))`).Scan(&exact); err != nil {
+		t.Fatal(err)
+	}
 	if exact != 2 {
 		t.Fatalf("fixture exact count = %d, want 2", exact)
 	}
@@ -1037,17 +1073,27 @@ func TestFastCountCeiling_WrappedUserExpr(t *testing.T) {
 	ingestTestImage(t, database, env, "wc_untagged.png")
 
 	var safeBlueID, safeRedID, expBlueID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wc_safe_blue.png'`).Scan(&safeBlueID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wc_safe_red.png'`).Scan(&safeRedID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wc_explicit_blue.png'`).Scan(&expBlueID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wc_safe_blue.png'`).Scan(&safeBlueID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wc_safe_red.png'`).Scan(&safeRedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wc_explicit_blue.png'`).Scan(&expBlueID); err != nil {
+		t.Fatal(err)
+	}
 
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	var blueID int64
-	database.Write.QueryRow(
+	if err := database.Write.QueryRow(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('blue_eyes', ?, 0) RETURNING id`,
 		generalID,
-	).Scan(&blueID)
+	).Scan(&blueID); err != nil {
+		t.Fatal(err)
+	}
 	attachTag(t, database, safeBlueID, blueID)
 	attachTag(t, database, expBlueID, blueID)
 	attachTag(t, database, safeBlueID, ratingTagID(t, database, "general"))
@@ -1092,8 +1138,12 @@ func TestFastCountCeiling_WrappedNoFastBound(t *testing.T) {
 	ingestTestImage(t, database, env, "nfb_c.png")
 
 	var aID, bID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%nfb_a.png'`).Scan(&aID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%nfb_b.png'`).Scan(&bID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%nfb_a.png'`).Scan(&aID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%nfb_b.png'`).Scan(&bID); err != nil {
+		t.Fatal(err)
+	}
 	attachTag(t, database, aID, ratingTagID(t, database, "general"))
 	attachTag(t, database, bID, ratingTagID(t, database, "explicit"))
 
@@ -1129,12 +1179,20 @@ func TestExecute_CeilingWithMultiAndUserExpr(t *testing.T) {
 	ingestTestImage(t, database, env, "ceil_other.png")
 
 	var matchSafeID, matchExpID, partialID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_match_safe.png'`).Scan(&matchSafeID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_match_explicit.png'`).Scan(&matchExpID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_partial.png'`).Scan(&partialID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_match_safe.png'`).Scan(&matchSafeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_match_explicit.png'`).Scan(&matchExpID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ceil_partial.png'`).Scan(&partialID); err != nil {
+		t.Fatal(err)
+	}
 
 	var generalCatID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalCatID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalCatID); err != nil {
+		t.Fatal(err)
+	}
 	tagID := func(name string) int64 {
 		var id int64
 		if err := database.Write.QueryRow(
@@ -1193,10 +1251,13 @@ func TestExecute_CeilingCategoryQualifiedExact(t *testing.T) {
 	ingestTestImage(t, database, env, "ccq_other_safe.png")
 
 	idOf := func(name string) int64 {
+		t.Helper()
 		var id int64
-		database.Read.QueryRow(
+		if err := database.Read.QueryRow(
 			`SELECT id FROM images WHERE canonical_path LIKE '%' || ?`, name,
-		).Scan(&id)
+		).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
 		return id
 	}
 	popSafe := idOf("ccq_pop_safe.png")
@@ -1207,12 +1268,16 @@ func TestExecute_CeilingCategoryQualifiedExact(t *testing.T) {
 	otherSafe := idOf("ccq_other_safe.png")
 
 	var generalCatID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalCatID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalCatID); err != nil {
+		t.Fatal(err)
+	}
 	var popID int64
-	database.Write.QueryRow(
+	if err := database.Write.QueryRow(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('popular', ?, 0) RETURNING id`,
 		generalCatID,
-	).Scan(&popID)
+	).Scan(&popID); err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []int64{popSafe, popSens1, popSens2, popExp1, popExp2} {
 		attachTag(t, database, id, popID)
 	}
@@ -1261,11 +1326,21 @@ func TestFastCountGenerated_HashMatch(t *testing.T) {
 	ingestTestImage(t, database, env, "fg_missing.png")
 
 	var sdID, comfyID, bothID, otherID, missingID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_sd.png'`).Scan(&sdID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_comfy.png'`).Scan(&comfyID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_both.png'`).Scan(&bothID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_other.png'`).Scan(&otherID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_missing.png'`).Scan(&missingID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_sd.png'`).Scan(&sdID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_comfy.png'`).Scan(&comfyID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_both.png'`).Scan(&bothID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_other.png'`).Scan(&otherID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fg_missing.png'`).Scan(&missingID); err != nil {
+		t.Fatal(err)
+	}
 
 	insertSD := func(id int64, hash string) {
 		if _, err := database.Write.Exec(
@@ -1321,8 +1396,12 @@ func TestFastCountRating(t *testing.T) {
 	ingestTestImage(t, database, env, "fr_untagged.png")
 
 	var genID, expID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fr_general.png'`).Scan(&genID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fr_explicit.png'`).Scan(&expID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fr_general.png'`).Scan(&genID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fr_explicit.png'`).Scan(&expID); err != nil {
+		t.Fatal(err)
+	}
 	attachTag(t, database, genID, ratingTagID(t, database, "general"))
 	attachTag(t, database, expID, ratingTagID(t, database, "explicit"))
 
@@ -1575,8 +1654,12 @@ func TestFastCountTagged_PartitionsVisible(t *testing.T) {
 	ingestTestImage(t, database, env, "ft_untagged.png")
 	ingestTestImage(t, database, env, "ft_auto.png")
 	var taggedID, autoID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ft_tagged.png'`).Scan(&taggedID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ft_auto.png'`).Scan(&autoID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ft_tagged.png'`).Scan(&taggedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ft_auto.png'`).Scan(&autoID); err != nil {
+		t.Fatal(err)
+	}
 	tagID := getOrCreateTagID(t, database, "blue")
 	attachTag(t, database, taggedID, tagID)
 	if _, err := database.Write.Exec(
@@ -1642,8 +1725,12 @@ func TestFastCountRating_RoutesThroughExecute(t *testing.T) {
 	ingestTestImage(t, database, env, "fre_a.png")
 	ingestTestImage(t, database, env, "fre_b.png")
 	var aID, bID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fre_a.png'`).Scan(&aID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fre_b.png'`).Scan(&bID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fre_a.png'`).Scan(&aID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%fre_b.png'`).Scan(&bID); err != nil {
+		t.Fatal(err)
+	}
 	attachTag(t, database, aID, ratingTagID(t, database, "explicit"))
 	attachTag(t, database, bID, ratingTagID(t, database, "explicit"))
 
@@ -1808,7 +1895,9 @@ func TestFastTagTotal_NonexistentTag(t *testing.T) {
 func TestFastTagTotal_SingleCanonical(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('hot', ?, 549514)`,
@@ -1829,13 +1918,17 @@ func TestFastTagTotal_SingleCanonical(t *testing.T) {
 func TestFastTagTotal_AliasFollowsCanonical(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 
 	var canonID int64
-	database.Write.QueryRow(
+	if err := database.Write.QueryRow(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('feline', ?, 7) RETURNING id`,
 		generalID,
-	).Scan(&canonID)
+	).Scan(&canonID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, is_alias, canonical_tag_id) VALUES ('cat', ?, 1, ?)`,
 		generalID, canonID,
@@ -1855,8 +1948,12 @@ func TestFastTagTotal_AliasFollowsCanonical(t *testing.T) {
 func TestFastTagTotal_MultipleCanonicalsFallthrough(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID, charID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('cat', ?, 3)`, generalID,
@@ -1877,7 +1974,9 @@ func TestFastTagTotal_MultipleCanonicalsFallthrough(t *testing.T) {
 func TestFastTagTotal_WildcardPrefix(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 
 	// Usages above fastApproxThreshold so the upper-bound short-circuit
 	// engages instead of falling through to the slow exact COUNT.
@@ -1903,7 +2002,9 @@ func TestFastTagTotal_WildcardPrefix(t *testing.T) {
 func TestFastTagTotal_WildcardSubstring(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES
@@ -1927,7 +2028,9 @@ func TestFastTagTotal_WildcardSubstring(t *testing.T) {
 func TestFastTagTotal_WildcardSuffix(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES
@@ -1953,7 +2056,9 @@ func TestFastTagTotal_WildcardBelowThresholdFallsThrough(t *testing.T) {
 	// and exact, so the fast path bails to keep displayed totals exact.
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES
@@ -1972,13 +2077,17 @@ func TestFastTagTotal_WildcardBelowThresholdFallsThrough(t *testing.T) {
 func TestFastTagTotal_WildcardCollapsesAlias(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 
 	var canonID int64
-	database.Write.QueryRow(
+	if err := database.Write.QueryRow(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('blueberry', ?, 7) RETURNING id`,
 		generalID,
-	).Scan(&canonID)
+	).Scan(&canonID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, is_alias, canonical_tag_id) VALUES ('bluebell', ?, 1, ?)`,
 		generalID, canonID,
@@ -2012,7 +2121,9 @@ func TestFastTagTotal_WildcardEscapesMetacharacters(t *testing.T) {
 	// position 4. escapeLike + ESCAPE '\' carries that through.
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES
@@ -2067,7 +2178,9 @@ func TestFastTagTotal_NotSingleTag(t *testing.T) {
 	ingestTestImage(t, database, env, "n_c.png")
 
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('hot', ?, 2)`, generalID,
 	); err != nil {
@@ -2101,7 +2214,9 @@ func TestFastTagTotal_NotMissingTag(t *testing.T) {
 func TestFastTagTotal_AndPositiveTags(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	// Each tag's usage above fastApproxThreshold so min(...) clears the
 	// gate and the upper-bound short-circuit engages.
 	if _, err := database.Write.Exec(
@@ -2136,7 +2251,9 @@ func TestFastTagTotal_AndBelowThresholdFallsThrough(t *testing.T) {
 	// libraries.
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('cute', ?, 3), ('dog', ?, 2)`,
 		generalID, generalID,
@@ -2155,7 +2272,9 @@ func TestFastTagTotal_OrCappedAtVisibleCount(t *testing.T) {
 	ingestTestImage(t, database, env, "or_cap.png") // 1 visible image total
 
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	// Drift-style usage_counts above what the (1) visible image
 	// supports; the cap should clamp the upper bound to visible_count.
 	if _, err := database.Write.Exec(
@@ -2178,7 +2297,9 @@ func TestFastTagTotal_OrCappedAtVisibleCount(t *testing.T) {
 func TestFastTagTotal_OrBelowThresholdFallsThrough(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('a', ?, 5), ('b', ?, 3)`,
 		generalID, generalID,
@@ -2194,8 +2315,12 @@ func TestFastTagTotal_OrBelowThresholdFallsThrough(t *testing.T) {
 func TestFastTagTotal_CatFilter(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID, charID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID); err != nil {
+		t.Fatal(err)
+	}
 	// Sum within character above fastApproxThreshold so the upper-bound
 	// short-circuit engages.
 	if _, err := database.Write.Exec(
@@ -2220,7 +2345,9 @@ func TestFastTagTotal_CatFilter(t *testing.T) {
 func TestFastTagTotal_CatFilterBelowThresholdFallsThrough(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var charID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('miku', ?, 5), ('haku', ?, 3)`,
 		charID, charID,
@@ -2235,7 +2362,9 @@ func TestFastTagTotal_CatFilterBelowThresholdFallsThrough(t *testing.T) {
 func TestFastTagTotal_CategoryQualifiedTag(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var charID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('miku', ?, 5)`, charID,
 	); err != nil {
@@ -2258,7 +2387,9 @@ func TestFastTagTotal_CategoryQualifiedMixedCase(t *testing.T) {
 	// `character:asuka`.
 	database, _ := setupSearchDB(t)
 	var charID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('asuka', ?, 3)`, charID,
 	); err != nil {
@@ -2280,13 +2411,17 @@ func TestFastTagTotal_CategoryQualifiedFollowsAlias(t *testing.T) {
 	// should report the canonical's usage_count.
 	database, _ := setupSearchDB(t)
 	var charID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID); err != nil {
+		t.Fatal(err)
+	}
 
 	var canonID int64
-	database.Write.QueryRow(
+	if err := database.Write.QueryRow(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('feline', ?, 9) RETURNING id`,
 		charID,
-	).Scan(&canonID)
+	).Scan(&canonID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, is_alias, canonical_tag_id) VALUES ('cat', ?, 1, ?)`,
 		charID, canonID,
@@ -2351,18 +2486,29 @@ func TestExecute_AndDriverMultiTag(t *testing.T) {
 	ingestTestImage(t, database, env, "and_single.png")
 
 	var matchID, pairID, singleID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%and_match.png'`).Scan(&matchID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%and_pair_only.png'`).Scan(&pairID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%and_single.png'`).Scan(&singleID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%and_match.png'`).Scan(&matchID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%and_pair_only.png'`).Scan(&pairID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%and_single.png'`).Scan(&singleID); err != nil {
+		t.Fatal(err)
+	}
 
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 
 	mkTag := func(name string) int64 {
+		t.Helper()
 		var id int64
-		database.Write.QueryRow(
+		if err := database.Write.QueryRow(
 			`INSERT INTO tags (name, category_id) VALUES (?, ?) RETURNING id`, name, generalID,
-		).Scan(&id)
+		).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
 		return id
 	}
 	tagA := mkTag("alpha")
@@ -2405,18 +2551,29 @@ func TestExecute_AndDriverPreservesOrAndNot(t *testing.T) {
 	ingestTestImage(t, database, env, "or_c.png")
 
 	var idA, idB, idC int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%or_a.png'`).Scan(&idA)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%or_b.png'`).Scan(&idB)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%or_c.png'`).Scan(&idC)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%or_a.png'`).Scan(&idA); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%or_b.png'`).Scan(&idB); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%or_c.png'`).Scan(&idC); err != nil {
+		t.Fatal(err)
+	}
 
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 
 	mkTag := func(name string) int64 {
+		t.Helper()
 		var id int64
-		database.Write.QueryRow(
+		if err := database.Write.QueryRow(
 			`INSERT INTO tags (name, category_id) VALUES (?, ?) RETURNING id`, name, generalID,
-		).Scan(&id)
+		).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
 		return id
 	}
 	tagX := mkTag("xray")
@@ -2445,7 +2602,9 @@ func TestExecute_AndDriverPreservesOrAndNot(t *testing.T) {
 func TestPickAndDriverTag_SingleWildcard(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES
 		    ('blue_eyes', ?, 12),
@@ -2478,7 +2637,9 @@ func TestPickAndDriverTag_SingleLiteralStillSkips(t *testing.T) {
 	// behaviour from before the wildcard generalisation.
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES
 		    ('alpha',   ?, 5),
@@ -2515,15 +2676,27 @@ func TestExecute_RandomSortSingleTagDriver(t *testing.T) {
 		ingestTestImage(t, database, env, name)
 	}
 	var blue1, blue2, red int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%r_blue1.png'`).Scan(&blue1)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%r_blue2.png'`).Scan(&blue2)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%r_red.png'`).Scan(&red)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%r_blue1.png'`).Scan(&blue1); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%r_blue2.png'`).Scan(&blue2); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%r_red.png'`).Scan(&red); err != nil {
+		t.Fatal(err)
+	}
 
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	var blueID, redID int64
-	database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES ('blue_eyes', ?) RETURNING id`, generalID).Scan(&blueID)
-	database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES ('red_eyes', ?) RETURNING id`, generalID).Scan(&redID)
+	if err := database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES ('blue_eyes', ?) RETURNING id`, generalID).Scan(&blueID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES ('red_eyes', ?) RETURNING id`, generalID).Scan(&redID); err != nil {
+		t.Fatal(err)
+	}
 	attachTag(t, database, blue1, blueID)
 	attachTag(t, database, blue2, blueID)
 	attachTag(t, database, red, redID)
@@ -2560,7 +2733,9 @@ func TestExecute_RandomSortSingleTagDriver(t *testing.T) {
 func TestPickAndDriverTag_PopularIntersect(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES
 		    ('a_pop',  ?, ?),
@@ -2636,11 +2811,15 @@ func TestPickAndDriverTag_PopularIntersect(t *testing.T) {
 func TestPickAndDriverTag_CategoryQualifiedFilterAtRoot(t *testing.T) {
 	database, _ := setupSearchDB(t)
 	var charID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID); err != nil {
+		t.Fatal(err)
+	}
 	var mikuID int64
-	database.Write.QueryRow(
+	if err := database.Write.QueryRow(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('miku', ?, 12) RETURNING id`, charID,
-	).Scan(&mikuID)
+	).Scan(&mikuID); err != nil {
+		t.Fatal(err)
+	}
 
 	filt := FilterExpr{Key: "character", Val: "miku"}
 	if _, ok := pickAndDriverTag(database, filt, false); ok {
@@ -2672,16 +2851,30 @@ func TestExecute_RandomSortCategoryFilterDriver(t *testing.T) {
 		ingestTestImage(t, database, env, name)
 	}
 	var cm1, cm2, other int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%cm1.png'`).Scan(&cm1)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%cm2.png'`).Scan(&cm2)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%other.png'`).Scan(&other)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%cm1.png'`).Scan(&cm1); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%cm2.png'`).Scan(&cm2); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%other.png'`).Scan(&other); err != nil {
+		t.Fatal(err)
+	}
 
 	var charID, generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID)
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'character'`).Scan(&charID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	var mikuID, redID int64
-	database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES ('miku', ?) RETURNING id`, charID).Scan(&mikuID)
-	database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES ('red', ?) RETURNING id`, generalID).Scan(&redID)
+	if err := database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES ('miku', ?) RETURNING id`, charID).Scan(&mikuID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Write.QueryRow(`INSERT INTO tags (name, category_id) VALUES ('red', ?) RETURNING id`, generalID).Scan(&redID); err != nil {
+		t.Fatal(err)
+	}
 	attachTag(t, database, cm1, mikuID)
 	attachTag(t, database, cm2, mikuID)
 	attachTag(t, database, other, redID)
@@ -2769,18 +2962,26 @@ func TestRatingRankTrigger_RoundTrip(t *testing.T) {
 	database, env := setupSearchDB(t)
 	ingestTestImage(t, database, env, "r.png")
 	var imgID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%r.png'`).Scan(&imgID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%r.png'`).Scan(&imgID); err != nil {
+		t.Fatal(err)
+	}
 
 	read := func() int {
+		t.Helper()
 		var n int
-		database.Read.QueryRow(`SELECT rating_rank FROM images WHERE id = ?`, imgID).Scan(&n)
+		if err := database.Read.QueryRow(`SELECT rating_rank FROM images WHERE id = ?`, imgID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
 		return n
 	}
 	ratingID := func(name string) int64 {
+		t.Helper()
 		var id int64
-		database.Read.QueryRow(
+		if err := database.Read.QueryRow(
 			`SELECT t.id FROM tags t JOIN tag_categories tc ON tc.id = t.category_id WHERE tc.name = 'rating' AND t.name = ?`, name,
-		).Scan(&id)
+		).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
 		return id
 	}
 
@@ -2872,18 +3073,29 @@ func TestExecute_PopularAndIntersect(t *testing.T) {
 	ingestTestImage(t, database, env, "a_only.png")
 
 	var allID, abID, aID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%all_three.png'`).Scan(&allID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ab_only.png'`).Scan(&abID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%a_only.png'`).Scan(&aID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%all_three.png'`).Scan(&allID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%ab_only.png'`).Scan(&abID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%a_only.png'`).Scan(&aID); err != nil {
+		t.Fatal(err)
+	}
 
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	mkTag := func(name string, usage int) int64 {
+		t.Helper()
 		var id int64
-		database.Write.QueryRow(
+		if err := database.Write.QueryRow(
 			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, ?) RETURNING id`,
 			name, generalID, usage,
-		).Scan(&id)
+		).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
 		return id
 	}
 	// Force every leaf above andDriverThreshold so the INTERSECT path
@@ -2950,13 +3162,18 @@ func TestExecute_RecentIDBoundSkipsAsc(t *testing.T) {
 	}
 
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	mkTag := func(name string, usage int) int64 {
+		t.Helper()
 		var id int64
-		database.Write.QueryRow(
+		if err := database.Write.QueryRow(
 			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, ?) RETURNING id`,
 			name, generalID, usage,
-		).Scan(&id)
+		).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
 		return id
 	}
 	// Force both leaves above andDriverThreshold so pickAndDriverTag picks
@@ -3000,17 +3217,28 @@ func TestExecute_AndDriverWildcardReplacesListSubquery(t *testing.T) {
 	ingestTestImage(t, database, env, "wd_none.png")
 
 	var blue1ID, blue2ID, otherID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wd_blue1.png'`).Scan(&blue1ID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wd_blue2.png'`).Scan(&blue2ID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wd_other.png'`).Scan(&otherID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wd_blue1.png'`).Scan(&blue1ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wd_blue2.png'`).Scan(&blue2ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%wd_other.png'`).Scan(&otherID); err != nil {
+		t.Fatal(err)
+	}
 
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	mkTag := func(name string) int64 {
+		t.Helper()
 		var id int64
-		database.Write.QueryRow(
+		if err := database.Write.QueryRow(
 			`INSERT INTO tags (name, category_id) VALUES (?, ?) RETURNING id`, name, generalID,
-		).Scan(&id)
+		).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
 		return id
 	}
 	blueEyes := mkTag("blue_eyes")
@@ -3068,7 +3296,9 @@ func TestExecute_FullSync(t *testing.T) {
 	ingestTestImage(t, database, env, "a.png")
 	ingestTestImage(t, database, env, "b.png")
 
-	gallery.Sync(context.Background(), database, env.galleryDir, env.thumbnailsDir, env.maxFileSizeMB, func(int, int, string) {})
+	if _, err := gallery.Sync(context.Background(), database, env.galleryDir, env.thumbnailsDir, env.maxFileSizeMB, func(int, int, string) {}); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := Execute(database, Query{Page: 1, Limit: 40})
 	if err != nil {
@@ -3655,7 +3885,9 @@ func TestBuildWhereDB_ColonUsesCategoryWhenPrefixExists(t *testing.T) {
 	// set is empty and the predicate is the no-match short-circuit.
 	database, _ := setupSearchDB(t)
 	var artistID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'artist'`).Scan(&artistID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'artist'`).Scan(&artistID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`INSERT INTO tags (name, category_id) VALUES ('foo', ?)`, artistID,
 	); err != nil {
@@ -4327,7 +4559,9 @@ func TestExecuteAdjacent_WithTagPredicate(t *testing.T) {
 	newest, _, oldest := result.Results[0].ID, result.Results[1].ID, result.Results[2].ID
 
 	var generalID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&generalID); err != nil {
+		t.Fatal(err)
+	}
 	var tagID int64
 	if err := database.Write.QueryRow(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES ('blue', ?, 2) RETURNING id`,
@@ -4390,7 +4624,7 @@ func TestExecuteAdjacent_RandomBucketBound(t *testing.T) {
 		}
 		ids = append(ids, id)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if len(ids) != 3 {
 		t.Fatalf("expected 3 images, got %d", len(ids))
 	}
@@ -4482,7 +4716,7 @@ func TestExecuteAdjacent_NewestSparseAndBucketBound(t *testing.T) {
 		}
 		ids = append(ids, id)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if len(ids) != 3 {
 		t.Fatalf("expected 3 images, got %d", len(ids))
 	}
@@ -4604,7 +4838,7 @@ func TestExecuteAdjacent_RandomSparseSkipsBucket(t *testing.T) {
 		}
 		ids = append(ids, id)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if len(ids) != 3 {
 		t.Fatalf("expected 3 images, got %d", len(ids))
 	}
@@ -4682,7 +4916,7 @@ func TestExecuteAdjacent_NewestSparseAndSkipsBucket(t *testing.T) {
 		}
 		ids = append(ids, id)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if len(ids) != 3 {
 		t.Fatalf("expected 3 images, got %d", len(ids))
 	}
@@ -4790,9 +5024,15 @@ func TestExecuteAdjacent_RatingCeiling(t *testing.T) {
 	ingestTestImage(t, database, env, "adj_safe2.png")
 
 	var safeID, expID, safe2ID int64
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%adj_safe.png'`).Scan(&safeID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%adj_explicit.png'`).Scan(&expID)
-	database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%adj_safe2.png'`).Scan(&safe2ID)
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%adj_safe.png'`).Scan(&safeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%adj_explicit.png'`).Scan(&expID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%adj_safe2.png'`).Scan(&safe2ID); err != nil {
+		t.Fatal(err)
+	}
 
 	attachTag(t, database, safeID, ratingTagID(t, database, "general"))
 	attachTag(t, database, expID, ratingTagID(t, database, "explicit"))
@@ -4850,10 +5090,12 @@ func TestExecuteAdjacent_FolderHalfOpenRange(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, 10+ingestCounter, 10))); err != nil {
-			f.Close()
+			_ = f.Close()
 			t.Fatal(err)
 		}
-		f.Close()
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
 		if _, _, err := gallery.Ingest(database, env.galleryDir, env.thumbnailsDir, path, "png", ""); err != nil {
 			t.Fatalf("ingest %q: %v", path, err)
 		}
@@ -5062,7 +5304,9 @@ func TestExecute_WithAutoTaggedAt(t *testing.T) {
 	ingestTestImage(t, database, cfg, "autotagged.png")
 
 	// Set auto_tagged_at directly in DB
-	database.Write.Exec(`UPDATE images SET auto_tagged_at = '2024-01-15T12:00:00Z'`)
+	if _, err := database.Write.Exec(`UPDATE images SET auto_tagged_at = '2024-01-15T12:00:00Z'`); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := Execute(database, Query{Page: 1, Limit: 40})
 	if err != nil {
@@ -5094,16 +5338,20 @@ func TestSuggestTagsWithFilter(t *testing.T) {
 	var ids []int64
 	for rows.Next() {
 		var id int64
-		rows.Scan(&id)
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
 		ids = append(ids, id)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if len(ids) != 3 {
 		t.Fatalf("expected 3 images, got %d", len(ids))
 	}
 
 	var catID int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&catID)
+	if err := database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&catID); err != nil {
+		t.Fatal(err)
+	}
 	seed := func(name string) int64 {
 		res, err := database.Write.Exec(`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 0)`, name, catID)
 		if err != nil {
@@ -5122,7 +5370,9 @@ func TestSuggestTagsWithFilter(t *testing.T) {
 		); err != nil {
 			t.Fatalf("add tag: %v", err)
 		}
-		database.Write.Exec(`UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?`, tag)
+		if _, err := database.Write.Exec(`UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?`, tag); err != nil {
+			t.Fatalf("bump usage_count: %v", err)
+		}
 	}
 	// img1: alpha, beta   img2: alpha, beta   img3: betula only
 	add(ids[0], tagA)
@@ -5568,4 +5818,3 @@ func TestExecute_PhashMalformed(t *testing.T) {
 		}
 	}
 }
-

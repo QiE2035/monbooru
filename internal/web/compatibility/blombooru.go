@@ -81,7 +81,7 @@ func translateBlombooru(entries []NormalizedEntry) (Result, error) {
 	}
 	var bb blombooruBackup
 	err = json.NewDecoder(rc).Decode(&bb)
-	rc.Close()
+	_ = rc.Close()
 	if err != nil {
 		return Result{}, fmt.Errorf("decode backup.json: %w", err)
 	}
@@ -142,7 +142,7 @@ func readBlombooruTagsCSV(tagsFile *zip.File) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open tags.csv: %w", err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	out := map[string]string{}
 	r := csv.NewReader(rc)
 	r.FieldsPerRecord = -1

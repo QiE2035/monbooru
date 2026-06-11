@@ -19,7 +19,7 @@ func setupTestDB(t *testing.T) (*db.DB, *Service) {
 	if err := db.Bootstrap(database); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 	return database, New(database)
 }
 
@@ -1422,4 +1422,3 @@ func find(s, sub string) bool {
 	}
 	return false
 }
-

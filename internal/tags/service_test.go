@@ -21,7 +21,7 @@ func setupTestDB(t *testing.T) (*db.DB, *Service) {
 	if err := db.Bootstrap(database); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	svc := New(database)
 	return database, svc
@@ -148,8 +148,12 @@ func TestAddTagTwice_NoDouble(t *testing.T) {
 	imgID := insertTestImage(t, database, "abc124")
 
 	tag, _ := svc.GetOrCreateTag("cute", catID)
-	svc.AddTagToImage(imgID, tag.ID, false, nil)
-	svc.AddTagToImage(imgID, tag.ID, false, nil) // duplicate
+	if err := svc.AddTagToImage(imgID, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(imgID, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	got, _ := svc.GetTag(tag.ID)
 	if got.UsageCount != 1 {
@@ -278,8 +282,12 @@ func TestRemoveTag_DecrementUsageCount(t *testing.T) {
 	imgID := insertTestImage(t, database, "abc125")
 
 	tag, _ := svc.GetOrCreateTag("cute", catID)
-	svc.AddTagToImage(imgID, tag.ID, false, nil)
-	svc.RemoveTagFromImage(imgID, tag.ID)
+	if err := svc.AddTagToImage(imgID, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RemoveTagFromImage(imgID, tag.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	// Removing the last image leaves the tag at usage_count=0; the row
 	// itself sticks around so user-declared aliases and implications keep
@@ -414,7 +422,9 @@ func TestMergeTags(t *testing.T) {
 	tagAlias, _ := svc.GetOrCreateTag("old_tag", catID)
 	tagCanon, _ := svc.GetOrCreateTag("new_tag", catID)
 
-	svc.AddTagToImage(imgID, tagAlias.ID, false, nil)
+	if err := svc.AddTagToImage(imgID, tagAlias.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := svc.MergeTags(tagAlias.ID, tagCanon.ID); err != nil {
 		t.Fatal(err)
@@ -455,14 +465,22 @@ func TestSuggestTags_PrefixFirst(t *testing.T) {
 	// Two prefix matches (abc_123, abc_456) + one substring match (xyz_abc).
 	// Make xyz_abc the most-used tag so any plain "order by usage" would
 	// float it to the top. The spec promises prefix matches win regardless.
-	svc.GetOrCreateTag("abc_123", catID)
-	svc.GetOrCreateTag("xyz_abc", catID)
-	svc.GetOrCreateTag("abc_456", catID)
+	if _, err := svc.GetOrCreateTag("abc_123", catID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTag("xyz_abc", catID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTag("abc_456", catID); err != nil {
+		t.Fatal(err)
+	}
 	imgA := insertTestImage(t, database, "abc_img_a")
 	imgB := insertTestImage(t, database, "abc_img_b")
 	xyzTag, _ := svc.GetOrCreateTag("xyz_abc", catID)
 	for _, img := range []int64{imgA, imgB} {
-		svc.AddTagToImage(img, xyzTag.ID, false, nil)
+		if err := svc.AddTagToImage(img, xyzTag.ID, false, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	results, err := svc.SuggestTags("abc", 10)
@@ -497,11 +515,21 @@ func TestRelatedImages(t *testing.T) {
 	tagC, _ := svc.GetOrCreateTag("rel_c", catID)
 
 	// img1: A, B   img2: A, B   img3: C
-	svc.AddTagToImage(img1, tagA.ID, false, nil)
-	svc.AddTagToImage(img1, tagB.ID, false, nil)
-	svc.AddTagToImage(img2, tagA.ID, false, nil)
-	svc.AddTagToImage(img2, tagB.ID, false, nil)
-	svc.AddTagToImage(img3, tagC.ID, false, nil)
+	if err := svc.AddTagToImage(img1, tagA.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(img1, tagB.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(img2, tagA.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(img2, tagB.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(img3, tagC.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	related, err := svc.RelatedImages(img1, 10, "")
 	if err != nil {
@@ -538,8 +566,12 @@ func TestRelatedImages_CarriesFileTypeAndPageCount(t *testing.T) {
 	}
 
 	tagA, _ := svc.GetOrCreateTag("shared", catID)
-	svc.AddTagToImage(src, tagA.ID, false, nil)
-	svc.AddTagToImage(manga, tagA.ID, false, nil)
+	if err := svc.AddTagToImage(src, tagA.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(manga, tagA.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	related, err := svc.RelatedImages(src, 10, "")
 	if err != nil {
@@ -573,9 +605,15 @@ func TestRelatedImages_TypePartition(t *testing.T) {
 		t.Fatal(err)
 	}
 	tag, _ := svc.GetOrCreateTag("link", catID)
-	svc.AddTagToImage(imgSrc, tag.ID, false, nil)
-	svc.AddTagToImage(imgPeer, tag.ID, false, nil)
-	svc.AddTagToImage(manga, tag.ID, false, nil)
+	if err := svc.AddTagToImage(imgSrc, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(imgPeer, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(manga, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	rel, err := svc.RelatedImages(imgSrc, 10, "")
 	if err != nil {
@@ -606,8 +644,12 @@ func TestRelatedImages_DropsPopularTags(t *testing.T) {
 	img2 := insertTestImage(t, database, "rel_pop2")
 
 	tag, _ := svc.GetOrCreateTag("very_popular", catID)
-	svc.AddTagToImage(img1, tag.ID, false, nil)
-	svc.AddTagToImage(img2, tag.ID, false, nil)
+	if err := svc.AddTagToImage(img1, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(img2, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Write.Exec(
 		`UPDATE tags SET usage_count = ? WHERE id = ?`, relatedMaxTagUsage+1, tag.ID,
 	); err != nil {
@@ -627,8 +669,12 @@ func TestListTags_All(t *testing.T) {
 	_, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
 
-	svc.GetOrCreateTag("list_a", catID)
-	svc.GetOrCreateTag("list_b", catID)
+	if _, err := svc.GetOrCreateTag("list_a", catID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTag("list_b", catID); err != nil {
+		t.Fatal(err)
+	}
 
 	// GetOrCreateTag without an image_tags row leaves usage_count=0; the
 	// listing now hides those by default, so opt in with ShowZero.
@@ -646,9 +692,15 @@ func TestListTags_WithPrefix(t *testing.T) {
 	_, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
 
-	svc.GetOrCreateTag("prefix_abc", catID)
-	svc.GetOrCreateTag("prefix_xyz", catID)
-	svc.GetOrCreateTag("other_tag", catID)
+	if _, err := svc.GetOrCreateTag("prefix_abc", catID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTag("prefix_xyz", catID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTag("other_tag", catID); err != nil {
+		t.Fatal(err)
+	}
 
 	tags, total, err := svc.ListTags(TagFilter{Prefix: "prefix", Limit: 100, ShowZero: true})
 	if err != nil {
@@ -669,8 +721,12 @@ func TestListTags_WithCategoryFilter(t *testing.T) {
 	catID := generalCategoryID(t, svc)
 
 	custom, _ := svc.CreateCategory("custom_filter", "#000000")
-	svc.GetOrCreateTag("cat_tag", custom.ID)
-	svc.GetOrCreateTag("gen_tag", catID)
+	if _, err := svc.GetOrCreateTag("cat_tag", custom.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTag("gen_tag", catID); err != nil {
+		t.Fatal(err)
+	}
 
 	tags, total, err := svc.ListTags(TagFilter{CategoryID: &custom.ID, Limit: 100, ShowZero: true})
 	if err != nil {
@@ -695,11 +751,17 @@ func TestListTags_SortByUsage(t *testing.T) {
 	tagB, _ := svc.GetOrCreateTag("sort_b", catID)
 	tagC, _ := svc.GetOrCreateTag("sort_c", catID)
 	for _, img := range []int64{img1, img2} {
-		svc.AddTagToImage(img, tagA.ID, false, nil)
+		if err := svc.AddTagToImage(img, tagA.ID, false, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
-	svc.AddTagToImage(img3, tagB.ID, false, nil)
+	if err := svc.AddTagToImage(img3, tagB.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
 	for _, img := range []int64{img1, img2, img3} {
-		svc.AddTagToImage(img, tagC.ID, false, nil)
+		if err := svc.AddTagToImage(img, tagC.ID, false, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	tags, _, err := svc.ListTags(TagFilter{Sort: "usage", Prefix: "sort_", Limit: 100})
@@ -737,12 +799,20 @@ func TestRecalc_CountsOnlyNonMissing(t *testing.T) {
 
 	shared, _ := svc.GetOrCreateTag("recalc_shared", catID)
 	onlyGone, _ := svc.GetOrCreateTag("recalc_only_gone", catID)
-	svc.AddTagToImage(liveImg, shared.ID, false, nil)
-	svc.AddTagToImage(goneImg, shared.ID, false, nil)
-	svc.AddTagToImage(goneImg, onlyGone.ID, false, nil)
+	if err := svc.AddTagToImage(liveImg, shared.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(goneImg, shared.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(goneImg, onlyGone.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	// Poison the counts so the recalc has work to do.
-	database.Write.Exec(`UPDATE tags SET usage_count = 99 WHERE id IN (?, ?)`, shared.ID, onlyGone.ID)
+	if _, err := database.Write.Exec(`UPDATE tags SET usage_count = 99 WHERE id IN (?, ?)`, shared.ID, onlyGone.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	updated, err := svc.RecalcCount()
 	if err != nil {
@@ -775,9 +845,13 @@ func TestListTags_IsAutoOnly(t *testing.T) {
 	imgID := insertTestImage(t, database, "isauto_img")
 	userTag, _ := svc.GetOrCreateTag("user_only", catID)
 	autoTag, _ := svc.GetOrCreateTag("auto_only", catID)
-	svc.AddTagToImage(imgID, userTag.ID, false, nil)
+	if err := svc.AddTagToImage(imgID, userTag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
 	conf := 0.9
-	svc.AddTagToImage(imgID, autoTag.ID, true, &conf)
+	if err := svc.AddTagToImage(imgID, autoTag.ID, true, &conf); err != nil {
+		t.Fatal(err)
+	}
 
 	tags, _, err := svc.ListTags(TagFilter{Prefix: "user_only", Limit: 100})
 	if err != nil || len(tags) != 1 {
@@ -836,11 +910,21 @@ func TestListTags_APIOrigin(t *testing.T) {
 	// Anonymous UI add => user; a manual add carrying a source label =>
 	// api; an auto-tagged row => auto; an anon row on one image plus a
 	// labelled row on another => user (a human touched it).
-	svc.AddTagToImage(img1, userTag.ID, false, nil)
-	svc.AddTagToImageFromTagger(img1, apiTag.ID, false, nil, "scraper")
-	svc.AddTagToImage(img1, autoTag.ID, true, &conf)
-	svc.AddTagToImage(img1, mixedTag.ID, false, nil)
-	svc.AddTagToImageFromTagger(img2, mixedTag.ID, false, nil, "scraper")
+	if err := svc.AddTagToImage(img1, userTag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImageFromTagger(img1, apiTag.ID, false, nil, "scraper"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(img1, autoTag.ID, true, &conf); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(img1, mixedTag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImageFromTagger(img2, mixedTag.ID, false, nil, "scraper"); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tc := range []struct {
 		prefix            string
@@ -914,8 +998,12 @@ func TestRemoveAllTagsFromImage(t *testing.T) {
 
 	tagA, _ := svc.GetOrCreateTag("rem_all_a", catID)
 	tagB, _ := svc.GetOrCreateTag("rem_all_b", catID)
-	svc.AddTagToImage(imgID, tagA.ID, false, nil)
-	svc.AddTagToImage(imgID, tagB.ID, false, nil)
+	if err := svc.AddTagToImage(imgID, tagA.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(imgID, tagB.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := svc.RemoveAllTagsFromImage(imgID); err != nil {
 		t.Fatal(err)
@@ -1020,7 +1108,9 @@ func TestListTags_AllIncludesAliasesAndCanonicals(t *testing.T) {
 	catID := generalCategoryID(t, svc)
 	alias, _ := svc.GetOrCreateTag("cat", catID)
 	canon, _ := svc.GetOrCreateTag("feline", catID)
-	svc.GetOrCreateTag("dog", catID) // extra canonical with no alias relationship
+	if _, err := svc.GetOrCreateTag("dog", catID); err != nil {
+		t.Fatal(err)
+	}
 	if err := svc.MergeTags(alias.ID, canon.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -1055,8 +1145,12 @@ func TestMergeTags_CanonicalAlreadyOnImage(t *testing.T) {
 	tagCanon, _ := svc.GetOrCreateTag("canon_tag_overlap", catID)
 
 	// Add both alias and canonical to the same image
-	svc.AddTagToImage(imgID, tagAlias.ID, false, nil)
-	svc.AddTagToImage(imgID, tagCanon.ID, false, nil)
+	if err := svc.AddTagToImage(imgID, tagAlias.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(imgID, tagCanon.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := svc.MergeTags(tagAlias.ID, tagCanon.ID); err != nil {
 		t.Fatal(err)
@@ -1198,7 +1292,9 @@ func TestListTags_DefaultLimit(t *testing.T) {
 	// Limit <= 0 should use default limit of 40
 	_, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
-	svc.GetOrCreateTag("default_lim_test", catID)
+	if _, err := svc.GetOrCreateTag("default_lim_test", catID); err != nil {
+		t.Fatal(err)
+	}
 
 	tags, total, err := svc.ListTags(TagFilter{Limit: 0, ShowZero: true}) // Limit=0 triggers default
 	if err != nil {
@@ -1215,9 +1311,15 @@ func TestListTags_WithPage(t *testing.T) {
 	catID := generalCategoryID(t, svc)
 	// Three tags so page 1 with limit=1 returns a different single tag than
 	// page 0 - proves the OFFSET math.
-	svc.GetOrCreateTag("page_tag_a", catID)
-	svc.GetOrCreateTag("page_tag_b", catID)
-	svc.GetOrCreateTag("page_tag_c", catID)
+	if _, err := svc.GetOrCreateTag("page_tag_a", catID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTag("page_tag_b", catID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTag("page_tag_c", catID); err != nil {
+		t.Fatal(err)
+	}
 
 	p0, total, err := svc.ListTags(TagFilter{Prefix: "page_tag_", Sort: "name", Limit: 1, PageIndex: 0, ShowZero: true})
 	if err != nil {
@@ -1248,8 +1350,12 @@ func TestGetTag_WithCanonical(t *testing.T) {
 
 	tagAlias, _ := svc.GetOrCreateTag("alias_for_get", catID)
 	tagCanon, _ := svc.GetOrCreateTag("canon_for_get", catID)
-	svc.AddTagToImage(imgID, tagAlias.ID, false, nil)
-	svc.MergeTags(tagAlias.ID, tagCanon.ID)
+	if err := svc.AddTagToImage(imgID, tagAlias.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.MergeTags(tagAlias.ID, tagCanon.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	// GetTag on alias should have CanonicalTagID set
 	got, err := svc.GetTag(tagAlias.ID)
@@ -1306,8 +1412,12 @@ func TestValidateTagName_AllowsColon(t *testing.T) {
 func TestListTags_SortByName(t *testing.T) {
 	_, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
-	svc.GetOrCreateTag("name_zzz", catID)
-	svc.GetOrCreateTag("name_aaa", catID)
+	if _, err := svc.GetOrCreateTag("name_zzz", catID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTag("name_aaa", catID); err != nil {
+		t.Fatal(err)
+	}
 
 	tags, _, err := svc.ListTags(TagFilter{Sort: "name", Prefix: "name_", Limit: 100, ShowZero: true})
 	if err != nil {
@@ -1815,7 +1925,7 @@ func TestAddRating_PrunesLowerRanksOnAdd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query rating names: %v", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		var out []string
 		for rows.Next() {
 			var n string
@@ -1903,7 +2013,7 @@ func TestAddRating_ManualOverwritesPriorLevel(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query rating names: %v", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		var out []string
 		for rows.Next() {
 			var n string
@@ -2051,7 +2161,7 @@ func TestAddImplication_RatingImpliedPrunesLower(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var ratings []string
 	for rows.Next() {
 		var n string

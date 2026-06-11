@@ -76,12 +76,12 @@ func FindPairs(ctx context.Context, database *db.DB, tree *BKTree, opts FindPair
 	for rows.Next() {
 		var r row
 		if err := rows.Scan(&r.id, &r.phash); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, err
 		}
 		entries = append(entries, r)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
@@ -105,17 +105,17 @@ func FindPairs(ctx context.Context, database *db.DB, tree *BKTree, opts FindPair
 		}
 		stmt, err := tx.Prepare(`INSERT OR IGNORE INTO potential_relation_pairs (a_image_id, b_image_id, distance, created_at) VALUES (?, ?, ?, ?)`)
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return err
 		}
 		for _, p := range pending {
 			if _, err := stmt.Exec(p.a, p.b, p.distance, now); err != nil {
-				stmt.Close()
-				tx.Rollback()
+				_ = stmt.Close()
+				_ = tx.Rollback()
 				return err
 			}
 		}
-		stmt.Close()
+		_ = stmt.Close()
 		if err := tx.Commit(); err != nil {
 			return err
 		}
@@ -221,7 +221,7 @@ func pairAlreadyKnown(ctx context.Context, database *db.DB, a, b int64) (bool, e
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	// pairHasOtherRelationTx only does SELECTs, so the read pool is
 	// fine; `not_related` blocks find-pairs from resurfacing rejections.
 	if got, err := pairHasOtherRelationTx(tx, a, b, ""); err != nil {

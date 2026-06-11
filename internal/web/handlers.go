@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"html"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/leqwin/monbooru/internal/db"
@@ -50,7 +51,7 @@ func writeInlineFlash(w http.ResponseWriter, kind, text string) {
 	if kind == "" {
 		kind = "ok"
 	}
-	w.Write([]byte(`<div class="flash flash-` + kind + `">` + html.EscapeString(text) + `</div>`))
+	_, _ = w.Write([]byte(`<div class="flash flash-` + kind + `">` + html.EscapeString(text) + `</div>`))
 }
 
 // writeInlineFlashHTML mirrors writeInlineFlash but takes a body that is
@@ -61,7 +62,7 @@ func writeInlineFlashHTML(w http.ResponseWriter, kind, body string) {
 	if kind == "" {
 		kind = "ok"
 	}
-	w.Write([]byte(`<div class="flash flash-` + kind + `">` + body + `</div>`))
+	_, _ = w.Write([]byte(`<div class="flash flash-` + kind + `">` + body + `</div>`))
 }
 
 func (s *Server) helpHandler(w http.ResponseWriter, r *http.Request) {
@@ -162,7 +163,7 @@ func loadImagePaths(ctx context.Context, database *db.DB, id int64) []models.Ima
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var paths []models.ImagePath
 	for rows.Next() {
 		var p models.ImagePath
@@ -172,7 +173,17 @@ func loadImagePaths(ctx context.Context, database *db.DB, id int64) []models.Ima
 			continue
 		}
 		p.IsCanonical = isCanon == 1
+		// A non-canonical path whose file is gone is move/copy history, not
+		// a live duplicate; keep it out of the Duplicates panel.
+		if !p.IsCanonical {
+			if _, statErr := os.Stat(p.Path); os.IsNotExist(statErr) {
+				continue
+			}
+		}
 		paths = append(paths, p)
+	}
+	if err := rows.Err(); err != nil {
+		logx.Warnf("load image paths: %v", err)
 	}
 	return paths
 }

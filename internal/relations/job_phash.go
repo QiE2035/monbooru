@@ -29,7 +29,7 @@ func BackfillPhashes(ctx context.Context, database *db.DB, thumbnailsPath string
 		return 0, 0, err
 	}
 	ids, scanErr := db.ScanIDs(rows)
-	rows.Close()
+	_ = rows.Close()
 	if scanErr != nil {
 		return 0, 0, scanErr
 	}

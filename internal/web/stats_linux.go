@@ -30,7 +30,7 @@ func readSelfStatusKB(prefix string) uint64 {
 	if err != nil {
 		return 0
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -64,7 +64,7 @@ func readStatusRssBreakdown(procDir string) (rssBreakdown, bool) {
 	if err != nil {
 		return rssBreakdown{}, false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var out rssBreakdown
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -119,7 +119,7 @@ func sumSmapsPssAt(procDir string) (totalPss, anonPss, filePss, dbPss uint64, ok
 	if err != nil {
 		return 0, 0, 0, 0, false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)
 	var inFile, inDB bool

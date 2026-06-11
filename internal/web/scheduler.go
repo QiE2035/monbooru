@@ -279,7 +279,7 @@ func (s *Server) runOrphanSweep(ctx context.Context, cx *galleryCtx) (removed, p
 		return 0, 0, total, err
 	}
 	ids, scanErr := db.ScanIDs(rows)
-	rows.Close()
+	_ = rows.Close()
 	if scanErr != nil {
 		return 0, 0, total, fmt.Errorf("cursor: %w", scanErr)
 	}
@@ -334,7 +334,7 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) error {
 		return err
 	}
 	ids, scanErr := db.ScanIDs(rows)
-	rows.Close()
+	_ = rows.Close()
 	if scanErr != nil {
 		logx.Warnf("scheduler autotag %q: %v", cx.Name, scanErr)
 		return scanErr

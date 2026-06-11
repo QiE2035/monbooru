@@ -10,10 +10,11 @@ CGO_ENABLED=1 go build -tags tagger -o monbooru ./cmd/monbooru
 ./monbooru -config /path/to/monbooru.toml
 ```
 
-## CLI flags
+## CLI flags and subcommands
 
 - `-config` - path to the TOML config file.
 - `-hash-password` - print a bcrypt hash and exit.
+- `healthcheck` - probe the local `/health` endpoint.
 
 ## ONNX Runtime
 

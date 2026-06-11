@@ -25,6 +25,10 @@ func main() {
 		runWorker(os.Args[2:])
 		return
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "healthcheck" {
+		runHealthcheck(os.Args[2:])
+		return
+	}
 
 	configPath := flag.String("config", "./monbooru.toml", "path to monbooru.toml config file")
 	hashPassword := flag.String("hash-password", "", "print bcrypt hash of the given password and exit")

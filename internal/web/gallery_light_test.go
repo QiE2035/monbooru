@@ -58,7 +58,7 @@ func TestExportGalleryLight_RoundTripsImages(t *testing.T) {
 		case "tags.json":
 			rc, _ := f.Open()
 			b, _ := io.ReadAll(rc)
-			rc.Close()
+			_ = rc.Close()
 			if err := json.Unmarshal(b, &manifest); err != nil {
 				t.Fatalf("manifest unmarshal: %v", err)
 			}
@@ -170,7 +170,7 @@ func TestImportGalleryLightZip_WipesAndRebuilds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	tagNames := []string{}
 	for rows.Next() {
 		var s string
@@ -325,7 +325,7 @@ func TestImportLightJSON_ReplaceRebuildsFromOnDiskFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var tagNames []string
 	for rows.Next() {
 		var s string

@@ -78,7 +78,7 @@ func LoadImageRelations(database *db.DB, imageID int64) (*ImageRelations, error)
 			return nil, err
 		}
 		members, scanErr := db.ScanIDs(rows)
-		rows.Close()
+		_ = rows.Close()
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -103,7 +103,7 @@ func LoadImageRelations(database *db.DB, imageID int64) (*ImageRelations, error)
 			return nil, err
 		}
 		members, scanErr := db.ScanIDs(rows)
-		rows.Close()
+		_ = rows.Close()
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -147,7 +147,7 @@ func LoadImageRelations(database *db.DB, imageID int64) (*ImageRelations, error)
 		return nil, err
 	}
 	derivatives, scanErr := db.ScanIDs(rows)
-	rows.Close()
+	_ = rows.Close()
 	if scanErr != nil {
 		return nil, scanErr
 	}

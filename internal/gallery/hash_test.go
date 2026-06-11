@@ -181,7 +181,9 @@ func TestDetectFileType_MagicFallback(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/noext"
 	// Write JPEG magic bytes
-	os.WriteFile(path, []byte{0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0, 0, 0, 0, 0}, 0644)
+	if err := os.WriteFile(path, []byte{0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0, 0, 0, 0, 0}, 0644); err != nil {
+		t.Fatal(err)
+	}
 	got, err := DetectFileType(path)
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +230,9 @@ func TestUniqueDestPath_SuffixesOnCollision(t *testing.T) {
 
 func TestUniqueDestPath_PreservesExtension(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "shot.tar.gz"), nil, 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "shot.tar.gz"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	got := UniqueDestPath(dir, "shot.tar.gz")
 	want := filepath.Join(dir, "shot.tar_1.gz")
 	if got != want {

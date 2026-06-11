@@ -300,21 +300,21 @@ func (s *Service) ChunkedDeleteWithTagRecalc(
 			args...,
 		)
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return tagIDsFromSet(seen), processed, false, err
 		}
 		for tagRows.Next() {
 			var tid int64
 			if scanErr := tagRows.Scan(&tid); scanErr != nil {
-				tagRows.Close()
-				tx.Rollback()
+				_ = tagRows.Close()
+				_ = tx.Rollback()
 				return tagIDsFromSet(seen), processed, false, scanErr
 			}
 			seen[tid] = struct{}{}
 		}
-		tagRows.Close()
+		_ = tagRows.Close()
 		if err := deleteFn(tx, placeholders, args); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return tagIDsFromSet(seen), processed, false, err
 		}
 		if err := tx.Commit(); err != nil {
@@ -367,7 +367,7 @@ func (s *Service) ListCategories() ([]models.TagCategory, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var cats []models.TagCategory
 	for rows.Next() {
@@ -478,7 +478,7 @@ func (s *Service) DeleteCategoryMoveOrDelete(id int64, action string, targetID i
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var isBuiltin int
 	if err := tx.QueryRow(
@@ -499,7 +499,7 @@ func (s *Service) DeleteCategoryMoveOrDelete(id int64, action string, targetID i
 			return err
 		}
 		tagIDs, scanErr := db.ScanIDs(rows)
-		rows.Close()
+		_ = rows.Close()
 		if scanErr != nil {
 			return scanErr
 		}
@@ -579,7 +579,7 @@ func (s *Service) GetOrCreateTag(name string, categoryID int64) (*models.Tag, er
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	tag, err := getOrCreateTagTx(tx, normalized, categoryID)
 	if err != nil {
@@ -734,7 +734,7 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tagList []models.Tag
 	for rows.Next() {
@@ -824,7 +824,7 @@ func (s *Service) tagIDSet(ids []int64, cond string) (map[int64]struct{}, error)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	set := make(map[int64]struct{})
 	for rows.Next() {
 		var id int64
@@ -845,7 +845,7 @@ func (s *Service) ListTagIDs(filter TagFilter) ([]int64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return db.ScanIDs(rows)
 }
 
@@ -907,7 +907,7 @@ func (s *Service) AliasesForTagIDs(canonicalIDs []int64) (map[int64][]models.Tag
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var t models.Tag
 			var canonicalID int64
@@ -949,7 +949,7 @@ func (s *Service) GetImageTags(imageID int64) (string, []models.ImageTag, error)
 	if err != nil {
 		return "", nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var folder string
 	var result []models.ImageTag
@@ -959,14 +959,14 @@ func (s *Service) GetImageTags(imageID int64) (string, []models.ImageTag, error)
 			imgID      sql.NullInt64
 			tagID      sql.NullInt64
 			tagName    sql.NullString
-			category  sql.NullString
-			color     sql.NullString
-			usage     sql.NullInt64
-			isAuto    sql.NullInt64
-			isImplied sql.NullInt64
-			conf      sql.NullFloat64
-			tagger    sql.NullString
-			createdAt sql.NullString
+			category   sql.NullString
+			color      sql.NullString
+			usage      sql.NullInt64
+			isAuto     sql.NullInt64
+			isImplied  sql.NullInt64
+			conf       sql.NullFloat64
+			tagger     sql.NullString
+			createdAt  sql.NullString
 		)
 		if err := rows.Scan(
 			&folderPath,
@@ -1042,7 +1042,7 @@ func (s *Service) AddTagsToImageFromTagger(imageID int64, tagIDs []int64, isAuto
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	for _, tagID := range tagIDs {
 		added, promoted, addErr := addTagToImageTxReportingDup(tx, imageID, tagID, isAuto, nil, taggerName, s.ratingCatID)
@@ -1077,7 +1077,7 @@ func (s *Service) AddTagToImageReportingDup(imageID, tagID int64, isAuto bool, c
 	if err != nil {
 		return AddResult{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	added, promoted, err := addTagToImageTxReportingDup(tx, imageID, tagID, isAuto, confidence, taggerName, s.ratingCatID)
 	if err != nil {
@@ -1195,7 +1195,7 @@ func transitiveImpliedTx(tx *sql.Tx, parents []int64) ([]int64, error) {
 		for rows.Next() {
 			var id int64
 			if err := rows.Scan(&id); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			if _, ok := seen[id]; ok {
@@ -1206,10 +1206,10 @@ func transitiveImpliedTx(tx *sql.Tx, parents []int64) ([]int64, error) {
 			out = append(out, id)
 		}
 		if err := rows.Err(); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
-		rows.Close()
+		_ = rows.Close()
 		frontier = next
 	}
 	return out, nil
@@ -1234,7 +1234,7 @@ func (s *Service) AddTagsToOneImage(imageID int64, tagIDs []int64, via string) (
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	results := make([]AddResult, 0, len(tagIDs))
 	for _, tagID := range tagIDs {
 		added, promoted, err := addTagToImageTxReportingDup(tx, imageID, tagID, false, nil, via, s.ratingCatID)
@@ -1313,7 +1313,7 @@ func (s *Service) RemoveTagFromImage(imageID, tagID int64) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if err := removeTagFromImageTx(tx, imageID, tagID); err != nil {
 		return err
@@ -1333,7 +1333,7 @@ func (s *Service) RemoveTagsFromOneImage(imageID int64, tagIDs []int64) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for _, tagID := range tagIDs {
 		if err := removeTagFromImageTx(tx, imageID, tagID); err != nil {
 			return err
@@ -1419,14 +1419,14 @@ func (s *Service) RemoveUserTagsFromImage(imageID int64) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.Query(`SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 0`, imageID)
 	if err != nil {
 		return err
 	}
 	tagIDs, scanErr := db.ScanIDs(rows)
-	rows.Close()
+	_ = rows.Close()
 	if scanErr != nil {
 		return scanErr
 	}
@@ -1446,7 +1446,7 @@ func (s *Service) RemoveAutoTagsFromImage(imageID int64, taggerNames []string) e
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var (
 		rows *sql.Rows
@@ -1465,7 +1465,7 @@ func (s *Service) RemoveAutoTagsFromImage(imageID int64, taggerNames []string) e
 		return err
 	}
 	tagIDs, scanErr := db.ScanIDs(rows)
-	rows.Close()
+	_ = rows.Close()
 	if scanErr != nil {
 		return scanErr
 	}
@@ -1482,14 +1482,14 @@ func (s *Service) RemoveAllTagsFromImage(imageID int64) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.Query(`SELECT tag_id FROM image_tags WHERE image_id = ?`, imageID)
 	if err != nil {
 		return err
 	}
 	tagIDs, scanErr := db.ScanIDs(rows)
-	rows.Close()
+	_ = rows.Close()
 	if scanErr != nil {
 		return scanErr
 	}
@@ -1602,12 +1602,12 @@ func pruneLowerRatingsTx(tx *sql.Tx, ratingCatID, imageID int64) error {
 	for rows.Next() {
 		var r ratingRow
 		if err := rows.Scan(&r.tagID, &r.name); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		present = append(present, r)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
 	}
@@ -1657,13 +1657,13 @@ func pruneOtherRatingsTx(tx *sql.Tx, ratingCatID, imageID, keepTagID int64) ([]s
 		var id int64
 		var name string
 		if err := rows.Scan(&id, &name); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		others = append(others, id)
 		displaced = append(displaced, name)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -1699,7 +1699,7 @@ func (s *Service) RatingTagIDsAbove(ceiling string) []int64 {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids, err := db.ScanIDs(rows)
 	if err != nil {
 		return nil
@@ -1796,7 +1796,7 @@ func (s *Service) RelatedImages(imageID int64, limit int, ratingCeiling string) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []models.Image
 	for rows.Next() {
@@ -1867,7 +1867,7 @@ func suggestUsageRanked(database *db.DB, prefix, categoryName string, requireUsa
 		if err != nil {
 			return prior, err
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		seen := map[int64]bool{}
 		for _, t := range prior {
 			seen[t.ID] = true
@@ -1914,7 +1914,7 @@ func (s *Service) SuggestTagsInCategory(prefix, categoryName string, limit int) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var result []models.Tag
 	for rows.Next() {
@@ -1955,7 +1955,7 @@ func (s *Service) DeleteTag(id int64) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	closure, err := transitiveImpliedTx(tx, []int64{id})
 	if err != nil {
@@ -2014,7 +2014,7 @@ func (s *Service) stripTagFromAllImages(tagID int64) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(`DELETE FROM image_tags WHERE tag_id = ?`, tagID); err != nil {
 		return fmt.Errorf("strip image_tags: %w", err)
 	}

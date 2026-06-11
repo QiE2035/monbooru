@@ -2,13 +2,14 @@
 ContainerName=monbooru
 # you can use monbooru:latest-cuda if you have a CUDA compatible GPU for faster auto-tagging
 Image=ghcr.io/leqwin/monbooru:latest
-# if using CUDA, pass the GPU to the container
+# if using CUDA, pass the GPU to the container (needs the NVIDIA container toolkit).
 #AddDevice=nvidia.com/gpu=all
 
 PublishPort=127.0.0.1:8080:8080
 
 NoNewPrivileges=true
-## Drop all capabilities, only keep CHOWN and DAC_OVERRIDE so monbooru can set permissions for files in the galleries
+## Drop all capabilities. CHOWN + DAC_OVERRIDE are only needed if your
+## gallery files are owned by a different uid than the container runs as.
 DropCapability=ALL
 AddCapability=CHOWN DAC_OVERRIDE
 
@@ -22,12 +23,12 @@ Volume=/path/to/monbooru/data:/data
 
 Environment=MONBOORU_SERVER_BIND_ADDRESS=0.0.0.0:8080
 
-HealthCmd=["sh","-c","curl --fail --silent --max-time 5 http://localhost:8081/health || exit 1"]
+HealthCmd=["/usr/local/bin/monbooru","healthcheck","-config","/config/monbooru.toml"]
 HealthInterval=30s
 HealthRetries=3
 HealthStartPeriod=10s
 HealthTimeout=5s
-HealthOnFailure=restart
+HealthOnFailure=kill
 
 # To install monloader, check https://github.com/leqwin/monloader
 # install it alongside this unit to pull from supported booru sites.

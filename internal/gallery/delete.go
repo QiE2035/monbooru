@@ -58,8 +58,8 @@ func DeleteImage(database *db.DB, galleryPath, thumbnailsPath string, id int64, 
 		return nil, fmt.Errorf("delete image row: %w", err)
 	}
 
-	os.Remove(ThumbnailPath(thumbnailsPath, id))
-	os.Remove(HoverPath(thumbnailsPath, id))
+	_ = os.Remove(ThumbnailPath(thumbnailsPath, id))
+	_ = os.Remove(HoverPath(thumbnailsPath, id))
 	// Manga cache directory only exists for cbz rows. Skipping the
 	// RemoveAll for static images cuts a per-image syscall in the bulk
 	// delete and prune-missing hot paths.

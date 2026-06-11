@@ -79,7 +79,7 @@ func ParseComicInfo(zr *zip.Reader) (*models.MangaMetadata, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	body, err := io.ReadAll(io.LimitReader(rc, int64(ComicInfoMaxRawXML)+1))
 	if err != nil {
 		return nil, err
@@ -89,11 +89,10 @@ func ParseComicInfo(zr *zip.Reader) (*models.MangaMetadata, error) {
 		body = body[:ComicInfoMaxRawXML]
 	}
 	var doc comicInfoXML
-	if err := xml.Unmarshal(body, &doc); err != nil {
-		// Malformed XML still earns a row so the truncated raw_xml is
-		// preserved for the operator to inspect; populated fields stay
-		// zero-valued.
-	}
+	// Malformed XML still earns a row so the truncated raw_xml is
+	// preserved for the operator to inspect; populated fields stay
+	// zero-valued.
+	_ = xml.Unmarshal(body, &doc)
 	return &models.MangaMetadata{
 		Title:           strings.TrimSpace(doc.Title),
 		Series:          strings.TrimSpace(doc.Series),

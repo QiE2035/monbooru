@@ -25,6 +25,14 @@ gallery header.
 | `/config` | `monbooru.toml` |
 | `/models` | ONNX taggers (one subfolder per tagger) |
 
+## Permissions (non-root)
+
+The image runs as a non-root user (uid/gid `1000`). The bundled
+`docker-compose.yml` and Quadlet unit set `1000:1000` to match the common host
+user (edit it to your own uid/gid) so files written to `/gallery`, `/data`, and
+`/config` land owned by you and the bind mounts stay read/writable. Make sure
+those host directories are owned by, or accessible to, that uid.
+
 ## Custom CSS
 
 Drop a `custom.css` next to `monbooru.toml` and set
@@ -55,6 +63,11 @@ empty falls back to `Monbooru`.
 browser handles is fine). When set, the file is served at `/custom.logo`
 and used for both the favicon and the topbar logo. Missing or empty
 falls back to the bundled defaults.
+
+## Link to monloader
+
+If you run a [monloader](https://github.com/leqwin/monloader) instance, set its browser URL in the settings to add a "Go to monloader"
+link in the top bar.
 
 ## Environment variables
 

@@ -234,4 +234,3 @@ func buildTensor(img *image.RGBA, tensor []float32, size int, profile Profile) (
 	}
 	return nil, fmt.Errorf("buildTensor: unsupported layout %q", profile.Layout)
 }
-

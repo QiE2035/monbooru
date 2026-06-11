@@ -218,8 +218,8 @@ func (s *Server) ExportGalleryDB(name string, w io.Writer) error {
 		return fmt.Errorf("create temp: %w", err)
 	}
 	tmpPath := tmp.Name()
-	tmp.Close()
-	defer os.Remove(tmpPath)
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if _, err := cx.DB.Write.Exec("VACUUM INTO ?", tmpPath); err != nil {
 		return fmt.Errorf("vacuum into: %w", err)
@@ -228,7 +228,7 @@ func (s *Server) ExportGalleryDB(name string, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("open snapshot: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, err = io.Copy(w, f)
 	return err
 }
@@ -344,7 +344,7 @@ func (s *Server) ExportGalleryArchive(name, format string, w io.Writer) error {
 		return fmt.Errorf("unknown gallery %q", name)
 	}
 	zw := zip.NewWriter(w)
-	defer zw.Close()
+	defer func() { _ = zw.Close() }()
 
 	// Inner DB/JSON gets deflated (usually compresses well); image files are
 	// already compressed so they go in as Store.
@@ -409,7 +409,7 @@ func writeGalleryFilesToZip(zw *zip.Writer, galleryPath string) error {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		_, err = io.Copy(entry, f)
 		return err
 	})
@@ -456,13 +456,13 @@ func (s *Server) ImportGallery(name, format string, upload io.Reader) error {
 		return fmt.Errorf("create temp: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 	if _, err := io.Copy(tmp, upload); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		s.ctxMu.Unlock()
 		return fmt.Errorf("buffer upload: %w", err)
 	}
-	tmp.Close()
+	_ = tmp.Close()
 
 	// Close the target DB and stop its watcher before touching on-disk state.
 	cx.close()
@@ -547,7 +547,7 @@ func isLightManifestJSON(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var probe struct {
 		GalleryName   string            `json:"gallery_name"`
 		TagCategories []json.RawMessage `json:"tag_categories"`
@@ -587,7 +587,7 @@ func replaceDBFromFile(srcPath, dbPath, thumbsPath, galleryPath string) error {
 	if err != nil {
 		return fmt.Errorf("reopen installed db: %w", err)
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 	// Bring the imported snapshot up to current schema before any sanitisation
 	// pass touches it. Today's sanitisers happen to query columns present in
 	// every monbooru release; a future helper that touches a newer column
@@ -620,14 +620,14 @@ func sanitizeImportedCategoryColors(database *db.DB) error {
 	for rows.Next() {
 		var r row
 		if err := rows.Scan(&r.id, &r.color); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		if !tags.IsValidCategoryColor(r.color) {
 			bad = append(bad, r)
 		}
 	}
-	rows.Close()
+	_ = rows.Close()
 	for _, r := range bad {
 		logx.Warnf("import: replaced invalid color %q on tag_category id=%d with #888888", r.color, r.id)
 		if _, err := database.Write.Exec(
@@ -649,7 +649,7 @@ func replaceDBFromJSON(srcPath, dbPath, thumbsPath, galleryPath string) error {
 	if err != nil {
 		return fmt.Errorf("open json: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var exp galleryExport
 	if err := json.NewDecoder(f).Decode(&exp); err != nil {
 		return fmt.Errorf("decode json: %w", err)
@@ -667,7 +667,7 @@ func replaceDBFromJSON(srcPath, dbPath, thumbsPath, galleryPath string) error {
 	if err != nil {
 		return fmt.Errorf("open new db: %w", err)
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 	if err := db.Bootstrap(database); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
@@ -697,7 +697,7 @@ func replaceFromArchive(srcPath, dbPath, thumbsPath, galleryPath string, maxFile
 	if err != nil {
 		return fmt.Errorf("open zip: %w", err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 
 	var innerDB, innerJSON, innerLight *zip.File
 	var galleryFiles []*zip.File
@@ -740,7 +740,7 @@ func replaceFromArchive(srcPath, dbPath, thumbsPath, galleryPath string, maxFile
 		return fmt.Errorf("create inner temp: %w", err)
 	}
 	innerTmpPath := innerTmp.Name()
-	defer os.Remove(innerTmpPath)
+	defer func() { _ = os.Remove(innerTmpPath) }()
 
 	var innerFile *zip.File
 	var applyInner func(string, string, string, string) error
@@ -752,10 +752,10 @@ func replaceFromArchive(srcPath, dbPath, thumbsPath, galleryPath string, maxFile
 		applyInner = replaceDBFromJSON
 	}
 	if err := copyZipEntry(innerTmp, innerFile, maxBytes); err != nil {
-		innerTmp.Close()
+		_ = innerTmp.Close()
 		return err
 	}
-	innerTmp.Close()
+	_ = innerTmp.Close()
 	if err := applyInner(innerTmpPath, dbPath, thumbsPath, galleryPath); err != nil {
 		return err
 	}
@@ -802,12 +802,12 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	type imgRow struct {
-		id         int64
-		folder     string
-		canonical  string
+		id        int64
+		folder    string
+		canonical string
 	}
 	rows, err := tx.Query(`SELECT id, folder_path, canonical_path FROM images`)
 	if err != nil {
@@ -817,12 +817,12 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 	for rows.Next() {
 		var r imgRow
 		if err := rows.Scan(&r.id, &r.folder, &r.canonical); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		imgs = append(imgs, r)
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	// Infer the source-root from the first canonical row: each row
 	// stores canonical_path = <sourceRoot>/<folder_path>/<basename>, so
@@ -889,13 +889,13 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 		var r pathRow
 		var isCanon int
 		if err := pathRows.Scan(&r.id, &r.imageID, &r.path, &isCanon, &r.folder); err != nil {
-			pathRows.Close()
+			_ = pathRows.Close()
 			return err
 		}
 		r.isCanonical = isCanon == 1
 		paths = append(paths, r)
 	}
-	pathRows.Close()
+	_ = pathRows.Close()
 
 	for _, p := range paths {
 		// Canonical rows always rebase to the row's stored folder_path so
@@ -969,7 +969,7 @@ func validateSQLiteFile(path string) error {
 	if err != nil {
 		return err
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 	for _, tbl := range []string{"tag_categories", "tags", "images", "image_tags"} {
 		var n int
 		if err := database.Read.QueryRow(
@@ -992,7 +992,7 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Defer FK checks until COMMIT so alias rows can reference canonical
 	// tags that haven't been inserted yet (tags are emitted in ID order,
@@ -1280,14 +1280,14 @@ func streamRows(j *jsonWriter, key string, database *db.DB, query string, scan f
 	for rows.Next() {
 		v, err := scan(rows)
 		if err != nil {
-			rows.Close()
+			_ = rows.Close()
 			j.arrayEnd()
 			j.err = err
 			return
 		}
 		j.arrayItem(&first, v)
 		if j.err != nil {
-			rows.Close()
+			_ = rows.Close()
 			j.arrayEnd()
 			return
 		}
@@ -1295,7 +1295,7 @@ func streamRows(j *jsonWriter, key string, database *db.DB, query string, scan f
 	if err := rows.Err(); err != nil && j.err == nil {
 		j.err = err
 	}
-	rows.Close()
+	_ = rows.Close()
 	j.arrayEnd()
 }
 
@@ -1393,7 +1393,7 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 		}
 		if part.FileName() == "" {
 			body, readErr := io.ReadAll(io.LimitReader(part, maxFieldBytes))
-			part.Close()
+			_ = part.Close()
 			if readErr != nil {
 				writeInlineFlash(w, "err", "malformed upload")
 				return
@@ -1409,7 +1409,7 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", "missing file")
 		return
 	}
-	defer filePart.Close()
+	defer func() { _ = filePart.Close() }()
 
 	mode := fields["mode"]
 	if mode == "" {

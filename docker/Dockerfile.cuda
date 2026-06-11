@@ -1,11 +1,9 @@
-# GPU variant - uses the CUDA-enabled ONNX Runtime build on an NVIDIA CUDA 12
-# + cuDNN 9 runtime base so the tagger can load the CUDA execution provider.
-# The image is ~3-4 GB (vs ~250 MB for docker/Dockerfile); prefer the default
-# Dockerfile unless you plan to enable tagger.use_cuda. The same binary still
-# runs on CPU when use_cuda=false, so this image works for both cases.
+# GPU variant: the monbooru binary on an NVIDIA CUDA 12 + cuDNN 9 runtime
+# base so the tagger can load the CUDA execution provider. The same binary runs
+# on CPU when tagger.use_cuda=false, so this image works for both.
 
-# Stage 1: Build
-FROM golang:1.25-bookworm AS builder
+# Stage 1: build the binary. 
+FROM golang:1.25-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -15,30 +13,41 @@ RUN VERSION=$(cat VERSION.md 2>/dev/null | tr -d '[:space:]') && \
     -ldflags="-s -w -X 'github.com/leqwin/monbooru/internal/web.Version=${VERSION}' -X 'github.com/leqwin/monbooru/internal/web.Variant=cuda'" \
     -o /monbooru ./cmd/monbooru
 
-# Stage 2: Runtime - NVIDIA CUDA 12 + cuDNN 9 runtime (x86_64 only;
+# Stage 2: runtime -- NVIDIA CUDA 12.6 + cuDNN 9 runtime (x86_64 only).
 FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
 
+# Drop the CUDA forward-compat libs (the host driver is used via the NVIDIA
+# container runtime) and the apt cache.
 RUN apt-get update && apt-get remove -y --purge 'cuda-compat-*' && \
     rm -rf /usr/local/cuda/compat /var/lib/apt/lists/*
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    ca-certificates \
-    curl \
-    libcap2-bin \
-    && rm -rf /var/lib/apt/lists/*
-
-# CUDA-enabled ONNX Runtime: pulls libonnxruntime.so plus the CUDA provider
-# shared libs. onnxruntime_go requests ORT API v21 (ORT 1.21.x).
+# Single layer: install build-only fetch tools, pull the CUDA-enabled ORT and a
+# static ffmpeg/ffprobe.
 ARG ORT_VERSION=1.21.0
-RUN curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz" \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl xz-utils && \
+    curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz" \
       | tar -xz -C /tmp && \
     cp /tmp/onnxruntime-linux-x64-gpu-${ORT_VERSION}/lib/libonnxruntime*.so* /usr/lib/ && \
     ln -sf /usr/lib/libonnxruntime.so.${ORT_VERSION} /usr/lib/libonnxruntime.so && \
     ldconfig && \
-    rm -rf /tmp/onnxruntime-*
+    curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" -o /tmp/ffmpeg.tar.xz && \
+    mkdir -p /tmp/ff && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ff --strip-components=1 && \
+    cp /tmp/ff/ffmpeg /tmp/ff/ffprobe /usr/local/bin/ && \
+    apt-get purge -y curl xz-utils && apt-get autoremove -y && \
+    rm -rf /tmp/onnxruntime-* /tmp/ff /tmp/ffmpeg.tar.xz /var/lib/apt/lists/*
 
-COPY --from=builder /monbooru /usr/local/bin/monbooru
-RUN setcap cap_chown,cap_dac_override+ep /usr/local/bin/monbooru
+COPY --from=build /monbooru /usr/local/bin/monbooru
+
+# Build a uid/gid 1000 "monbooru" account
+RUN groupadd --gid 1000 monbooru && \
+    useradd --uid 1000 --gid 1000 --home-dir /home/monbooru --create-home monbooru
+USER 1000:1000
+
+ENV MONBOORU_SERVER_BIND_ADDRESS=0.0.0.0:8080
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/monbooru", "healthcheck", "-config", "/config/monbooru.toml"]
+
 ENTRYPOINT ["/usr/local/bin/monbooru", "-config", "/config/monbooru.toml"]

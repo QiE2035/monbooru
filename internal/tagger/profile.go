@@ -309,4 +309,3 @@ func (p Profile) EmittedCategories() []string {
 	}
 	return nil
 }
-

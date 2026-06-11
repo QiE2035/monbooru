@@ -2,7 +2,7 @@ services:
   monbooru:
     container_name: monbooru
 
-    # you can use monbooru:latest-cuda if you have a CUDA compatible GPU for faster auto-tagging 
+    # you can use monbooru:latest-cuda if you have a CUDA compatible GPU for faster auto-tagging
     image: ghcr.io/leqwin/monbooru:latest
 
     # if using CUDA, pass the GPU to the container
@@ -11,11 +11,10 @@ services:
     #    reservations:
     #      devices:
     #        - driver: nvidia
-    #          count: all     
+    #          count: all
     #          capabilities: [gpu]
 
-    ## Run as your host user so files written to bind-mounted volumes land owned by you on the host. 
-    ## You may need to comment this line out if using CUDA
+    ## set it to your host uid:gid
     user: "1000:1000"
 
     ports:
@@ -23,13 +22,14 @@ services:
     security_opt:
       - no-new-privileges:true
 
-    ## Drop all capabilities, only keep CHOWN and DAC_OVERRIDE so monbooru can set permissions for files in the galleries
+    ## Drop all capabilities. CHOWN + DAC_OVERRIDE are only needed if your
+    ## gallery files are owned by a different uid than the container runs as.
     cap_drop:
       - ALL
     cap_add:
       - CHOWN
       - DAC_OVERRIDE
-    
+
     volumes:
       - /path/to/your/models:/models:ro
       - /path/to/your/gallery:/gallery
@@ -40,33 +40,26 @@ services:
       - /path/to/monbooru/data:/data
     environment:
       - MONBOORU_SERVER_BIND_ADDRESS=0.0.0.0:8080
-    healthcheck:
-      test: ["CMD-SHELL", "curl --fail --silent --max-time 5 http://localhost:8080/health || exit 1"]
-      interval: 30s
-      retries: 3
-      start_period: 10s
-      timeout: 5s
     restart: unless-stopped
 
-  ## monloader - companion downloader for monbooru (https://github.com/leqwin/monloader).
-  ## Uncomment to pull images from supported booru sites into monbooru. 
-  ## Set MONBOORU_API_TOKEN in your environment to a token generated in monbooru Settings -> Authentication.
-  # monloader:
-  #   image: ghcr.io/leqwin/monloader:latest
-  #   container_name: monloader
-  #   user: "1000:1000"
-  #   ports:
-  #     - "127.0.0.1:8081:8081"
-  #   security_opt:
-  #     - no-new-privileges:true
-  #   cap_drop:
-  #     - ALL
-  #   volumes:
-  #     - /path/to/monloader/config:/config 
-  #   environment:
-  #     - MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8081
-  #     - MONLOADER_MONBOORU_API_URL=http://monbooru:8080
-  #     - MONLOADER_MONBOORU_API_TOKEN=${MONBOORU_API_TOKEN}
-  #   depends_on:
-  #     - monbooru
-  #   restart: unless-stopped
+  ## monloader is an optional online boorus and galleries downloader
+  ## it allows you to download images and their tags directly into monbooru
+  ## see https://github.com/leqwin/monloader for more details
+  monloader:
+    image: ghcr.io/leqwin/monloader:latest
+    container_name: monloader
+    user: "1000:1000"
+    ports:
+      - "127.0.0.1:8081:8081"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - /path/to/monloader/config:/config
+    environment:
+      - MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8081
+      - MONLOADER_MONBOORU_API_URL=http://monbooru:8080
+    depends_on:
+      - monbooru
+    restart: unless-stopped

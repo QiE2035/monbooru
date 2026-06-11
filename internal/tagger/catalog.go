@@ -120,7 +120,7 @@ func (c CatalogEntry) DockerCommand(containerName string) string {
 }
 
 // shellSingleQuote wraps s in shell single quotes, escaping any embedded
-// single quote with the standard `'\''` recipe.
+// single quote with the standard `'\”` recipe.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

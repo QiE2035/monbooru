@@ -42,8 +42,8 @@ func TestResolveCategory_RatingShortCircuits(t *testing.T) {
 func TestResolveCategory_DispatchOverrides(t *testing.T) {
 	catIDs := canonicalCatIDs
 	dispatch := &DispatchTable{rules: map[string]DispatchRule{
-		"monochrome":        {CatID: catIDs["medium"]},
-		"annoying":          {Drop: true},
+		"monochrome": {CatID: catIDs["medium"]},
+		"annoying":   {Drop: true},
 	}}
 	prof := wd14Profile
 

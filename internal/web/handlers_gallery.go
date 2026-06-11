@@ -34,6 +34,7 @@ type galleryData struct {
 	Query             string
 	Sort              string
 	Order             string
+	ThumbnailFit      string // "square" | "natural"; drives the grid's thumb-fit CSS class
 	RandomSeed        int64
 	Page              int
 	TotalPages        int
@@ -83,11 +84,20 @@ type inboxCluster struct {
 func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	queryStr := q.Get("q")
+	expr, parseErr := search.Parse(queryStr)
+	if parseErr != nil {
+		logx.Warnf("gallery search parse: %v", parseErr)
+	}
 	sortStr := q.Get("sort")
+	orderStr := q.Get("order")
+	// Collection shortcut links carry no sort/order; read them in series
+	// order instead of ingest order. An explicit sort/order still wins.
+	if sortStr == "" && orderStr == "" && collectionFilterActive(expr) {
+		sortStr, orderStr = "order", "asc"
+	}
 	if sortStr == "" {
 		sortStr = "newest"
 	}
-	orderStr := q.Get("order")
 	if orderStr == "" {
 		orderStr = "desc"
 	}
@@ -146,10 +156,6 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	expr, parseErr := search.Parse(queryStr)
-	if parseErr != nil {
-		logx.Warnf("gallery search parse: %v", parseErr)
-	}
 	ceiling := resolveCeiling(r, s.Active())
 	expr = ceiling.Apply(expr)
 	sq := search.Query{
@@ -273,6 +279,7 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		Query:             queryStr,
 		Sort:              sortStr,
 		Order:             orderStr,
+		ThumbnailFit:      s.cfg.UI.ThumbnailFit,
 		RandomSeed:        randomSeed,
 		Page:              page,
 		TotalPages:        totalPages,
@@ -351,7 +358,7 @@ func (s *Server) sidebarLoad(pageImageIDs []int64, ceiling *Ceiling) sidebarBund
 		if ssErr != nil {
 			return
 		}
-		defer ssRows.Close()
+		defer func() { _ = ssRows.Close() }()
 		for ssRows.Next() {
 			var ss models.SavedSearch
 			if err := ssRows.Scan(&ss.ID, &ss.Name, &ss.Query, &ss.Sort, &ss.Order, &ss.Seed); err != nil {
@@ -515,7 +522,7 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var ss models.SavedSearch
 			if err := rows.Scan(&ss.ID, &ss.Name, &ss.Query, &ss.Sort, &ss.Order, &ss.Seed); err != nil {
@@ -636,6 +643,32 @@ func inboxFilterActive(expr search.Expr) bool {
 	return found
 }
 
+// collectionFilterActive reports whether the parsed query positively
+// asserts a non-empty collection: filter at the top level. The walk
+// descends into top-level AndExpr only, so a negated or OR-nested
+// collection leaf doesn't trigger. Gates the Order-ascending sort
+// default for collection shortcut links.
+func collectionFilterActive(expr search.Expr) bool {
+	if expr == nil {
+		return false
+	}
+	var found bool
+	var walk func(search.Expr)
+	walk = func(e search.Expr) {
+		switch v := e.(type) {
+		case search.AndExpr:
+			walk(v.Left)
+			walk(v.Right)
+		case search.FilterExpr:
+			if v.Key == "collection" && v.Val != "" {
+				found = true
+			}
+		}
+	}
+	walk(expr)
+	return found
+}
+
 // inboxClustersActive narrows inboxFilterActive to the only sort
 // shape time-cluster headers make sense for: newest-DESC. Wildcarded
 // sorts (filesize, random) still light the upload drop zone, but
@@ -719,4 +752,3 @@ func buildInboxCluster(rows []models.Image, queryStr string) *inboxCluster {
 		RangeLink:  "/?" + url.Values{"q": []string{clusterQ}}.Encode(),
 	}
 }
-

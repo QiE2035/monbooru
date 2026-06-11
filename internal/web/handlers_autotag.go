@@ -146,24 +146,24 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		dstPath := gallery.UniqueDestPath(destDir, fh.Filename)
 		dst, err := os.Create(dstPath)
 		if err != nil {
-			file.Close()
+			_ = file.Close()
 			errors++
 			continue
 		}
 
 		if _, err := dst.ReadFrom(file); err != nil {
-			dst.Close()
-			file.Close()
-			os.Remove(dstPath)
+			_ = dst.Close()
+			_ = file.Close()
+			_ = os.Remove(dstPath)
 			errors++
 			continue
 		}
-		dst.Close()
-		file.Close()
+		_ = dst.Close()
+		_ = file.Close()
 
 		ft, ftErr := gallery.DetectFileType(dstPath)
 		if ftErr != nil {
-			os.Remove(dstPath)
+			_ = os.Remove(dstPath)
 			errors++
 			continue
 		}

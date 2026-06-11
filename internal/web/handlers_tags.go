@@ -297,7 +297,7 @@ func (s *Server) resolveOrCreateCanonicalTag(input string) (int64, string) {
 	if err != nil {
 		return 0, "Tag lookup failed: " + err.Error()
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids, err := db.ScanIDs(rows)
 	if err != nil {
 		return 0, "Tag lookup failed: " + err.Error()

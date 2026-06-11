@@ -206,7 +206,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("data query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var images []models.Image
 	for rows.Next() {
@@ -286,7 +286,7 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 	if err != nil {
 		return nil, fmt.Errorf("cached id fetch: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	byID := make(map[int64]models.Image, len(pageIDs))
 	for rows.Next() {
@@ -335,7 +335,7 @@ func fetchSortedMatchIDs(database *db.DB, indexHint, where string, args []any, o
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids, err := db.ScanIDs(rows)
 	if err != nil {
 		return nil
@@ -1056,7 +1056,7 @@ func resolveDriverCanonicals(database *db.DB, leaf TagExpr) ([]int64, int64, boo
 	if err != nil {
 		return nil, 0, false
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return drainCanonicalUsage(rows)
 }
 
@@ -1081,7 +1081,7 @@ func resolveFilterDriverCanonicals(database *db.DB, leaf FilterExpr) ([]int64, i
 	if err != nil {
 		return nil, 0, false
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return drainCanonicalUsage(rows)
 }
 
@@ -1212,7 +1212,7 @@ func fastCountTag(database *db.DB, t TagExpr) (int, bool) {
 		return 0, false
 	}
 	canonIDs, scanErr := db.ScanIDs(rows)
-	rows.Close()
+	_ = rows.Close()
 	if scanErr != nil {
 		return 0, false
 	}
@@ -1521,12 +1521,12 @@ func fastCountAI(database *db.DB, e FilterExpr) (int, bool) {
 	for rows.Next() {
 		var s string
 		if err := rows.Scan(&s); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, false
 		}
 		present = append(present, s)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, false
 	}
@@ -2011,7 +2011,7 @@ func ExecuteForDeleteStream(database *db.DB, expr Expr, visit func(DeleteTarget)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var t DeleteTarget
@@ -2071,7 +2071,7 @@ func SidebarTagsWithGlobalCount(database *db.DB, imageIDs []int64) ([]models.Tag
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []models.Tag
 	for rows.Next() {
@@ -2184,7 +2184,7 @@ func SuggestTagsWithFilter(database *db.DB, expr Expr, prefix, categoryName stri
 		if err != nil {
 			return prior, err
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		seen := map[int64]bool{}
 		for _, t := range prior {
 			seen[t.ID] = true
@@ -2338,7 +2338,7 @@ func (b *whereBuilder) resolveRatingIDs() {
 	if err != nil {
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids := make(map[string]int64, 4)
 	usage := make(map[string]int64, 4)
 	for rows.Next() {
@@ -2372,7 +2372,7 @@ func (b *whereBuilder) resolveCategoryTagByName(category, name string) ([]int64,
 	if err != nil {
 		return nil, false
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids, err := db.ScanIDs(rows)
 	if err != nil {
 		return nil, false
@@ -3315,7 +3315,7 @@ func parseSizeValue(raw string) (int64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	mult := int64(1)
+	var mult int64
 	switch unit {
 	case "", "b":
 		mult = 1

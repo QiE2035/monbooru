@@ -21,21 +21,6 @@ relations on the detail page and search via `collection:<value>` and
 `relation:collection`, but they are not part of the duplicate /
 alternate / version / derivative graph.
 
-## Backfill perceptual hashes
-
-The Relations features ride a 64-bit per-image perceptual hash
-(DCT-based, mirror-canonicalised so a horizontally flipped copy
-hashes to the same value). New ingests get the hash automatically.
-On an existing library:
-
-1. Open **Settings -> Maintenance**.
-2. Click **Compute perceptual hashes**. Runs a background job that
-   walks every image still missing a `phash`.
-
-The number of images currently lacking a phash is also shown on the
-Relations hub (under "Find relations") as "**N** image(s) without a
-phash".
-
 ## Find candidate pairs
 
 The find-pairs job populates a queue (`potential_relation_pairs`)
@@ -49,12 +34,6 @@ the session UI walks. Trigger it from either:
 Both run the same job. The Hamming-distance cutoff comes from
 **Settings -> Relations -> Find-pairs default distance** (default 4,
 range 0..12); set it tighter for fewer, more confident pairs.
-
-The job also probes incrementally: when a fresh image is ingested,
-monbooru searches the in-memory BK-tree for near-duplicates and
-queues any hits without waiting for the next manual scan. Toggling
-this off via the TOML config is possible (`relations.incremental_on_ingest`)
-but the value resets to `true` on every settings save.
 
 ## Triage with the session UI
 
@@ -96,10 +75,3 @@ Both walkers are also linked from the Relations hub under
 duplicate is a filesystem-level alias (already one image in the DB),
 while a marked duplicate is a relation-level grouping of distinct
 DB rows.
-
-## Schedule
-
-**Settings -> Schedule -> Find relation pairs (phash near-duplicates)**
-runs the find-pairs job at the configured daily time, scoped to every
-configured gallery in turn. Off by default. The phash backfill is not
-scheduled; run it once after upgrading, then ingest covers the rest.

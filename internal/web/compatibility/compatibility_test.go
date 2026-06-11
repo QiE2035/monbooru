@@ -48,8 +48,8 @@ func TestPickValidSHA256(t *testing.T) {
 		want string
 	}{
 		{"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
-		{"E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855", ""}, // uppercase rejected
-		{"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", ""},  // 63 chars
+		{"E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855", ""},  // uppercase rejected
+		{"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", ""},   // 63 chars
 		{"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8550", ""}, // 65 chars
 		{"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85g", ""},  // non-hex char
 		{"", ""},
@@ -106,8 +106,8 @@ func TestNormalizeEntries_StripsSharedPrefix(t *testing.T) {
 
 func TestNormalizeEntries_FlatNoPrefix(t *testing.T) {
 	zr := buildZip(t, map[string]string{
-		"backup.json":  "{}",
-		"media/a.png":  "x",
+		"backup.json": "{}",
+		"media/a.png": "x",
 	})
 	got := NormalizeEntries(zr.File)
 	wantRels := []string{"backup.json", "media/a.png"}
@@ -179,8 +179,8 @@ func TestTranslate_BlombooruHappyPath(t *testing.T) {
 	}`
 	csvText := "cat,0\nsky,0\nfoo,1\n" // foo → artist (id 1) per blombooruCategoryByID
 	zr := buildZip(t, map[string]string{
-		"backup.json": backup,
-		"tags.csv":    csvText,
+		"backup.json":   backup,
+		"tags.csv":      csvText,
 		"media/cat.png": "PNGBYTES",
 	})
 	res, err := Translate(zr.File, "blombooru")

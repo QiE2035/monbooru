@@ -17,7 +17,9 @@ func getCategories(t *testing.T, env *testEnv) []map[string]any {
 		t.Fatalf("GET categories: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	var out []map[string]any
-	json.NewDecoder(w.Body).Decode(&out)
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
 	return out
 }
 

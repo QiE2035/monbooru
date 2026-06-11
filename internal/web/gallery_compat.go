@@ -75,4 +75,3 @@ func translatedFilesFromCompat(in map[string]*zip.File) []translatedFile {
 	}
 	return out
 }
-

@@ -49,7 +49,7 @@ func (s *Server) ExportGalleryLight(name string, w io.Writer) error {
 		return fmt.Errorf("unknown gallery %q", name)
 	}
 	zw := zip.NewWriter(w)
-	defer zw.Close()
+	defer func() { _ = zw.Close() }()
 
 	inner, err := zw.CreateHeader(&zip.FileHeader{Name: "tags.json", Method: zip.Deflate})
 	if err != nil {
@@ -98,14 +98,14 @@ func writeLightManifest(cx *galleryCtx, w io.Writer) error {
 	for rows.Next() {
 		var r imgRow
 		if err := rows.Scan(&r.id, &r.sha, &r.folder, &r.canonical); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			bw.arrayEnd()
 			bw.objEnd()
 			return err
 		}
 		imgs = append(imgs, r)
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	first := true
 	for _, r := range imgs {
@@ -124,7 +124,7 @@ func writeLightManifest(cx *galleryCtx, w io.Writer) error {
 		for tagRows.Next() {
 			var tname, tcat string
 			if err := tagRows.Scan(&tname, &tcat); err != nil {
-				tagRows.Close()
+				_ = tagRows.Close()
 				bw.arrayEnd()
 				bw.objEnd()
 				return err
@@ -135,7 +135,7 @@ func writeLightManifest(cx *galleryCtx, w io.Writer) error {
 				tagsList = append(tagsList, tcat+":"+tname)
 			}
 		}
-		tagRows.Close()
+		_ = tagRows.Close()
 		rel := filepath.ToSlash(filepath.Join(r.folder, filepath.Base(r.canonical)))
 		bw.arrayItem(&first, lightManifestImage{SHA256: r.sha, Path: rel, Tags: tagsList})
 	}
@@ -156,7 +156,7 @@ func replaceFromLightArchive(manifest *zip.File, galleryFiles []*zip.File, dbPat
 	}
 	var mf lightManifest
 	err = json.NewDecoder(mc).Decode(&mf)
-	mc.Close()
+	_ = mc.Close()
 	if err != nil {
 		return fmt.Errorf("decode tags.json: %w", err)
 	}
@@ -214,7 +214,7 @@ func applyLightReplace(mf lightManifest, files []translatedFile, dbPath, thumbsP
 	if err != nil {
 		return fmt.Errorf("open new db: %w", err)
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 	if err := db.Bootstrap(database); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
@@ -253,7 +253,7 @@ func replaceFromLightManifest(srcPath, dbPath, thumbsPath, galleryPath string) e
 	}
 	var mf lightManifest
 	err = json.NewDecoder(f).Decode(&mf)
-	f.Close()
+	_ = f.Close()
 	if err != nil {
 		return fmt.Errorf("decode tags.json: %w", err)
 	}
@@ -267,7 +267,7 @@ func replaceFromLightManifest(srcPath, dbPath, thumbsPath, galleryPath string) e
 	if err != nil {
 		return fmt.Errorf("open new db: %w", err)
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 	if err := db.Bootstrap(database); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
@@ -336,7 +336,7 @@ func insertMissingImageRow(database *db.DB, sha, path, galleryPath, origin strin
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var id int64
 	err = tx.QueryRow(
 		`INSERT INTO images (sha256, canonical_path, folder_path, file_type, file_size,
@@ -398,12 +398,12 @@ func (s *Server) MergeGallery(name, format string, upload io.Reader) error {
 		return fmt.Errorf("create temp: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 	if _, err := io.Copy(tmp, upload); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("buffer upload: %w", err)
 	}
-	tmp.Close()
+	_ = tmp.Close()
 
 	var mergeErr error
 	maxFileSizeMB := s.cfg.Gallery.MaxFileSizeMB
@@ -443,7 +443,7 @@ func mergeFromDB(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 	if err != nil {
 		return err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 	records, err := readDBMergeRecords(src)
 	if err != nil {
 		return err
@@ -457,7 +457,7 @@ func mergeFromJSON(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 	if err != nil {
 		return fmt.Errorf("open json: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var exp galleryExport
 	if err := json.NewDecoder(f).Decode(&exp); err != nil {
 		return fmt.Errorf("decode json: %w", err)
@@ -480,7 +480,7 @@ func mergeFromLightJSON(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error
 	}
 	var mf lightManifest
 	err = json.NewDecoder(f).Decode(&mf)
-	f.Close()
+	_ = f.Close()
 	if err != nil {
 		return fmt.Errorf("decode tags.json: %w", err)
 	}
@@ -501,7 +501,7 @@ func mergeFromZip(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 	if err != nil {
 		return fmt.Errorf("open zip: %w", err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 
 	var innerDB, innerJSON, innerLight *zip.File
 	galleryFiles := map[string]*zip.File{}
@@ -528,7 +528,7 @@ func mergeFromZip(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 		}
 		var mf lightManifest
 		err = json.NewDecoder(rc).Decode(&mf)
-		rc.Close()
+		_ = rc.Close()
 		if err != nil {
 			return fmt.Errorf("decode tags.json: %w", err)
 		}
@@ -543,7 +543,7 @@ func mergeFromZip(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 		if err != nil {
 			return err
 		}
-		defer os.Remove(inner)
+		defer func() { _ = os.Remove(inner) }()
 		if err := validateSQLiteFile(inner); err != nil {
 			return fmt.Errorf("inner db invalid: %w", err)
 		}
@@ -551,7 +551,7 @@ func mergeFromZip(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 		if err != nil {
 			return err
 		}
-		defer src.Close()
+		defer func() { _ = src.Close() }()
 		records, err = readDBMergeRecords(src)
 		if err != nil {
 			return err
@@ -563,7 +563,7 @@ func mergeFromZip(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 		}
 		var exp galleryExport
 		err = json.NewDecoder(rc).Decode(&exp)
-		rc.Close()
+		_ = rc.Close()
 		if err != nil {
 			return fmt.Errorf("decode inner json: %w", err)
 		}
@@ -636,7 +636,7 @@ func applyMergeRecords(cx *galleryCtx, records []mergeRecord, source string, max
 		ft, err := gallery.DetectFileType(dst)
 		if err != nil {
 			logx.Warnf("merge: unsupported file %q: %v", r.SourcePath, err)
-			os.Remove(dst)
+			_ = os.Remove(dst)
 			continue
 		}
 		// Pass source through as origin so the detail page credits the
@@ -647,7 +647,7 @@ func applyMergeRecords(cx *galleryCtx, records []mergeRecord, source string, max
 		img, _, err := gallery.Ingest(cx.DB, cx.GalleryPath, cx.ThumbnailsPath, dst, ft, source)
 		if err != nil {
 			logx.Warnf("merge: ingest %q: %v", r.SourcePath, err)
-			os.Remove(dst)
+			_ = os.Remove(dst)
 			continue
 		}
 		applyImportTagsToImage(cx.DB, cx.TagSvc, img.ID, r.Tags, generalID, source)
@@ -671,12 +671,12 @@ func readDBMergeRecords(src *db.DB) ([]mergeRecord, error) {
 	for rows.Next() {
 		var r imgRow
 		if err := rows.Scan(&r.id, &r.sha, &r.folder, &r.canonical); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		imgs = append(imgs, r)
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	var recs []mergeRecord
 	for _, r := range imgs {
@@ -692,7 +692,7 @@ func readDBMergeRecords(src *db.DB) ([]mergeRecord, error) {
 		for tagRows.Next() {
 			var n, c string
 			if err := tagRows.Scan(&n, &c); err != nil {
-				tagRows.Close()
+				_ = tagRows.Close()
 				return nil, err
 			}
 			if c == "general" {
@@ -701,7 +701,7 @@ func readDBMergeRecords(src *db.DB) ([]mergeRecord, error) {
 				tagsList = append(tagsList, c+":"+n)
 			}
 		}
-		tagRows.Close()
+		_ = tagRows.Close()
 		recs = append(recs, mergeRecord{
 			SHA256:     r.sha,
 			Tags:       tagsList,
@@ -796,7 +796,7 @@ func resolveImportTag(database *db.DB, token string, generalID int64) (int64, st
 
 func lookupCategoryID(database *db.DB, name string) int64 {
 	var id int64
-	database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = ?`, name).Scan(&id)
+	_ = database.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = ?`, name).Scan(&id)
 	return id
 }
 
@@ -810,7 +810,7 @@ func copyZipEntry(dst io.Writer, f *zip.File, maxBytes int64) error {
 	if err != nil {
 		return err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	var src io.Reader = rc
 	if maxBytes > 0 {
 		src = io.LimitReader(rc, maxBytes+1)
@@ -830,7 +830,7 @@ func copyZipFile(f *zip.File, dst string, maxBytes int64) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 	return copyZipEntry(out, f, maxBytes)
 }
 
@@ -840,9 +840,9 @@ func extractZipEntryToTemp(f *zip.File, dataDir string, maxBytes int64) (string,
 		return "", err
 	}
 	copyErr := copyZipEntry(tmp, f, maxBytes)
-	tmp.Close()
+	_ = tmp.Close()
 	if copyErr != nil {
-		os.Remove(tmp.Name())
+		_ = os.Remove(tmp.Name())
 		return "", copyErr
 	}
 	return tmp.Name(), nil

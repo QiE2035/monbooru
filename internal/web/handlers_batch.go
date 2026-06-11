@@ -98,7 +98,7 @@ func (s *Server) batchDelete(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", "Could not load the selected images.")
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	byID := make(map[int64]search.DeleteTarget, len(ids))
 	for rows.Next() {
 		var t search.DeleteTarget
@@ -201,8 +201,8 @@ func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 		func(chunk []int64) {
 			for _, id := range chunk {
 				t := byID[id]
-				os.Remove(gallery.ThumbnailPath(s.thumbnailsPath(), id))
-				os.Remove(gallery.HoverPath(s.thumbnailsPath(), id))
+				_ = os.Remove(gallery.ThumbnailPath(s.thumbnailsPath(), id))
+				_ = os.Remove(gallery.HoverPath(s.thumbnailsPath(), id))
 				gallery.RemoveMangaCache(s.thumbnailsPath(), id)
 				if !t.IsMissing && t.CanonicalPath != "" {
 					if err := os.Remove(t.CanonicalPath); err != nil && !os.IsNotExist(err) {
@@ -510,7 +510,7 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 			n, err = s.tagSvc().BatchRemoveTagsTx(tx, chunk, tagIDs)
 		}
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return err
 		}
 		if err := tx.Commit(); err != nil {
@@ -711,7 +711,7 @@ func (s *Server) runBulkToggle(ids []int64, column, progressNoun, cancelNoun, su
 		if _, err := tx.Exec(
 			`UPDATE images SET `+column+` = 1 - `+column+` WHERE id IN (`+placeholders+`)`, args...,
 		); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return err
 		}
 		return tx.Commit()
@@ -781,7 +781,7 @@ func (s *Server) runBatchCollection(ids []int64, label string) {
 		if _, err := tx.Exec(
 			`UPDATE images SET series = ? WHERE id IN (`+placeholders+`)`, args...,
 		); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return err
 		}
 		return tx.Commit()

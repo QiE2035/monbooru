@@ -21,6 +21,7 @@ gallery_path = "/my/gallery"
 [server]
 bind_address = "0.0.0.0:9090"
 base_url = "http://example.com"
+monloader_url = "http://localhost:8081"
 
 [paths]
 data_path  = "/my/data"
@@ -58,6 +59,9 @@ level = "debug"
 
 	if cfg.Server.BindAddress != "0.0.0.0:9090" {
 		t.Errorf("BindAddress = %q", cfg.Server.BindAddress)
+	}
+	if cfg.Server.MonloaderURL != "http://localhost:8081" {
+		t.Errorf("MonloaderURL = %q", cfg.Server.MonloaderURL)
 	}
 	if len(cfg.Galleries) != 1 || cfg.Galleries[0].GalleryPath != "/my/gallery" {
 		t.Errorf("Galleries = %+v", cfg.Galleries)
@@ -116,10 +120,12 @@ func TestMissingTOMLCreatesDefaults(t *testing.T) {
 func TestInvalidBindAddress(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "monbooru.toml")
-	os.WriteFile(path, []byte(`
+	if err := os.WriteFile(path, []byte(`
 [server]
 bind_address = "notavalidaddress"
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Load(path); err == nil {
 		t.Errorf("expected error for invalid bind address")
 	}
@@ -128,7 +134,7 @@ bind_address = "notavalidaddress"
 func TestSessionLifetimeDaysClampsZero(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "monbooru.toml")
-	os.WriteFile(path, []byte(`
+	if err := os.WriteFile(path, []byte(`
 [[galleries]]
 name = "default"
 gallery_path = "/gallery"
@@ -138,7 +144,9 @@ data_path = "/data"
 
 [auth]
 session_lifetime_days = 0
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
@@ -148,10 +156,39 @@ session_lifetime_days = 0
 	}
 }
 
+func TestThumbnailFitDefaultsAndClamps(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"absent defaults to square", "", "square"},
+		{"bogus snaps to square", `thumbnail_fit = "circle"`, "square"},
+		{"natural preserved", `thumbnail_fit = "natural"`, "natural"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "monbooru.toml")
+			toml := "\n[[galleries]]\nname = \"default\"\ngallery_path = \"/gallery\"\n\n[paths]\ndata_path = \"/data\"\n\n[ui]\n" + c.line + "\n"
+			if err := os.WriteFile(path, []byte(toml), 0644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load failed: %v", err)
+			}
+			if cfg.UI.ThumbnailFit != c.want {
+				t.Errorf("ThumbnailFit = %q, want %q", cfg.UI.ThumbnailFit, c.want)
+			}
+		})
+	}
+}
+
 func TestPasswordHashRejectsNonBcrypt(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "monbooru.toml")
-	os.WriteFile(path, []byte(`
+	if err := os.WriteFile(path, []byte(`
 [[galleries]]
 name = "default"
 gallery_path = "/gallery"
@@ -162,7 +199,9 @@ data_path = "/data"
 [auth]
 enable_password = true
 password_hash   = "not-a-bcrypt-hash"
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "bcrypt") {
 		t.Errorf("expected bcrypt-shape error, got %v", err)
 	}
@@ -211,7 +250,9 @@ bind_address = "127.0.0.1:8080"
 data_path  = "/data"
 model_path = "/models"
 `
-	os.WriteFile(path, []byte(content), 0644)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
@@ -231,13 +272,15 @@ model_path = "/models"
 func TestDefaultGalleryFallback(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "monbooru.toml")
-	os.WriteFile(path, []byte(`
+	if err := os.WriteFile(path, []byte(`
 default_gallery = "missing"
 
 [[galleries]]
 name = "only"
 gallery_path = "/gallery"
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
@@ -256,8 +299,8 @@ func TestTaggerGalleriesNilVsEmptyRoundTrip(t *testing.T) {
 	// shape, otherwise the "no galleries" choice degenerates back into
 	// "every gallery" silently.
 	cases := []struct {
-		name   string
-		input  []string
+		name    string
+		input   []string
 		applies bool
 	}{
 		{name: "all-nil", input: nil, applies: true},
@@ -294,7 +337,7 @@ func TestTaggerGalleriesNilVsEmptyRoundTrip(t *testing.T) {
 func TestLoadRejectsDuplicateGalleryNames(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "monbooru.toml")
-	os.WriteFile(path, []byte(`
+	if err := os.WriteFile(path, []byte(`
 [[galleries]]
 name = "a"
 gallery_path = "/gallery1"
@@ -302,7 +345,9 @@ gallery_path = "/gallery1"
 [[galleries]]
 name = "a"
 gallery_path = "/gallery2"
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Load(path); err == nil {
 		t.Error("expected error for duplicate gallery name")
 	}
@@ -355,7 +400,9 @@ func TestSave_ErrorOnBadDir(t *testing.T) {
 func TestValidate_EmptyBindAddress(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "monbooru.toml")
-	os.WriteFile(path, []byte("[server]\nbind_address = \"\""), 0644)
+	if err := os.WriteFile(path, []byte("[server]\nbind_address = \"\""), 0644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Load(path); err == nil {
 		t.Error("expected error for empty bind_address")
 	}
@@ -364,7 +411,9 @@ func TestValidate_EmptyBindAddress(t *testing.T) {
 func TestLoad_InvalidTOML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "monbooru.toml")
-	os.WriteFile(path, []byte("not valid toml ][[["), 0644)
+	if err := os.WriteFile(path, []byte("not valid toml ][[["), 0644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Load(path); err == nil {
 		t.Error("expected error for invalid TOML")
 	}
@@ -375,7 +424,7 @@ func TestSave_ReadOnlyDir(t *testing.T) {
 	if err := os.Chmod(dir, 0555); err != nil {
 		t.Skip("cannot change dir permissions")
 	}
-	defer os.Chmod(dir, 0755)
+	defer func() { _ = os.Chmod(dir, 0755) }()
 	if err := Save(Default(), filepath.Join(dir, "monbooru.toml")); err == nil {
 		if os.Getuid() == 0 {
 			t.Skip("running as root, chmod has no effect")

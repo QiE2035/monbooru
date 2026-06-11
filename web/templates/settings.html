@@ -4,6 +4,7 @@
   <nav class="settings-nav">
     <a href="#general">General</a>
     <a href="#galleries">Galleries</a>
+    <a href="#monloader">Monloader</a>
     <a href="#tagger">Tagger</a>
     <a href="#relations">Relations</a>
     <a href="#auth">Auth</a>
@@ -69,6 +70,13 @@
               <option value="20"></option><option value="40"></option><option value="60"></option>
               <option value="80"></option><option value="100"></option>
             </datalist>
+          </div>
+          <div class="field">
+            <label>Thumbnails</label>
+            <div class="radio-row">
+              <label><input type="radio" name="thumbnail_fit" value="square" {{if ne $cfg.UI.ThumbnailFit "natural"}}checked{{end}}> Square (cropped)</label>
+              <label><input type="radio" name="thumbnail_fit" value="natural" {{if eq $cfg.UI.ThumbnailFit "natural"}}checked{{end}}> Real aspect ratio</label>
+            </div>
           </div>
         </div>
       </div>
@@ -458,6 +466,23 @@
   }
   </script>
 
+  <section id="monloader" class="settings-section">
+    <h3>Monloader</h3>
+    <div id="flash-monloader"></div>
+    <form hx-post="/settings/monloader" hx-target="#flash-monloader" hx-swap="innerHTML">
+      <input type="hidden" name="_csrf" value="{{$csrf}}">
+      <div class="settings-sub">
+        <h4>Link</h4>
+        <div class="field">
+          <label for="monloader_url">monloader URL</label>
+          <input type="text" name="monloader_url" id="monloader_url" value="{{$cfg.Server.MonloaderURL}}" placeholder="http://localhost:8081">
+          <p class="field-hint">Browser URL of your monloader instance; adds a "Go to monloader" link in the top bar, hidden when empty.</p>
+        </div>
+      </div>
+      <div class="settings-actions"><button type="submit">Save</button></div>
+    </form>
+  </section>
+
   <section id="tagger" class="settings-section">
     <div class="settings-section-header">
       <h3>Auto-Tagger</h3>
@@ -543,7 +568,7 @@
             <td>
               {{if not $r.Installed}}<span class="status-dim" title="Not installed">not installed</span>
               {{else if not $r.Available}}<span class="status-err" title="{{$r.Reason}}">unavailable</span>
-              {{else if $r.Enabled}}<span class="status-ok" title="Enabled">enabled</span>
+              {{else if $r.Enabled}}<span class="status-badge status-enabled" title="Enabled">enabled</span>
               {{else}}<span class="status-dim" title="Disabled">disabled</span>{{end}}
             </td>
             <td>

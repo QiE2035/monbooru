@@ -55,7 +55,7 @@ func NewWatcher(galleryName, galleryPath, thumbnailsPath string, maxFileSizeMB i
 	}
 
 	if addErr := fsw.Add(galleryPath); addErr != nil {
-		fsw.Close()
+		_ = fsw.Close()
 		return nil, fmt.Errorf("fsnotify watch gallery root: %w", addErr)
 	}
 	logx.Infof("watcher: watching %s", galleryPath)
@@ -108,7 +108,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			w.cancelPendingTimers()
-			w.fsw.Close()
+			_ = w.fsw.Close()
 			return nil
 
 		case event, ok := <-w.fsw.Events:
@@ -159,7 +159,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 			}
 
 			if event.Has(fsnotify.Remove) {
-				w.fsw.Remove(event.Name)
+				_ = w.fsw.Remove(event.Name)
 				w.markFileMissing(event.Name)
 			}
 
@@ -284,7 +284,7 @@ func (w *Watcher) markFileMissing(path string) {
 		logx.Warnf("watcher mark missing %q: begin tx: %v", path, err)
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec(`UPDATE images SET is_missing = 1 WHERE id = ?`, imgID); err != nil {
 		logx.Warnf("watcher mark missing %q: %v", path, err)
@@ -300,18 +300,18 @@ func (w *Watcher) markFileMissing(path string) {
 	for rows.Next() {
 		var tid int64
 		if scanErr := rows.Scan(&tid); scanErr != nil {
-			rows.Close()
+			_ = rows.Close()
 			logx.Warnf("watcher mark missing %q: scan tag: %v", path, scanErr)
 			return
 		}
 		tagIDs = append(tagIDs, tid)
 	}
 	if iterErr := rows.Err(); iterErr != nil {
-		rows.Close()
+		_ = rows.Close()
 		logx.Warnf("watcher mark missing %q: iterate tags: %v", path, iterErr)
 		return
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	for _, tid := range tagIDs {
 		if _, err := tx.Exec(

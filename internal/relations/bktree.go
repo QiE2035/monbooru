@@ -109,7 +109,7 @@ func (t *BKTree) BuildFromDB(database *db.DB) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	t.mu.Lock()
 	defer t.mu.Unlock()

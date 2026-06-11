@@ -144,7 +144,7 @@ func Open(path string) (*DB, error) {
 
 	wr, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		rd.Close()
+		_ = rd.Close()
 		return nil, fmt.Errorf("opening write pool: %w", err)
 	}
 	wr.SetMaxOpenConns(1)
@@ -154,11 +154,11 @@ func Open(path string) (*DB, error) {
 	db := &DB{Read: rd, Write: wr}
 
 	if err := rd.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("pinging read pool: %w", err)
 	}
 	if err := wr.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("pinging write pool: %w", err)
 	}
 
@@ -654,7 +654,7 @@ func shrinkPool(ctx context.Context, pool *sql.DB) error {
 	conns := make([]*sql.Conn, 0, n)
 	defer func() {
 		for _, c := range conns {
-			c.Close()
+			_ = c.Close()
 		}
 	}()
 	for i := 0; i < n; i++ {

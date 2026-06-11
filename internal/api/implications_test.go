@@ -26,7 +26,7 @@ func getImplications(t *testing.T, env *testEnv, parentID int64, wantStatus int)
 	}
 	var out []map[string]any
 	if w.Body.Len() > 0 {
-		json.NewDecoder(w.Body).Decode(&out)
+		_ = json.NewDecoder(w.Body).Decode(&out)
 	}
 	return out
 }

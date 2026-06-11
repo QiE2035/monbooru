@@ -31,18 +31,18 @@ func (e *testEnv) createTestManga(t *testing.T, name string) int64 {
 	zw := zip.NewWriter(f)
 	w, err := zw.Create("01.png")
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
 	if err := png.Encode(w, pic); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
 	if err := zw.Close(); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 	rec, _, err := gallery.Ingest(e.database, e.galleryDir, e.thumbDir, cbzPath, "cbz", "")
 	if err != nil {
 		t.Fatalf("ingest cbz: %v", err)
@@ -58,9 +58,13 @@ func TestAPI_PostImages_AcceptsCBZUpload(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		w, _ := zw.Create("page_" + strconv.Itoa(i) + ".png")
 		pic := image.NewRGBA(image.Rect(0, 0, 4, 4))
-		png.Encode(w, pic)
+		if err := png.Encode(w, pic); err != nil {
+			t.Fatal(err)
+		}
 	}
-	zw.Close()
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	body := &bytes.Buffer{}
 	mw := multipart.NewWriter(body)
@@ -68,8 +72,12 @@ func TestAPI_PostImages_AcceptsCBZUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.Copy(fw, &buf)
-	mw.Close()
+	if _, err := io.Copy(fw, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/images", body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
@@ -139,4 +147,3 @@ func TestAPI_GetImage_ReturnsMangaFields(t *testing.T) {
 		}
 	}
 }
-

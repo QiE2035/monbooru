@@ -71,8 +71,8 @@ func TestDeleteSearch_HonoursCeiling(t *testing.T) {
 	awaitJobsDrain(t, srv)
 
 	var safeAlive, explicitAlive int
-	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images WHERE id = ?`, safe).Scan(&safeAlive)
-	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images WHERE id = ?`, explicit).Scan(&explicitAlive)
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images WHERE id = ?`, safe).Scan(&safeAlive)
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images WHERE id = ?`, explicit).Scan(&explicitAlive)
 	if safeAlive != 0 {
 		t.Errorf("safe image %d should have been deleted; still present", safe)
 	}
@@ -97,7 +97,7 @@ func TestBatchTag_ScopeSearch_HonoursCeiling(t *testing.T) {
 
 	carriesMark := func(id int64) bool {
 		var n int
-		srv.db().Read.QueryRow(`
+		_ = srv.db().Read.QueryRow(`
 			SELECT COUNT(*) FROM image_tags it
 			JOIN tags t ON t.id = it.tag_id
 			WHERE it.image_id = ? AND t.name = 'mark_under_ceiling'`, id,
@@ -129,7 +129,7 @@ func TestBatchMove_ScopeSearch_HonoursCeiling(t *testing.T) {
 
 	folderOf := func(id int64) string {
 		var p string
-		srv.db().Read.QueryRow(`SELECT folder_path FROM images WHERE id = ?`, id).Scan(&p)
+		_ = srv.db().Read.QueryRow(`SELECT folder_path FROM images WHERE id = ?`, id).Scan(&p)
 		return p
 	}
 	if got := folderOf(safe); got != target {
@@ -177,7 +177,7 @@ func TestMarkedWalkerDeleteAll_HonoursCeiling(t *testing.T) {
 
 	alive := func(id int64) int {
 		var n int
-		srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images WHERE id = ?`, id).Scan(&n)
+		_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images WHERE id = ?`, id).Scan(&n)
 		return n
 	}
 	if alive(safeDup) != 0 {
@@ -239,7 +239,7 @@ func TestFileDuplicatesRemoveAll_HonoursCeiling(t *testing.T) {
 
 	pathAlive := func(id int64) int {
 		var n int
-		srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_paths WHERE id = ?`, id).Scan(&n)
+		_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_paths WHERE id = ?`, id).Scan(&n)
 		return n
 	}
 	if pathAlive(safeAlias) != 0 {
@@ -258,7 +258,7 @@ func TestBatchInbox_ScopeSearch_HonoursCeiling(t *testing.T) {
 	safe, explicit := seedRatedPair(t, srv)
 	for _, id := range []int64{safe, explicit} {
 		var v int
-		srv.db().Read.QueryRow(`SELECT is_inbox FROM images WHERE id = ?`, id).Scan(&v)
+		_ = srv.db().Read.QueryRow(`SELECT is_inbox FROM images WHERE id = ?`, id).Scan(&v)
 		if v != 1 {
 			t.Fatalf("seedImage %d expected is_inbox=1, got %d", id, v)
 		}
@@ -274,7 +274,7 @@ func TestBatchInbox_ScopeSearch_HonoursCeiling(t *testing.T) {
 
 	inboxOf := func(id int64) int {
 		var v int
-		srv.db().Read.QueryRow(`SELECT is_inbox FROM images WHERE id = ?`, id).Scan(&v)
+		_ = srv.db().Read.QueryRow(`SELECT is_inbox FROM images WHERE id = ?`, id).Scan(&v)
 		return v
 	}
 	if got := inboxOf(safe); got != 0 {

@@ -58,11 +58,13 @@ type Handler struct {
 	cfg      *config.Config
 	jobs     *jobs.Manager
 	resolver ResolverFunc
+	version  string
 }
 
-// New creates a new API handler.
-func New(cfg *config.Config, jobManager *jobs.Manager, resolver ResolverFunc) *Handler {
-	return &Handler{cfg: cfg, jobs: jobManager, resolver: resolver}
+// New creates a new API handler. version is surfaced on the /api/v1/ root so
+// clients (e.g. monloader) can read the server version without scraping HTML.
+func New(cfg *config.Config, jobManager *jobs.Manager, resolver ResolverFunc, version string) *Handler {
+	return &Handler{cfg: cfg, jobs: jobManager, resolver: resolver, version: version}
 }
 
 // resolveGallery picks the target gallery from ?gallery=... (preferred)
@@ -131,6 +133,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"api":     "monbooru",
+			"version": h.version,
 			"docs":    "/api/v1/docs",
 			"openapi": "/api/v1/openapi.json",
 		})
@@ -190,13 +193,13 @@ func apiPathInt64(w http.ResponseWriter, r *http.Request, name string) (int64, b
 func apiError(w http.ResponseWriter, status int, code, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg, "code": code})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg, "code": code})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // parsePage reads page + limit from the query string and clamps limit

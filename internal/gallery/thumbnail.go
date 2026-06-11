@@ -103,7 +103,7 @@ func generateMangaThumbnails(srcPath, dstDir string, imageID int64) error {
 	if err != nil {
 		return fmt.Errorf("open manga thumb: %w", err)
 	}
-	defer archive.Close()
+	defer func() { _ = archive.Close() }()
 
 	cover, err := archive.CoverImage()
 	if err != nil {
@@ -135,7 +135,7 @@ func generateOneMangaPageThumb(archive *Manga, idx int, dstPath string) error {
 	if err != nil {
 		return err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	src, err := DecodeImageWithCap(rc)
 	if err != nil {
 		return fmt.Errorf("decode page %d: %w", idx+1, err)
@@ -148,7 +148,7 @@ func generateImageThumb(srcPath, dstPath, fileType string) error {
 	if err != nil {
 		return fmt.Errorf("opening source: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var src image.Image
 
@@ -209,16 +209,16 @@ func writeJPEGAtomic(img image.Image, path string, quality int) error {
 	tmpName := tmp.Name()
 
 	if err := jpeg.Encode(tmp, img, &jpeg.Options{Quality: quality}); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("encoding jpeg: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return err
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("renaming temp file: %w", err)
 	}
 	return nil

@@ -15,7 +15,7 @@ func flashErr(w http.ResponseWriter, r *http.Request, code int, msg string) {
 	if isHTMXRequest(r) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(code)
-		fmt.Fprintf(w, `<div class="flash flash-err">%s</div>`, html.EscapeString(msg))
+		_, _ = fmt.Fprintf(w, `<div class="flash flash-err">%s</div>`, html.EscapeString(msg))
 		return
 	}
 	http.Error(w, msg, code)

@@ -41,7 +41,7 @@ func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {
 		// (default so freshly-declared tags surface without a flag flip);
 		// "0" → Hide. The UI also exposes "only" but the API has no use
 		// for that triage view, so any non-"0" string folds into Show.
-		ShowZero:  q.Get("show_zero") != "0",
+		ShowZero: q.Get("show_zero") != "0",
 	}
 
 	if catName != "" {

@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rwcarlsen/goexif/exif"
 	"github.com/leqwin/monbooru/internal/models"
+	"github.com/rwcarlsen/goexif/exif"
 )
 
 // extractSDFromJPEG reads A1111 metadata from a JPEG's EXIF UserComment.
@@ -15,7 +15,7 @@ func extractSDFromJPEG(path string) (*models.SDMetadata, error) {
 	if err != nil {
 		return nil, nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	x, err := exif.Decode(f)
 	if err != nil {

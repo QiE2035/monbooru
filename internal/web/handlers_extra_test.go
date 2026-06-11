@@ -38,7 +38,7 @@ func TestMoveImage_RejectsAbsolutePath(t *testing.T) {
 	// Canonical path must still be at the root.
 	cx := srv.Active()
 	var canonPath string
-	cx.DB.Read.QueryRow(`SELECT canonical_path FROM images WHERE id = ?`, id).Scan(&canonPath)
+	_ = cx.DB.Read.QueryRow(`SELECT canonical_path FROM images WHERE id = ?`, id).Scan(&canonPath)
 	if !strings.HasSuffix(canonPath, "mv.png") || strings.Contains(canonPath, "passwd") {
 		t.Errorf("image moved to an unexpected path: %s", canonPath)
 	}
@@ -80,7 +80,7 @@ func TestMoveImage_HappyPath(t *testing.T) {
 	}
 	cx := srv.Active()
 	var canonPath, folderPath string
-	cx.DB.Read.QueryRow(`SELECT canonical_path, folder_path FROM images WHERE id = ?`, id).Scan(&canonPath, &folderPath)
+	_ = cx.DB.Read.QueryRow(`SELECT canonical_path, folder_path FROM images WHERE id = ?`, id).Scan(&canonPath, &folderPath)
 	if folderPath != "archive/2026" {
 		t.Errorf("folder_path = %q, want archive/2026", folderPath)
 	}
@@ -90,6 +90,63 @@ func TestMoveImage_HappyPath(t *testing.T) {
 	}
 	if _, err := os.Stat(want); err != nil {
 		t.Errorf("file not at new path: %v", err)
+	}
+}
+
+func TestImageByHashRedirectsToCurrentID(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "hash.png", 10, 10)
+	var sha string
+	if err := srv.Active().DB.Read.QueryRow(`SELECT sha256 FROM images WHERE id = ?`, id).Scan(&sha); err != nil {
+		t.Fatalf("read sha: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/i/"+sha, nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", w.Code)
+	}
+	if got := w.Header().Get("Location"); got != fmt.Sprintf("/images/%d", id) {
+		t.Errorf("Location = %q, want /images/%d", got, id)
+	}
+
+	req = httptest.NewRequest("GET", "/i/deadbeef", nil)
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("unknown hash status = %d, want 404", w.Code)
+	}
+}
+
+func TestImageByHashSwitchesToImageGallery(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+
+	// Seed an image into the non-active "stock" gallery, then return to "default".
+	if err := srv.SwitchGallery("stock"); err != nil {
+		t.Fatalf("switch to stock: %v", err)
+	}
+	id := seedImage(t, srv, "elsewhere.png", 10, 10)
+	var sha string
+	if err := srv.Active().DB.Read.QueryRow(`SELECT sha256 FROM images WHERE id = ?`, id).Scan(&sha); err != nil {
+		t.Fatalf("read sha: %v", err)
+	}
+	if err := srv.SwitchGallery("default"); err != nil {
+		t.Fatalf("switch to default: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/i/"+sha, nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Location"); got != fmt.Sprintf("/images/%d", id) {
+		t.Errorf("Location = %q, want /images/%d", got, id)
+	}
+	if srv.activeName != "stock" {
+		t.Errorf("activeName = %q, want stock (view should switch to the image's gallery)", srv.activeName)
 	}
 }
 
@@ -141,7 +198,7 @@ func TestFoldersSuggest_CaseInsensitivePrefix(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 9, 9))
 	f, _ := os.Create(p)
 	_ = png.Encode(f, img)
-	f.Close()
+	_ = f.Close()
 	if _, _, err := gallery.Ingest(cx.DB, cx.GalleryPath, cx.ThumbnailsPath, p, "png", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +254,7 @@ func TestFoldersSuggest_PrefixFilter(t *testing.T) {
 		}
 		f, _ := os.Create(p)
 		_ = png.Encode(f, img)
-		f.Close()
+		_ = f.Close()
 		if _, _, err := gallery.Ingest(cx.DB, cx.GalleryPath, cx.ThumbnailsPath, p, "png", ""); err != nil {
 			t.Fatal(err)
 		}
@@ -234,7 +291,7 @@ func TestSidebarFolderLink_SinglePercentEncoded(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
 	f, _ := os.Create(p)
 	_ = png.Encode(f, img)
-	f.Close()
+	_ = f.Close()
 	if _, _, err := gallery.Ingest(cx.DB, cx.GalleryPath, cx.ThumbnailsPath, p, "png", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -784,7 +841,7 @@ func TestSavedSearch_CreateAndDelete(t *testing.T) {
 		t.Errorf("delete saved search expected 200, got %d", w2.Code)
 	}
 	var count int
-	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM saved_searches`).Scan(&count)
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM saved_searches`).Scan(&count)
 	if count != 0 {
 		t.Errorf("saved_searches should be empty after delete, got %d", count)
 	}
@@ -899,12 +956,12 @@ func TestReExtract_ReplacesExistingMetadata(t *testing.T) {
 	// The plain PNG has no real SD metadata so re-extraction should drop the
 	// stale row and flip source_type back to "none".
 	var count int
-	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM sd_metadata WHERE image_id = ?`, id).Scan(&count)
+	_ = cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM sd_metadata WHERE image_id = ?`, id).Scan(&count)
 	if count != 0 {
 		t.Errorf("re-extract should have cleared the stale sd_metadata row for a plain PNG, count = %d", count)
 	}
 	var sourceType string
-	cx.DB.Read.QueryRow(`SELECT source_type FROM images WHERE id = ?`, id).Scan(&sourceType)
+	_ = cx.DB.Read.QueryRow(`SELECT source_type FROM images WHERE id = ?`, id).Scan(&sourceType)
 	if sourceType != "none" {
 		t.Errorf("source_type after re-extract = %q, want 'none'", sourceType)
 	}
@@ -1178,7 +1235,7 @@ func TestRenameTag_HTMXCollisionSurfacesError(t *testing.T) {
 	srv := newTestServer(t)
 	cx := srv.Active()
 	var generalID int64
-	cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
+	_ = cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
 	first, _ := cx.TagSvc.GetOrCreateTag("first", generalID)
 	if _, err := cx.TagSvc.GetOrCreateTag("second", generalID); err != nil {
 		t.Fatal(err)
@@ -1203,7 +1260,7 @@ func TestRenameTag_HTMXCollisionSurfacesError(t *testing.T) {
 		t.Errorf("flash should name the colliding name: %s", w.Body.String())
 	}
 	var stillName string
-	cx.DB.Read.QueryRow(`SELECT name FROM tags WHERE id = ?`, first.ID).Scan(&stillName)
+	_ = cx.DB.Read.QueryRow(`SELECT name FROM tags WHERE id = ?`, first.ID).Scan(&stillName)
 	if stillName != "first" {
 		t.Errorf("collision should leave tag untouched, got name %q", stillName)
 	}
@@ -1217,7 +1274,7 @@ func TestMergeTags_HTMXSuccessRedirectsToAlias(t *testing.T) {
 	srv := newTestServer(t)
 	cx := srv.Active()
 	var generalID int64
-	cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
+	_ = cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
 	src, _ := cx.TagSvc.GetOrCreateTag("alias_src", generalID)
 	dst, _ := cx.TagSvc.GetOrCreateTag("alias_dst", generalID)
 
@@ -1253,7 +1310,7 @@ func TestRenameTag_HTMXSuccessRefreshes(t *testing.T) {
 	srv := newTestServer(t)
 	cx := srv.Active()
 	var generalID int64
-	cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
+	_ = cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
 	tag, _ := cx.TagSvc.GetOrCreateTag("renameme", generalID)
 
 	csrf := srv.csrfToken("anon")
@@ -1358,7 +1415,7 @@ func TestUpdateExternal_HTMXSuccessRefreshes(t *testing.T) {
 		t.Errorf("HX-Refresh = %q, want true", w.Header().Get("HX-Refresh"))
 	}
 	var stored string
-	srv.Active().DB.Read.QueryRow(`SELECT url FROM images WHERE id = ?`, id).Scan(&stored)
+	_ = srv.Active().DB.Read.QueryRow(`SELECT url FROM images WHERE id = ?`, id).Scan(&stored)
 	if stored != "https://example.com/art" {
 		t.Errorf("images.url = %q, want https://example.com/art", stored)
 	}
@@ -1430,7 +1487,7 @@ func TestDeleteSearch_BulkDeleteReconcilesUsage(t *testing.T) {
 		ids = append(ids, seedImage(t, srv, fmt.Sprintf("bd%d.png", i), 4+i, 4+i))
 	}
 	var general int64
-	srv.db().Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&general)
+	_ = srv.db().Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&general)
 	res, err := srv.db().Write.Exec(
 		`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 0)`, "shared", general,
 	)
@@ -1475,13 +1532,13 @@ func TestDeleteSearch_BulkDeleteReconcilesUsage(t *testing.T) {
 	}
 
 	var imgCount int
-	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&imgCount)
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&imgCount)
 	if imgCount != 0 {
 		t.Errorf("images count after bulk delete = %d, want 0", imgCount)
 	}
 	var sharedUsage, untouchedUsage int
-	srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, sharedID).Scan(&sharedUsage)
-	srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, untouchedID).Scan(&untouchedUsage)
+	_ = srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, sharedID).Scan(&sharedUsage)
+	_ = srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, untouchedID).Scan(&untouchedUsage)
 	if sharedUsage != 0 {
 		t.Errorf("shared tag usage_count = %d after wiping every carrier, want 0", sharedUsage)
 	}
@@ -1501,7 +1558,7 @@ func TestRemoveUserTagsFromImageHandler_DropsManualOnly(t *testing.T) {
 	insertTag := func(name string) int64 {
 		t.Helper()
 		var general int64
-		srv.db().Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&general)
+		_ = srv.db().Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&general)
 		res, err := srv.db().Write.Exec(
 			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 1)`, name, general,
 		)
@@ -1536,8 +1593,8 @@ func TestRemoveUserTagsFromImageHandler_DropsManualOnly(t *testing.T) {
 	}
 
 	var manualLeft, autoLeft int
-	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND is_auto = 0`, id).Scan(&manualLeft)
-	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND is_auto = 1`, id).Scan(&autoLeft)
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND is_auto = 0`, id).Scan(&manualLeft)
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND is_auto = 1`, id).Scan(&autoLeft)
 	if manualLeft != 0 {
 		t.Errorf("user-tags should be 0 after delete, got %d", manualLeft)
 	}
@@ -1545,8 +1602,8 @@ func TestRemoveUserTagsFromImageHandler_DropsManualOnly(t *testing.T) {
 		t.Errorf("auto-tags should remain 1 (left alone), got %d", autoLeft)
 	}
 	var manualUsage, autoUsage int
-	srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, manualID).Scan(&manualUsage)
-	srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, autoID).Scan(&autoUsage)
+	_ = srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, manualID).Scan(&manualUsage)
+	_ = srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, autoID).Scan(&autoUsage)
 	if manualUsage != 0 {
 		t.Errorf("manual_a usage_count = %d after user-tags delete, want 0", manualUsage)
 	}
@@ -1566,7 +1623,7 @@ func TestRemoveAutoTagsFromImageHandler_RespectsTaggerFilter(t *testing.T) {
 	insertAuto := func(name, taggerName string) int64 {
 		t.Helper()
 		var general int64
-		srv.db().Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&general)
+		_ = srv.db().Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&general)
 		res, err := srv.db().Write.Exec(
 			`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 1)`, name, general,
 		)
@@ -1596,8 +1653,8 @@ func TestRemoveAutoTagsFromImageHandler_RespectsTaggerFilter(t *testing.T) {
 	}
 
 	var leftA, leftB int
-	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND tag_id = ?`, id, aID).Scan(&leftA)
-	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND tag_id = ?`, id, bID).Scan(&leftB)
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND tag_id = ?`, id, aID).Scan(&leftA)
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND tag_id = ?`, id, bID).Scan(&leftB)
 	if leftA != 0 {
 		t.Errorf("tagger-A row should be removed, got %d", leftA)
 	}
@@ -1782,7 +1839,7 @@ func TestUpdateExternal_RejectsCollectionOrderWithoutCollection(t *testing.T) {
 		t.Errorf("body missing the validation message: %s", w.Body.String())
 	}
 	var stored sql.NullInt64
-	srv.Active().DB.Read.QueryRow(`SELECT series_order FROM images WHERE id = ?`, id).Scan(&stored)
+	_ = srv.Active().DB.Read.QueryRow(`SELECT series_order FROM images WHERE id = ?`, id).Scan(&stored)
 	if stored.Valid {
 		t.Errorf("collection_order should remain NULL, got %d", stored.Int64)
 	}
@@ -1857,7 +1914,7 @@ func TestUpdateExternal_RejectsZeroOrNegativeOrder(t *testing.T) {
 		}
 	}
 	var stored sql.NullInt64
-	srv.Active().DB.Read.QueryRow(`SELECT series_order FROM images WHERE id = ?`, id).Scan(&stored)
+	_ = srv.Active().DB.Read.QueryRow(`SELECT series_order FROM images WHERE id = ?`, id).Scan(&stored)
 	if stored.Valid {
 		t.Errorf("collection_order should remain NULL, got %d", stored.Int64)
 	}
@@ -1919,7 +1976,7 @@ func TestTagsPage_AliasRowExposesCategorySelect(t *testing.T) {
 	srv := newTestServer(t)
 	cx := srv.Active()
 	var generalID int64
-	cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
+	_ = cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
 	canon, _ := cx.TagSvc.GetOrCreateTag("alias_canon", generalID)
 	src, _ := cx.TagSvc.GetOrCreateTag("alias_src", generalID)
 	if err := cx.TagSvc.MergeTags(src.ID, canon.ID); err != nil {
@@ -2060,9 +2117,15 @@ func TestDetailPage_DuplicateFilePathsHeaderReadsDuplicates(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "dup.png", 10, 10)
 	cx := srv.Active()
+	// The panel only lists duplicates whose file is present, so the alias
+	// needs to exist on disk.
+	dupPath := filepath.Join(cx.GalleryPath, "dup-alt.png")
+	if err := os.WriteFile(dupPath, []byte("dup"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := cx.DB.Write.Exec(
 		`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 0)`,
-		id, filepath.Join(cx.GalleryPath, "dup-alt.png"),
+		id, dupPath,
 	); err != nil {
 		t.Fatalf("insert duplicate path: %v", err)
 	}
@@ -2084,6 +2147,71 @@ func TestDetailPage_DuplicateFilePathsHeaderReadsDuplicates(t *testing.T) {
 	}
 	if !strings.Contains(body, `duplicates-section`) {
 		t.Errorf("duplicates-section CSS class missing")
+	}
+}
+
+// TestDuplicatesPanel_HidesGoneFileAlias: a non-canonical path whose file
+// is gone is move/copy history, not a live duplicate, so it must not
+// render in the detail page's Duplicates panel - even before a sync prunes
+// the row.
+func TestDuplicatesPanel_HidesGoneFileAlias(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "live.png", 10, 10)
+	cx := srv.Active()
+	ghost := filepath.Join(cx.GalleryPath, "moved-away.png") // never written to disk
+	if _, err := cx.DB.Write.Exec(
+		`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 0)`,
+		id, ghost,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", fmt.Sprintf("/internal/images/%d/related-entries", id), nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("related-entries GET: %d", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "moved-away.png") {
+		t.Errorf("gone-file alias rendered in Duplicates panel; body should omit it")
+	}
+	if strings.Contains(body, `<h3>Duplicates</h3>`) {
+		t.Errorf("Duplicates panel shown with only a phantom alias; should be hidden")
+	}
+}
+
+// TestPromoteCanonical_RefusesMissingFile: setting canonical to an alias
+// whose file is gone must be rejected so the image isn't repointed at a
+// nonexistent path (which would make it unservable).
+func TestPromoteCanonical_RefusesMissingFile(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "real.png", 10, 10)
+	cx := srv.Active()
+	ghost := filepath.Join(cx.GalleryPath, "ghost.png") // never written to disk
+	if _, err := cx.DB.Write.Exec(
+		`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 0)`,
+		id, ghost,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{"_csrf": {srv.csrfToken("anon")}, "path": {ghost}}
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/canonical-path", id), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("promote missing-file path: status = %d, want 400", w.Code)
+	}
+
+	var canonPath string
+	if err := cx.DB.Read.QueryRow(`SELECT canonical_path FROM images WHERE id = ?`, id).Scan(&canonPath); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(canonPath, "real.png") {
+		t.Errorf("canonical_path = %q, want it left at real.png", canonPath)
 	}
 }
 
@@ -2128,8 +2256,8 @@ func TestResetSkippedPost(t *testing.T) {
 	}
 
 	var skipped, open int
-	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs WHERE skipped_at IS NOT NULL`).Scan(&skipped)
-	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs WHERE skipped_at IS NULL`).Scan(&open)
+	_ = cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs WHERE skipped_at IS NOT NULL`).Scan(&skipped)
+	_ = cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs WHERE skipped_at IS NULL`).Scan(&open)
 	if skipped != 0 {
 		t.Errorf("after reset, skipped count = %d, want 0", skipped)
 	}

@@ -20,7 +20,7 @@ func extractSDFromWebP(path string) (*models.SDMetadata, error) {
 	if err != nil {
 		return nil, nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	exifData, err := readWebPEXIF(f)
 	if err != nil || exifData == nil {
@@ -84,7 +84,7 @@ func readWebPEXIF(r io.Reader) ([]byte, error) {
 		if size%2 == 1 {
 			// RIFF chunks are word-aligned; skip the pad byte.
 			pad := make([]byte, 1)
-			io.ReadFull(r, pad)
+			_, _ = io.ReadFull(r, pad)
 		}
 		if chunkType == "EXIF" {
 			// Some encoders prepend the JPEG-style "Exif\x00\x00" magic;
@@ -101,7 +101,7 @@ func genericFromWebP(path string) []models.SDParam {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	exifData, err := readWebPEXIF(f)
 	if err != nil || exifData == nil {
 		return nil

@@ -88,18 +88,18 @@ func MoveImage(database *db.DB, galleryPath string, id int64, targetFolder strin
 		`UPDATE images SET canonical_path = ?, folder_path = ? WHERE id = ?`,
 		newPath, newFolder, id,
 	); err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return nil, fmt.Errorf("update images row: %w", err)
 	}
 	if _, err := tx.Exec(
 		`UPDATE image_paths SET path = ? WHERE image_id = ? AND is_canonical = 1`,
 		newPath, id,
 	); err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return nil, fmt.Errorf("update image_paths row: %w", err)
 	}
 	if err := os.Rename(oldCanonical, newPath); err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return nil, fmt.Errorf("rename file: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

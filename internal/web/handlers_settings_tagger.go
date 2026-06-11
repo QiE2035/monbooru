@@ -283,7 +283,7 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 	logx.Infof("settings: tagger %q thresholds updated (global=%.2f, %d threshold overrides, %d top-K overrides, %d disabled)", name, global, len(overrides), len(topK), len(disabled))
 	summary := taggerThresholdSummary(global, overrides, disabled)
 	setTaggerSavedTrigger(w, "tagger-thresh-"+name)
-	fmt.Fprintf(w,
+	_, _ = fmt.Fprintf(w,
 		`<span id="tagger-thresh-summary-%s" hx-swap-oob="true">%s</span>`+
 			`<div id="flash-tagger" hx-swap-oob="true"><div class="flash flash-ok">Tagger %s thresholds saved.</div></div>`,
 		html.EscapeString(name), html.EscapeString(summary), html.EscapeString(name))
@@ -333,7 +333,7 @@ func (s *Server) settingsTaggerThresholdsResetPost(w http.ResponseWriter, r *htt
 	}
 	csrf := s.csrfToken(sessionFromContext(r.Context()))
 	summary := taggerThresholdSummary(global, defaults.CategoryThresholds, defaults.DisabledCategories)
-	fmt.Fprintf(w, `<span id="tagger-thresh-summary-%s" hx-swap-oob="true">%s</span>`,
+	_, _ = fmt.Fprintf(w, `<span id="tagger-thresh-summary-%s" hx-swap-oob="true">%s</span>`,
 		html.EscapeString(name), html.EscapeString(summary))
 	s.renderTemplate(w, "partials/tagger_thresholds_dialog.html", map[string]any{
 		"Name":      name,
@@ -549,7 +549,7 @@ func (s *Server) settingsTaggerGalleriesPost(w http.ResponseWriter, r *http.Requ
 	logx.Infof("settings: tagger %q galleries updated (all=%t, %d named)", name, all, len(galleries))
 	summary := taggerGallerySummary(galleries, len(s.cfg.Galleries))
 	setTaggerSavedTrigger(w, "tagger-gal-"+name)
-	fmt.Fprintf(w,
+	_, _ = fmt.Fprintf(w,
 		`<span id="tagger-gal-summary-%s" hx-swap-oob="true">%s</span>`+
 			`<div id="flash-tagger" hx-swap-oob="true"><div class="flash flash-ok">Tagger %s galleries saved.</div></div>`,
 		html.EscapeString(name), html.EscapeString(summary), html.EscapeString(name))

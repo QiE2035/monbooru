@@ -43,7 +43,9 @@ func seedImportExportFixture(t *testing.T, srv *Server) {
 		t.Fatalf("merge: %v", err)
 	}
 	var imgID int64
-	cx.DB.Read.QueryRow(`SELECT id FROM images WHERE sha256 = ?`, "seed-sha").Scan(&imgID)
+	if err := cx.DB.Read.QueryRow(`SELECT id FROM images WHERE sha256 = ?`, "seed-sha").Scan(&imgID); err != nil {
+		t.Fatalf("query seed image: %v", err)
+	}
 	if err := cx.TagSvc.AddTagToImage(imgID, canon.ID, false, nil); err != nil {
 		t.Fatalf("tag image: %v", err)
 	}
@@ -119,12 +121,16 @@ func TestImportGalleryDB_RestoresRows(t *testing.T) {
 
 	cx := srv.Get("stock")
 	var n int
-	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&n)
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
 	if n != 1 {
 		t.Errorf("images after import = %d, want 1", n)
 	}
 	var aliasCount int
-	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM tags WHERE is_alias = 1`).Scan(&aliasCount)
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM tags WHERE is_alias = 1`).Scan(&aliasCount); err != nil {
+		t.Fatal(err)
+	}
 	if aliasCount != 1 {
 		t.Errorf("aliases after import = %d, want 1", aliasCount)
 	}
@@ -144,9 +150,15 @@ func TestImportGalleryJSON_RestoresRows(t *testing.T) {
 
 	cx := srv.Get("stock")
 	var imgCount, aliasCount, imageTagCount int
-	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&imgCount)
-	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM tags WHERE is_alias = 1`).Scan(&aliasCount)
-	cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM image_tags`).Scan(&imageTagCount)
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&imgCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM tags WHERE is_alias = 1`).Scan(&aliasCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM image_tags`).Scan(&imageTagCount); err != nil {
+		t.Fatal(err)
+	}
 	if imgCount != 1 || aliasCount != 1 || imageTagCount != 1 {
 		t.Errorf("after JSON import: images=%d aliases=%d image_tags=%d, want 1/1/1",
 			imgCount, aliasCount, imageTagCount)
@@ -213,15 +225,19 @@ func TestImportGallery_RebasesPathsToTargetGallery(t *testing.T) {
 	cx = srv.Get("stock")
 	wantPrefix := cx.GalleryPath
 	var got string
-	cx.DB.Read.QueryRow(`SELECT canonical_path FROM images WHERE sha256 = 'sha1'`).Scan(&got)
+	if err := cx.DB.Read.QueryRow(`SELECT canonical_path FROM images WHERE sha256 = 'sha1'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
 	want := wantPrefix + "/2024/foo.png"
 	if got != want {
 		t.Errorf("canonical_path = %q, want %q", got, want)
 	}
 	var gotAlias string
-	cx.DB.Read.QueryRow(
+	if err := cx.DB.Read.QueryRow(
 		`SELECT path FROM image_paths WHERE image_id = (SELECT id FROM images WHERE sha256 = 'sha1')`,
-	).Scan(&gotAlias)
+	).Scan(&gotAlias); err != nil {
+		t.Fatal(err)
+	}
 	if gotAlias != want {
 		t.Errorf("image_paths.path = %q, want %q", gotAlias, want)
 	}
@@ -391,7 +407,7 @@ func TestImportGallery_FlagsMissingFilesAfterRebase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	for r.Next() {
 		var sha string
 		var miss int

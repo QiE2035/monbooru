@@ -105,7 +105,7 @@ func (s *Service) inWriteTx(work func(*sql.Tx) error) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := work(tx); err != nil {
 		return err
 	}
@@ -761,7 +761,7 @@ func collectDerivativeTreeMembersTx(tx *sql.Tx, anyMember int64) ([]int64, error
 				return nil, err
 			}
 			ids, scanErr := db.ScanIDs(rows)
-			rows.Close()
+			_ = rows.Close()
 			if scanErr != nil {
 				return nil, scanErr
 			}

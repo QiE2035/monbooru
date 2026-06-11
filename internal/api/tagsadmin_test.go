@@ -29,7 +29,9 @@ func apiJSON(t *testing.T, env *testEnv, method, path string, body map[string]an
 	}
 	var resp map[string]any
 	if w.Body.Len() > 0 {
-		json.NewDecoder(w.Body).Decode(&resp)
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return resp
 }

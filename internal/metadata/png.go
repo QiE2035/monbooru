@@ -127,7 +127,7 @@ func extractFromPNG(path string) (*models.SDMetadata, *models.ComfyUIMetadata, e
 	if err != nil {
 		return nil, nil, nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	chunks, err := readPNGTextChunks(f)
 	if err != nil {

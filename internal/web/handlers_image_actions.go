@@ -54,9 +54,9 @@ func (s *Server) toggleBoolColumn(w http.ResponseWriter, r *http.Request, column
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if newVal == 1 {
-		w.Write([]byte(onHTML))
+		_, _ = w.Write([]byte(onHTML))
 	} else {
-		w.Write([]byte(offHTML))
+		_, _ = w.Write([]byte(offHTML))
 	}
 }
 
@@ -204,6 +204,10 @@ func (s *Server) promoteCanonical(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path is not an alias of this image", http.StatusBadRequest)
 		return
 	}
+	if _, statErr := os.Stat(newCanonical); statErr != nil {
+		http.Error(w, "cannot set canonical: file is missing on disk", http.StatusBadRequest)
+		return
+	}
 
 	newFolder := gallery.FolderPath(s.galleryPath(), newCanonical)
 
@@ -212,7 +216,7 @@ func (s *Server) promoteCanonical(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec(`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ?`, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -478,7 +482,7 @@ func (s *Server) deleteAlias(w http.ResponseWriter, r *http.Request) {
 	if isHTMXRequest(r) {
 		// Empty body for HTMX outerHTML swap - removes the row.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(""))
+		_, _ = w.Write([]byte(""))
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/images/%d", id), http.StatusSeeOther)

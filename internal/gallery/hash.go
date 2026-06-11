@@ -30,7 +30,7 @@ func ResolveSubdir(galleryPath, folder string) (string, error) {
 	folder = strings.Trim(folder, "/\\")
 	cleaned := filepath.Clean(filepath.ToSlash(folder))
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") || strings.Contains(cleaned, "/../") {
-		return "", fmt.Errorf("folder path may not contain ..")
+		return "", fmt.Errorf("folder path may not contain a .. segment")
 	}
 	abs, err := filepath.Abs(filepath.Join(galleryPath, cleaned))
 	if err != nil {
@@ -95,7 +95,7 @@ func HashFile(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("opening file for hashing: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
 	buf := make([]byte, 32*1024)
@@ -134,7 +134,7 @@ func DetectFileType(path string) (string, error) {
 	if err != nil {
 		return "", ErrUnsupportedType
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, 16)
 	n, _ := f.Read(buf)

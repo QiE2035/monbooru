@@ -40,10 +40,10 @@ type categoryResolution struct {
 //     category 9; that would otherwise fall under copyright).
 //  3. profile.CategoryScheme:
 //     - wd14_numeric  : look label.categoryID up in wd14Category;
-//                       unknown ids fall to general.
+//     unknown ids fall to general.
 //     - single_general: everything lands in general; the .txt-tagger
-//                       inferred-category fallback (callers know about
-//                       it) gets a chance to lift it elsewhere.
+//     inferred-category fallback (callers know about
+//     it) gets a chance to lift it elsewhere.
 //     - name_string   : look label.categoryName up in catIDs.
 //
 // The returned categoryResolution.skip is true only when a dispatch rule

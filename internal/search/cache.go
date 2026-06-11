@@ -160,7 +160,7 @@ func AdjacencyCacheDropForGallery(gallery string) {
 		}
 	}
 	// Rebuild the LRU order without the dropped keys; len(adjCacheOrder)
-	// stays bounded by adjacencyCacheMaxEntries (32) so the rebuild is
+	// stays bounded by adjacencyCacheMaxEntries (4) so the rebuild is
 	// constant time.
 	newOrder := adjCacheOrder[:0]
 	for _, k := range adjCacheOrder {

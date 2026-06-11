@@ -33,7 +33,7 @@ func startWatcher(t *testing.T) (*Watcher, *db.DB, string) {
 	if err := db.Bootstrap(database); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	w, err := NewWatcher("default", galleryDir, thumbDir, 0, database, jobs.NewManager())
 	if err != nil {
@@ -78,9 +78,16 @@ func TestWatcher_DebounceExtendsOnWrite(t *testing.T) {
 	// after 500 ms on the half-file and OpenManga fails.
 	var zbuf bytes.Buffer
 	zw := zip.NewWriter(&zbuf)
-	out, _ := zw.Create("01.png")
-	out.Write(solidPNG(t, 8, 8, [3]uint8{55, 66, 77}))
-	zw.Close()
+	out, err := zw.Create("01.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := out.Write(solidPNG(t, 8, 8, [3]uint8{55, 66, 77})); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
 	full := zbuf.Bytes()
 	mid := len(full) / 2
 
@@ -90,19 +97,21 @@ func TestWatcher_DebounceExtendsOnWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := f.Write(full[:mid]); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
 	time.Sleep(700 * time.Millisecond)
 	if _, err := f.Write(full[mid:]); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	pollForRow(t, database, `file_type = 'cbz' AND canonical_path LIKE '%slow.cbz'`, 5*time.Second)
 }

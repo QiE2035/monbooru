@@ -19,26 +19,26 @@ import (
 
 type detailData struct {
 	baseData
-	Image          models.Image
-	Filename       string // basename of the canonical path, shown on the detail page topbar
-	ImageTags      []models.ImageTag
-	SDMeta         *models.SDMetadata
-	ComfyMeta      *models.ComfyUIMetadata
-	ComfyNodes     []models.ComfyNode
-	GenericMeta    []models.SDParam
-	MangaMeta      *models.MangaMetadata // populated for cbz rows when ComicInfo.xml was parsed
-	IsManga        bool                  // shorthand for FileType == "cbz" so the template doesn't string-compare
-	ImagePaths     []models.ImagePath
-	ThumbnailURL   string
-	PrevID         *int64
-	NextID         *int64
-	RefURL         string // predecessor detail URL when the user arrived via a Similar-images click; drives the "← Previous image" back link and Escape
-	Ref            string // raw ref=<sourceID> value when valid; forwarded on the delete button so the post-delete redirect returns to the source instead of an arbitrary neighbour
-	BackQuery      string
-	BackSort       string
-	BackOrder      string
-	BackPage       string
-	BackSeed       string
+	Image        models.Image
+	Filename     string // basename of the canonical path, shown on the detail page topbar
+	ImageTags    []models.ImageTag
+	SDMeta       *models.SDMetadata
+	ComfyMeta    *models.ComfyUIMetadata
+	ComfyNodes   []models.ComfyNode
+	GenericMeta  []models.SDParam
+	MangaMeta    *models.MangaMetadata // populated for cbz rows when ComicInfo.xml was parsed
+	IsManga      bool                  // shorthand for FileType == "cbz" so the template doesn't string-compare
+	ImagePaths   []models.ImagePath
+	ThumbnailURL string
+	PrevID       *int64
+	NextID       *int64
+	RefURL       string // predecessor detail URL when the user arrived via a Similar-images click; drives the "← Previous image" back link and Escape
+	Ref          string // raw ref=<sourceID> value when valid; forwarded on the delete button so the post-delete redirect returns to the source instead of an arbitrary neighbour
+	BackQuery    string
+	BackSort     string
+	BackOrder    string
+	BackPage     string
+	BackSeed     string
 	// BackQS is the URL-safe `?back_*=...` fragment carrying every back_*
 	// the detail handler saw. Forwarded verbatim on the manga Read /
 	// Pages anchors so click-through preserves the gallery context;
@@ -55,6 +55,49 @@ type detailData struct {
 	// Config.Relations.DefaultDistance so a settings tweak is honoured
 	// without a restart.
 	PhashDistance int
+}
+
+// imageByHashHandler redirects /i/{sha} to the detail page of the image with
+// that sha256. An image id is reused after deletion, so an external link by id
+// can later open the wrong image; the sha is content-addressed and stable, so
+// resolving it here keeps such a link pointing at the right content. A monloader
+// "view" link can target an image pushed into a gallery other than the active
+// one; since every gallery's DB stays open, a miss in the active gallery falls
+// back to the others and switches the active gallery to the one holding the
+// image before redirecting. 404 when no gallery carries the hash.
+func (s *Server) imageByHashHandler(w http.ResponseWriter, r *http.Request) {
+	sha := r.PathValue("sha")
+	if d := s.db(); d != nil {
+		var id int64
+		if err := d.Read.QueryRow(`SELECT id FROM images WHERE sha256 = ?`, sha).Scan(&id); err == nil {
+			http.Redirect(w, r, "/images/"+strconv.FormatInt(id, 10), http.StatusFound)
+			return
+		}
+	}
+
+	s.ctxMu.RLock()
+	ctxs := make([]*galleryCtx, 0, len(s.contexts))
+	for _, cx := range s.contexts {
+		ctxs = append(ctxs, cx)
+	}
+	s.ctxMu.RUnlock()
+
+	for _, cx := range ctxs {
+		if cx.DB == nil {
+			continue
+		}
+		var id int64
+		if err := cx.DB.Read.QueryRow(`SELECT id FROM images WHERE sha256 = ?`, sha).Scan(&id); err != nil {
+			continue
+		}
+		if err := s.SwitchGallery(cx.Name); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		http.Redirect(w, r, "/images/"+strconv.FormatInt(id, 10), http.StatusFound)
+		return
+	}
+	s.notFoundHandler(w, r)
 }
 
 func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {

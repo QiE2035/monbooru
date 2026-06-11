@@ -75,7 +75,7 @@ func TestDissolveGroupsPost(t *testing.T) {
 			t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 		}
 		var n int
-		srv.db().Read.QueryRow(`SELECT COUNT(*) FROM dup_groups`).Scan(&n)
+		_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM dup_groups`).Scan(&n)
 		if n != 0 {
 			t.Errorf("dup_groups remaining = %d, want 0", n)
 		}
@@ -100,10 +100,10 @@ func TestDissolveGroupsPost(t *testing.T) {
 		var gids []string
 		for rows.Next() {
 			var id int64
-			rows.Scan(&id)
+			_ = rows.Scan(&id)
 			gids = append(gids, strconv.FormatInt(id, 10))
 		}
-		rows.Close()
+		_ = rows.Close()
 		if len(gids) != 2 {
 			t.Fatalf("alt_groups seed = %d, want 2", len(gids))
 		}
@@ -112,7 +112,7 @@ func TestDissolveGroupsPost(t *testing.T) {
 			t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 		}
 		var n int
-		srv.db().Read.QueryRow(`SELECT COUNT(*) FROM alt_groups`).Scan(&n)
+		_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM alt_groups`).Scan(&n)
 		if n != 0 {
 			t.Errorf("alt_groups remaining = %d, want 0", n)
 		}
@@ -130,7 +130,7 @@ func TestDissolveGroupsPost(t *testing.T) {
 			t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 		}
 		var n int
-		srv.db().Read.QueryRow(`SELECT COUNT(*) FROM version_edges`).Scan(&n)
+		_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM version_edges`).Scan(&n)
 		if n != 0 {
 			t.Errorf("version_edges remaining = %d, want 0", n)
 		}
@@ -148,7 +148,7 @@ func TestDissolveGroupsPost(t *testing.T) {
 			t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 		}
 		var n int
-		srv.db().Read.QueryRow(`SELECT COUNT(*) FROM derivative_edges`).Scan(&n)
+		_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM derivative_edges`).Scan(&n)
 		if n != 0 {
 			t.Errorf("derivative_edges remaining = %d, want 0", n)
 		}
@@ -167,7 +167,7 @@ func TestDissolveGroupsPost(t *testing.T) {
 			t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 		}
 		var n int
-		srv.db().Read.QueryRow(`SELECT COUNT(*) FROM not_related_pairs`).Scan(&n)
+		_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM not_related_pairs`).Scan(&n)
 		if n != 0 {
 			t.Errorf("not_related_pairs remaining = %d, want 0", n)
 		}

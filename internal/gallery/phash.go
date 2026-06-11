@@ -37,7 +37,7 @@ func ComputePhashFromThumb(thumbPath string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("open thumb: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	img, err := jpeg.Decode(f)
 	if err != nil {
 		return 0, fmt.Errorf("decode thumb: %w", err)

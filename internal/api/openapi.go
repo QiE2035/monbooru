@@ -766,7 +766,7 @@ func galleryParam() map[string]any {
 func (h *Handler) openAPIJSON(w http.ResponseWriter, r *http.Request) {
 	spec := buildSpec(h.cfg.Server.BaseURL)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(spec)
+	_ = json.NewEncoder(w).Encode(spec)
 }
 
 // openAPIDocs serves a self-contained HTML page rendered from the

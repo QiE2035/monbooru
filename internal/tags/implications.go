@@ -39,7 +39,7 @@ func (s *Service) ListImplications(parentID int64) ([]models.Implication, error)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []models.Implication
 	for rows.Next() {
 		var im models.Implication
@@ -82,7 +82,7 @@ func (s *Service) ImplicationsForParents(parentIDs []int64) (map[int64][]models.
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var im models.Implication
 			if err := rows.Scan(
@@ -117,7 +117,7 @@ func (s *Service) AddImplication(parentID, impliedID int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	for _, id := range [2]int64{parentID, impliedID} {
 		var isAlias int
@@ -191,11 +191,11 @@ func implicationReachesTx(tx *sql.Tx, start, target int64) (bool, error) {
 		for rows.Next() {
 			var id int64
 			if err := rows.Scan(&id); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return false, err
 			}
 			if id == target {
-				rows.Close()
+				_ = rows.Close()
 				return true, nil
 			}
 			if _, ok := seen[id]; !ok {
@@ -204,10 +204,10 @@ func implicationReachesTx(tx *sql.Tx, start, target int64) (bool, error) {
 			}
 		}
 		if err := rows.Err(); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return false, err
 		}
-		rows.Close()
+		_ = rows.Close()
 		frontier = next
 	}
 	return false, nil
@@ -299,7 +299,7 @@ func implicationParentsOnImageExcluding(tx *sql.Tx, imageID, impliedID, excludeP
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []int64
 	for rows.Next() {
 		var id int64

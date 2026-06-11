@@ -1,23 +1,17 @@
-/* Monbooru - dark mode only, monospace, no rounded corners, no shadows */
 :root {
-  --bg:         #0d0d0d;
-  --bg-surface: #1a1a1a;
-  --bg-input:   #111111;
-  --border:     #2a2a2a;
-  --fg:         #c8c8c8;
-  --fg-dim:     #666666;
+  --bg:         #0e0e0e;
+  --bg-surface: #1a1818;
+  --bg-input:   #080808;
+  --border:     #2a2828;
+  --fg:         #e8e4e2;
+  --fg-dim:     #a09898;
   --accent:     #9d2235;
-  --success:    #22aa44;
-  --warning:    #ffaa00;
-  --error:      #cc3333;
-  --indigo:     #5c6bc0;
-
-  /* Tag category colors */
-  --cat-general:   #3d90e3;
-  --cat-character: #00aa00;
-  --cat-artist:    #cc0000;
-  --cat-copyright: #aa00aa;
-  --cat-meta:      #ffaa00;
+  --link:       #ef8f99;
+  --success:    #7fc99a;
+  --warning:    #e8c06a;
+  --error:      #ef8f99;
+  --indigo:     #88b0d8;
+  --fav:        #e0524d;
 }
 
 *, *::before, *::after {
@@ -40,7 +34,7 @@ body {
 }
 
 a {
-  color: var(--accent);
+  color: var(--link);
   text-decoration: none;
 }
 a:hover { text-decoration: underline; }
@@ -54,13 +48,18 @@ button, input, select, textarea {
   border-radius: 0;
   padding: 4px 8px;
 }
+input[type="text"]:focus, input[type="search"]:focus, input[type="password"]:focus,
+input[type="number"]:focus, textarea:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
 
 button {
   cursor: pointer;
   background: var(--bg-surface);
   border-color: var(--border);
 }
-button:hover { border-color: var(--accent); }
+button:hover { border-color: var(--fg-dim); }
 button:disabled, button[disabled] {
   cursor: not-allowed;
   color: var(--fg-dim);
@@ -117,11 +116,6 @@ button:disabled:hover, button[disabled]:hover { border-color: var(--border); }
 @media (max-width: 600px) {
   #footer { flex-direction: column; align-items: flex-start; }
 }
-/* At very narrow widths the counts strip ("[default] · 52 img · ...")
-   wraps inside #footer-left and the leading "::" separator is left
-   dangling at the end of the first line before the rating row. Turn
-   that separator into a zero-height flex-row break so the rating row
-   starts cleanly on its own line. */
 @media (max-width: 480px) {
   #footer-left .footer-sep-strong {
     flex-basis: 100%;
@@ -132,7 +126,7 @@ button:disabled:hover, button[disabled]:hover { border-color: var(--border); }
 }
 #footer a { color: var(--fg-dim); }
 #footer a:hover { color: var(--fg); }
-.footer-gallery { color: var(--accent); }
+.footer-gallery { color: var(--link); }
 button.footer-gallery {
   background: none;
   border: none;
@@ -145,7 +139,7 @@ button.footer-gallery:hover { color: var(--fg); }
 .footer-sep-strong { color: var(--fg-dim); font-weight: bold; margin: 0 4px; }
 .footer-degraded { color: var(--warning); }
 .footer-rating-label { color: var(--fg-dim); }
-.footer-rating-active { color: var(--accent); }
+.footer-rating-active { color: var(--link); }
 .footer-hidden:empty { display: none; }
 button.footer-rating-link {
   background: none;
@@ -170,6 +164,7 @@ button.footer-rating-link:hover { color: var(--fg); }
 }
 #nav a:hover, #nav a.active { color: var(--fg); text-decoration: none; }
 #nav a.active { border-bottom-color: var(--accent); }
+#nav .nav-sep { width: 1px; height: 16px; background: var(--fg-dim); align-self: center; flex-shrink: 0; }
 
 #topbar-right {
   margin-left: auto;
@@ -270,7 +265,7 @@ button.footer-rating-link:hover { color: var(--fg); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.folder-link:hover { text-decoration: underline; color: var(--accent); }
+.folder-link:hover { text-decoration: underline; color: var(--link); }
 .folder-only-btn {
   color: var(--fg-dim);
   text-decoration: none;
@@ -279,8 +274,8 @@ button.footer-rating-link:hover { color: var(--fg); }
   padding: 0 4px;
   flex-shrink: 0;
 }
-.folder-only-btn:hover { color: var(--accent); }
-.folder-only-btn.active { color: var(--accent); }
+.folder-only-btn:hover { color: var(--link); }
+.folder-only-btn.active { color: var(--link); }
 
 /* Tag group headers in sidebar */
 .tag-group { margin-bottom: 2px; }
@@ -320,10 +315,6 @@ button.footer-rating-link:hover { color: var(--fg); }
   margin-top: 8px;
   padding-top: 4px;
 }
-/* Skip the top divider when this section is the first content in its
-   container - otherwise the gallery sidebar without tag-groups (and the
-   detail sidebar without image tags) would render a floating line above
-   nothing. */
 #folder-tree-section:first-child, #saved-searches-section:first-child,
 #source-filter-section:first-child, #series-filter-section:first-child,
 #favorites-filter-section:first-child, #source-labels-section:first-child {
@@ -359,7 +350,7 @@ button.footer-rating-link:hover { color: var(--fg); }
   flex-shrink: 0;
 }
 .folder-spacer { display: inline-block; width: 12px; }
-.folder-link.active { color: var(--accent); }
+.folder-link.active { color: var(--link); }
 .saved-search-list-sidebar { list-style: none; margin: 0; padding: 0; }
 .saved-search-entry {
   padding: 2px 12px;
@@ -382,11 +373,6 @@ button.footer-rating-link:hover { color: var(--fg); }
 }
 .saved-search-del:hover { color: var(--error); }
 
-/* Sidebar tag add button. The fixed width + centred glyph keeps the
-   button itself uniform across rows where the + or - glyph differs;
-   the .tag-count sibling carries a right-aligned min-width so a
-   variable-digit count to the right doesn't shove the button column
-   sideways. Without both, +/- drift visibly between rows. */
 .tag-add-btn {
   background: none;
   border: none;
@@ -399,8 +385,8 @@ button.footer-rating-link:hover { color: var(--fg); }
   line-height: 1;
   flex-shrink: 0;
 }
-.tag-add-btn:hover { color: var(--accent); }
-.tag-add-btn.active { color: var(--accent); }
+.tag-add-btn:hover { color: var(--link); }
+.tag-add-btn.active { color: var(--link); }
 
 /* Gallery grid */
 #gallery-header {
@@ -444,11 +430,6 @@ button.footer-rating-link:hover { color: var(--fg); }
   border: 1px solid var(--border);
 }
 #search-input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
-/* Uniform, compact height for every control in the search bar row.
-   Explicit height + line-height:1 bypasses the browser quirk where
-   <select> ignores line-height and ends up 3px shorter than the input
-   and buttons next to it. Padding is horizontal-only so the fixed
-   height is what actually drives the box geometry. */
 #gallery-header input,
 #gallery-header button,
 #gallery-header select {
@@ -457,8 +438,6 @@ button.footer-rating-link:hover { color: var(--fg); }
   line-height: 1;
   box-sizing: border-box;
 }
-/* Restore the prompt glyph's reserved left padding after the row-level
-   reset above. */
 #gallery-header #search-input { padding-left: 26px; }
 .result-count { color: var(--fg); }
 #save-search-area { flex-shrink: 0; }
@@ -497,7 +476,7 @@ button.footer-rating-link:hover { color: var(--fg); }
 }
 .thumb-cluster-label { white-space: nowrap; }
 .thumb-cluster-range { color: var(--fg-dim); text-decoration: none; border-bottom: 1px dotted var(--fg-dim); }
-.thumb-cluster-range:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.thumb-cluster-range:hover { color: var(--link); border-bottom-color: var(--link); }
 .thumb-cluster-select { white-space: nowrap; }
 
 .thumb-card {
@@ -516,6 +495,12 @@ button.footer-rating-link:hover { color: var(--fg); }
   object-fit: cover;
   display: block;
   background: var(--bg-input);
+}
+
+.thumb-grid.fit-natural { align-items: start; }
+.thumb-grid.fit-natural .thumb-img {
+  aspect-ratio: var(--ar, 1);
+  object-fit: contain;
 }
 
 .thumb-placeholder {
@@ -571,11 +556,6 @@ button.footer-rating-link:hover { color: var(--fg); }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* Lock the inner content box so every overlay slot is exactly the
-     same square regardless of which icon it carries. Each glyph is an
-     inline SVG sized to fill the box, so font-metric variance (a
-     unicode heart vs asterisk centring at different y-offsets) is
-     gone - SVG paths position deterministically. */
   box-sizing: content-box;
   width: 12px;
   height: 12px;
@@ -587,12 +567,8 @@ button.footer-rating-link:hover { color: var(--fg); }
   fill: currentColor;
 }
 .badge-inbox { font-size: 10px; line-height: 1; width: auto; }
-.fav-heart { color: var(--error); }
+.fav-heart { color: var(--fav); }
 .badge-missing { color: var(--warning); }
-/* The play badge is rendered as a CSS triangle: a 9x12 right-pointing
-   shape sized to fit the same 12x12 inner box as the SVG icons.
-   font-size:0 keeps the surrounding flex layout from reserving any
-   text line-height. */
 .badge-video {
   color: var(--warning);
   font-size: 0;
@@ -607,9 +583,6 @@ button.footer-rating-link:hover { color: var(--fg); }
   border-left: 9px solid currentColor;
   margin-left: 1px;
 }
-/* Filesize is the only text-bearing badge in the overlay; the locked
-   box is too narrow for kilobyte numerals, so widen it back out and
-   restore the legacy small font. */
 .badge-filesize {
   font-size: 10px;
   line-height: 1;
@@ -636,7 +609,7 @@ button.footer-rating-link:hover { color: var(--fg); }
   cursor: pointer;
 }
 .pagination a:hover, .pagination button.page-jump:hover { border-color: var(--accent); text-decoration: none; }
-.pagination .current { border-color: var(--accent); color: var(--accent); }
+.pagination .current { border-color: var(--accent); color: var(--link); }
 
 /* Batch action bar */
 #batch-bar {
@@ -647,24 +620,12 @@ button.footer-rating-link:hover { color: var(--fg); }
   border-bottom: 1px solid var(--border);
   margin-bottom: 12px;
 }
-/* Auto-tag uses the small (2px) detail-page padding by default so it
-   matches .btn-sm / .btn-fav in the detail action row; in the batch bar it
-   sits next to default-padding buttons (Add tags, Remove tags, Move,
-   Delete), so bump it back up to keep heights consistent. */
 #batch-bar .btn-autotag { padding: 4px 8px; }
 #batch-bar.visible { display: flex; }
 #batch-delete-form { display: flex; gap: 8px; flex: 1; align-items: center; }
 .batch-bar-right { margin-left: auto; }
 .batch-bar-sep { display: inline-block; width: 1px; height: 22px; background: var(--fg-dim); margin: 0 12px; align-self: center; flex-shrink: 0; }
 
-/* Actions chooser: a flat vertical stack of buttons inside a dialog. The
-   number-key prefix on each entry's label takes the place of any visual
-   accelerator, so the menu stays plain text.
-   - Plain entries: neutral border, fg text.
-   - .btn-autotag: neutral border at rest (matches plain entries) but indigo
-     text so the action is still readable as accent; full indigo invert on
-     hover/focus.
-   - .btn-danger: keeps its filled-red look at rest; the red is the warning. */
 .actions-menu { list-style: none; margin: 0 0 12px 0; padding: 0; min-width: 320px; }
 .actions-menu-item { margin: 0; }
 .actions-menu-item button {
@@ -708,8 +669,6 @@ button.footer-rating-link:hover { color: var(--fg); }
 }
 .meta-table th { color: var(--fg-dim); width: 100px; word-break: normal; }
 
-/* Dotted-leader rows. :has(> th) skips the aliases table so it keeps the
-   bordered layout; cells sit on opaque --bg to mask the underlying dots. */
 .meta-table tr:has(> th) {
   display: flex;
   align-items: baseline;
@@ -735,9 +694,6 @@ button.footer-rating-link:hover { color: var(--fg); }
   color: var(--fg);
   padding-left: 6px;
 }
-/* Dot-leader between th and td. Tiled background-image rather than
-   text content so screen readers don't announce filler dots on
-   every row. */
 .meta-table tr:has(> th)::before {
   content: "";
   position: absolute;
@@ -788,8 +744,6 @@ details summary:hover { color: var(--fg); }
 .tag-table th:nth-child(4), .tag-table td:nth-child(4) { width: 110px; }
 .tag-table th:nth-child(5), .tag-table td:nth-child(5) { width: 70px; }
 .tag-table th:nth-child(6), .tag-table td:nth-child(6) { width: 70px; }
-/* Implied column: stays on a single line, ellipsises overflow so the
-   row height never grows past the others. */
 .tag-implied-cell {
   max-width: 380px;
   min-width: 240px;
@@ -839,9 +793,6 @@ details summary:hover { color: var(--fg); }
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
-/* Heading row that lines up the section title with a top-right marker
-   (e.g. the tagger CPU/GPU badge) without disturbing the rest of the
-   section's vertical rhythm. */
 .settings-section-header {
   display: flex;
   align-items: center;
@@ -863,10 +814,6 @@ details summary:hover { color: var(--fg); }
 .schedule-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px 24px; margin-bottom: 12px; }
 .schedule-grid .field { margin-bottom: 0; }
 .schedule-time-input { width: 6ch; text-align: center; font-family: monospace; }
-/* Slider rows: label + live value on the top row, then min / range / max
-   on the slider row so the bounds sit flush against the track and the
-   slider stretches to the available width. The optional <datalist> below
-   each input paints tick graduations natively. */
 .range-row { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 2px 8px; }
 .range-row > label { grid-column: 1; font-size: 12px; }
 .range-row > output { grid-column: 2; text-align: right; font-family: monospace; color: var(--fg-dim); min-width: 3em; }
@@ -883,18 +830,17 @@ details summary:hover { color: var(--fg); }
 .filter-group .filter-label { font-size: 11px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 1px; margin-right: 6px; flex-basis: 100%; }
 .filter-btn { font-size: 12px; padding: 2px 8px; border: 1px solid var(--border); background: var(--bg-input); color: var(--fg-dim); text-decoration: none; line-height: 1.4; }
 .filter-btn:hover { color: var(--fg); border-color: var(--fg-dim); text-decoration: none; }
-.filter-btn.active { color: var(--accent); border-color: var(--accent); }
+.filter-btn.active { color: var(--fg); border-color: var(--accent); }
 .field { margin-bottom: 8px; }
 .field label { display: block; font-size: 12px; color: var(--fg-dim); margin-bottom: 2px; }
+.radio-row { display: flex; gap: 16px; }
+.radio-row label { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 0; }
 .field input[type="text"], .field input[type="number"], .field input[type="password"] { width: 100%; max-width: 300px; }
 .cat-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 10px; }
 .cat-table th, .cat-table td { padding: 4px 8px; border: 1px solid var(--border); text-align: left; }
 .cat-table th { color: var(--fg-dim); }
 .add-cat-form { display: flex; gap: 6px; align-items: stretch; }
 .add-cat-form input[type="text"] { flex: 1; max-width: 200px; }
-/* The native color-picker pulls a chunky default padding; flatten so it
-   matches the text input + Add button row height once align-items is
-   set to stretch. */
 .add-cat-form input[type="color"] { padding: 0; width: 40px; }
 /* Help page */
 #help-page ul { padding-left: 20px; margin-bottom: 12px; }
@@ -910,10 +856,8 @@ kbd {
   font-family: inherit;
   font-size: 12px;
 }
-/* The ? key in the help page's shortcuts line doubles as a button that
-   opens the overlay; accent-on-hover signals it is clickable. */
 kbd.kbd-link { cursor: pointer; }
-kbd.kbd-link:hover { border-color: var(--accent); color: var(--accent); }
+kbd.kbd-link:hover { border-color: var(--accent); color: var(--link); }
 
 #shortcuts-help { width: min(1400px, 95vw); }
 #shortcuts-help h3 { margin: 0 0 6px 0; font-size: 13px; }
@@ -968,12 +912,6 @@ dialog {
   left: 50%;
   transform: translate(-50%, -50%);
   margin: 0;
-  /* Absolutely-positioned descendants (the autocomplete dropdowns under
-     `.series-input-wrap`) contribute to scrollHeight, so the browser's
-     default `overflow: auto` would give the dialog its own scrollbar
-     and trap the dropdown inside. Keep the dialog box visible-overflow
-     so the dropdown extends past the bottom; each .suggest-list still
-     self-caps at max-height: 200px and scrolls inside that. */
   overflow: visible;
 }
 dialog::backdrop { background: rgba(0,0,0,0.7); }
@@ -1034,7 +972,7 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   padding-bottom: 6px;
   border-bottom: 1px dashed var(--border);
   margin-bottom: 12px;
-  gap: 24px; /* mirrors .detail-body gap so columns align */
+  gap: 24px;
 }
 .detail-nav-group {
   flex: 1;
@@ -1050,9 +988,6 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   align-items: center;
   justify-content: space-between;
 }
-/* Pages grid only carries one button on the right; without an override
-   the 420px-wide block plus space-between push it left of the topbar
-   edge, breaking visual alignment with the topbar sync button. */
 #pages-grid-page .detail-topbar-right,
 #relations-walker-page .detail-topbar-right {
   width: auto;
@@ -1071,8 +1006,6 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .back-link { color: var(--fg-dim); font-size: 13px; text-decoration: none; flex-shrink: 0; }
 .back-link:hover { color: var(--fg); }
 .detail-actions { display: flex; gap: 8px; align-items: center; }
-/* Bring the download anchor (.btn-sm) up to the row's font-size +
-   line-height so it renders at the same height as autotag/inbox/fav. */
 .detail-actions .btn-sm { font-size: 13px; line-height: 1.4; }
 .detail-filename {
   color: var(--fg-dim);
@@ -1103,8 +1036,8 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   font-size: 13px;
   line-height: 1.4;
 }
-.btn-fav:hover { color: var(--error); border-color: var(--error); }
-.btn-fav.active { color: var(--error); border-color: var(--error); }
+.btn-fav:hover { color: var(--fav); border-color: var(--fav); }
+.btn-fav.active { color: var(--fav); border-color: var(--fav); }
 
 .btn-inbox {
   background: none;
@@ -1115,8 +1048,8 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   font-size: 13px;
   line-height: 1.4;
 }
-.btn-inbox:hover { color: var(--accent); border-color: var(--accent); }
-.btn-inbox.active { color: var(--accent); border-color: var(--accent); }
+.btn-inbox:hover { color: var(--fg); border-color: var(--fg-dim); }
+.btn-inbox.active { color: var(--fg); border-color: var(--accent); }
 
 .detail-media {
   text-align: center;
@@ -1137,9 +1070,6 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 
 .mono-small { font-family: monospace; font-size: 11px; }
 .sha-truncated { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: baseline; }
-/* Click-to-copy variant of .sha-truncated: strips the default button
-   chrome so the value still reads as a hash, then layers a hover hint
-   so the click affordance is discoverable. */
 .sha-copyable {
   background: none;
   border: none;
@@ -1149,7 +1079,7 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   text-align: left;
   cursor: pointer;
 }
-.sha-copyable:hover { color: var(--accent); }
+.sha-copyable:hover { color: var(--link); }
 .copy-flash {
   display: inline-block;
   margin-left: 6px;
@@ -1165,10 +1095,6 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .gen-details summary:hover { color: var(--fg); }
 .gen-text { white-space: pre-wrap; font-family: monospace; font-size: 11px; margin: 0; max-height: 200px; overflow-y: auto; }
 .code-block { background: var(--bg-alt, #1a1a1a); border: 1px solid var(--border); padding: 6px 8px; margin: 4px 0 8px; font-size: 11px; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
-/* Label line sitting just above each .code-block: keeps the label
-   strong, the parenthetical hint dim, and the trailing Copy button +
-   "copied" flash aligned at the right edge so the click target sits
-   next to the command it copies. */
 .code-block-label { display: flex; align-items: baseline; gap: 8px; margin-top: 8px; }
 .code-block-label > .code-block-copy { margin-left: auto; }
 .node-list { max-height: 400px; overflow-y: auto; margin-top: 6px; font-size: 11px; }
@@ -1181,7 +1107,7 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .node-params { width: calc(100% - 8px); border-collapse: collapse; margin-left: 8px; }
 .node-param-name { color: var(--fg-dim); padding-right: 8px; white-space: nowrap; vertical-align: top; width: 30%; }
 .node-param-value { color: var(--fg); word-break: break-word; }
-.node-ref { color: var(--accent); font-style: italic; }
+.node-ref { color: var(--link); font-style: italic; }
 .node-ref-link { color: inherit; text-decoration: none; }
 .node-ref-link:hover { text-decoration: underline; }
 .node-entry:target { background: var(--bg-surface); }
@@ -1191,7 +1117,7 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   list-style: none;
   word-break: break-word;
 }
-.long-value > summary::before { content: '▸ '; color: var(--accent); }
+.long-value > summary::before { content: '▸ '; color: var(--link); }
 .long-value[open] > summary::before { content: '▾ '; }
 .long-value[open] > summary { color: var(--fg); }
 .long-value-full {
@@ -1204,7 +1130,7 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   overflow-y: auto;
   color: var(--fg);
 }
-.gen-hash-link { color: var(--accent); font-family: monospace; margin-left: 6px; }
+.gen-hash-link { color: var(--link); font-family: monospace; margin-left: 6px; }
 .gen-hash-link:hover { text-decoration: underline; }
 
 /* Tag editor section */
@@ -1218,28 +1144,20 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   cursor: pointer;
 }
 .btn-sm:hover { border-color: var(--fg-dim); }
-/* The metadata-table edit markers (Source / URL / Series) read as inline
-   links sitting next to the value, not buttons. Strip the .btn-sm chrome
-   on these specific buttons and lean on the accent-coloured underline-on-
-   hover convention used elsewhere for in-prose links. */
 .btn-edit-external {
   background: none;
   border: none;
   padding: 0 0 0 4px;
-  color: var(--accent);
+  color: var(--link);
   font-size: 12px;
   cursor: pointer;
 }
 .btn-edit-external:hover { text-decoration: underline; }
-/* Inline action link used in places that prefer a borderless red [edit]-style
-   chip over the bordered .btn-sm box. Matches .btn-edit-external visually
-   but is button-or-anchor agnostic so a <form><button> can sit next to a
-   plain <a> on the same row. */
 .btn-link-accent {
   background: none;
   border: none;
   padding: 0;
-  color: var(--accent);
+  color: var(--link);
   font-size: 12px;
   font-family: inherit;
   cursor: pointer;
@@ -1247,15 +1165,11 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 }
 .btn-link-accent:hover { text-decoration: underline; }
 .btn-danger {
-  color: var(--bg);
-  border-color: var(--error);
-  background: var(--error);
+  color: var(--fg);
+  border-color: var(--accent);
+  background: var(--accent);
 }
-.btn-danger:hover { background: var(--bg); color: var(--error); }
-/* The global button:disabled rule dims text to --fg-dim but leaves the
-   red fill in place, which reads as grey-on-red and has poor contrast.
-   Drop the fill and the red border on disabled so the dimmed label
-   sits on the surface background instead. */
+.btn-danger:hover { border-color: var(--fg); }
 .btn-danger:disabled, .btn-danger[disabled] {
   background: var(--bg-surface);
   border-color: var(--border);
@@ -1265,9 +1179,6 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   color: var(--fg-dim);
   border-color: var(--border);
 }
-/* Filled-hover accent buttons. Each declares only its accent var; the
-   shared rule below picks up rest + hover. .btn-purple matches
-   .btn-autotag's indigo so the two action accents stay paired. */
 .btn-warning { --btn-accent: var(--warning); }
 .btn-success { --btn-accent: var(--success); }
 .btn-purple  { --btn-accent: var(--indigo); }
@@ -1281,11 +1192,6 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   color: var(--bg);
   border-color: var(--btn-accent);
 }
-/* The global button:disabled rule dims the label but leaves these on
-   --bg with the accent border, so a disabled accent button reads lighter
-   than a disabled .btn-danger sitting next to it. Drop to the surface
-   background + neutral border (matching .btn-danger:disabled) so a
-   toolbar of mixed disabled buttons reads uniformly. */
 .btn-warning:disabled, .btn-warning[disabled],
 .btn-success:disabled, .btn-success[disabled],
 .btn-purple:disabled, .btn-purple[disabled] {
@@ -1299,7 +1205,6 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   color: var(--fg-dim);
   border-color: var(--border);
 }
-/* Subdued so a slip next to "Remove all tags" doesn't nuke the wrong subset. */
 .btn-warning-subtle {
   color: var(--warning);
   border-color: var(--border);
@@ -1311,7 +1216,6 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 
 /* Tag list partial */
 .tag-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 10px; }
-/* Brackets via ::before/::after inherit the category color from the li. */
 .tag-item {
   display: inline-flex;
   align-items: center;
@@ -1334,7 +1238,6 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 }
 .tag-chip-name:hover { text-decoration: underline; }
 .auto-badge { font-size: 10px; color: var(--fg-dim); border: 1px solid var(--border); padding: 0 2px; margin-left: 2px; }
-/* Accent border so an API-sourced tag stands apart from the dim auto badge. */
 .api-badge { font-size: 10px; color: var(--fg); border: 1px solid var(--accent); padding: 0 2px; margin-left: 2px; }
 .auto-conf { font-size: 10px; color: var(--fg-dim); margin-left: 2px; }
 .tag-remove-btn {
@@ -1356,25 +1259,15 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   margin-top: 8px;
 }
 .add-tag-form input { flex: 1; }
-/* Wraps just the input + its suggest dropdown so the absolute-positioned
-   dropdown anchors to the input's width, not the form's (which would
-   otherwise stretch past the input under the Add button). */
 .add-tag-input-wrap {
   position: relative;
   flex: 1;
   min-width: 0;
 }
 .add-tag-input-wrap input { width: 100%; }
-/* Same shape as .add-tag-input-wrap: the wrap anchors the absolute
-   suggest dropdown to the input's width inside the Set-series dialog,
-   instead of the dialog .field which is wider than the input. */
 .series-input-wrap {
   position: relative;
   width: 100%;
-  /* Match the .field input[type="text"] cap so the dropdown anchors
-     to the same right edge as the input - otherwise a wide dialog
-     stretches the wrap past the 300px input clip and the suggest
-     list overhangs. */
   max-width: 300px;
 }
 .series-input-wrap input { width: 100%; }
@@ -1432,24 +1325,11 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   text-align: left;
 }
 .suggest-item:hover { background: var(--bg-input); }
-/* After an htmx swap the cursor may already be over a freshly-rendered
-   suggestion; the JS-tagged `suggest-fresh` class suppresses :hover until
-   the user actually moves the mouse, so the item doesn't look "selected"
-   when only kbd-focused is honoured by Enter. */
 .suggest-dropdown.suggest-fresh .suggest-item:hover { background: var(--bg-surface); }
 .suggest-name { white-space: nowrap; }
-/* Description sits to the right of the name and consumes the slack, so the
-   eye reads the row left-to-right without a hike across blank space. The
-   count (tag rows only) stays pinned to the far right via space-between. */
 .suggest-description { flex: 1; color: var(--fg-dim); font-size: 11px; font-style: italic; overflow: hidden; text-overflow: ellipsis; }
 .suggest-count { color: var(--fg-dim); font-size: 11px; }
 
-/* Duplicate filesystem paths section on the detail page. Each entry
-   stacks the path on its own row and the action buttons below so the
-   narrow metadata panel doesn't crush the path/buttons together. The
-   Set canonical / Remove buttons and the Canonical chip share
-   .btn-sm sizing so the action area reads as a tidy row of uniform
-   pills regardless of which row the operator is looking at. */
 .duplicates-section { margin-bottom: 16px; }
 .duplicates-section h3 { font-size: 13px; margin-bottom: 8px; }
 .duplicates-list { list-style: none; padding: 0; margin: 0; }
@@ -1512,10 +1392,6 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
 .tag-source-group { margin-bottom: 4px; }
 .tag-source-title { font-size: 11px; color: var(--fg-dim); margin: 4px 0 2px; font-weight: normal; }
 
-/* Implied + alias rows live in a collapsed <details> at the bottom of
-   the under-image list. Dim them so they read as derived from the tags
-   above, not as primary content. The sidebar excludes implied via
-   groupByImageTags. */
 details.tag-source-group[data-source="implied"] > summary { font-style: italic; cursor: pointer; list-style: none; font-size: 11px; color: var(--fg-dim); margin: 4px 0 2px; }
 details.tag-source-group[data-source="implied"] > summary::-webkit-details-marker { display: none; }
 details.tag-source-group[data-source="implied"] > summary::before { content: "▶ "; display: inline-block; }
@@ -1545,10 +1421,6 @@ details.tag-source-group[data-source="implied"][open] > summary::before { conten
 .stats-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: normal; color: var(--fg-dim); }
 .stats-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .stats-table td:last-child, .stats-table th:last-child { white-space: nowrap; }
-/* Right-align the value column and pin a min-width so MiB/GiB cells render
-   at a consistent width regardless of the actual value - the rows don't
-   shift around as numbers tick up and down. tabular-nums keeps digit
-   widths uniform inside the cell. */
 .stats-table td:last-child {
   text-align: right;
   min-width: 7em;
@@ -1557,10 +1429,6 @@ details.tag-source-group[data-source="implied"][open] > summary::before { conten
 .stats-table th.stats-d1 { padding-left: 24px; }
 .stats-table th.stats-d2 { padding-left: 44px; }
 .stats-table th.stats-d3 { padding-left: 64px; }
-/* Stats section laid out as a 2x2 grid of sub-sections so the four
-   stats panels share the section width instead of stacking. Collapses
-   to one column on narrow viewports where the sub-section labels would
-   wrap. */
 .stats-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; }
 @media (max-width: 900px) {
   .stats-cols { grid-template-columns: 1fr; }
@@ -1573,14 +1441,6 @@ details.tag-source-group[data-source="implied"][open] > summary::before { conten
 .tagger-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
 .tagger-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: normal; color: var(--fg-dim); }
 .tagger-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-/* The Auto-Tagger configuration table (7 cols):
-     1 Tagger  2 Instructions  3 Status
-     4 Thresholds  5 Galleries  6 Enable/Disable  7 Delete
-   Thresholds and Galleries get fixed widths so their inline summary fits
-   on one line without expanding/contracting as the text changes; Tagger
-   is capped so it doesn't dominate when descriptions are short.
-   Instructions / Status shrink to fit. The two action columns pin to
-   the right edge with a fixed gap before them. */
 section#tagger .tagger-table th:nth-child(1),
 section#tagger .tagger-table td:nth-child(1) { width: 200px; max-width: 200px; }
 section#tagger .tagger-table th:nth-child(2),
@@ -1595,49 +1455,16 @@ section#tagger .tagger-table th:nth-child(6),
 section#tagger .tagger-table td:nth-child(6),
 section#tagger .tagger-table th:nth-child(7),
 section#tagger .tagger-table td:nth-child(7) { width: 1%; white-space: nowrap; text-align: right; }
-/* Visual gap between Galleries and the action columns. Relying on
-   table-layout: auto to distribute leftover between columns isn't
-   predictable across browsers, so use a fixed left padding instead.
-   16px is enough to read as a separation while leaving the action
-   columns inside the typical content width on a 1440 desktop. */
 section#tagger .tagger-table th:nth-child(6),
 section#tagger .tagger-table td:nth-child(6) { padding-left: 16px; }
-/* Header text aligns to the cell padding edge, but the button text is
-   offset further by the button's own border + horizontal padding. Pad
-   the header right edge to match so "Enable"/"Delete" line up vertically
-   with the button text below. 17px = 8px cell padding + 1px border +
-   8px btn-sm padding-right. */
 section#tagger .tagger-table th:nth-child(6),
 section#tagger .tagger-table th:nth-child(7) { padding-right: 17px; }
-/* Enable/Disable share the same cell across rows; their labels differ in
-   length ("Enable" vs "Disable") which would otherwise produce two
-   different left edges under the right-aligned column. Pin a min-width
-   that comfortably covers Disable's intrinsic width (~68px at 12px
-   font) so both labels render at the same size and the column lines
-   up across rows. */
 section#tagger .tagger-table td:nth-child(6) .btn-sm { min-width: 6em; }
-/* When no taggers are installed the Delete cell is empty and the column
-   shrinks to the bare width:1%, clipping the right-aligned "Delete"
-   header behind the 17px padding into "Delet". Reserve enough room
-   for the label even when the column carries no button. */
 section#tagger .tagger-table th:nth-child(7),
 section#tagger .tagger-table td:nth-child(7) { min-width: 5em; }
-/* Inline summaries next to the Configure buttons (Thresholds, Galleries).
-   The .field-hint is otherwise tuned for full-width form text; tighten
-   it inside the table so the summary doesn't crowd the button. */
 section#tagger .tagger-table .field-hint { display: inline; margin-left: 8px; }
-/* Description sub-line under the tagger name: tighter than the field-hint
-   default and softer colour so the row reads as <name / caption>. The
-   rule has to sit after .field-hint above; both selectors carry the same
-   specificity (1 id + 2 classes) and the later one wins, otherwise the
-   description renders inline next to the name. */
 section#tagger .tagger-table .tagger-row-desc { display: block; margin-top: 2px; margin-left: 0; font-size: 11px; }
-/* Divider row between supported (catalog) and unsupported (user-only)
-   tagger rows. Reads as a quiet caption, not a data row. */
 section#tagger .tagger-table tr.tagger-sep td { color: var(--fg-dim); font-size: 12px; padding-top: 8px; }
-/* Per-tagger Thresholds dialog: width-bound, single table covering global
-   and per-category rows. The fixed dialog max-width keeps the help line
-   from forcing the dialog wider than its content. */
 .tagger-thresh-dialog { max-width: 600px; }
 .tagger-thresh-dialog .field-hint { margin-bottom: 8px; }
 .tagger-thresh-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
@@ -1651,11 +1478,6 @@ section#tagger .tagger-table tr.tagger-sep td { color: var(--fg-dim); font-size:
 .tagger-thresh-table td:nth-child(4) { width: 4.5em; text-align: center; }
 .tagger-thresh-table input[type=number] { width: 8em; }
 .tagger-thresh-table tr.tagger-thresh-global td { border-bottom: 1px solid var(--border); }
-/* Per-row Reset clears every input on its row. syncThreshRow (main.js)
-   adds reset-thresh-shown only when the row differs from its catalog
-   default; the base stays visibility:hidden (not display:none) so the
-   cell reserves the link's width either way and the column never reflows
-   as resets show and hide. */
 .tagger-thresh-table .reset-thresh { visibility: hidden; }
 .tagger-thresh-table .reset-thresh.reset-thresh-shown { visibility: visible; }
 
@@ -1671,28 +1493,14 @@ section#tagger .tagger-table tr.tagger-sep td { color: var(--fg-dim); font-size:
 .gallery-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .gallery-table code { color: var(--fg-dim); font-size: 12px; }
 .gallery-info { color: var(--fg-dim); font-size: 11px; white-space: nowrap; }
-/* Reserve enough horizontal space in the Status column for "active" + "default"
-   to sit side by side, so the column width stays stable as that pair toggles. */
 .gallery-table .gallery-status-cell { white-space: nowrap; min-width: 120px; }
-/* Action columns (Switch, Set default, Rename, Export, Import, Delete) cluster
-   on the right edge: shrink to fit and right-align. Cols 1-4 take leftover. */
 .gallery-table th:nth-child(n+5),
 .gallery-table td:nth-child(n+5) { width: 1%; white-space: nowrap; text-align: right; }
-/* See the matching note on .tagger-table headers: pad the action-column
-   header right edge so the label sits directly above the button text. */
 .gallery-table th:nth-child(n+5) { padding-right: 17px; }
-/* When the action is N/A the cell holds a dim "-" placeholder instead of
-   a button; promote it to a centered block so it sits in the middle of
-   the column rather than hanging off the right edge inherited from the
-   action-column text-align. */
 .gallery-table td:nth-child(n+5) > .status-dim { display: block; text-align: center; }
 .gallery-switch-list { list-style: none; padding: 0; margin: 0 0 12px 0; }
 .gallery-switch-list li { padding: 4px 0; }
 .gallery-switch-current { color: var(--fg-dim); }
-
-/* Add-gallery dialog uses the standard .field block layout (label on its own
-   line, input below, fields stacked) so each row reads cleanly inside the
-   modal instead of squeezing onto one wrapped strip. */
 
 .btn-set-default { color: #aa66cc; border-color: #aa66cc; }
 .btn-set-default:hover { color: #c99bdd; border-color: #c99bdd; }
@@ -1708,15 +1516,13 @@ section#tagger .tagger-table tr.tagger-sep td { color: var(--fg-dim); font-size:
   border: 1px solid var(--border);
   vertical-align: middle;
 }
-.status-badge.status-ok { color: var(--accent); border-color: var(--accent); }
+.status-badge.status-ok { color: var(--fg); border-color: var(--accent); }
 .status-badge.status-off { color: var(--fg-dim); }
+.status-badge.status-enabled { color: var(--success); border-color: var(--success); }
 
 .upload-page .field input[type="text"].upload-wide-input { max-width: none; width: 100%; }
 dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420px; max-width: none; }
 .upload-tags-wrap { position: relative; }
-/* The action buttons sit in a third column so toggling the autotag picker
-   doesn't shift them - the grid row may grow taller, but their column stays
-   put on the right. */
 .upload-actions { display: flex; flex-direction: column; gap: 8px; }
 .upload-drop-zone {
   border: 1px dashed var(--border);
@@ -1736,10 +1542,6 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
   .upload-actions { flex-direction: row; }
 }
 .upload-drop-zone.drag-over { border-color: var(--fg); background: var(--bg); }
-/* Inline inbox upload: full-width drop zone that renders above the
-   thumbnail clusters on /?q=inbox:true. The footer rule reuses the
-   cluster-header shape so the [Upload] chip lines up with [Select]/
-   [Unselect] on the cluster headers below. */
 .inbox-upload { margin: 0 0 12px; }
 .inbox-upload .upload-drop-zone { min-height: 120px; }
 .inbox-upload-footer { padding: 4px 4px 6px 4px; }
@@ -1748,9 +1550,6 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 .upload-file-list li { padding: 1px 0; }
 .related-images { margin-top: 12px; }
 .related-images h3 { font-size: 13px; margin: 0 0 6px; color: var(--fg-dim); }
-/* Related entries: title left, action chips ([See all], [Add a relation])
-   right, single row regardless of width so the panel stays compact in the
-   narrow metadata column. */
 .related-entries-header {
   display: flex;
   align-items: baseline;
@@ -1760,9 +1559,6 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 }
 .related-entries-header h3 { margin: 0; }
 .related-entries-actions { display: flex; gap: 8px; flex-shrink: 0; }
-/* /images/{id}/relations grid: action chips sit on a single line under the
-   thumbnail. Each <form> is inline-block so two chips ([unlink], [original])
-   share the row without wrapping under each other. */
 .relations-actions-row {
   display: flex;
   gap: 8px;
@@ -1771,16 +1567,9 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
   flex-wrap: wrap;
 }
 .relations-actions-row form { display: inline-flex; }
-/* Add-relation dialog: parent and child column inputs separated by a swap
-   button. Each side carries its own h4 header; the swap exchanges values
-   only, so the operator always reads "left = parent" and "right = child"
-   regardless of which image was the originator. */
 .relation-edit-grid {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
-  /* Dense packing so the swap class can reassign grid-column on the two
-     sides without the default sparse cursor bumping them onto a new row
-     when the explicit column number goes backwards. */
   grid-auto-flow: dense;
   align-items: end;
   gap: 8px;
@@ -1790,9 +1579,6 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 .relation-edit-side h4 { font-size: 12px; color: var(--fg-dim); margin: 0 0 4px; text-align: center; }
 .relation-edit-side input[type="number"] { width: 100%; max-width: none; }
 .relation-edit-side input[readonly] { color: var(--fg-dim); background: var(--bg-input); }
-/* Reserve the thumb slot height even when the image is hidden so the
-   input fields on both sides land on the same y axis regardless of
-   whether the "other" side has been filled in yet. */
 .relation-edit-thumb-slot {
   height: 64px;
   display: flex;
@@ -1815,16 +1601,10 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 .relation-edit-grid-swapped > .relation-edit-swap { grid-column: 2; }
 .relation-edit-summary { margin: 4px 0 10px; }
 
-/* Relations page: section layout shares .settings-section chrome from the
-   Settings page. The find-pairs row puts every CTA on one line so the
-   buttons read as a tidy toolbar instead of stacking. */
 #relations-page h2 { font-size: 14px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .relations-hub-cols { display: flex; gap: 24px; flex-wrap: wrap; align-items: stretch; }
 .relations-hub-cols > .settings-section { flex: 1 1 320px; min-width: 0; }
 .relations-header-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-/* Anchor + button siblings in the toolbar share a flex baseline so the
-   walker `<a class="btn-sm">` row reads the same height as the form
-   buttons next to it. */
 .relations-header-row .btn-sm,
 .walker-controls .btn-sm {
   display: inline-flex;
@@ -1873,35 +1653,11 @@ details[open] > .relations-card-summary::before { content: "▾"; }
 .relations-card-thumbs-pair { align-items: center; flex-wrap: nowrap; justify-content: center; }
 .relations-card-arrow { color: var(--fg-dim); font-size: 20px; padding: 0 4px; }
 .relations-card-thumb { display: block; width: 180px; aspect-ratio: 1 / 1; border: 1px solid var(--border); overflow: hidden; position: relative; }
-/* Version chain cards read left to right: oldest revision at the
-   left, each newer step separated by a -> arrow. Wraps onto a second
-   row when the chain is long enough that 180px thumbs don't fit. */
 .relations-card-chain { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; margin-top: 8px; }
 .relations-chain-arrow { color: var(--fg-dim); font-size: 20px; line-height: 1; align-self: center; }
-/* Each chain entry stacks the thumb above its per-thumb action
-   (or "^ This image" label) so the operator reads the action right
-   under the revision it targets. */
 .relations-chain-cell { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-/* Derivative tree cards stack one row per node in DFS order. The
-   .relations-tree-prefix block before each thumb carries one
-   .relations-tree-trunk span per indent column, each painting a
-   piece of the tree's branch lines via CSS pseudo-elements:
-   "line" continues an ancestor's vertical, "empty" leaves it blank,
-   "tee" stops the vertical past this row's parent and joins it to
-   the thumb, "elbow" stops the vertical at the row centre. Adjacent
-   rows have no gap so the verticals form continuous trunks. */
 .relations-card-tree { display: flex; flex-direction: column; margin-top: 8px; }
-/* The trunk-line spans (.relations-tree-trunk) rely on align-items:
-   stretch to draw vertical guides spanning the full row height; their
-   ::before pseudo-elements anchor top:0 / bottom:0 to the trunk box.
-   align-items:center would collapse the prefix div to its content
-   height and break the verticals. The inline label / action elements
-   self-center via align-self instead. */
 .relations-tree-row { display: flex; align-items: stretch; min-height: 180px; }
-/* Inline action / "this image" marker sits to the right of the row's
-   thumb in the derivative tree so the unlink target reads "thumb +
-   action" on one line; in dup / alt / version cells the same class
-   labels the current image below its thumb. */
 .relations-inline-label { font-size: 12px; color: var(--fg-dim); padding: 0 8px; align-self: center; }
 .relations-inline-action { padding: 0 8px; display: inline-flex; align-self: center; }
 .relations-tree-prefix { display: flex; align-items: stretch; flex-shrink: 0; }
@@ -1923,10 +1679,6 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   left: 50%; top: 50%;
   width: 16px; border-top: 1px solid var(--fg-dim);
 }
-/* On the per-image relations page the chain / tree centres around the
-   image whose page the operator is on; an outline (negative offset)
-   paints uniformly over both the image and the caption strip, so the
-   accent ring looks the same thickness on every side of the cell. */
 .relations-tree-current { border-color: var(--accent); outline: 3px solid var(--accent); outline-offset: -3px; }
 .relations-card-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .relations-card-thumb:hover { border-color: var(--accent); }
@@ -1934,8 +1686,6 @@ details[open] > .relations-card-summary::before { content: "▾"; }
 .relations-card-date { position: absolute; bottom: 2px; left: 2px; font-size: 10px; background: rgba(0,0,0,0.6); color: #fff; padding: 0 3px; font-family: var(--font-mono); }
 .relations-card-original .relations-card-date { background: rgba(0,0,0,0.7); }
 .relations-card-meta { margin: 6px 0 2px; }
-/* Originals lead a duplicate strip with a small accent chip + extra
-   gap so the eye reads "this one wins" at a glance. */
 .relations-card-original { margin-right: 16px; border-color: var(--accent); }
 .relations-cell-original .manga-page-link { border-color: var(--accent); }
 .relations-card-original .relations-card-tag,
@@ -1951,20 +1701,12 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   letter-spacing: 1px;
 }
 
-/* Relations session: pair of images side by side, metadata below the
-   action row, decision row centered. Distance label sits on a thin
-   horizontal segment threading the two thumbnails so the operator
-   reads "left vs right at distance N" in one glance. */
 .relations-session { padding: 16px; }
 .session-order-form { display: inline-flex; gap: 12px; align-items: center; margin-left: auto; }
 .session-order-form > .field-hint,
 .session-order-form > label { display: inline-flex; align-items: center; gap: 4px; line-height: 1; }
 .session-order-form label { font-size: 13px; color: var(--fg-dim); }
 .session-order-form .field-hint { font-size: 13px; margin: 0; }
-/* The remaining-pair counter rides as a .field-hint inside the topbar
-   nav row; the default field-hint font-size + bottom margin pull it
-   off the back-link / title baseline. Pin it to the same 13px/0-margin
-   the rest of the row uses. */
 .detail-nav-group > .field-hint { font-size: 13px; margin: 0; }
 .session-role { margin: 0 0 4px; font-size: 13px; text-align: center; color: var(--fg-dim); align-self: stretch; }
 .session-pair { display: flex; flex-direction: column; align-items: stretch; gap: 16px; }
@@ -1987,8 +1729,6 @@ details[open] > .relations-card-summary::before { content: "▾"; }
 .session-cell-img {
   display: block;
   width: 100%;
-  /* Sized so both images and the decision buttons clear a 1080p viewport
-     once browser chrome is subtracted. */
   height: 55vh;
   object-fit: contain;
   background: #000;
@@ -2025,22 +1765,15 @@ details[open] > .relations-card-summary::before { content: "▾"; }
 .session-buttons-secondary { margin-top: 8px; }
 .session-controls { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; }
 
-/* Per-decision-button accents. The terminal palette stays muted - a
-   1px coloured border plus a faint background hover signal which key
-   each button binds to without flooding the row with fills. */
 .session-buttons button[value="duplicate"]  { border-color: var(--success); color: var(--success); }
 .session-buttons button[value="alternate"]  { border-color: var(--indigo);  color: var(--indigo); }
 .session-buttons button[value="version"]    { border-color: var(--warning); color: var(--warning); }
-.session-buttons button[value="derivative"] { border-color: var(--accent);  color: var(--accent); }
+.session-buttons button[value="derivative"] { border-color: var(--accent);  color: var(--link); }
 .session-buttons button[value="duplicate"]:hover  { background: color-mix(in srgb, var(--success) 18%, transparent); }
 .session-buttons button[value="alternate"]:hover  { background: color-mix(in srgb, var(--indigo) 18%, transparent); }
 .session-buttons button[value="version"]:hover    { background: color-mix(in srgb, var(--warning) 18%, transparent); }
 .session-buttons button[value="derivative"]:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 
-/* Compare dialog: stacked images with a draggable vertical divider
-   driving a clip-path on the top image. The stage's width is bounded
-   by a vw cap so the dialog fits on small displays; the images use
-   max-height to keep tall portraits in view without overflow. */
 .compare-dialog { max-width: 95vw; }
 .compare-stage {
   position: relative;
@@ -2081,7 +1814,7 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   left: 50%;
   transform: translate(-50%, -50%);
   background: var(--bg-surface);
-  color: var(--accent);
+  color: var(--link);
   border: 1px solid var(--accent);
   font-size: 14px;
   padding: 0 4px;
@@ -2113,8 +1846,6 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   border: 1px solid var(--border);
   max-width: 720px;
   width: 100%;
-  /* Fixed layout + per-column widths so Left and Right share the
-     remaining horizontal space exactly, regardless of cell content. */
   table-layout: fixed;
 }
 .relations-compare-table th,
@@ -2139,18 +1870,11 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   .session-cells .session-distance-line { width: 100%; }
 }
 
-/* The order picker is wide; kept on the title's line it overruns the
-   non-truncating session title down to ~900px. Drop it onto its own
-   line well above that band so the title can never collide with it. */
 @media (max-width: 960px) {
   #relations-session-page .detail-topbar { flex-wrap: wrap; row-gap: 8px; }
   #relations-session-page .session-order-form { margin-left: 0; width: 100%; flex-wrap: wrap; }
 }
 
-/* Duplicates walker pages (SHA-256 and marked variants): one case per
-   render, image preview on the left, path list / member list on the
-   right. Mirrors relations_session.html's two-column shape but trades
-   the side-by-side cells for a thumbnail + metadata stack. */
 #relations-walker-page .walker-header { display: flex; gap: 12px; align-items: baseline; margin-bottom: 8px; }
 .walker-page-title { font-size: 14px; color: var(--fg); }
 .walker-body { display: flex; gap: 16px; }
@@ -2166,22 +1890,16 @@ details[open] > .relations-card-summary::before { content: "▾"; }
 .walker-member-actions { margin-top: 4px; font-size: 12px; }
 .walker-controls { margin-top: 12px; display: flex; gap: 8px; }
 
-/* Relations browse table (/relations/browse): per-type tabs across the
-   top, then a fixed-column-width grid of (id, thumb, thumb, id, action).
-   Tab matches .filter-btn so the toolbar reads consistent with the
-   rest of the app. */
 #relations-browse-page h2 { font-size: 14px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .browse-tabs { display: flex; align-items: center; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
 .browse-tab { font-size: 12px; padding: 4px 10px; border: 1px solid var(--border); background: var(--bg-input); color: var(--fg-dim); text-decoration: none; }
 .browse-tab:hover { color: var(--fg); border-color: var(--fg-dim); }
-.browse-tab-active { color: var(--accent); border-color: var(--accent); }
+.browse-tab-active { color: var(--fg); border-color: var(--accent); }
 .browse-tabs .browse-sort { margin: 0 0 0 auto; padding: 0; }
 .browse-tabs .browse-sort .filter-label { flex-basis: auto; }
 .browse-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .browse-table th, .browse-table td { padding: 6px 8px; border: 1px solid var(--border); text-align: left; vertical-align: middle; }
 .browse-table th { color: var(--fg-dim); background: var(--bg-surface); }
-/* The Action column rides the right edge of the walker tables so the
-   per-row buttons line up vertically. */
 #relations-walker-page .browse-table th:last-child,
 #relations-walker-page .browse-table td:last-child { text-align: right; white-space: nowrap; width: 1%; }
 .browse-thumb { display: block; width: 80px; aspect-ratio: 1 / 1; border: 1px solid var(--border); overflow: hidden; position: relative; }
@@ -2206,8 +1924,6 @@ details[open] > .relations-card-summary::before { content: "▾"; }
 }
 .related-mini-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .related-mini-card:hover { border-color: var(--accent); }
-/* Relation-type overlay pinned bottom-right of the thumbnail, matching
-   the manga-pill rhythm so adjacent cards share the same visual weight. */
 .relation-marker {
   position: absolute;
   bottom: 4px;
@@ -2245,21 +1961,12 @@ details[open] > .relations-card-summary::before { content: "▾"; }
 }
 
 /* Responsive */
-/* Detail page: stack the image column above the metadata column once the
-   meta panel (420px) plus the gap can no longer fit next to a usable image
-   width. Without this the meta panel overlaps the image area on narrow
-   viewports. */
 @media (max-width: 960px) {
   .detail-body { flex-direction: column; }
   .detail-meta-col { width: 100%; }
   .detail-topbar-right { width: auto; }
 }
 
-/* Below the meta-column breakpoint, the 420px-wide button cluster on the
-   right still wins the flex split and squeezes .detail-filename to 0
-   width. Let the topbar wrap so the nav group (Back + filename) and the
-   action cluster sit on their own rows; min-width:0 on the nav group
-   keeps the ellipsis honest when a long name lands on its own line. */
 @media (max-width: 600px) {
   .detail-topbar { flex-wrap: wrap; row-gap: 6px; gap: 12px; }
   .detail-nav-group { flex-basis: 100%; }
@@ -2267,10 +1974,6 @@ details[open] > .relations-card-summary::before { content: "▾"; }
 }
 
 @media (max-width: 768px) {
-  /* --topbar-h is set by main.js to the real topbar bounding-rect
-     height so the drawer clears the wrapped nav / topbar-right rows at
-     narrow widths instead of pinning to the wide-layout 42px and
-     occluding the second-row links. */
   #sidebar {
     display: none;
     position: fixed;
@@ -2294,11 +1997,6 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   #topbar { flex-wrap: wrap; height: auto; padding: 4px 8px; gap: 8px; row-gap: 4px; }
   #nav { flex-basis: 100%; margin-left: 0; justify-content: flex-start; flex-wrap: wrap; }
   #topbar-right { margin-left: auto; }
-  /* Give the search input its own row so the sort/order/buttons wrap
-     below instead of squeezing the placeholder down to ~3 glyphs.
-     `div.search-input-wrap` lifts the selector above the wide-layout
-     `#search-form > div:first-child` rule's specificity so the wrap
-     actually picks up the 100% flex-basis. */
   #search-form > div.search-input-wrap { flex-basis: 100%; }
 }
 
@@ -2309,15 +2007,8 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   cursor: pointer;
 }
 
-/* Categories page action column: matches the tags-page rhythm so a
-   user moving between the two pages sees a uniform set of chips. */
 .cat-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 
-/* Tags page - action column hugs its buttons; Name takes the remaining space.
-   The four action buttons sit in a fixed grid so a row missing Rename/Alias
-   (rating built-ins) or Implications (alias rows) still places Delete in the
-   rightmost slot - vertical alignment of the action column doesn't depend on
-   which siblings render. */
 .tag-actions {
   display: grid;
   grid-template-columns: 6em 6.5em 9em 5.5em;
@@ -2346,7 +2037,7 @@ details[open] > .relations-card-summary::before { content: "▾"; }
 /* Save search area */
 #gallery-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 #save-search-area { margin-left: auto; }
-.save-search-terms { color: var(--accent); font-style: italic; }
+.save-search-terms { color: var(--link); font-style: italic; }
 
 /* Search suggest dropdown (gallery search bar) */
 #search-suggest {
@@ -2360,10 +2051,6 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   position: static;
   width: 100%;
   min-width: unset;
-  /* The gallery cheat-sheet lists every filter keyword plus every tag
-     category - 40+ rows on a typical install. The default 200px cap
-     hides most of them behind a scrollbar; give this dropdown more room
-     so the level-1 menu is visible without paging. */
   max-height: 60vh;
 }
 .suggest-item.kbd-focused { background: var(--bg-input); outline: 1px solid var(--accent); }
@@ -2371,17 +2058,11 @@ details[open] > .relations-card-summary::before { content: "▾"; }
 /* Field hint text */
 .field-hint { font-size: 11px; color: var(--fg-dim); margin: 4px 0 8px; }
 
-/* Layout-stable hide: keeps the slot in flow so siblings (and the surrounding
-   dialog) don't shift as the row toggles. Used by the Remove tags dialog so
-   flipping between Specific / Specific auto-tagger / bulk modes doesn't move
-   the radio list or resize the pop-in. */
 .row-inactive { visibility: hidden; }
 
 /* Settings sub sections */
 .settings-sub { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 
-/* Centered action bar between the cover and the tag editor on a manga
-   detail page. Holds the Open-in-reader / See-all-pages buttons. */
 .manga-actions {
   display: flex;
   gap: 8px;
@@ -2400,22 +2081,16 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   cursor: pointer;
 }
 .btn-manga-action:hover {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--fg-dim);
+  color: var(--fg);
 }
-/* Dim shortcut hint inside a button label so the key letter sits one
-   step back from the verb without taking equal visual weight. */
 .btn-key-hint {
   color: var(--fg-dim);
   font-size: 11px;
   margin-left: 4px;
 }
-.btn-manga-action:hover .btn-key-hint { color: var(--accent); }
+.btn-manga-action:hover .btn-key-hint { color: var(--fg-dim); }
 
-/* Pill rendered on top of a manga thumbnail in the gallery grid. Sits at
-   the bottom-right corner of the card, off the top-right overlay where
-   the favourite / inbox badges live, so the page count never gets
-   clipped by another glyph. */
 .manga-pill {
   position: absolute;
   bottom: 4px;
@@ -2429,11 +2104,6 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   z-index: 1;
 }
 
-/* Series chip on a thumbnail: pinned to the bottom-left so it doesn't
-   collide with the bottom-right manga-pill on cbz rows. The label is
-   trimmed at 60% of the card width with text-overflow: ellipsis so a
-   long series name doesn't blow out the card. Children stack so the
-   order number sits above the name. */
 .series-pill {
   position: absolute;
   bottom: 4px;
@@ -2450,17 +2120,6 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   flex-direction: column;
   line-height: 1.1;
 }
-/* Related-images panel pins the series chip to the top-right (opposite
-   the bottom-right "Same collection" marker), so the operator reads
-   "what collection" up top and "why this card is here" down at the
-   bottom. Text right-aligns inside the chip so the order number and
-   series name sit flush with the chip's right edge - reading naturally
-   along the same axis as the chip's pinned corner. left: 4px (paired
-   with right: 4px) caps the chip's width at the card's inner width so
-   the name span has a real box to ellipsis inside; left: auto would
-   let the chip grow off the card's left edge as the name lengthens.
-   The gallery grid keeps the default bottom-left position to stay out
-   of the cbz manga-pill corner. */
 .related-entries .related-entry-card .series-pill {
   top: 4px;
   right: 4px;
@@ -2472,17 +2131,12 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   pointer-events: auto;
 }
 .series-pill-name {
-  /* max-width: 100% pins the span to the chip's width so the ellipsis
-     actually clips; without it the nowrap text grows past the chip
-     box and overflows the card. */
   max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Reader: full-bleed black, single page paginated. The body class hides any
-   inherited chrome and the stage centers the page bytes. */
 body.reader-body {
   margin: 0;
   background: #000;
@@ -2495,17 +2149,8 @@ body.reader-body #main-layout > aside,
 body.reader-body #gallery-status { display: none; }
 #reader { display: flex; flex-direction: column; height: 100vh; }
 .reader-stage { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; position: relative; }
-/* Fill the stage box so sub-screen pages scale up to the available area
-   instead of pinning at their natural pixel size against a sea of black.
-   object-fit: contain still preserves aspect, and the stage's own
-   max-height keeps the page from forcing layout taller than the
-   viewport. */
 .reader-img { width: 100%; height: 100%; max-height: 100vh; object-fit: contain; display: block; }
 .reader-page-link { display: contents; }
-/* Side chevrons for click-to-prev/next. Pinned to the stage edges so
-   they sit in the whitespace beside a portrait page without obscuring
-   the centred image. The bottom inset clears the reader-bar so the
-   click target doesn't overlap the bar's controls. */
 .reader-side {
   position: absolute;
   top: 0;
@@ -2547,17 +2192,13 @@ body.reader-body #gallery-status { display: none; }
   font-size: 12px;
 }
 .reader-bar a, .reader-bar button { color: var(--fg-dim); text-decoration: none; background: transparent; border: 0; cursor: pointer; padding: 2px 6px; font: inherit; }
-.reader-bar a:hover, .reader-bar button:hover { color: var(--accent); }
+.reader-bar a:hover, .reader-bar button:hover { color: var(--link); }
 .reader-counter { border: 1px dashed var(--border); padding: 2px 8px; }
 .reader-disabled { opacity: 0.3; padding: 2px 6px; }
 .reader-back { margin-right: 0; }
 .reader-pages { margin-right: auto; }
 .reader-open { margin-left: auto; }
 
-/* Image viewer (lightbox). Modeled on the reader: flat black backdrop,
-   monospace dashed-border footer bar. The dialog is full viewport; the
-   stage owns the wheel / pointer / dblclick handlers and clips the
-   transformed image, so .lightbox-img is pointer-transparent. */
 .lightbox-dialog {
   width: 100vw;
   height: 100vh;
@@ -2571,8 +2212,6 @@ body.reader-body #gallery-status { display: none; }
   overflow: hidden;
 }
 .lightbox-dialog[open] { display: flex; flex-direction: column; }
-/* Stage stays transparent so the detail page bleeds through; the backdrop
-   carries the dim and the bar keeps its solid #111 for control contrast. */
 .lightbox-dialog::backdrop { background: rgba(0, 0, 0, 0.85); }
 .lightbox-stage {
   flex: 1;
@@ -2587,11 +2226,6 @@ body.reader-body #gallery-status { display: none; }
 }
 .lightbox-stage.grabbing { cursor: grabbing; }
 .lightbox-img {
-  /* Fill the stage box so a small fixture (icon, sprite) scales up to
-     fit instead of floating at natural pixel size in a viewport-wide
-     black canvas. object-fit: contain keeps the aspect ratio so the
-     image never stretches; the lightbox JS still reads the IMG's
-     bounding rect, which now agrees with the stage size. */
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -2613,12 +2247,10 @@ body.reader-body #gallery-status { display: none; }
   font-size: 12px;
 }
 .lightbox-bar a, .lightbox-bar button { color: var(--fg-dim); text-decoration: none; background: transparent; border: 0; cursor: pointer; padding: 2px 6px; font: inherit; }
-.lightbox-bar a:hover, .lightbox-bar button:hover { color: var(--accent); }
+.lightbox-bar a:hover, .lightbox-bar button:hover { color: var(--link); }
 .lightbox-zoom { border: 1px dashed var(--border); padding: 2px 8px; }
 .lightbox-open { margin-left: auto; }
 
-/* Pages grid - reuses the gallery grid styling but cells are smaller so a
-   long manga fits on screen at once. */
 .manga-pages-grid {
   list-style: none;
   display: grid;
@@ -2645,9 +2277,6 @@ body.reader-body #gallery-status { display: none; }
 }
 .manga-page-thumb { width: 100%; height: auto; display: block; max-height: 180px; object-fit: contain; background: #000; }
 .manga-page-num { display: block; font-size: 11px; color: var(--fg-dim); padding: 2px; }
-/* See-all relations page reuses the manga-pages-grid shell but wants
-   the gallery-grid behaviour: cells locked to a square so a wide image
-   doesn't squash a tall sibling into a different cell height. */
 #relations-image-page .manga-pages-grid {
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
 }
@@ -2656,11 +2285,6 @@ body.reader-body #gallery-status { display: none; }
   max-height: none;
   object-fit: cover;
 }
-/* Version-chain and derivative-tree thumbs lay the badge as an opaque
-   caption below the image (same look as the dup/alt cells above) instead
-   of an overlay glued to the thumb's bottom-right corner. The card keeps
-   its 180px square; the caption sits in the same flex column right under
-   the image. */
 #relations-image-page .relations-page-thumb-cell {
   width: 180px;
   aspect-ratio: auto;
@@ -2687,9 +2311,6 @@ body.reader-body #gallery-status { display: none; }
 /* Comic-info metadata table (mirrors meta-table styling). */
 .comic-info-summary { white-space: pre-wrap; }
 
-/* Copy-tags preview dialog (marked-duplicates walker). The tag column
-   stays narrow and scrolls so a long list doesn't blow the dialog
-   open. */
 .copy-tags-preview-body { min-width: 360px; max-width: 520px; }
 .copy-tags-preview-groups { max-height: 50vh; overflow-y: auto; border: 1px solid var(--border); padding: 6px 8px; }
 .copy-tags-preview-group + .copy-tags-preview-group { margin-top: 8px; }

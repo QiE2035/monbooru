@@ -48,7 +48,7 @@ func TestNormalizeImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	cfg, _, err := image.DecodeConfig(f)
 	if err != nil {
 		t.Fatalf("normalized file does not decode with the stdlib: %v", err)

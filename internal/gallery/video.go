@@ -42,9 +42,9 @@ func NormalizeImage(srcPath string) error {
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}
-	tmp.Close()
+	_ = tmp.Close()
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 
 	// `-update 1` writes a single still image rather than a numbered
 	// sequence; `--` keeps a tmpName beginning with `-` positional.
@@ -84,9 +84,9 @@ func generateVideoThumb(srcPath, dstPath string) error {
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}
-	tmp.Close()
+	_ = tmp.Close()
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 
 	// `--` terminates option parsing so a tmpName beginning with `-`
 	// stays a positional output path.
@@ -126,9 +126,9 @@ func generateVideoHover(srcPath, dstPath string) error {
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}
-	tmp.Close()
+	_ = tmp.Close()
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 
 	args := []string{
 		"-y",
@@ -162,9 +162,9 @@ func generateGIFHover(srcPath, dstPath string) error {
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}
-	tmp.Close()
+	_ = tmp.Close()
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 
 	args := []string{
 		"-y",
@@ -205,7 +205,7 @@ func ExtractVideoFrames(srcPath, tmpDir string, positions []float64) ([]string, 
 		if err != nil {
 			return out, fmt.Errorf("creating temp frame file: %w", err)
 		}
-		tmp.Close()
+		_ = tmp.Close()
 		args := []string{
 			"-y",
 			"-ss", strconv.FormatFloat(offset, 'f', 3, 64),
@@ -217,7 +217,7 @@ func ExtractVideoFrames(srcPath, tmpDir string, positions []float64) ([]string, 
 		}
 		cmd := exec.Command("ffmpeg", args...)
 		if _, err := cmd.CombinedOutput(); err != nil {
-			os.Remove(tmp.Name())
+			_ = os.Remove(tmp.Name())
 			continue
 		}
 		out = append(out, tmp.Name())

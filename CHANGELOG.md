@@ -1,5 +1,25 @@
 # Changelog
 
+## [v1.10.0] - 2026-06-11
+### Added
+- Settings: gallery thumbnails can render at their natural aspect ratio instead of the default cropped square.
+- Built-in tag category colors can now be recolored from the Categories settings page.
+- A "Go to monloader" top-bar link, set via `server.monloader_url` in a new settings section (hidden when unset).
+- `/i/{sha256}` permalink resolves an image by its content hash, stable across id reuse and available in any gallery.
+- API: the `/api/v1/` root response now reports the running server version.
+- `monbooru healthcheck` subcommand and a baked-in container `HEALTHCHECK`.
+
+### Changed
+- Collection links now sort by collection order (ascending) by default; an explicit sort still wins.
+- UI palette refreshed for higher contrast.
+- Custom CSS: link text now uses a new `--link` variable, while `--accent` stays structural (borders, focus, buttons, badges, fills). A stylesheet that recolored `--accent` for link text should also set `--link`.
+- Docker: the CPU image is now distroless and non-root (`distroless/cc`, Debian 13, uid 1000), with ffmpeg bundled as a static binary. The CUDA image is now non-root (uid 1000) and uses static ffmpeg instead of apt's. Both drop the `setcap` file capabilities.
+
+### Fixed
+- Folder moves no longer leave phantom duplicate paths in the detail page's Duplicates panel.
+- `/favicon.ico` now honors the `server.logo` override.
+- Quadlet (`docker/monbooru.container`): the healthcheck probed the wrong port (8081) and needed a shell; it now calls the binary directly.
+
 ## [v1.9.4] - 2026-06-06
 ### Fixed
 - Upload: a valid JPEG the image decoder rejected is now re-encoded and accepted.

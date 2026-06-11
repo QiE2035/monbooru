@@ -58,7 +58,7 @@ type SeriesCount struct {
 // SourceLabelCount is one row of the sidebar's Sources section: a
 // per-image source label and the count of non-missing image rows
 // carrying it. Mirrors SeriesCount; the column is partial-indexed on
-// `source != ''` so the read hits it directly.
+// `source != ”` so the read hits it directly.
 type SourceLabelCount struct {
 	Source string
 	Count  int
@@ -66,7 +66,7 @@ type SourceLabelCount struct {
 
 // SeriesCountsQuery returns the top series labels (by row count desc)
 // across non-missing rows of any file type. Empty series strings are
-// excluded - the index is partial on `series != ''` so the read hits
+// excluded - the index is partial on `series != ”` so the read hits
 // it directly. Sorted Count desc, then alphabetical to make the
 // sidebar deterministic.
 func SeriesCountsQuery(database *db.DB, limit int) ([]SeriesCount, error) {
@@ -75,7 +75,7 @@ func SeriesCountsQuery(database *db.DB, limit int) ([]SeriesCount, error) {
 
 // SourceLabelCountsQuery returns the top source labels (by row count
 // desc) across non-missing rows. Empty source strings are excluded;
-// idx_images_source is partial on `source != ''` so the seek skips
+// idx_images_source is partial on `source != ”` so the seek skips
 // untouched rows. Sorted Count desc, then alphabetical for a
 // deterministic sidebar.
 func SourceLabelCountsQuery(database *db.DB, limit int) ([]SourceLabelCount, error) {
@@ -175,6 +175,16 @@ func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath stri
 		return result, ctx.Err()
 	}
 
+	// Drop non-canonical paths whose file the walk didn't find, so a move
+	// or a deleted copy can't leave a phantom duplicate. Gated on a
+	// non-empty walk so a not-yet-mounted gallery can't wipe live aliases;
+	// existence comes from foundPaths, not a per-row stat.
+	if len(found) > 0 {
+		if err := pruneStaleAliasPaths(ctx, database, foundPaths); err != nil {
+			return result, err
+		}
+	}
+
 	// Recompute tag usage counts only when the reconcile touched something
 	// that could change them. Duplicates alone never do, so an idle sync on
 	// a large library skips this step.
@@ -201,7 +211,7 @@ func loadKnownPaths(database *db.DB) (map[string]syncKnownEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("preloading known paths: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var p, sha string
 		var sz, mt int64
@@ -285,7 +295,7 @@ func loadImagesBySHA(database *db.DB) (map[string]syncBySHARow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("preloading SHA index: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var r syncBySHARow
 		var sha string
@@ -408,9 +418,9 @@ func reactivateImage(database *db.DB, imageID int64) {
 }
 
 // promoteAliasToCanonical fires when an alias path's file is still on
-// disk but the row's canonical_path is gone. Three writes: image row's
-// canonical_path + folder_path, alias row flipped to is_canonical=1,
-// old canonical row flipped to is_canonical=0.
+// disk but the row's canonical_path is gone. The image row is repointed,
+// the alias becomes canonical, and the vanished old canonical row is
+// dropped so it can't resurface as a phantom duplicate.
 func promoteAliasToCanonical(database *db.DB, galleryPath, newCanonical string, row syncBySHARow) {
 	newFolder := FolderPath(galleryPath, newCanonical)
 	if _, wErr := database.Write.Exec(
@@ -426,17 +436,17 @@ func promoteAliasToCanonical(database *db.DB, galleryPath, newCanonical string, 
 		logx.Warnf("sync: set canonical path %d: %v", row.id, wErr)
 	}
 	if _, wErr := database.Write.Exec(
-		`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ? AND path = ?`,
+		`DELETE FROM image_paths WHERE image_id = ? AND path = ?`,
 		row.id, row.canonicalPath,
 	); wErr != nil {
-		logx.Warnf("sync: clear old canonical %d: %v", row.id, wErr)
+		logx.Warnf("sync: drop old canonical %d: %v", row.id, wErr)
 	}
 }
 
 // moveCanonical points the image row at a new on-disk path when the
-// previous canonical file has vanished. The old canonical path is
-// demoted to is_canonical=0 (kept in image_paths) so a stale rsync
-// alias isn't rewritten in place.
+// previous canonical file has vanished. The vanished path is dropped
+// from image_paths rather than kept as an alias, so it can't resurface
+// as a phantom duplicate.
 func moveCanonical(database *db.DB, galleryPath, newCanonical string, imageID int64) {
 	newFolder := FolderPath(galleryPath, newCanonical)
 	if _, wErr := database.Write.Exec(
@@ -446,10 +456,10 @@ func moveCanonical(database *db.DB, galleryPath, newCanonical string, imageID in
 		logx.Warnf("sync: move %d: %v", imageID, wErr)
 	}
 	if _, wErr := database.Write.Exec(
-		`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ? AND is_canonical = 1`,
+		`DELETE FROM image_paths WHERE image_id = ? AND is_canonical = 1`,
 		imageID,
 	); wErr != nil {
-		logx.Warnf("sync: demote old canonical %d: %v", imageID, wErr)
+		logx.Warnf("sync: drop old canonical %d: %v", imageID, wErr)
 	}
 	if _, wErr := database.Write.Exec(
 		`INSERT INTO image_paths (image_id, path, is_canonical) VALUES (?, ?, 1)
@@ -469,7 +479,7 @@ func selectImagesToMarkMissing(database *db.DB, foundPaths map[string]struct{}) 
 	if err != nil {
 		return nil, fmt.Errorf("querying existing images: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var toMark []int64
 	for rows.Next() {
 		var id int64
@@ -527,6 +537,56 @@ func markImagesMissingChunked(ctx context.Context, database *db.DB, ids []int64)
 	return marked, nil
 }
 
+// pruneStaleAliasPaths deletes non-canonical image_paths rows whose file
+// is gone from disk, in 500-row chunks. foundPaths is the fast path: a
+// path the walk observed is kept without a stat. A path it didn't observe
+// is stat'd and removed only when genuinely absent, so a file merely
+// skipped this pass (over the size cap, undetectable, transiently
+// unreadable) keeps its row. Canonical rows are left to the is_missing pass.
+func pruneStaleAliasPaths(ctx context.Context, database *db.DB, foundPaths map[string]struct{}) error {
+	rows, err := database.Read.Query(`SELECT id, path FROM image_paths WHERE is_canonical = 0`)
+	if err != nil {
+		return fmt.Errorf("listing alias paths: %w", err)
+	}
+	var staleIDs []int64
+	for rows.Next() {
+		var id int64
+		var path string
+		if scanErr := rows.Scan(&id, &path); scanErr != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scanning alias path: %w", scanErr)
+		}
+		if _, ok := foundPaths[path]; !ok {
+			if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+				staleIDs = append(staleIDs, id)
+			}
+		}
+	}
+	if iterErr := rows.Err(); iterErr != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterating alias paths: %w", iterErr)
+	}
+	_ = rows.Close()
+
+	const chunkSize = 500
+	for start := 0; start < len(staleIDs); start += chunkSize {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		end := start + chunkSize
+		if end > len(staleIDs) {
+			end = len(staleIDs)
+		}
+		placeholders, args := db.InPlaceholders(staleIDs[start:end])
+		if _, wErr := database.Write.Exec(
+			`DELETE FROM image_paths WHERE id IN (`+placeholders+`)`, args...,
+		); wErr != nil {
+			return fmt.Errorf("prune alias paths chunk: %w", wErr)
+		}
+	}
+	return nil
+}
+
 // applyInPlaceEdit handles the case where sync re-hashed a known path
 // and observed a different SHA. The image_id stays so user-curated tags
 // survive; sha, size, dimensions, source_type, and side-table metadata
@@ -552,7 +612,7 @@ func applyInPlaceEdit(database *db.DB, galleryPath, thumbnailsPath, path, fileTy
 			}
 			pcVal := len(archive.Pages)
 			pageCount = &pcVal
-			archive.Close()
+			_ = archive.Close()
 		}
 	} else if IsVideoType(fileType) {
 		if w, h, ok := ProbeVideoDimensions(path); ok {
@@ -565,7 +625,7 @@ func applyInPlaceEdit(database *db.DB, galleryPath, thumbnailsPath, path, fileTy
 				w, h := cfg2.Width, cfg2.Height
 				imgWidth, imgHeight = &w, &h
 			}
-			f.Close()
+			_ = f.Close()
 		}
 	}
 
@@ -573,7 +633,7 @@ func applyInPlaceEdit(database *db.DB, galleryPath, thumbnailsPath, path, fileTy
 	if err != nil {
 		return fmt.Errorf("begin in-place edit tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec(
 		`UPDATE images SET sha256 = ?, file_size = ?, width = ?, height = ?, page_count = ? WHERE id = ?`,
@@ -657,7 +717,7 @@ func FolderTree(database *db.DB) ([]FolderNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	flat, err := scanFolderRows(rows)
 	if err != nil {
 		return nil, err

@@ -32,7 +32,9 @@ func newTestServerWithDegraded(t *testing.T, degraded bool) *Server {
 	if degraded {
 		galleryDir = filepath.Join(dir, "nonexistent_gallery")
 	} else {
-		os.MkdirAll(galleryDir, 0o755)
+		if err := os.MkdirAll(galleryDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	cfg := config.Default()
@@ -358,6 +360,36 @@ func TestBooruLogo_DefaultsToBundledFavicon(t *testing.T) {
 		if strings.Contains(body, `href="/custom.logo"`) {
 			t.Errorf("%s: layout should not link /custom.logo when BooruLogo unset", page)
 		}
+	}
+}
+
+// /favicon.ico is the fallback for tabs with no <link rel="icon"> (a raw
+// image in a new tab); it must honor the override, not just the HTML link.
+func TestFaviconIco_RoutedToOverrideWhenConfigured(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.Server.BooruLogo = "/some/path/logo.png"
+
+	req := httptest.NewRequest("GET", "/favicon.ico", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("GET /favicon.ico expected 302, got %d", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/custom.logo" {
+		t.Errorf("GET /favicon.ico should redirect to /custom.logo when BooruLogo configured, got %q", loc)
+	}
+}
+
+func TestFaviconIco_DefaultsToBundledFavicon(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/favicon.ico", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if loc := w.Header().Get("Location"); loc != "/static/favicon.png" {
+		t.Errorf("GET /favicon.ico should redirect to bundled favicon when BooruLogo unset, got %q", loc)
 	}
 }
 
@@ -695,10 +727,10 @@ func TestJobStatusHandler_RunningMarkup(t *testing.T) {
 	}
 	body := w.Body.String()
 	for _, want := range []string{
-		`class="job-running`,           // running class flips on the wrapper
-		`data-job-type="re-extract"`,   // job type surfaces for UI hooks
-		`<button class="job-dismiss"`,  // × cancel button
-		`reading metadata`,             // progress message rendered
+		`class="job-running`,          // running class flips on the wrapper
+		`data-job-type="re-extract"`,  // job type surfaces for UI hooks
+		`<button class="job-dismiss"`, // × cancel button
+		`reading metadata`,            // progress message rendered
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("running job partial missing %q\nbody: %s", want, body)
@@ -1061,7 +1093,7 @@ func TestDeleteImage(t *testing.T) {
 	}
 	// Verify image is gone
 	var count int
-	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images WHERE id = ?`, id).Scan(&count)
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images WHERE id = ?`, id).Scan(&count)
 	if count != 0 {
 		t.Error("image should be deleted from DB")
 	}
@@ -1172,6 +1204,28 @@ func TestSettingsGeneralPost(t *testing.T) {
 	}
 }
 
+func TestSettingsMonloaderPost(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+
+	body := "_csrf=" + srv.csrfToken("anon") + "&monloader_url=http://localhost:8081"
+	req := httptest.NewRequest("POST", "/settings/monloader", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("settings monloader POST expected 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Saved") {
+		t.Error("expected 'Saved' flash message")
+	}
+	if srv.cfg.Server.MonloaderURL != "http://localhost:8081" {
+		t.Errorf("MonloaderURL = %q, want http://localhost:8081", srv.cfg.Server.MonloaderURL)
+	}
+}
+
 // TestSettingsTagger_RejectsBadName pins the allowlist guard on every
 // per-tagger settings endpoint. A name that escapes [A-Za-z0-9_-]+
 // would otherwise land in cfg.Tagger.Taggers verbatim and persist to
@@ -1276,9 +1330,11 @@ func TestPruneMissingImages(t *testing.T) {
 	h := srv.Handler()
 
 	// Insert a missing image
-	srv.db().Write.Exec(`
+	if _, err := srv.db().Write.Exec(`
 		INSERT INTO images (canonical_path, file_type, file_size, sha256, is_missing, ingested_at)
-		VALUES ('/nonexistent/file.jpg', 'jpg', 1024, 'prune_test_hash', 1, datetime('now'))`)
+		VALUES ('/nonexistent/file.jpg', 'jpg', 1024, 'prune_test_hash', 1, datetime('now'))`); err != nil {
+		t.Fatal(err)
+	}
 
 	body := "_csrf=" + srv.csrfToken("anon")
 	req := httptest.NewRequest("POST", "/settings/maintenance/prune-missing", strings.NewReader(body))
@@ -1309,7 +1365,7 @@ func TestPruneMissingImages(t *testing.T) {
 
 	// Verify pruned
 	var count int
-	srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images WHERE sha256 = 'prune_test_hash'`).Scan(&count)
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM images WHERE sha256 = 'prune_test_hash'`).Scan(&count)
 	if count != 0 {
 		t.Error("missing image should have been pruned")
 	}
@@ -1327,9 +1383,11 @@ func TestPruneMissingImages_RejectsConcurrentRun(t *testing.T) {
 	defer srv.jobs.Complete("test cleanup")
 
 	// Need at least one missing row so the handler reaches the Start call.
-	srv.db().Write.Exec(`
+	if _, err := srv.db().Write.Exec(`
 		INSERT INTO images (canonical_path, file_type, file_size, sha256, is_missing, ingested_at)
-		VALUES ('/nonexistent/conflict.jpg', 'jpg', 1024, 'conflict_hash', 1, datetime('now'))`)
+		VALUES ('/nonexistent/conflict.jpg', 'jpg', 1024, 'conflict_hash', 1, datetime('now'))`); err != nil {
+		t.Fatal(err)
+	}
 
 	body := "_csrf=" + srv.csrfToken("anon")
 	req := httptest.NewRequest("POST", "/settings/maintenance/prune-missing", strings.NewReader(body))
@@ -1396,8 +1454,12 @@ func newMultiGalleryServer(t *testing.T) *Server {
 	dir := t.TempDir()
 	g1 := filepath.Join(dir, "g1")
 	g2 := filepath.Join(dir, "g2")
-	os.MkdirAll(g1, 0o755)
-	os.MkdirAll(g2, 0o755)
+	if err := os.MkdirAll(g1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(g2, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := config.Default()
 	cfg.Paths.DataPath = filepath.Join(dir, "data")

@@ -717,9 +717,9 @@ document.addEventListener('keydown', function(e) {
     if (focusFirstSelector(['.add-cat-form input[name="name"]'])) { e.preventDefault(); return; }
   }
 
-  // Settings page: 1-6 jump to section anchors.
-  if (isSettingsPage() && /^[1-6]$/.test(e.key)) {
-    var settingsAnchors = ['#general', '#galleries', '#tagger', '#auth', '#maintenance', '#schedule'];
+  // Settings page: 1-9 jump to section anchors, in nav order.
+  if (isSettingsPage() && /^[1-9]$/.test(e.key)) {
+    var settingsAnchors = ['#general', '#galleries', '#monloader', '#tagger', '#relations', '#auth', '#maintenance', '#schedule', '#stats'];
     var sec = document.querySelector(settingsAnchors[parseInt(e.key, 10) - 1]);
     if (sec) { e.preventDefault(); sec.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
   }
@@ -1258,6 +1258,24 @@ document.addEventListener('click', function(e) {
   updateBatchBar();
 });
 
+// In the inbox, hide a cluster's [Unselect] when nothing in it is selected
+// and [Select] when all of it is - the same sibling-walk as the click above.
+function updateClusterButtons() {
+  document.querySelectorAll('.thumb-cluster-header[data-cluster-start]').forEach(function(header) {
+    var total = 0, checked = 0;
+    var node = header.nextElementSibling;
+    while (node && !node.classList.contains('thumb-cluster-header')) {
+      var cb = node.querySelector ? node.querySelector('.thumb-checkbox') : null;
+      if (cb) { total++; if (cb.checked) checked++; }
+      node = node.nextElementSibling;
+    }
+    var sel = header.querySelector('[data-cluster-select]');
+    var uns = header.querySelector('[data-cluster-unselect]');
+    if (sel) sel.hidden = total > 0 && checked === total;
+    if (uns) uns.hidden = checked === 0;
+  });
+}
+
 function updateBatchBar() {
   const checked = document.querySelectorAll('.thumb-checkbox:checked');
   const bar = document.getElementById('batch-bar');
@@ -1271,6 +1289,7 @@ function updateBatchBar() {
   // the search-scoped variants.
   const actions = document.getElementById('actions-btn');
   if (actions) actions.hidden = checked.length > 0;
+  updateClusterButtons();
 }
 
 function clearSelection() {

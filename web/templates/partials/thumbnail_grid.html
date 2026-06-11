@@ -29,18 +29,19 @@
   {{end}}
 </div>
 {{end}}
-<div class="thumb-grid">
+<div class="thumb-grid{{if eq .ThumbnailFit "natural"}} fit-natural{{end}}">
   {{range $i, $_ := .Result.Results}}
   {{if $.InboxClusterAtIdx}}{{with index $.InboxClusterAtIdx $i}}
   <div class="thumb-cluster-header" data-cluster-start="{{$i}}">
     <span class="thumb-cluster-rule" aria-hidden="true"></span>
     <span class="thumb-cluster-label mono-small">{{.DateLabel}} · <a class="thumb-cluster-range" href="{{.RangeLink}}">{{.RangeLabel}}</a> · {{.Count}} on this page</span>
     <span class="thumb-cluster-rule" aria-hidden="true"></span>
-    <button type="button" class="btn-sm thumb-cluster-select" data-cluster-unselect>[Unselect]</button>
+    <button type="button" class="btn-sm thumb-cluster-select" data-cluster-unselect hidden>[Unselect]</button>
     <button type="button" class="btn-sm thumb-cluster-select" data-cluster-select>[Select]</button>
   </div>
   {{end}}{{end}}
   <div class="thumb-card" data-id="{{.ID}}"
+       {{if and .Width .Height}}style="--ar:{{deref .Width}}/{{deref .Height}}"{{end}}
        {{if or (eq .FileType "mp4") (eq .FileType "webm") (eq .FileType "gif")}}data-hover="/thumbnails/{{$.ActiveGallery}}/{{.ID}}_hover.webp"{{end}}>
     <input type="checkbox" class="thumb-checkbox" name="ids" value="{{.ID}}">
     <a href="/images/{{.ID}}?back_q={{urlQ $.Query}}&back_sort={{$.Sort}}&back_order={{$.Order}}&back_page={{$.Page}}{{if $.RandomSeed}}&back_seed={{$.RandomSeed}}{{end}}" class="thumb-link">

@@ -563,6 +563,12 @@ func contextMiddlewareBypass(path string) bool {
 	if path == "/custom.logo" {
 		return true
 	}
+	if strings.HasPrefix(path, "/i/") {
+		// /i/{sha} can switch the active gallery (write lock) when the image
+		// lives in another gallery, so it must not run under the request-held
+		// read lock.
+		return true
+	}
 	return strings.HasPrefix(path, "/static/") ||
 		strings.HasPrefix(path, "/thumbnails/") ||
 		strings.HasPrefix(path, "/settings/galleries")
@@ -595,17 +601,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /custom.css", s.serveCustomCSS)
 	mux.HandleFunc("GET /custom.logo", s.serveCustomLogo)
 	mux.HandleFunc("GET /thumbnails/{gallery}/{file}", s.serveThumbnail)
-	// Browsers request /favicon.ico unconditionally on first paint;
-	// without this alias every fresh tab logged a 404 in the console.
+	// Fallback icon for tabs with no <link rel="icon"> (a raw image opened
+	// in a new tab). Route through the override so server.logo applies;
+	// non-permanent since that target can change.
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/static/favicon.png", http.StatusMovedPermanently)
+		http.Redirect(w, r, s.booruFaviconURL(), http.StatusFound)
 	})
 
 	// Health check (unauthenticated)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": Version})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": Version})
 	})
 
 	mux.HandleFunc("GET /login", s.loginPage)
@@ -619,6 +626,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", s.galleryHandler)
 	mux.HandleFunc("GET /", s.notFoundHandler)
 
+	mux.HandleFunc("GET /i/{sha}", s.imageByHashHandler)
 	mux.HandleFunc("GET /images/{id}", s.detailHandler)
 	mux.HandleFunc("GET /images/{id}/related", s.relatedImagesHandler)
 	mux.HandleFunc("GET /images/{id}/file", s.serveImageFile)
@@ -658,6 +666,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /settings", s.settingsHandler)
 	mux.HandleFunc("POST /settings/general", s.settingsGeneralPost)
+	mux.HandleFunc("POST /settings/monloader", s.settingsMonloaderPost)
 	mux.HandleFunc("POST /settings/tagger", s.settingsTaggerPost)
 	mux.HandleFunc("POST /settings/auth/password", s.settingsPasswordPost)
 	mux.HandleFunc("POST /settings/auth/remove-password", s.settingsRemovePasswordPost)
@@ -755,7 +764,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /settings/galleries/{name}/export", s.settingsGalleryExport)
 	mux.HandleFunc("POST /settings/galleries/{name}/import", s.settingsGalleryImport)
 
-	api.New(s.cfg, s.jobs, s.apiResolver).Mount(mux)
+	api.New(s.cfg, s.jobs, s.apiResolver, Version).Mount(mux)
 
 	// Middleware order, outermost first: logging, context (RLock), session, CSRF.
 	var h http.Handler = mux
@@ -860,15 +869,15 @@ var ratingFooterLevels = []ratingLevel{
 
 // baseData is common template data present on every page.
 type baseData struct {
-	Title         string
-	ActiveNav     string
-	CSRFToken     string
-	AuthEnabled   bool
-	Degraded      bool
-	Version       string
-	RepoURL       string
-	Variant       string
-	CustomCSS     bool
+	Title       string
+	ActiveNav   string
+	CSRFToken   string
+	AuthEnabled bool
+	Degraded    bool
+	Version     string
+	RepoURL     string
+	Variant     string
+	CustomCSS   bool
 	// BooruName is the operator's brand override (or "Monbooru" by
 	// default). Rendered into every page <title>, the topbar wordmark,
 	// and the login screen so a deployment that wants a different name
@@ -879,8 +888,11 @@ type baseData struct {
 	// BooruFavicon is the same for the favicon <link>, falling back to
 	// the bundled favicon.png. A configured server.logo drives both, so
 	// they only diverge on their unset defaults.
-	BooruLogo     string
-	BooruFavicon  string
+	BooruLogo    string
+	BooruFavicon string
+	// MonloaderURL is the browser-facing monloader base for the top-bar
+	// "Go to monloader" link, trailing slash trimmed; "" hides the link.
+	MonloaderURL  string
 	ActiveGallery string
 	Galleries     []config.Gallery
 	// Counts surfaced on the footer status bar. Populated per-request;
@@ -928,6 +940,7 @@ func (b baseData) AsMap() map[string]any {
 		"BooruName":        b.BooruName,
 		"BooruLogo":        b.BooruLogo,
 		"BooruFavicon":     b.BooruFavicon,
+		"MonloaderURL":     b.MonloaderURL,
 		"ActiveGallery":    b.ActiveGallery,
 		"Galleries":        b.Galleries,
 		"VisibleCount":     b.VisibleCount,
@@ -971,28 +984,29 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 		active = "explicit"
 	}
 	return baseData{
-		Title:         title,
-		ActiveNav:     nav,
-		CSRFToken:     s.csrfToken(sessID),
-		AuthEnabled:   s.cfg.Auth.EnablePassword,
-		Degraded:      degraded,
-		Version:       Version,
-		RepoURL:       RepoURL,
-		Variant:       Variant,
-		CustomCSS:     s.cfg.Server.CustomCSS != "",
-		BooruName:     s.booruName(),
-		BooruLogo:     s.booruLogoURL(),
-		BooruFavicon:  s.booruFaviconURL(),
-		ActiveGallery: s.activeName,
-		Galleries:     galleries,
+		Title:            title,
+		ActiveNav:        nav,
+		CSRFToken:        s.csrfToken(sessID),
+		AuthEnabled:      s.cfg.Auth.EnablePassword,
+		Degraded:         degraded,
+		Version:          Version,
+		RepoURL:          RepoURL,
+		Variant:          Variant,
+		CustomCSS:        s.cfg.Server.CustomCSS != "",
+		BooruName:        s.booruName(),
+		BooruLogo:        s.booruLogoURL(),
+		BooruFavicon:     s.booruFaviconURL(),
+		MonloaderURL:     strings.TrimRight(s.cfg.Server.MonloaderURL, "/"),
+		ActiveGallery:    s.activeName,
+		Galleries:        galleries,
 		VisibleCount:     visible,
 		InboxCount:       inbox,
 		TagCount:         tagCount,
 		CollectionsCount: collectionsCount,
 		InboxNavActive:   inboxNavActive,
-		RatingLevels:  ratingFooterLevels,
-		ActiveRating:  active,
-		RequestStart:  requestStartFromContext(r.Context()),
+		RatingLevels:     ratingFooterLevels,
+		ActiveRating:     active,
+		RequestStart:     requestStartFromContext(r.Context()),
 	}
 }
 
