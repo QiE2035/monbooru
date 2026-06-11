@@ -1,5 +1,9 @@
 # Changelog
 
+## [v1.10.1] - 2026-06-11
+### Fixed
+- Natural-fit thumbnails now sit in a uniform square cell.
+
 ## [v1.10.0] - 2026-06-11
 ### Added
 - Settings: gallery thumbnails can render at their natural aspect ratio instead of the default cropped square.

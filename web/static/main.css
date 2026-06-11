@@ -497,11 +497,7 @@ button.footer-rating-link:hover { color: var(--fg); }
   background: var(--bg-input);
 }
 
-.thumb-grid.fit-natural { align-items: start; }
-.thumb-grid.fit-natural .thumb-img {
-  aspect-ratio: var(--ar, 1);
-  object-fit: contain;
-}
+.thumb-grid.fit-natural .thumb-img { object-fit: contain; }
 
 .thumb-placeholder {
   width: 100%;

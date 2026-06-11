@@ -41,7 +41,6 @@
   </div>
   {{end}}{{end}}
   <div class="thumb-card" data-id="{{.ID}}"
-       {{if and .Width .Height}}style="--ar:{{deref .Width}}/{{deref .Height}}"{{end}}
        {{if or (eq .FileType "mp4") (eq .FileType "webm") (eq .FileType "gif")}}data-hover="/thumbnails/{{$.ActiveGallery}}/{{.ID}}_hover.webp"{{end}}>
     <input type="checkbox" class="thumb-checkbox" name="ids" value="{{.ID}}">
     <a href="/images/{{.ID}}?back_q={{urlQ $.Query}}&back_sort={{$.Sort}}&back_order={{$.Order}}&back_page={{$.Page}}{{if $.RandomSeed}}&back_seed={{$.RandomSeed}}{{end}}" class="thumb-link">
