@@ -4332,6 +4332,85 @@ func TestExecuteAdjacent_Newest(t *testing.T) {
 	}
 }
 
+// On a cache miss, ExecuteAdjacent and RankInQuery must walk the same
+// (series, series_order NULLS-last, id) order buildOrder produces, not the
+// ingest-order fallback. Fixture: series A with orders 2,1,NULL, series B,
+// and one row with no series; checks every neighbour and rank in asc + desc.
+func TestExecuteAdjacent_Order(t *testing.T) {
+	database, cfg := setupSearchDB(t)
+	for _, n := range []string{"o_a1.png", "o_a2.png", "o_a3.png", "o_b1.png", "o_none.png"} {
+		ingestTestImage(t, database, cfg, n)
+	}
+	for _, set := range []struct {
+		name  string
+		ser   string
+		order interface{}
+	}{
+		{"o_a1.png", "A", 2},
+		{"o_a2.png", "A", 1},
+		{"o_a3.png", "A", nil},
+		{"o_b1.png", "B", 1},
+	} {
+		if _, err := database.Write.Exec(
+			`UPDATE images SET series=?, series_order=? WHERE canonical_path LIKE '%' || ?`,
+			set.ser, set.order, set.name,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	samePtr := func(got, want *int64) bool {
+		if got == nil || want == nil {
+			return got == nil && want == nil
+		}
+		return *got == *want
+	}
+	showPtr := func(p *int64) string {
+		if p == nil {
+			return "nil"
+		}
+		return strconv.FormatInt(*p, 10)
+	}
+
+	for _, order := range []string{"asc", "desc"} {
+		q := Query{Sort: "order", Order: order, Page: 1, Limit: 40}
+		result, err := Execute(database, q)
+		if err != nil || len(result.Results) != 5 {
+			t.Fatalf("[%s] setup Execute: err=%v len=%d", order, err, len(result.Results))
+		}
+		ids := make([]int64, len(result.Results))
+		for i, r := range result.Results {
+			ids[i] = r.ID
+		}
+		for i := range ids {
+			prev, next, err := ExecuteAdjacent(database, q, ids[i])
+			if err != nil {
+				t.Fatalf("[%s] adjacent %d: %v", order, ids[i], err)
+			}
+			var wantPrev, wantNext *int64
+			if i > 0 {
+				wantPrev = &ids[i-1]
+			}
+			if i < len(ids)-1 {
+				wantNext = &ids[i+1]
+			}
+			if !samePtr(prev, wantPrev) {
+				t.Errorf("[%s] pos %d id %d: prev=%s want %s (order %v)", order, i, ids[i], showPtr(prev), showPtr(wantPrev), ids)
+			}
+			if !samePtr(next, wantNext) {
+				t.Errorf("[%s] pos %d id %d: next=%s want %s (order %v)", order, i, ids[i], showPtr(next), showPtr(wantNext), ids)
+			}
+			rank, err := RankInQuery(context.Background(), database, q, ids[i])
+			if err != nil {
+				t.Fatalf("[%s] rank %d: %v", order, ids[i], err)
+			}
+			if rank != i {
+				t.Errorf("[%s] id %d rank=%d want %d (order %v)", order, ids[i], rank, i, ids)
+			}
+		}
+	}
+}
+
 func TestExecuteAdjacent_Random(t *testing.T) {
 	database, cfg := setupSearchDB(t)
 	ingestTestImage(t, database, cfg, "rnd_a.png")

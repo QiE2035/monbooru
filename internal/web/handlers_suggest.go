@@ -41,13 +41,14 @@ func (s *Server) foldersSuggest(w http.ResponseWriter, r *http.Request) {
 			 ORDER BY folder_path COLLATE NOCASE LIMIT 10`,
 		)
 	} else {
+		lo, hi := nocasePrefixRange(prefix)
 		rows, err = s.db().Read.Query(
 			`SELECT DISTINCT folder_path FROM images INDEXED BY idx_images_folder_nocase_visible
 			 WHERE is_missing = 0
 			   AND folder_path >= ? COLLATE NOCASE
 			   AND folder_path < ? COLLATE NOCASE
 			 ORDER BY folder_path COLLATE NOCASE LIMIT 10`,
-			prefix, nextPrefix(prefix),
+			lo, hi,
 		)
 	}
 	if err != nil {
@@ -153,13 +154,14 @@ func (s *Server) pagedDistinctIndexedLabels(col, index, where, prefix string, li
 			limit,
 		)
 	} else {
+		lo, hi := nocasePrefixRange(prefix)
 		rows, err = s.db().Read.Query(
 			`SELECT DISTINCT `+col+` FROM images INDEXED BY `+index+`
 			 WHERE `+where+`
 			   AND `+col+` >= ? COLLATE NOCASE
 			   AND `+col+` < ? COLLATE NOCASE
 			 ORDER BY `+col+` COLLATE NOCASE LIMIT ?`,
-			prefix, nextPrefix(prefix), limit,
+			lo, hi, limit,
 		)
 	}
 	if err != nil {

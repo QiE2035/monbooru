@@ -1,6 +1,7 @@
 package gallery
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,12 +9,31 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
 	ffmpegOnce sync.Once
 	ffmpegOK   bool
 )
+
+// ffmpegTimeout caps any single ffmpeg/ffprobe run. The per-file size cap
+// bounds bytes, not decode time, so a truncated or pathological-but-small
+// media file could otherwise wedge the ingest/thumbnail goroutine (and its
+// held write transaction) until killed by hand.
+const ffmpegTimeout = 60 * time.Second
+
+// runFFmpeg executes ffmpeg/ffprobe under ffmpegTimeout. A timeout surfaces
+// as a normal command error, which every caller already turns into a skip.
+func runFFmpeg(combinedOutput bool, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), ffmpegTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	if combinedOutput {
+		return cmd.CombinedOutput()
+	}
+	return cmd.Output()
+}
 
 // ffmpegAvailable reports whether ffmpeg is on PATH (cached).
 func ffmpegAvailable() bool {
@@ -57,8 +77,7 @@ func NormalizeImage(srcPath string) error {
 		"--",
 		tmpName,
 	}
-	cmd := exec.Command("ffmpeg", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runFFmpeg(true, "ffmpeg", args...); err != nil {
 		return fmt.Errorf("ffmpeg normalize: %w\n%s", err, string(out))
 	}
 
@@ -100,8 +119,7 @@ func generateVideoThumb(srcPath, dstPath string) error {
 		"--",
 		tmpName,
 	}
-	cmd := exec.Command("ffmpeg", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runFFmpeg(true, "ffmpeg", args...); err != nil {
 		return fmt.Errorf("ffmpeg thumbnail: %w\n%s", err, string(out))
 	}
 
@@ -141,8 +159,7 @@ func generateVideoHover(srcPath, dstPath string) error {
 		"--",
 		tmpName,
 	}
-	cmd := exec.Command("ffmpeg", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runFFmpeg(true, "ffmpeg", args...); err != nil {
 		return fmt.Errorf("ffmpeg hover: %w\n%s", err, string(out))
 	}
 
@@ -174,8 +191,7 @@ func generateGIFHover(srcPath, dstPath string) error {
 		"--",
 		tmpName,
 	}
-	cmd := exec.Command("ffmpeg", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runFFmpeg(true, "ffmpeg", args...); err != nil {
 		return fmt.Errorf("ffmpeg gif hover: %w\n%s", err, string(out))
 	}
 
@@ -215,8 +231,7 @@ func ExtractVideoFrames(srcPath, tmpDir string, positions []float64) ([]string, 
 			"--",
 			tmp.Name(),
 		}
-		cmd := exec.Command("ffmpeg", args...)
-		if _, err := cmd.CombinedOutput(); err != nil {
+		if _, err := runFFmpeg(true, "ffmpeg", args...); err != nil {
 			_ = os.Remove(tmp.Name())
 			continue
 		}
@@ -229,14 +244,13 @@ func ExtractVideoFrames(srcPath, tmpDir string, positions []float64) ([]string, 
 func probeDuration(srcPath string) (float64, error) {
 	// `--` terminates option parsing so a filename beginning with `-`
 	// is treated as positional rather than a flag.
-	cmd := exec.Command("ffprobe",
+	out, err := runFFmpeg(false, "ffprobe",
 		"-v", "quiet",
 		"-print_format", "csv=p=0",
 		"-show_entries", "format=duration",
 		"--",
 		srcPath,
 	)
-	out, err := cmd.Output()
 	if err != nil {
 		return 0, err
 	}
@@ -268,7 +282,7 @@ func ProbeVideoDimensions(srcPath string) (int, int, bool) {
 	if !ffmpegAvailable() {
 		return 0, 0, false
 	}
-	cmd := exec.Command("ffprobe",
+	out, err := runFFmpeg(false, "ffprobe",
 		"-v", "quiet",
 		"-select_streams", "v:0",
 		"-show_entries", "stream=width,height",
@@ -276,7 +290,6 @@ func ProbeVideoDimensions(srcPath string) (int, int, bool) {
 		"--",
 		srcPath,
 	)
-	out, err := cmd.Output()
 	if err != nil {
 		return 0, 0, false
 	}

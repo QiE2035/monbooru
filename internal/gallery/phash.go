@@ -169,19 +169,6 @@ func init() {
 	}
 }
 
-// PhashHamming returns the Hamming distance between two pHash values
-// stored as signed int64 (the SQLite INTEGER affinity). The
-// computation is over the unsigned bit pattern.
-func PhashHamming(a, b int64) int {
-	x := uint64(a) ^ uint64(b)
-	count := 0
-	for x != 0 {
-		x &= x - 1
-		count++
-	}
-	return count
-}
-
 // PhashHooks is the extension point a higher layer (internal/relations)
 // uses to keep its in-memory BK-tree consistent with what
 // RecomputeAndStorePhash just wrote. Set by the relations package's

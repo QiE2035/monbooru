@@ -103,24 +103,6 @@ func readPNGTextChunks(r io.Reader) (map[string]string, error) {
 	return result, nil
 }
 
-// extractComfyUI reads ComfyUI metadata from a PNG reader, trying the
-// "prompt" chunk (API format) first and falling back to "workflow".
-func extractComfyUI(r io.Reader) (*models.ComfyUIMetadata, error) {
-	chunks, err := readPNGTextChunks(r)
-	if err != nil {
-		return nil, nil //nolint:nilerr // non-PNG files return nil gracefully
-	}
-	if raw, ok := chunks["prompt"]; ok {
-		if meta := parseComfyPromptChunk(raw); meta != nil {
-			return meta, nil
-		}
-	}
-	if raw, ok := chunks["workflow"]; ok {
-		return parseComfyWorkflow(raw), nil
-	}
-	return nil, nil
-}
-
 // extractFromPNG reads SD and ComfyUI metadata from a PNG file.
 func extractFromPNG(path string) (*models.SDMetadata, *models.ComfyUIMetadata, error) {
 	f, err := os.Open(path)

@@ -367,6 +367,9 @@ func (s *Server) sidebarLoad(pageImageIDs []int64, ceiling *Ceiling) sidebarBund
 			}
 			sb.Saved = append(sb.Saved, ss)
 		}
+		if err := ssRows.Err(); err != nil {
+			logx.Warnf("sidebar saved searches: %v", err)
+		}
 	}()
 	if cx := s.Active(); cx != nil {
 		sb.Folders, _ = cx.FolderTreeUnder(ceiling)
@@ -531,6 +534,9 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 			}
 			saved = append(saved, ss)
 		}
+		if err := rows.Err(); err != nil {
+			logx.Warnf("sidebar-browse saved searches: %v", err)
+		}
 	}()
 	wg.Wait()
 	nonFav := visible - fav
@@ -681,14 +687,15 @@ func inboxClustersActive(sort, order string, expr search.Expr) bool {
 }
 
 // computeInboxClusters walks the page's images in newest-DESC order
-// and emits a header marker at every cluster boundary - the first
-// row in any batch where the previous row sits more than
-// batchGapMinutes ahead in time. The returned slice is parallel to
-// images; nil entries are the in-cluster rows that don't emit a
-// header. queryStr is the operator's current search; the cluster
-// header's date-range link extends it with a date:T1..T2 leaf so
-// the batch bar's scope=search path can act on the whole cluster
-// even when the tail crosses a page boundary.
+// and emits a header marker at every cluster boundary. Web-UI uploads
+// carry a per-POST upload_batch token and break by that token (one
+// drop is one cluster, whatever the timing); watcher / sync rows carry
+// no token and break on a gap of more than batchGapMinutes. The
+// returned slice is parallel to images; nil entries are the in-cluster
+// rows that don't emit a header. queryStr is the operator's current
+// search; the cluster header's date-range link extends it with a
+// date:T1..T2 leaf so the batch bar's scope=search path can act on the
+// whole cluster even when the tail crosses a page boundary.
 func computeInboxClusters(images []models.Image, queryStr string) []*inboxCluster {
 	if len(images) == 0 {
 		return nil
@@ -697,19 +704,22 @@ func computeInboxClusters(images []models.Image, queryStr string) []*inboxCluste
 	gap := time.Duration(batchGapMinutes) * time.Minute
 	start := 0
 	for i := 1; i <= len(images); i++ {
-		// Close the open cluster at i (one past its last row) when
-		// the next row sits more than gap minutes before the previous
-		// one (newest-DESC, so "older than" is the boundary).
+		// Close the open cluster at i (one past its last row) at the
+		// boundary between row i-1 (newer) and row i (older, newest-DESC).
 		closeCluster := i == len(images)
 		if !closeCluster {
-			prev := images[i-1].IngestedAt
-			next := images[i].IngestedAt
-			// >= so a cron-driven schedule landing on the exact gap
-			// boundary opens a fresh batch, matching "every 15 minutes
-			// is a new cluster" intuition. Strict > used to glue
-			// exactly-aligned syncs together.
-			if prev.Sub(next) >= gap {
-				closeCluster = true
+			prevB, nextB := images[i-1].UploadBatch, images[i].UploadBatch
+			switch {
+			case prevB != nil || nextB != nil:
+				// An upload batch boundary - a different token, or a batch
+				// meeting a watcher/sync row - cuts the cluster regardless
+				// of the time gap.
+				closeCluster = !sameBatch(prevB, nextB)
+			default:
+				// Watcher/sync rows break on inactivity. >= so a schedule
+				// landing on the exact gap boundary opens a fresh batch,
+				// matching "every 15 minutes is a new cluster".
+				closeCluster = images[i-1].IngestedAt.Sub(images[i].IngestedAt) >= gap
 			}
 		}
 		if closeCluster {
@@ -718,6 +728,13 @@ func computeInboxClusters(images []models.Image, queryStr string) []*inboxCluste
 		}
 	}
 	return markers
+}
+
+// sameBatch reports whether two rows carry the same non-nil upload-batch
+// token. Two nil tokens are not the same batch - those rows fall back to
+// the time-gap rule.
+func sameBatch(a, b *int64) bool {
+	return a != nil && b != nil && *a == *b
 }
 
 func buildInboxCluster(rows []models.Image, queryStr string) *inboxCluster {

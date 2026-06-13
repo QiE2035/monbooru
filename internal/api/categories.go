@@ -34,6 +34,7 @@ func writeCategoryError(w http.ResponseWriter, err error) {
 	case errors.Is(err, tags.ErrCategoryExists):
 		apiError(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, tags.ErrBuiltinCategory),
+		errors.Is(err, tags.ErrBuiltinCategoryName),
 		errors.Is(err, tags.ErrInvalidCategoryName),
 		errors.Is(err, tags.ErrInvalidCategoryColor),
 		errors.Is(err, tags.ErrReservedCategoryName):

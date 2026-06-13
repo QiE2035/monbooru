@@ -1,5 +1,23 @@
 # Changelog
 
+## [v1.10.2] - 2026-06-13
+### Added
+- Settings: upload folder applied to web-UI uploads.
+- API: `DELETE /api/v1/relations` accepts `promote_original` to promote a new original on removal.
+
+### Changed
+- Emptied folders are no longer removed when their last image is moved or deleted.
+- Inbox: each web-UI upload forms its own cluster, even when drops land minutes apart.
+
+### Fixed
+- Manga pages and image moves refuse a stored path that resolves outside the gallery root.
+- ffmpeg/ffprobe runs are bounded by a timeout so a file can't wedge ingestion.
+- Custom CSS and logo revalidate on each load, so edits show without disabling the cache.
+- Tags page: the list filter treats `_` and `%` as literal characters, not wildcards.
+- Bulk category delete now also removes the implied tags those tags had added to images.
+- Config: environment-variable overrides are re-validated, warning on invalid values.
+- Relations: set-canonical and phash-recompute failures now surface an inline error.
+
 ## [v1.10.1] - 2026-06-11
 ### Fixed
 - Natural-fit thumbnails now sit in a uniform square cell.

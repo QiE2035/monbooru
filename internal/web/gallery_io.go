@@ -926,20 +926,22 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 		}
 	}
 
-	// After rebasing, flag every row whose canonical file isn't on disk in
-	// the target gallery as is_missing=1. Without this the user sees rows
-	// that look healthy in the gallery view but 404 on click; the
-	// missing:true filter then surfaces the gap so they can re-attach the
-	// files or prune the rows. Mirrors what Sync does for vanished files.
+	// After rebasing, reconcile is_missing against the target root in both
+	// directions: flag a row whose canonical file is absent (so missing:true
+	// surfaces it instead of a healthy-looking row that 404s on click), and
+	// clear a row that was exported missing but exists here (otherwise it
+	// stays hidden until a manual Sync the import flow never queues). Mirrors
+	// what Sync does for vanished/reappeared files.
 	for _, r := range imgs {
 		newCanonical := filepath.Join(root, r.folder, filepath.Base(r.canonical))
+		flag := 1
 		if _, err := os.Stat(newCanonical); err == nil {
-			continue
+			flag = 0
 		}
 		if _, err := tx.Exec(
-			`UPDATE images SET is_missing = 1 WHERE id = ?`, r.id,
+			`UPDATE images SET is_missing = ? WHERE id = ?`, flag, r.id,
 		); err != nil {
-			return fmt.Errorf("flag missing image %d: %w", r.id, err)
+			return fmt.Errorf("reconcile is_missing for image %d: %w", r.id, err)
 		}
 	}
 

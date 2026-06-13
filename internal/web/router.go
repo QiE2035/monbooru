@@ -1079,6 +1079,10 @@ func (s *Server) serveCustomCSS(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Revalidate against the file mtime so an edited stylesheet is picked
+	// up at once; a bare Last-Modified would go heuristically stale until
+	// the operator disabled the browser cache.
+	setGalleryScopedCache(w, "custom", "css", s.cfg.Server.CustomCSS)
 	http.ServeFile(w, r, s.cfg.Server.CustomCSS)
 }
 
@@ -1090,6 +1094,7 @@ func (s *Server) serveCustomLogo(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	setGalleryScopedCache(w, "custom", "logo", s.cfg.Server.BooruLogo)
 	http.ServeFile(w, r, s.cfg.Server.BooruLogo)
 }
 
@@ -1221,6 +1226,16 @@ func (s *Server) resolveMangaImage(idStr string) (string, bool) {
 		return "", false
 	}
 	if fileType != "cbz" {
+		return "", false
+	}
+	// Refuse a canonical_path that drifted outside the gallery root before
+	// the archive extractor opens it, mirroring serveImageFile.
+	absPath, err := filepath.Abs(canonPath)
+	if err != nil {
+		return "", false
+	}
+	galleryAbs, err := filepath.Abs(cx.GalleryPath)
+	if err != nil || !gallery.PathInside(galleryAbs, absPath) {
 		return "", false
 	}
 	return canonPath, true

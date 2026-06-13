@@ -182,7 +182,6 @@ func (s *Server) startBulkDelete(w http.ResponseWriter, targets []search.DeleteT
 func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 	ctx := s.jobs.Context()
 	total := len(targets)
-	folders := map[string]struct{}{}
 	byID := make(map[int64]search.DeleteTarget, len(targets))
 	ids := make([]int64, 0, len(targets))
 	for _, t := range targets {
@@ -209,9 +208,6 @@ func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 						logx.Warnf("bulk delete file %q: %v", t.CanonicalPath, err)
 					}
 				}
-				if !t.IsMissing && t.FolderPath != "" {
-					folders[t.FolderPath] = struct{}{}
-				}
 			}
 			done += len(chunk)
 			s.jobs.Update(done, total, fmt.Sprintf("deleting %d/%d…", done, total))
@@ -227,10 +223,6 @@ func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 		if err := s.tagSvc().RecalcIDs(affectedTags); err != nil {
 			logx.Warnf("bulk delete recalc IDs: %v", err)
 		}
-	}
-
-	for fp := range folders {
-		gallery.DeleteEmptyFolderIfEmpty(s.galleryPath(), fp)
 	}
 
 	if processed > 0 {
@@ -308,18 +300,11 @@ func (s *Server) batchMove(w http.ResponseWriter, r *http.Request) {
 // runBatchMove processes move targets one image at a time. Each MoveImage has
 // its own small write txn + Rename; per-image failures are logged and counted
 // but don't stop the run so a single unreadable file can't strand the rest.
-// Empty source folders are cleaned up at the end, matching single-image move.
 func (s *Server) runBatchMove(ids []int64, targetFolder string) {
 	ctx := s.jobs.Context()
 	total := len(ids)
 	moved, failed := 0, 0
 	cancelled := false
-	// Track every observed source folder, not just successful ones. A
-	// failed move can still be the last image in its source folder
-	// (because earlier successful moves emptied it), and the post-loop
-	// cleanup must consider those too. DeleteEmptyFolderIfEmpty is a
-	// no-op on non-empty folders so over-eager calls are safe.
-	observedSources := map[string]struct{}{}
 
 	s.jobs.Update(0, total, fmt.Sprintf("moving 0/%d…", total))
 
@@ -328,31 +313,15 @@ func (s *Server) runBatchMove(ids []int64, targetFolder string) {
 			cancelled = true
 			break
 		}
-		res, err := gallery.MoveImage(s.db(), s.galleryPath(), id, targetFolder)
-		if err != nil {
+		if _, err := gallery.MoveImage(s.db(), s.galleryPath(), id, targetFolder); err != nil {
 			logx.Warnf("batch move %d: %v", id, err)
 			failed++
-			// Pull the source folder from the row directly so we can
-			// still try to clean it up. MoveImage rolls back on
-			// failure but the row's folder_path is still known.
-			var oldFolder string
-			_ = s.db().Read.QueryRow(`SELECT folder_path FROM images WHERE id = ?`, id).Scan(&oldFolder)
-			if oldFolder != "" {
-				observedSources[oldFolder] = struct{}{}
-			}
 			continue
-		}
-		if res.OldFolderPath != res.NewFolderPath && res.OldFolderPath != "" {
-			observedSources[res.OldFolderPath] = struct{}{}
 		}
 		moved++
 		if (i+1)%25 == 0 || i == total-1 {
 			s.jobs.Update(i+1, total, fmt.Sprintf("moving %d/%d…", i+1, total))
 		}
-	}
-
-	for fp := range observedSources {
-		gallery.DeleteEmptyFolderIfEmpty(s.galleryPath(), fp)
 	}
 
 	if moved > 0 {

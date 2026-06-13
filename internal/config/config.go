@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/leqwin/monbooru/internal/logx"
 )
 
 // Config holds all application configuration.
@@ -80,6 +82,10 @@ type Gallery struct {
 type GalleryConfig struct {
 	WatchEnabled  bool `toml:"watch_enabled"`
 	MaxFileSizeMB int  `toml:"max_file_size_mb"`
+	// DefaultUploadFolder is the subfolder web-UI uploads land in when the
+	// upload form leaves the folder blank. Relative to the active gallery
+	// root so one global value works across galleries; empty means root.
+	DefaultUploadFolder string `toml:"default_upload_folder"`
 }
 
 type TaggerConfig struct {
@@ -87,7 +93,7 @@ type TaggerConfig struct {
 	Parallel int  `toml:"parallel"`
 	// IdleReleaseAfterMinutes is how long the cached ORT session may sit
 	// idle before the reclaim loop tears it down. 0 disables caching, so
-	// every run loads the model fresh. Default 30.
+	// every run loads the model fresh. Default 15.
 	IdleReleaseAfterMinutes int                  `toml:"idle_release_after_minutes"`
 	Aggregation             TaggerAggregationCfg `toml:"aggregation"`
 	Taggers                 []TaggerInstance     `toml:"taggers"`
@@ -265,6 +271,11 @@ func Load(path string) (*Config, error) {
 	}
 	fillDerivedPaths(cfg)
 	applyEnvOverrides(cfg)
+	// Re-validate so env overrides ride the same clamps as the TOML path
+	// (e.g. a 0/negative session lifetime doesn't slip past the clamp).
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -334,6 +345,34 @@ func fillDerivedPaths(cfg *Config) {
 	}
 }
 
+// envInt / envBool read an override, keeping cur on an empty var and warning
+// (rather than silently keeping cur) on an unparseable value.
+func envInt(key string, cur int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return cur
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		logx.Warnf("config: ignoring %s=%q: %v", key, v, err)
+		return cur
+	}
+	return n
+}
+
+func envBool(key string, cur bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return cur
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		logx.Warnf("config: ignoring %s=%q: %v", key, v, err)
+		return cur
+	}
+	return b
+}
+
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("MONBOORU_SERVER_BIND_ADDRESS"); v != "" {
 		cfg.Server.BindAddress = v
@@ -348,34 +387,14 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("MONBOORU_PATHS_MODEL_PATH"); v != "" {
 		cfg.Paths.ModelPath = v
 	}
-	if v := os.Getenv("MONBOORU_GALLERY_WATCH_ENABLED"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Gallery.WatchEnabled = b
-		}
-	}
-	if v := os.Getenv("MONBOORU_GALLERY_MAX_FILE_SIZE_MB"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Gallery.MaxFileSizeMB = n
-		}
-	}
-	if v := os.Getenv("MONBOORU_TAGGER_USE_CUDA"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Tagger.UseCUDA = b
-		}
-	}
-	if v := os.Getenv("MONBOORU_AUTH_ENABLE_PASSWORD"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Auth.EnablePassword = b
-		}
-	}
+	cfg.Gallery.WatchEnabled = envBool("MONBOORU_GALLERY_WATCH_ENABLED", cfg.Gallery.WatchEnabled)
+	cfg.Gallery.MaxFileSizeMB = envInt("MONBOORU_GALLERY_MAX_FILE_SIZE_MB", cfg.Gallery.MaxFileSizeMB)
+	cfg.Tagger.UseCUDA = envBool("MONBOORU_TAGGER_USE_CUDA", cfg.Tagger.UseCUDA)
+	cfg.Auth.EnablePassword = envBool("MONBOORU_AUTH_ENABLE_PASSWORD", cfg.Auth.EnablePassword)
 	if v := os.Getenv("MONBOORU_AUTH_PASSWORD_HASH"); v != "" {
 		cfg.Auth.PasswordHash = v
 	}
-	if v := os.Getenv("MONBOORU_AUTH_SESSION_LIFETIME_DAYS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Auth.SessionLifetimeDays = n
-		}
-	}
+	cfg.Auth.SessionLifetimeDays = envInt("MONBOORU_AUTH_SESSION_LIFETIME_DAYS", cfg.Auth.SessionLifetimeDays)
 	if v := os.Getenv("MONBOORU_AUTH_API_TOKEN"); v != "" {
 		cfg.Auth.APIToken = v
 	}

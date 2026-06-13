@@ -56,6 +56,7 @@ type Image struct {
 	SeriesOrder   *int     // operator-edited position within Series; NULL = unspecified
 	Phash         *int64   // 64-bit perceptual hash; NULL until backfilled or for rows without a decodable thumbnail
 	IngestedAt    time.Time
+	UploadBatch   *int64 // shared token across one web-UI upload POST; NULL for watcher/sync/API rows. Groups a drop into one inbox cluster.
 }
 
 // MangaMetadata mirrors sd_metadata / comfyui_metadata for the manga

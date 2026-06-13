@@ -8,7 +8,8 @@ Manage them at **Settings → Galleries**:
 
 - **Add** - give it a name and a path on disk. The Add form also
   accepts an import file (.db / .json / .zip) so you can create a
-  populated gallery in one shot.
+  populated gallery in one shot. Adding a gallery switches the active
+  gallery to it (runtime only; the default is restored on restart).
 - **Switch** - runtime only; doesn't persist.
 - **Set default** - the gallery that loads on startup.
 - **Rename** / **Delete** - type the gallery name to confirm.

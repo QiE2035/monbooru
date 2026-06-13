@@ -103,6 +103,64 @@ func TestComputeInboxClusters_MixedSizes(t *testing.T) {
 	}
 }
 
+func TestComputeInboxClusters_UploadBatch(t *testing.T) {
+	base := time.Date(2026, 5, 22, 14, 0, 0, 0, time.UTC)
+	batch := func(v int64) *int64 { return &v }
+
+	t.Run("different batches within the gap split", func(t *testing.T) {
+		// Two drops a minute apart - well under batchGapMinutes - still
+		// form two clusters because their tokens differ.
+		imgs := []models.Image{
+			{ID: 2, IngestedAt: base.Add(time.Minute), UploadBatch: batch(200)},
+			{ID: 1, IngestedAt: base, UploadBatch: batch(100)},
+		}
+		got := computeInboxClusters(imgs, "inbox:true")
+		if got[0] == nil || got[1] == nil {
+			t.Fatalf("expected two clusters, got %+v / %+v", got[0], got[1])
+		}
+	})
+
+	t.Run("same batch beyond the gap stays one", func(t *testing.T) {
+		// One drop's rows stay a single cluster even past the gap: the
+		// shared token overrides the time rule.
+		imgs := []models.Image{
+			{ID: 2, IngestedAt: base.Add(30 * time.Minute), UploadBatch: batch(100)},
+			{ID: 1, IngestedAt: base, UploadBatch: batch(100)},
+		}
+		got := computeInboxClusters(imgs, "inbox:true")
+		if got[0] == nil || got[1] != nil {
+			t.Fatalf("expected one cluster, got %+v / %+v", got[0], got[1])
+		}
+		if got[0].Count != 2 {
+			t.Errorf("count = %d, want 2", got[0].Count)
+		}
+	})
+
+	t.Run("upload row adjacent to a watcher row splits", func(t *testing.T) {
+		// An upload batch meeting a tokenless watcher/sync row breaks even
+		// within the gap.
+		imgs := []models.Image{
+			{ID: 2, IngestedAt: base.Add(time.Minute), UploadBatch: batch(100)},
+			{ID: 1, IngestedAt: base},
+		}
+		got := computeInboxClusters(imgs, "inbox:true")
+		if got[0] == nil || got[1] == nil {
+			t.Fatalf("expected two clusters, got %+v / %+v", got[0], got[1])
+		}
+	})
+
+	t.Run("tokenless rows still use the time gap", func(t *testing.T) {
+		imgs := []models.Image{
+			{ID: 2, IngestedAt: base.Add(time.Minute)},
+			{ID: 1, IngestedAt: base},
+		}
+		got := computeInboxClusters(imgs, "inbox:true")
+		if got[0] == nil || got[1] != nil {
+			t.Fatalf("expected one cluster, got %+v / %+v", got[0], got[1])
+		}
+	})
+}
+
 func TestInboxClustersActive(t *testing.T) {
 	cases := []struct {
 		name  string

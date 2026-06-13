@@ -122,6 +122,43 @@ func TestUploadPost_IngestsIntoSubfolder(t *testing.T) {
 	}
 }
 
+func TestUploadPost_DefaultUploadFolderWhenBlank(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.Gallery.DefaultUploadFolder = "incoming"
+
+	// A blank folder field falls back to the configured default.
+	req := makeUploadReq(t, srv, map[string][]byte{
+		"a.png": makePNGBytes(t, 12, 12, 10, 20, 30),
+	}, "", "")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	cx := srv.Active()
+	if _, err := os.Stat(filepath.Join(cx.GalleryPath, "incoming", "a.png")); err != nil {
+		t.Errorf("file not under the default folder: %v", err)
+	}
+	var folderPath string
+	_ = cx.DB.Read.QueryRow(`SELECT folder_path FROM images WHERE canonical_path LIKE '%a.png'`).Scan(&folderPath)
+	if folderPath != "incoming" {
+		t.Errorf("folder_path = %q, want incoming", folderPath)
+	}
+
+	// An explicit folder still wins over the default.
+	req2 := makeUploadReq(t, srv, map[string][]byte{
+		"b.png": makePNGBytes(t, 12, 12, 40, 50, 60),
+	}, "elsewhere", "")
+	w2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("explicit-folder upload: expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(cx.GalleryPath, "elsewhere", "b.png")); err != nil {
+		t.Errorf("explicit folder ignored: %v", err)
+	}
+}
+
 func TestUploadPost_AppliesTagsToEveryFile(t *testing.T) {
 	srv := newTestServer(t)
 	req := makeUploadReq(t, srv, map[string][]byte{

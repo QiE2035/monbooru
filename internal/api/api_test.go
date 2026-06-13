@@ -1392,10 +1392,9 @@ func TestListTags_WithUnknownCategory(t *testing.T) {
 	}
 }
 
-// The API delete sweeps an emptied parent folder by default, matching
-// single-image move and the web UI delete. The structured response
-// body stays opt-in via ?delete_empty_folder=true.
-func TestDeleteImage_EmptyFolderCleanedUpByDefault(t *testing.T) {
+// The API delete keeps an emptied parent folder by default, matching the
+// web UI; folder removal is opt-in via ?delete_empty_folder=true.
+func TestDeleteImage_EmptyFolderKeptByDefault(t *testing.T) {
 	env := newTestEnv(t)
 
 	subDir := filepath.Join(env.galleryDir, "cleanup_default")
@@ -1424,8 +1423,8 @@ func TestDeleteImage_EmptyFolderCleanedUpByDefault(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("default delete expected 204, got %d: %s", w.Code, w.Body.String())
 	}
-	if _, err := os.Stat(subDir); !os.IsNotExist(err) {
-		t.Errorf("empty parent folder should be removed; stat err = %v", err)
+	if _, err := os.Stat(subDir); err != nil {
+		t.Errorf("empty parent folder should be kept by default; stat err = %v", err)
 	}
 }
 

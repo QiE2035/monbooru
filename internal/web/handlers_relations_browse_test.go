@@ -215,3 +215,20 @@ func TestRelationsBrowse_Pagination(t *testing.T) {
 		t.Errorf("page 2 cards = %d, want 1", p2)
 	}
 }
+
+func TestRelationsBrowse_ClampsPastEndPage(t *testing.T) {
+	srv := newTestServer(t)
+	for i := 0; i < browseRelationsPageSize+1; i++ {
+		seedDupGroup(t, srv, fmt.Sprintf("c%03d-", i))
+	}
+	req := httptest.NewRequest("GET", "/relations/browse?kind=duplicate&page=99", nil)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d", w.Code)
+	}
+	if push := w.Header().Get("HX-Push-Url"); !strings.Contains(push, "page=2") {
+		t.Errorf("HX-Push-Url = %q, want it to carry the clamped page=2", push)
+	}
+}

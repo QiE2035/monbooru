@@ -2,8 +2,8 @@ package web
 
 import (
 	"database/sql"
-	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -79,9 +79,10 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 	if !validOrderModes[order] {
 		order = "smallest_distance_first"
 	}
-	if r.URL.Query().Get("order") != "" {
-		// Operator switched modes from the picker; persist so a
-		// reload picks up the same shuffle.
+	if validOrderModes[r.URL.Query().Get("order")] {
+		// Operator switched modes from the picker; persist so a reload picks
+		// up the same shuffle. Gate on validity so a bogus ?order= doesn't
+		// overwrite the saved preference with the fallback.
 		saveSessionOrder(cx, order)
 	}
 	ceiling := resolveCeiling(r, cx)
@@ -530,7 +531,7 @@ func writeDuplicatePostDecideHeaders(w http.ResponseWriter, cx *galleryCtx, left
 // the next pair renders. For HTMX requests, emits an HX-Redirect
 // header so the swap reloads the whole page.
 func sessionRedirect(w http.ResponseWriter, r *http.Request) {
-	dest := fmt.Sprintf("/relations/session?order=%s", r.FormValue("order"))
+	dest := "/relations/session?order=" + url.QueryEscape(r.FormValue("order"))
 	if isHTMXRequest(r) {
 		w.Header().Set("HX-Redirect", dest)
 		w.WriteHeader(http.StatusNoContent)

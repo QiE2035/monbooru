@@ -81,7 +81,10 @@ func AdjacencyCacheReleaseFan(key string) {
 }
 
 // AdjacencyCacheGet returns the cached sorted match-id list for key,
-// or ok=false on miss / expiry.
+// or ok=false on miss / expiry. The returned slice aliases the cached
+// backing array (copying it on every hit would blow the adjacency-cache
+// latency budget on large result sets), so callers must treat it as
+// read-only - never sort, append into, or mutate it.
 func AdjacencyCacheGet(key string) ([]int64, bool) {
 	if key == "" {
 		return nil, false

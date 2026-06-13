@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -367,7 +368,11 @@ func TestExtractFromPNG_NoParameters(t *testing.T) {
 func TestExtractComfyUI_WithWorkflow(t *testing.T) {
 	workflow := `{"1": {"type": "KSampler", "inputs": {"seed": 42, "steps": 20, "cfg": 7.0, "sampler_name": "euler"}}, "2": {"type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "model.safetensors"}}}`
 	buf := makePNGWithTextChunk("workflow", workflow)
-	comfy, err := extractComfyUI(bytes.NewReader(buf))
+	path := filepath.Join(t.TempDir(), "wf.png")
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, comfy, err := extractFromPNG(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +386,11 @@ func TestExtractComfyUI_WithWorkflow(t *testing.T) {
 
 func TestExtractComfyUI_NoWorkflow(t *testing.T) {
 	buf := makePNGWithTextChunk("other", "value")
-	comfy, err := extractComfyUI(bytes.NewReader(buf))
+	path := filepath.Join(t.TempDir(), "no_wf.png")
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, comfy, err := extractFromPNG(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +401,11 @@ func TestExtractComfyUI_NoWorkflow(t *testing.T) {
 
 func TestExtractComfyUI_NotPNG(t *testing.T) {
 	t.Parallel()
-	got, err := extractComfyUI(bytes.NewReader([]byte("not a png")))
+	path := filepath.Join(t.TempDir(), "notpng.png")
+	if err := os.WriteFile(path, []byte("not a png"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, got, err := extractFromPNG(path)
 	if err != nil {
 		t.Fatal(err)
 	}

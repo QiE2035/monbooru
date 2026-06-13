@@ -75,15 +75,22 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
+	srvErr := make(chan error, 1)
 	go func() {
 		logx.Infof("monbooru listening on %s", cfg.Server.BindAddress)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("FATAL HTTP server: %v", err)
+			srvErr <- err
 		}
 	}()
 
-	<-quit
-	logx.Infof("shutting down...")
+	// Report a bind failure through the channel rather than log.Fatalf so the
+	// deferred srv.Close() still flushes the DB pools and stops the watchers.
+	select {
+	case <-quit:
+		logx.Infof("shutting down...")
+	case err := <-srvErr:
+		logx.Errorf("FATAL HTTP server: %v", err)
+	}
 	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	httpSrv.Shutdown(shutCtx) //nolint:errcheck

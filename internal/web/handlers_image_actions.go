@@ -118,7 +118,7 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 		prevID, nextID = s.findAdjacentImages(id, back.Q, sortStr, orderStr, back.Seed, resolveCeiling(r, s.Active()))
 	}
 
-	result, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), id, s.tagSvc().RemoveAllTagsFromImage, s.onImageDeleteCallback())
+	_, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), id, s.tagSvc().RemoveAllTagsFromImage, s.onImageDeleteCallback())
 	if err != nil {
 		// ErrNoRows on the initial canonical-path lookup is the genuine
 		// "no such image id" case; everything else (write-pool busy,
@@ -134,10 +134,6 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Active().InvalidateCaches()
-
-	if !result.IsMissing {
-		gallery.DeleteEmptyFolderIfEmpty(s.galleryPath(), result.FolderPath)
-	}
 
 	redirectURL := ""
 	switch {
@@ -178,13 +174,23 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) promoteCanonical(w http.ResponseWriter, r *http.Request) {
+	// HTMX callers get the failure as a flash and stay on the detail page;
+	// a plain form submit falls back to http.Error.
+	fail := func(msg string, code int) {
+		if isHTMXRequest(r) {
+			setFlashHeader(w, msg, "err", nil)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Error(w, msg, code)
+	}
 	id, ok := pathInt64(w, r, "id")
 	if !ok {
 		return
 	}
 	newCanonical := r.FormValue("path")
 	if newCanonical == "" {
-		http.Error(w, "path required", http.StatusBadRequest)
+		fail("path required", http.StatusBadRequest)
 		return
 	}
 
@@ -197,15 +203,15 @@ func (s *Server) promoteCanonical(w http.ResponseWriter, r *http.Request) {
 		`SELECT COUNT(*) FROM image_paths WHERE image_id = ? AND path = ?`,
 		id, newCanonical,
 	).Scan(&aliasExists); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fail(err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if aliasExists == 0 {
-		http.Error(w, "path is not an alias of this image", http.StatusBadRequest)
+		fail("path is not an alias of this image", http.StatusBadRequest)
 		return
 	}
 	if _, statErr := os.Stat(newCanonical); statErr != nil {
-		http.Error(w, "cannot set canonical: file is missing on disk", http.StatusBadRequest)
+		fail("cannot set canonical: file is missing on disk", http.StatusBadRequest)
 		return
 	}
 
@@ -213,31 +219,31 @@ func (s *Server) promoteCanonical(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := s.db().Write.Begin()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fail(err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec(`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ?`, id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fail(err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if _, err := tx.Exec(
 		`UPDATE image_paths SET is_canonical = 1 WHERE image_id = ? AND path = ?`,
 		id, newCanonical,
 	); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fail(err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if _, err := tx.Exec(
 		`UPDATE images SET canonical_path = ?, folder_path = ? WHERE id = ?`,
 		newCanonical, newFolder, id,
 	); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fail(err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fail(err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// folder_path drives folder:/folderonly: search and the cached
@@ -246,6 +252,12 @@ func (s *Server) promoteCanonical(w http.ResponseWriter, r *http.Request) {
 	// have to drop.
 	s.Active().InvalidateCaches()
 
+	if isHTMXRequest(r) {
+		setFlashHeader(w, "Canonical path updated.", "ok", nil)
+		w.Header().Set("HX-Refresh", "true")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	http.Redirect(w, r, fmt.Sprintf("/images/%d", id), http.StatusSeeOther)
 }
 
@@ -526,15 +538,11 @@ func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, moveErr := gallery.MoveImage(s.db(), s.galleryPath(), id, targetFolder)
-	if moveErr != nil {
+	if _, moveErr := gallery.MoveImage(s.db(), s.galleryPath(), id, targetFolder); moveErr != nil {
 		s.jobs.Fail(moveErr.Error())
 		w.WriteHeader(http.StatusBadRequest)
 		writeInlineFlash(w, "err", moveErr.Error())
 		return
-	}
-	if res.OldFolderPath != res.NewFolderPath && res.OldFolderPath != "" {
-		gallery.DeleteEmptyFolderIfEmpty(s.galleryPath(), res.OldFolderPath)
 	}
 	s.Active().InvalidateCaches()
 	s.jobs.Complete("Moved image.")
@@ -566,4 +574,14 @@ func nextPrefix(prefix string) string {
 		}
 	}
 	return prefix + "\xff"
+}
+
+// nocasePrefixRange returns the half-open [lo, hi) bounds for a
+// case-insensitive prefix match. Folding to lower case keeps the
+// byte-incremented upper bound consistent with COLLATE NOCASE (which folds
+// to lower case); a raw upper-case-ending prefix like "Z" would otherwise
+// exclude every lower-case continuation.
+func nocasePrefixRange(prefix string) (lo, hi string) {
+	lo = strings.ToLower(prefix)
+	return lo, nextPrefix(lo)
 }

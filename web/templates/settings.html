@@ -48,6 +48,11 @@
             <span class="field-hint">Files larger than this are skipped during sync.</span>
           </div>
           <div class="field">
+            <label for="default_upload_folder">Default upload folder</label>
+            <input type="text" name="default_upload_folder" id="default_upload_folder" value="{{$cfg.Gallery.DefaultUploadFolder}}" placeholder="(gallery root)">
+            <span class="field-hint">Web uploads land here. Blank means the gallery root.</span>
+          </div>
+          <div class="field">
             <label>
               <input type="checkbox" name="watch_enabled" {{if $cfg.Gallery.WatchEnabled}}checked{{end}}>
               Watch gallery for new files automatically

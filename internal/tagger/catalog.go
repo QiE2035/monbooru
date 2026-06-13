@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/leqwin/monbooru/internal/logx"
 )
 
 //go:embed catalog_default.json
@@ -78,13 +80,20 @@ func LoadCatalog(modelPath string) []CatalogEntry {
 			for i, e := range out {
 				byName[e.Name] = i
 			}
+			seen := map[string]bool{}
 			for _, e := range override.Models {
 				if i, ok := byName[e.Name]; ok {
+					// Replacing a default is intended; a second override entry
+					// with the same name silently clobbers the first.
+					if seen[e.Name] {
+						logx.Warnf("models.json: duplicate tagger name %q; keeping the last entry", e.Name)
+					}
 					out[i] = e
 				} else {
 					byName[e.Name] = len(out)
 					out = append(out, e)
 				}
+				seen[e.Name] = true
 			}
 		}
 	}

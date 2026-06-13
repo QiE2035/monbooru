@@ -2003,7 +2003,13 @@ details[open] > .relations-card-summary::before { content: "▾"; }
   cursor: pointer;
 }
 
-.cat-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.cat-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+/* Reset the field-hint margin so the "(built-in)" label doesn't inflate the
+   flex line and stretch the recolor button taller than other rows. */
+.cat-actions .field-hint { margin: 0; }
+/* Invisible Rename-width spacer that keeps the recolor button on built-in
+   rows aligned with the one on renamable rows. */
+.cat-action-spacer { visibility: hidden; }
 
 .tag-actions {
   display: grid;

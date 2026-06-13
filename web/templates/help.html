@@ -191,7 +191,7 @@
       <li>Top menu: the <a href="/?q=inbox:true">Inbox (N)</a> entry jumps to the inbox view. The parenthesised count tracks the post-ceiling match count.</li>
       <li>Image detail: the <strong>In inbox</strong> / <strong>Archived</strong> button left of the favorite toggles the current image between inbox and archived.</li>
       <li>Batch surface: the gallery's Actions chooser and the selection batch bar each carry a single <strong>Toggle inbox</strong> entry that flips every targeted row (inbox rows become archived; archived become inbox).</li>
-      <li>Time clusters: while the gallery is sorted newest-first on an <code>inbox:true</code> search, contiguous ingests are grouped together.</li>
+      <li>Batch clusters: while the gallery is sorted newest-first on an <code>inbox:true</code> search, rows are grouped into batches. Each web upload (one drop) is its own batch; files that land on disk are batched by time, a new group every 15 minutes of inactivity.</li>
     </ul>
   </section>
 

@@ -71,9 +71,9 @@ func (h *Handler) relationsForImage(w http.ResponseWriter, r *http.Request) {
 }
 
 // relationsAddBody is the JSON shape POST /api/v1/relations expects.
-// Type is required. A and B are required for everything except the
-// optional `original` swap on duplicates. Direction defaults to
-// "ab" - A is the left side (original / source / newer / parent).
+// Type, A, and B are required. Direction defaults to "ab" - A is the left
+// side (original / source / newer / parent). Promotion to original is a
+// DELETE-side action (type "promote_original"), not a field here.
 type relationsAddBody struct {
 	Type      string `json:"type"`
 	A         int64  `json:"a"`
@@ -198,6 +198,12 @@ func (h *Handler) removeRelation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		err = g.RelationsSvc.DissolveDerivativeTree(body.RootID)
+	case "promote_original":
+		if body.GroupID == 0 || body.ImageID == 0 {
+			apiError(w, http.StatusBadRequest, "invalid_request", "group_id and image_id required")
+			return
+		}
+		err = g.RelationsSvc.PromoteToOriginal(body.GroupID, body.ImageID)
 	default:
 		apiError(w, http.StatusBadRequest, "invalid_request", "unknown type")
 		return

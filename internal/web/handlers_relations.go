@@ -551,8 +551,9 @@ func (s *Server) recomputePhashPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := gallery.RecomputeAndStorePhash(r.Context(), cx.DB, id, cx.ThumbnailsPath); err != nil {
 		logx.Warnf("recompute phash %d: %v", id, err)
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "phash recompute failed (is the thumbnail present?)")
+		// Flash at 200: htmx ignores HX-Trigger on a non-2xx response and
+		// the form is hx-swap="none", so a 500 here gives no feedback.
+		setFlashHeader(w, "phash recompute failed (is the thumbnail present?)", "err", nil)
 		return
 	}
 	cx.InvalidatePhashMissing()

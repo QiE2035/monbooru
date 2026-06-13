@@ -382,7 +382,7 @@ func (s *Server) settingsGalleriesPost(w http.ResponseWriter, r *http.Request) {
 		if switchErr := s.SwitchGallery(name); switchErr != nil {
 			logx.Infof("gallery %q: post-add switch skipped: %v", name, switchErr)
 		}
-		writeInlineFlash(w, "ok", "Gallery "+name+" added.")
+		writeInlineFlash(w, "ok", "Gallery "+name+" added and now active.")
 		return
 	}
 	if err != nil {
@@ -394,7 +394,7 @@ func (s *Server) settingsGalleriesPost(w http.ResponseWriter, r *http.Request) {
 		if switchErr := s.SwitchGallery(name); switchErr != nil {
 			logx.Infof("gallery %q: post-add switch skipped: %v", name, switchErr)
 		}
-		writeInlineFlash(w, "ok", "Gallery "+name+" added.")
+		writeInlineFlash(w, "ok", "Gallery "+name+" added and now active.")
 		return
 	}
 	format := formatFromExt(fh.Filename)

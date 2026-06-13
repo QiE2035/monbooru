@@ -196,6 +196,25 @@ func TestServeMangaPage_HitServesBytes(t *testing.T) {
 	}
 }
 
+func TestServeMangaPage_RejectsTraversal(t *testing.T) {
+	srv := newTestServer(t)
+	pic := tinyPNG(t, 16, 16, color.RGBA{77, 77, 77, 255})
+	id := seedManga(t, srv, "m.cbz", [][]byte{pic})
+	// Drift canonical_path outside the gallery root; the page route must
+	// 404 instead of extracting from an out-of-tree archive.
+	outside := filepath.Join(t.TempDir(), "evil.cbz")
+	cx := srv.Active()
+	if _, err := cx.DB.Write.Exec(`UPDATE images SET canonical_path = ? WHERE id = ?`, outside, id); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/images/"+strconv.FormatInt(id, 10)+"/page/1", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != 404 {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
 func TestUpdateExternal_AcceptsCollection(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedManga(t, srv, "m.cbz", [][]byte{

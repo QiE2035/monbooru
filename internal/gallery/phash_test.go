@@ -111,23 +111,6 @@ func TestComputePhashFromThumbMissing(t *testing.T) {
 	}
 }
 
-func TestPhashHamming(t *testing.T) {
-	cases := []struct {
-		a, b int64
-		want int
-	}{
-		{0, 0, 0},
-		{0, 1, 1},
-		{0, 0x3, 2},
-		{-1, 0, 64},
-	}
-	for _, tc := range cases {
-		if got := PhashHamming(tc.a, tc.b); got != tc.want {
-			t.Fatalf("PhashHamming(%x,%x) = %d, want %d", tc.a, tc.b, got, tc.want)
-		}
-	}
-}
-
 // newGradient returns a diagonal-luma RGBA gradient. Deterministic
 // per (w, h) so two calls produce identical pixel data.
 func newGradient(w, h int) *image.RGBA {

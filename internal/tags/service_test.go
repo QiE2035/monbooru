@@ -414,6 +414,13 @@ func TestRenameCategory_DuplicateNameFriendlyError(t *testing.T) {
 	}
 }
 
+func TestRenameCategory_BuiltinUsesRenameMessage(t *testing.T) {
+	_, svc := setupTestDB(t)
+	if err := svc.RenameCategory(generalCategoryID(t, svc), "renamed_general"); err != ErrBuiltinCategoryName {
+		t.Fatalf("RenameCategory(builtin) err = %v, want ErrBuiltinCategoryName", err)
+	}
+}
+
 func TestMergeTags(t *testing.T) {
 	database, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
@@ -1689,6 +1696,82 @@ func TestMergeTags_RepointsImplicationsAndKeepsImpliedRowsCleanable(t *testing.T
 	}
 	if len(imgTags) != 0 {
 		t.Errorf("image still carries %d tag(s) after removing the only user tag: %+v", len(imgTags), imgTags)
+	}
+}
+
+// A `_` in a /tags or API query prefix must match literally, not as a LIKE
+// wildcard. Before escaping, prefix "a_b" also matched "axb".
+func TestListTags_PrefixEscapesLikeWildcards(t *testing.T) {
+	_, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	if _, err := svc.GetOrCreateTag("a_b", catID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTag("axb", catID); err != nil {
+		t.Fatal(err)
+	}
+	tags, _, err := svc.ListTags(TagFilter{Prefix: "a_b", Limit: 50, ShowZero: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tags) != 1 || tags[0].Name != "a_b" {
+		names := make([]string, len(tags))
+		for i, tg := range tags {
+			names[i] = tg.Name
+		}
+		t.Errorf("prefix a_b matched %v, want only [a_b]", names)
+	}
+}
+
+// delete_all on a category must sweep the implied closure like DeleteTag,
+// so an implied child in a surviving category isn't orphaned when its only
+// parent (in the deleted category) goes away.
+func TestDeleteCategoryDeleteAll_SweepsImpliedClosure(t *testing.T) {
+	database, svc := setupTestDB(t)
+	genID := generalCategoryID(t, svc)
+	cat, err := svc.CreateCategory("doomed", "#aabbcc")
+	if err != nil {
+		t.Fatalf("CreateCategory: %v", err)
+	}
+	imgID := insertTestImage(t, database, "delall_closure")
+
+	parent, _ := svc.GetOrCreateTag("doomed_parent", cat.ID)
+	child, _ := svc.GetOrCreateTag("surviving_child", genID)
+	if _, err := svc.AddImplication(parent.ID, child.ID); err != nil {
+		t.Fatalf("AddImplication: %v", err)
+	}
+	if err := svc.AddTagToImage(imgID, parent.ID, false, nil); err != nil {
+		t.Fatalf("AddTagToImage: %v", err)
+	}
+	var implied int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND tag_id = ? AND is_implied = 1`, imgID, child.ID,
+	).Scan(&implied); err != nil {
+		t.Fatal(err)
+	}
+	if implied != 1 {
+		t.Fatalf("setup: implied child row = %d, want 1", implied)
+	}
+
+	if err := svc.DeleteCategoryMoveOrDelete(cat.ID, "delete_all", 0); err != nil {
+		t.Fatalf("DeleteCategoryMoveOrDelete: %v", err)
+	}
+
+	var rows int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND tag_id = ?`, imgID, child.ID,
+	).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Errorf("orphaned implied child row remains: %d", rows)
+	}
+	var usage int
+	if err := database.Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, child.ID).Scan(&usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage != 0 {
+		t.Errorf("child usage_count = %d, want 0", usage)
 	}
 }
 

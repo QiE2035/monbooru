@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/leqwin/monbooru/internal/config"
@@ -190,7 +191,7 @@ func resolveTaggerFiles(dir, explicitModel, explicitTags string) (string, string
 
 	if modelFile == "" {
 		switch {
-		case contains(onnxFiles, DefaultModelFile):
+		case slices.Contains(onnxFiles, DefaultModelFile):
 			modelFile = DefaultModelFile
 		case len(onnxFiles) == 1:
 			modelFile = onnxFiles[0]
@@ -236,15 +237,6 @@ func hasTaggerFiles(dir string) bool {
 			if n != "tagger.json" && n != "dispatch.json" {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-func contains(list []string, v string) bool {
-	for _, s := range list {
-		if s == v {
-			return true
 		}
 	}
 	return false

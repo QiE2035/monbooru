@@ -59,11 +59,15 @@ const (
 // under the same caps and the URL stays a renderable target=_blank
 // link. Callers pass the already-trimmed value. Shared by the create
 // (POST /images) and edit (PATCH /images/{id}) paths.
-func validateImageSource(s string) error {
-	if len(s) > maxImageSourceLen {
-		return fmt.Errorf("source must be %d characters or less", maxImageSourceLen)
+func validateMaxLen(field, s string, max int) error {
+	if len(s) > max {
+		return fmt.Errorf("%s must be %d characters or less", field, max)
 	}
 	return nil
+}
+
+func validateImageSource(s string) error {
+	return validateMaxLen("source", s, maxImageSourceLen)
 }
 
 func validateImageURL(s string) error {
@@ -81,10 +85,7 @@ func validateImageURL(s string) error {
 }
 
 func validateImageCollection(s string) error {
-	if len(s) > maxImageSourceLen {
-		return fmt.Errorf("collection must be %d characters or less", maxImageSourceLen)
-	}
-	return nil
+	return validateMaxLen("collection", s, maxImageSourceLen)
 }
 
 // validateCreateProvenance checks the optional provenance fields a
@@ -853,13 +854,12 @@ func (h *Handler) deleteImage(w http.ResponseWriter, r *http.Request) {
 	}
 	g.invalidate()
 
-	// Empty-source-folder cleanup mirrors the UI delete handler so the
-	// API doesn't leave the operator's tree with empty parent folders
-	// after a delete that emptied them. The structured 200 response
-	// (folder_deleted + folder) is opt-in via ?delete_empty_folder=true
-	// to keep the wire shape for callers that just want 204.
+	// Empty-source-folder cleanup is opt-in via ?delete_empty_folder=true.
+	// Operators create folders deliberately, so a delete leaves an emptied
+	// folder in place by default, matching the UI (§7.6); when asked, prune
+	// it and report the removal in a structured 200.
 	folderRemoved := false
-	if !result.IsMissing && result.FolderPath != "" {
+	if r.URL.Query().Get("delete_empty_folder") == "true" && !result.IsMissing && result.FolderPath != "" {
 		fullFolderPath := filepath.Join(g.GalleryPath, result.FolderPath)
 		if entries, readErr := os.ReadDir(fullFolderPath); readErr == nil && len(entries) == 0 {
 			if removeErr := os.Remove(fullFolderPath); removeErr == nil {
@@ -870,7 +870,7 @@ func (h *Handler) deleteImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if folderRemoved && r.URL.Query().Get("delete_empty_folder") == "true" {
+	if folderRemoved {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"folder_deleted": true,
 			"folder":         result.FolderPath,

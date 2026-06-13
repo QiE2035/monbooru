@@ -8,8 +8,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/leqwin/monbooru/internal/config"
+	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
@@ -101,6 +103,11 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	tagInput := strings.TrimSpace(r.FormValue("tags"))
 	autotagAfter := r.FormValue("autotag") == "on"
 	folderInput := strings.TrimSpace(r.FormValue("folder"))
+	// The inline inbox drop zone posts no folder field, so fall back to the
+	// operator's configured default; an explicit folder still wins.
+	if folderInput == "" {
+		folderInput = strings.TrimSpace(s.cfg.Gallery.DefaultUploadFolder)
+	}
 	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
 	files := r.MultipartForm.File["files"]
 	if len(files) == 0 {
@@ -195,6 +202,18 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if added > 0 {
+		// Stamp every row from this POST with one token so the inbox cluster
+		// view groups the whole drop together regardless of the time-gap rule.
+		batch := time.Now().UnixNano()
+		if err := db.Chunked(addedIDs, 500, func(chunk []int64) error {
+			placeholders, args := db.InPlaceholders(chunk)
+			_, execErr := s.db().Write.Exec(
+				`UPDATE images SET upload_batch = ? WHERE id IN (`+placeholders+`)`,
+				append([]any{batch}, args...)...)
+			return execErr
+		}); err != nil {
+			logx.Warnf("upload: stamp batch token: %v", err)
+		}
 		s.Active().InvalidateCaches()
 	}
 

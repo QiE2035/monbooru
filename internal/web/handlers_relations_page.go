@@ -819,8 +819,12 @@ func (s *Server) browseRelationsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page := 1
-	if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && p > 0 {
-		page = p
+	requested := 0
+	if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil {
+		requested, page = p, p
+	}
+	if page < 1 {
+		page = 1
 	}
 	sort := resolveBrowseSort(kind, r.URL.Query().Get("sort"))
 	ceiling := resolveCeiling(r, cx)
@@ -838,6 +842,19 @@ func (s *Server) browseRelationsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if page > totalPages {
 		page = totalPages
+	}
+	// Sync the address bar when an out-of-range ?page= was clamped, mirroring
+	// the gallery; otherwise a bookmarked deep page sticks in the URL.
+	if requested != 0 && requested != page {
+		clampedQ := r.URL.Query()
+		clampedQ.Set("page", strconv.Itoa(page))
+		clampedURL := "/relations/browse?" + clampedQ.Encode()
+		if isHTMXRequest(r) {
+			w.Header().Set("HX-Push-Url", clampedURL)
+		} else {
+			http.Redirect(w, r, clampedURL, http.StatusSeeOther)
+			return
+		}
 	}
 	offset := (page - 1) * browseRelationsPageSize
 	cards, walkedTotal, err := loadBrowseCardsByKind(cx, kind, sort, browseRelationsPageSize, offset, ceiling)

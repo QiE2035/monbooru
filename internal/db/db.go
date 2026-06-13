@@ -271,6 +271,10 @@ func Bootstrap(db *DB) error {
 	b.ensureColumn("saved_searches", "seed", `ALTER TABLE saved_searches ADD COLUMN seed TEXT NOT NULL DEFAULT ''`)
 	b.ensureColumn("image_paths", "mtime_unix", `ALTER TABLE image_paths ADD COLUMN mtime_unix INTEGER NOT NULL DEFAULT 0`)
 	b.ensureColumn("images", "phash", `ALTER TABLE images ADD COLUMN phash INTEGER`)
+	// Per-upload batch token stamped on web-UI uploads; NULL elsewhere. No
+	// index - it is only read for the page of rows the inbox cluster view
+	// already loaded, never filtered or sorted on.
+	b.ensureColumn("images", "upload_batch", `ALTER TABLE images ADD COLUMN upload_batch INTEGER`)
 	// Partial phash index: drives `phash:<hex>` exact-match seeks and
 	// the cold-path SELECT that loads the BK-tree at first relations
 	// query. Skips NULL rows (the BK-tree only carries computed phashes)

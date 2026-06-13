@@ -101,6 +101,51 @@ func TestRelationsRemove(t *testing.T) {
 	}
 }
 
+func TestRelationsPromoteOriginal(t *testing.T) {
+	env := newTestEnv(t)
+	mux := env.mux
+	a := env.createTestImage(t, "a.png", 10, 10)
+	b := env.createTestImage(t, "b.png", 11, 11)
+
+	body, _ := json.Marshal(map[string]any{"type": "duplicate", "a": a, "b": b})
+	req := httptest.NewRequest("POST", "/api/v1/relations", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup add: %d", w.Code)
+	}
+
+	get := func(id int64) dupGroupJSON {
+		req := httptest.NewRequest("GET", "/api/v1/images/"+strconv.FormatInt(id, 10)+"/relations", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		var resp relationsResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.DuplicateGroup == nil {
+			t.Fatal("no dup group")
+		}
+		return *resp.DuplicateGroup
+	}
+
+	grp := get(a)
+	target := a
+	if grp.Original == a {
+		target = b
+	}
+	remBody, _ := json.Marshal(map[string]any{"type": "promote_original", "group_id": grp.ID, "image_id": target})
+	req = httptest.NewRequest("DELETE", "/api/v1/relations", bytes.NewReader(remBody))
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("promote: got %d %s", w.Code, w.Body.String())
+	}
+	if got := get(a).Original; got != target {
+		t.Errorf("original_image_id = %d, want %d", got, target)
+	}
+}
+
 func TestRelationsAddSelfRefused(t *testing.T) {
 	env := newTestEnv(t)
 	mux := env.mux

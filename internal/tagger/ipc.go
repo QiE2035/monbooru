@@ -259,19 +259,22 @@ func (b *ipcBackend) terminate() {
 // Intermediate Stream=true frames are forwarded to onProgress (when
 // non-nil); the loop returns on the first Stream=false frame.
 func (b *ipcBackend) call(ctx context.Context, req ipcRequest, onProgress func(int, string)) (ipcResponse, error) {
+	// Capture the handle under the caller's lock so the watcher never reads
+	// b.conn while terminate() (also under b.mu) sets it to nil.
+	conn := b.conn
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
-			if conn := b.conn; conn != nil {
+			if conn != nil {
 				conn.Close()
 			}
 		case <-done:
 		}
 	}()
 
-	if err := writeFrame(b.conn, req); err != nil {
+	if err := writeFrame(conn, req); err != nil {
 		b.terminate()
 		if ctx.Err() != nil {
 			return ipcResponse{}, ctx.Err()
@@ -280,7 +283,7 @@ func (b *ipcBackend) call(ctx context.Context, req ipcRequest, onProgress func(i
 	}
 	for {
 		var resp ipcResponse
-		if err := readFrame(b.conn, &resp); err != nil {
+		if err := readFrame(conn, &resp); err != nil {
 			b.terminate()
 			if ctx.Err() != nil {
 				return ipcResponse{}, ctx.Err()

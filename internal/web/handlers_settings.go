@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/leqwin/monbooru/internal/config"
+	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/tagger"
 	"golang.org/x/crypto/bcrypt"
@@ -133,11 +134,17 @@ func (s *Server) settingsGeneralPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
+	uploadFolder := strings.TrimSpace(r.FormValue("default_upload_folder"))
+	if _, err := gallery.ResolveSubdir(s.galleryPath(), uploadFolder); err != nil {
+		writeInlineFlash(w, "err", err.Error())
+		return
+	}
 	s.cfgMu.Lock()
 	s.cfg.Gallery.WatchEnabled = r.FormValue("watch_enabled") == "on"
 	if n, err := strconv.Atoi(r.FormValue("max_file_size_mb")); err == nil && n >= 0 {
 		s.cfg.Gallery.MaxFileSizeMB = n
 	}
+	s.cfg.Gallery.DefaultUploadFolder = uploadFolder
 	if n, err := strconv.Atoi(r.FormValue("page_size")); err == nil && n > 0 {
 		s.cfg.UI.PageSize = n
 	}

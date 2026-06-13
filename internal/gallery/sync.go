@@ -511,30 +511,25 @@ func selectImagesToMarkMissing(database *db.DB, foundPaths map[string]struct{}) 
 // under the operator. The first chunk-level error short-circuits the
 // loop and surfaces alongside the partial total.
 func markImagesMissingChunked(ctx context.Context, database *db.DB, ids []int64) (int, error) {
-	const chunkSize = 500
 	marked := 0
-	for start := 0; start < len(ids); start += chunkSize {
+	err := db.Chunked(ids, 500, func(chunk []int64) error {
 		if ctx.Err() != nil {
-			return marked, ctx.Err()
+			return ctx.Err()
 		}
-		end := start + chunkSize
-		if end > len(ids) {
-			end = len(ids)
-		}
-		chunk := ids[start:end]
 		placeholders, args := db.InPlaceholders(chunk)
 		res, wErr := database.Write.Exec(
 			`UPDATE images SET is_missing = 1 WHERE id IN (`+placeholders+`)`, args...,
 		)
 		if wErr != nil {
 			logx.Warnf("sync: mark missing chunk: %v", wErr)
-			return marked, fmt.Errorf("mark missing chunk: %w", wErr)
+			return fmt.Errorf("mark missing chunk: %w", wErr)
 		}
 		if n, _ := res.RowsAffected(); n > 0 {
 			marked += int(n)
 		}
-	}
-	return marked, nil
+		return nil
+	})
+	return marked, err
 }
 
 // pruneStaleAliasPaths deletes non-canonical image_paths rows whose file
@@ -568,23 +563,18 @@ func pruneStaleAliasPaths(ctx context.Context, database *db.DB, foundPaths map[s
 	}
 	_ = rows.Close()
 
-	const chunkSize = 500
-	for start := 0; start < len(staleIDs); start += chunkSize {
+	return db.Chunked(staleIDs, 500, func(chunk []int64) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		end := start + chunkSize
-		if end > len(staleIDs) {
-			end = len(staleIDs)
-		}
-		placeholders, args := db.InPlaceholders(staleIDs[start:end])
+		placeholders, args := db.InPlaceholders(chunk)
 		if _, wErr := database.Write.Exec(
 			`DELETE FROM image_paths WHERE id IN (`+placeholders+`)`, args...,
 		); wErr != nil {
 			return fmt.Errorf("prune alias paths chunk: %w", wErr)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // applyInPlaceEdit handles the case where sync re-hashed a known path
@@ -675,35 +665,6 @@ func applyInPlaceEdit(database *db.DB, galleryPath, thumbnailsPath, path, fileTy
 	}
 	logx.Infof("sync: applied in-place edit to image id=%d at %q (sha %s)", imageID, path, newSHA)
 	return nil
-}
-
-// DeleteEmptyFolderIfEmpty removes folderPath (relative to gallery root)
-// when it's empty, then walks up the parent chain and removes any ancestors
-// that become empty too. Stops at the gallery root.
-func DeleteEmptyFolderIfEmpty(galleryPath, folderPath string) {
-	if folderPath == "" {
-		return
-	}
-	root := galleryPath
-	cur := folderPath
-	for cur != "" && cur != "." {
-		absPath := filepath.Join(root, cur)
-		entries, err := os.ReadDir(absPath)
-		if err != nil {
-			return
-		}
-		if len(entries) != 0 {
-			return
-		}
-		if removeErr := os.Remove(absPath); removeErr != nil {
-			logx.Warnf("removing empty folder %q: %v", absPath, removeErr)
-			return
-		}
-		cur = filepath.Dir(cur)
-		if cur == "." {
-			cur = ""
-		}
-	}
 }
 
 // FolderTree builds the folder tree from images. Each node's Count rolls

@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/leqwin/monbooru/internal/db"
@@ -314,6 +315,15 @@ func (s *Service) RemoveDupMember(imageID int64) error {
 	return s.inWriteTx(func(tx *sql.Tx) error { return removeDupMemberTx(tx, imageID) })
 }
 
+// nextDupOriginalQuery picks a dup group's next original (largest file,
+// then highest id) excluding one member. Shared so the unlink preview and
+// the two promotion sites stay byte-identical.
+const nextDupOriginalQuery = `SELECT m.image_id FROM dup_group_members m
+	JOIN images i ON i.id = m.image_id
+	WHERE m.group_id = ? AND m.image_id != ?
+	ORDER BY i.file_size DESC, m.image_id DESC
+	LIMIT 1`
+
 func removeDupMemberTx(tx *sql.Tx, imageID int64) error {
 	gid, err := lookupGroupIDTx(tx, "dup_group_members", imageID)
 	if err != nil {
@@ -336,13 +346,7 @@ func removeDupMemberTx(tx *sql.Tx, imageID int64) error {
 	}
 	if current == imageID {
 		var newOriginal int64
-		err := tx.QueryRow(`
-			SELECT m.image_id FROM dup_group_members m
-			JOIN images i ON i.id = m.image_id
-			WHERE m.group_id = ? AND m.image_id != ?
-			ORDER BY i.file_size DESC, m.image_id DESC
-			LIMIT 1`, gid.Int64, imageID,
-		).Scan(&newOriginal)
+		err := tx.QueryRow(nextDupOriginalQuery, gid.Int64, imageID).Scan(&newOriginal)
 		if err != nil {
 			return err
 		}
@@ -378,13 +382,7 @@ func (s *Service) NextOriginalIfRemoved(groupID, removeID int64) (int64, error) 
 		return 0, nil
 	}
 	var nextID int64
-	err := s.db.Read.QueryRow(`
-		SELECT m.image_id FROM dup_group_members m
-		JOIN images i ON i.id = m.image_id
-		WHERE m.group_id = ? AND m.image_id != ?
-		ORDER BY i.file_size DESC, m.image_id DESC
-		LIMIT 1`, groupID, removeID,
-	).Scan(&nextID)
+	err := s.db.Read.QueryRow(nextDupOriginalQuery, groupID, removeID).Scan(&nextID)
 	if err != nil {
 		return 0, err
 	}
@@ -474,22 +472,8 @@ func dedupAndSortInt64(ids []int64) []int64 {
 	if len(ids) == 0 {
 		return nil
 	}
-	out := make([]int64, 0, len(ids))
-	seen := map[int64]bool{}
-	for _, id := range ids {
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, id)
-	}
-	// Insertion-sort style for tiny N (UI sends at most a handful).
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1] > out[j]; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
-	return out
+	slices.Sort(ids)
+	return slices.Compact(ids)
 }
 
 // mergeAltGroupsTx implements MergeAltGroups inside an existing
@@ -516,7 +500,8 @@ func mergeAltGroupsTx(tx *sql.Tx, groupIDs []int64) error {
 // mergeDupGroupsTx implements MergeDupGroups inside an existing
 // transaction. groupIDs must be deduplicated and sorted ascending.
 // keepOriginalFrom names which group's original_image_id is copied
-// onto the survivor; 0 means "keep the survivor's existing original".
+// onto the survivor; 0 (or an id not in groupIDs) means "keep the
+// survivor's existing original".
 func mergeDupGroupsTx(tx *sql.Tx, groupIDs []int64, keepOriginalFrom int64) error {
 	if len(groupIDs) <= 1 {
 		return nil
@@ -1140,7 +1125,12 @@ func mergeIntoDupGroupTx(tx *sql.Tx, a, b int64) error {
 	case groupA.Int64 == groupB.Int64:
 		// Already in the same group - idempotent no-op.
 	default:
-		return mergeDupGroupsTx(tx, []int64{groupA.Int64, groupB.Int64}, 0)
+		lo, hi := groupA.Int64, groupB.Int64
+		if hi < lo {
+			lo, hi = hi, lo
+		}
+		// mergeDupGroupsTx requires ascending ids so the lowest survives.
+		return mergeDupGroupsTx(tx, []int64{lo, hi}, 0)
 	}
 	return nil
 }
@@ -1188,7 +1178,12 @@ func mergeIntoAltGroupTx(tx *sql.Tx, a, b int64) error {
 	case groupA.Int64 == groupB.Int64:
 		// Same group; no-op.
 	default:
-		return mergeAltGroupsTx(tx, []int64{groupA.Int64, groupB.Int64})
+		lo, hi := groupA.Int64, groupB.Int64
+		if hi < lo {
+			lo, hi = hi, lo
+		}
+		// mergeAltGroupsTx requires ascending ids so the lowest survives.
+		return mergeAltGroupsTx(tx, []int64{lo, hi})
 	}
 	return nil
 }
@@ -1226,13 +1221,7 @@ func handleDupGroupOnDeleteTx(tx *sql.Tx, imageID int64) error {
 		return nil
 	}
 	var newOriginal int64
-	err = tx.QueryRow(`
-		SELECT m.image_id FROM dup_group_members m
-		JOIN images i ON i.id = m.image_id
-		WHERE m.group_id = ? AND m.image_id != ?
-		ORDER BY i.file_size DESC, m.image_id DESC
-		LIMIT 1`, gid.Int64, imageID,
-	).Scan(&newOriginal)
+	err = tx.QueryRow(nextDupOriginalQuery, gid.Int64, imageID).Scan(&newOriginal)
 	if err != nil {
 		return err
 	}

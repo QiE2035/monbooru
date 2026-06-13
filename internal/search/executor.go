@@ -45,7 +45,7 @@ type Query struct {
 // the image row shape.
 const imageRowColumns = `i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
 	        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
-	        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.page_count, i.duration_seconds, i.series, i.series_order, i.phash, i.ingested_at`
+	        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.page_count, i.duration_seconds, i.series, i.series_order, i.phash, i.ingested_at, i.upload_batch`
 
 // scanImageRow reads one row in the imageRowColumns shape and folds the
 // int-as-bool flags + RFC3339 timestamps back onto the typed Image
@@ -61,7 +61,7 @@ func scanImageRow(rows *sql.Rows) (models.Image, error) {
 	if err := rows.Scan(
 		&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
 		&width, &height, &img.FileSize, &isMissing, &isFav,
-		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt,
+		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt, &img.UploadBatch,
 	); err != nil {
 		return models.Image{}, err
 	}
@@ -1677,6 +1677,43 @@ func fastVisibleCount(database *db.DB) (int, bool) {
 	return n, true
 }
 
+// orderCursor builds the cursor predicates and sort clauses for sort=order,
+// matching buildOrder's (series, series_order NULLS-last, id) total order.
+// before/after match the rows positioned before/after the current row; fwd
+// and rev are the forward and reversed ORDER BY for the LIMIT-1 seeks.
+func orderCursor(series string, order sql.NullInt64, id int64, desc bool) (before, after, fwd, rev string, beforeArgs, afterArgs []any) {
+	if desc {
+		fwd = "ORDER BY i.series DESC, i.series_order IS NULL, i.series_order DESC, i.id DESC"
+		rev = "ORDER BY i.series ASC, i.series_order IS NULL DESC, i.series_order ASC, i.id ASC"
+		if order.Valid {
+			before = "(i.series > ? OR (i.series = ? AND i.series_order IS NOT NULL AND (i.series_order, i.id) > (?, ?)))"
+			after = "(i.series < ? OR (i.series = ? AND (i.series_order IS NULL OR (i.series_order, i.id) < (?, ?))))"
+			beforeArgs = []any{series, series, order.Int64, id}
+			afterArgs = []any{series, series, order.Int64, id}
+		} else {
+			before = "(i.series > ? OR (i.series = ? AND (i.series_order IS NOT NULL OR (i.series_order IS NULL AND i.id > ?))))"
+			after = "(i.series < ? OR (i.series = ? AND i.series_order IS NULL AND i.id < ?))"
+			beforeArgs = []any{series, series, id}
+			afterArgs = []any{series, series, id}
+		}
+		return
+	}
+	fwd = "ORDER BY i.series ASC, i.series_order IS NULL, i.series_order ASC, i.id ASC"
+	rev = "ORDER BY i.series DESC, i.series_order IS NULL DESC, i.series_order DESC, i.id DESC"
+	if order.Valid {
+		before = "(i.series < ? OR (i.series = ? AND i.series_order IS NOT NULL AND (i.series_order, i.id) < (?, ?)))"
+		after = "(i.series > ? OR (i.series = ? AND (i.series_order IS NULL OR (i.series_order, i.id) > (?, ?))))"
+		beforeArgs = []any{series, series, order.Int64, id}
+		afterArgs = []any{series, series, order.Int64, id}
+	} else {
+		before = "(i.series < ? OR (i.series = ? AND (i.series_order IS NOT NULL OR (i.series_order IS NULL AND i.id < ?))))"
+		after = "(i.series > ? OR (i.series = ? AND i.series_order IS NULL AND i.id > ?))"
+		beforeArgs = []any{series, series, id}
+		afterArgs = []any{series, series, id}
+	}
+	return
+}
+
 // ExecuteAdjacent returns the image IDs immediately before and after
 // currentID under q's sort and filter. Uses cursor-style LIMIT 1
 // queries so cost is O(log n) via the ingested_at / file_size indexes,
@@ -1696,9 +1733,11 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 
 	var ingestedAt string
 	var fileSize int64
+	var series string
+	var seriesOrder sql.NullInt64
 	if err := database.Read.QueryRow(
-		`SELECT ingested_at, file_size FROM images WHERE id = ?`, currentID,
-	).Scan(&ingestedAt, &fileSize); err != nil {
+		`SELECT ingested_at, file_size, series, series_order FROM images WHERE id = ?`, currentID,
+	).Scan(&ingestedAt, &fileSize, &series, &seriesOrder); err != nil {
 		return nil, nil, nil
 	}
 
@@ -1768,6 +1807,10 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 	// a UNION ALL on idx_images_folder_nocase_visible; the per-image
 	// where is dropped so the legs don't double-count the placeholders.
 	folderActive, folderEq, folderRangeLo, folderRangeHi := detectPureFolder(q.Expr)
+	// sort=order has no single key column for the folder UNION-ALL legs.
+	if q.Sort == "order" {
+		folderActive = false
+	}
 	if folderActive {
 		where = ""
 		args = args[:0]
@@ -1782,40 +1825,49 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 
 	var keyCol string
 	var keyVal any
-	switch q.Sort {
-	case "random":
-		if q.RandomSeed == 0 {
-			return nil, nil, nil
-		}
-		// SAFETY: %d only produces digits; literal seed interpolation
-		// is injection-safe. db.RandomSortKey mirrors random_key()'s
-		// hash so the cursor compares Go-computed and SQLite-computed
-		// keys against the same scrambled space.
-		keyCol = fmt.Sprintf("random_key(i.id, %d)", q.RandomSeed)
-		keyVal = int64(db.RandomSortKey(currentID, q.RandomSeed))
-	case "filesize":
-		keyCol = "i.file_size"
-		keyVal = fileSize
-	default: // "newest"
-		keyCol = "i.ingested_at"
-		keyVal = ingestedAt
-	}
-
-	// In desc order prev is the next-larger neighbour; in asc/random it's
-	// the next-smaller one. Row-value comparison `(A, id) < (?, ?)`
-	// seek-prunes against the (A, id) index; the equivalent OR shape
-	// does not.
 	var prevCmp, nextCmp, prevSort, nextSort string
-	if q.Order == "asc" || q.Sort == "random" {
-		prevCmp = fmt.Sprintf("(%s, i.id) < (?, ?)", keyCol)
-		nextCmp = fmt.Sprintf("(%s, i.id) > (?, ?)", keyCol)
-		prevSort = fmt.Sprintf("ORDER BY %s DESC, i.id DESC", keyCol)
-		nextSort = fmt.Sprintf("ORDER BY %s ASC, i.id ASC", keyCol)
+	var prevArgs, nextArgs []any
+	if q.Sort == "order" {
+		before, after, fwd, rev, bArgs, aArgs := orderCursor(series, seriesOrder, currentID, q.Order == "desc")
+		prevCmp, prevSort, prevArgs = before, rev, bArgs
+		nextCmp, nextSort, nextArgs = after, fwd, aArgs
 	} else {
-		prevCmp = fmt.Sprintf("(%s, i.id) > (?, ?)", keyCol)
-		nextCmp = fmt.Sprintf("(%s, i.id) < (?, ?)", keyCol)
-		prevSort = fmt.Sprintf("ORDER BY %s ASC, i.id ASC", keyCol)
-		nextSort = fmt.Sprintf("ORDER BY %s DESC, i.id DESC", keyCol)
+		switch q.Sort {
+		case "random":
+			if q.RandomSeed == 0 {
+				return nil, nil, nil
+			}
+			// SAFETY: %d only produces digits; literal seed interpolation
+			// is injection-safe. db.RandomSortKey mirrors random_key()'s
+			// hash so the cursor compares Go-computed and SQLite-computed
+			// keys against the same scrambled space.
+			keyCol = fmt.Sprintf("random_key(i.id, %d)", q.RandomSeed)
+			keyVal = int64(db.RandomSortKey(currentID, q.RandomSeed))
+		case "filesize":
+			keyCol = "i.file_size"
+			keyVal = fileSize
+		default: // "newest"
+			keyCol = "i.ingested_at"
+			keyVal = ingestedAt
+		}
+
+		// In desc order prev is the next-larger neighbour; in asc/random it's
+		// the next-smaller one. Row-value comparison `(A, id) < (?, ?)`
+		// seek-prunes against the (A, id) index; the equivalent OR shape
+		// does not.
+		if q.Order == "asc" || q.Sort == "random" {
+			prevCmp = fmt.Sprintf("(%s, i.id) < (?, ?)", keyCol)
+			nextCmp = fmt.Sprintf("(%s, i.id) > (?, ?)", keyCol)
+			prevSort = fmt.Sprintf("ORDER BY %s DESC, i.id DESC", keyCol)
+			nextSort = fmt.Sprintf("ORDER BY %s ASC, i.id ASC", keyCol)
+		} else {
+			prevCmp = fmt.Sprintf("(%s, i.id) > (?, ?)", keyCol)
+			nextCmp = fmt.Sprintf("(%s, i.id) < (?, ?)", keyCol)
+			prevSort = fmt.Sprintf("ORDER BY %s ASC, i.id ASC", keyCol)
+			nextSort = fmt.Sprintf("ORDER BY %s DESC, i.id DESC", keyCol)
+		}
+		prevArgs = []any{keyVal, currentID}
+		nextArgs = []any{keyVal, currentID}
 	}
 
 	// Pin the partial sort index when nothing in the query has its own
@@ -1825,7 +1877,7 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 	// Execute.
 	indexHint := sortIndexHint(q.Expr, q.Sort, hasMissingFilter, ceilingRewrote)
 
-	lookup := func(cursorCmp, sort string) *int64 {
+	lookup := func(cursorCmp, sort string, cursorArgs []any) *int64 {
 		var sql string
 		var qargs []any
 		if folderActive {
@@ -1844,15 +1896,15 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 			// Leg 1 (equality): folder val, plus the shared where/cursor args
 			qargs = append(qargs, folderEq)
 			qargs = append(qargs, args...)
-			qargs = append(qargs, keyVal, currentID)
+			qargs = append(qargs, cursorArgs...)
 			// Leg 2 (range): folder lo, folder hi, plus the shared args
 			qargs = append(qargs, folderRangeLo, folderRangeHi)
 			qargs = append(qargs, args...)
-			qargs = append(qargs, keyVal, currentID)
+			qargs = append(qargs, cursorArgs...)
 		} else {
-			qargs = make([]any, 0, len(args)+2)
+			qargs = make([]any, 0, len(args)+len(cursorArgs))
 			qargs = append(qargs, args...)
-			qargs = append(qargs, keyVal, currentID)
+			qargs = append(qargs, cursorArgs...)
 			sql = fmt.Sprintf("SELECT i.id FROM images i%s WHERE %s AND %s %s LIMIT 1",
 				indexHint, where, cursorCmp, sort)
 		}
@@ -1862,7 +1914,7 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		}
 		return &id
 	}
-	return lookup(prevCmp, prevSort), lookup(nextCmp, nextSort), nil
+	return lookup(prevCmp, prevSort, prevArgs), lookup(nextCmp, nextSort, nextArgs), nil
 }
 
 // RankInQuery returns the 0-indexed position currentID would occupy in
@@ -1892,9 +1944,11 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 
 	var ingestedAt string
 	var fileSize int64
+	var series string
+	var seriesOrder sql.NullInt64
 	if err := database.Read.QueryRowContext(ctx,
-		`SELECT ingested_at, file_size FROM images WHERE id = ?`, currentID,
-	).Scan(&ingestedAt, &fileSize); err != nil {
+		`SELECT ingested_at, file_size, series, series_order FROM images WHERE id = ?`, currentID,
+	).Scan(&ingestedAt, &fileSize, &series, &seriesOrder); err != nil {
 		return -1, err
 	}
 
@@ -1913,6 +1967,10 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 	// full idx_images_folder_nocase_visible scan the OR-of-(equality,
 	// range) shape forced.
 	folderActive, folderEq, folderRangeLo, folderRangeHi := detectPureFolder(q.Expr)
+	// sort=order has no single key column for the folder UNION-ALL legs.
+	if q.Sort == "order" {
+		folderActive = false
+	}
 	if folderActive {
 		where = ""
 		args = args[:0]
@@ -1922,34 +1980,42 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 
 	var keyCol string
 	var keyVal any
-	switch q.Sort {
-	case "random":
-		if q.RandomSeed == 0 {
-			return -1, nil
-		}
-		// SAFETY: %d only produces digits; literal seed interpolation
-		// is injection-safe. db.RandomSortKey mirrors random_key()
-		// so the rank COUNT compares Go-computed and SQLite-computed
-		// keys against the same scrambled space.
-		keyCol = fmt.Sprintf("random_key(i.id, %d)", q.RandomSeed)
-		keyVal = int64(db.RandomSortKey(currentID, q.RandomSeed))
-	case "filesize":
-		keyCol = "i.file_size"
-		keyVal = fileSize
-	default: // "newest"
-		keyCol = "i.ingested_at"
-		keyVal = ingestedAt
-	}
-
-	// Match ExecuteAdjacent's prev-direction comparison: under DESC
-	// order the rows that come before currentID in the result are the
-	// ones with a larger (key, id); under ASC / random they're the
-	// ones with a smaller (key, id).
 	var beforeCmp string
-	if q.Order == "asc" || q.Sort == "random" {
-		beforeCmp = fmt.Sprintf("(%s, i.id) < (?, ?)", keyCol)
+	var beforeArgs []any
+	if q.Sort == "order" {
+		before, _, _, _, bArgs, _ := orderCursor(series, seriesOrder, currentID, q.Order == "desc")
+		beforeCmp = before
+		beforeArgs = bArgs
 	} else {
-		beforeCmp = fmt.Sprintf("(%s, i.id) > (?, ?)", keyCol)
+		switch q.Sort {
+		case "random":
+			if q.RandomSeed == 0 {
+				return -1, nil
+			}
+			// SAFETY: %d only produces digits; literal seed interpolation
+			// is injection-safe. db.RandomSortKey mirrors random_key()
+			// so the rank COUNT compares Go-computed and SQLite-computed
+			// keys against the same scrambled space.
+			keyCol = fmt.Sprintf("random_key(i.id, %d)", q.RandomSeed)
+			keyVal = int64(db.RandomSortKey(currentID, q.RandomSeed))
+		case "filesize":
+			keyCol = "i.file_size"
+			keyVal = fileSize
+		default: // "newest"
+			keyCol = "i.ingested_at"
+			keyVal = ingestedAt
+		}
+
+		// Match ExecuteAdjacent's prev-direction comparison: under DESC
+		// order the rows that come before currentID in the result are the
+		// ones with a larger (key, id); under ASC / random they're the
+		// ones with a smaller (key, id).
+		if q.Order == "asc" || q.Sort == "random" {
+			beforeCmp = fmt.Sprintf("(%s, i.id) < (?, ?)", keyCol)
+		} else {
+			beforeCmp = fmt.Sprintf("(%s, i.id) > (?, ?)", keyCol)
+		}
+		beforeArgs = []any{keyVal, currentID}
 	}
 
 	indexHint := sortIndexHint(q.Expr, q.Sort, hasMissingFilter, ceilingRewrote)
@@ -1966,18 +2032,18 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 		qargs = make([]any, 0, len(args)*2+8)
 		qargs = append(qargs, folderEq)
 		qargs = append(qargs, args...)
-		qargs = append(qargs, keyVal, currentID)
+		qargs = append(qargs, beforeArgs...)
 		qargs = append(qargs, folderRangeLo, folderRangeHi)
 		qargs = append(qargs, args...)
-		qargs = append(qargs, keyVal, currentID)
+		qargs = append(qargs, beforeArgs...)
 	} else {
 		sql = fmt.Sprintf(
 			"SELECT COUNT(*) FROM images i%s WHERE %s AND %s",
 			indexHint, where, beforeCmp,
 		)
-		qargs = make([]any, 0, len(args)+2)
+		qargs = make([]any, 0, len(args)+len(beforeArgs))
 		qargs = append(qargs, args...)
-		qargs = append(qargs, keyVal, currentID)
+		qargs = append(qargs, beforeArgs...)
 	}
 
 	var rank int
@@ -2325,8 +2391,8 @@ func (b *whereBuilder) resolveRatingIDs() {
 	if b.ratingResolved {
 		return
 	}
-	b.ratingResolved = true
 	if b.db == nil {
+		b.ratingResolved = true
 		return
 	}
 	rows, err := b.db.Read.Query(
@@ -2344,13 +2410,20 @@ func (b *whereBuilder) resolveRatingIDs() {
 	for rows.Next() {
 		var name string
 		var id, count int64
-		if err := rows.Scan(&name, &id, &count); err == nil {
-			ids[name] = id
-			usage[name] = count
+		if err := rows.Scan(&name, &id, &count); err != nil {
+			return
 		}
+		ids[name] = id
+		usage[name] = count
+	}
+	// Only latch the cache as authoritative on a clean read - a torn
+	// cursor must not leave a partial map that turns rating:X into 1=0.
+	if err := rows.Err(); err != nil {
+		return
 	}
 	b.ratingIDs = ids
 	b.ratingUsage = usage
+	b.ratingResolved = true
 }
 
 // resolveCategoryTagByName reads the canonical tag_ids that match

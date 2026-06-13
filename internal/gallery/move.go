@@ -9,11 +9,9 @@ import (
 	"github.com/leqwin/monbooru/internal/logx"
 )
 
-// MoveImageResult summarises a successful move so the caller can clean up the
-// old parent directory and invalidate caches without re-querying.
+// MoveImageResult reports the new location of a moved image so the caller
+// can render it and invalidate caches without re-querying.
 type MoveImageResult struct {
-	OldCanonicalPath string
-	OldFolderPath    string
 	NewCanonicalPath string
 	NewFolderPath    string
 }
@@ -34,6 +32,12 @@ func MoveImage(database *db.DB, galleryPath string, id int64, targetFolder strin
 	if isMissing == 1 {
 		return nil, fmt.Errorf("image %d is missing from disk", id)
 	}
+	// Refuse a source whose canonical_path drifted outside the gallery
+	// root, mirroring DeleteImage; the destination is already root-bounded
+	// by ResolveSubdir.
+	if galleryPath != "" && !PathInside(galleryPath, oldCanonical) {
+		return nil, fmt.Errorf("refusing to move %q outside gallery root %q", oldCanonical, galleryPath)
+	}
 
 	destDir, err := ResolveSubdir(galleryPath, targetFolder)
 	if err != nil {
@@ -49,8 +53,6 @@ func MoveImage(database *db.DB, galleryPath string, id int64, targetFolder strin
 
 	if newFolder == oldFolder {
 		return &MoveImageResult{
-			OldCanonicalPath: oldCanonical,
-			OldFolderPath:    oldFolder,
 			NewCanonicalPath: oldCanonical,
 			NewFolderPath:    oldFolder,
 		}, nil
@@ -113,8 +115,6 @@ func MoveImage(database *db.DB, galleryPath string, id int64, targetFolder strin
 	}
 
 	return &MoveImageResult{
-		OldCanonicalPath: oldCanonical,
-		OldFolderPath:    oldFolder,
 		NewCanonicalPath: newPath,
 		NewFolderPath:    newFolder,
 	}, nil

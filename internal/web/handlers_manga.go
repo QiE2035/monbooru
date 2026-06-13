@@ -49,16 +49,25 @@ type pagesGridData struct {
 // readerHandler serves /images/{id}/read?page=N. Validates the row is
 // a manga, clamps page to [1, page_count], and renders the reader
 // template.
-func (s *Server) readerHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
+// loadMangaImage parses {id}, loads the image, and 404s unless it is a
+// readable cbz. Returns ok=false (the 404 is already written) otherwise.
+func (s *Server) loadMangaImage(w http.ResponseWriter, r *http.Request) (*models.Image, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		s.notFoundHandler(w, r)
-		return
+		return nil, false
 	}
 	img, err := loadImage(r.Context(), s.db(), id)
 	if err != nil || img.FileType != models.FileTypeCBZ || img.PageCount == nil || *img.PageCount < 1 {
 		s.notFoundHandler(w, r)
+		return nil, false
+	}
+	return img, true
+}
+
+func (s *Server) readerHandler(w http.ResponseWriter, r *http.Request) {
+	img, ok := s.loadMangaImage(w, r)
+	if !ok {
 		return
 	}
 	pageCount := *img.PageCount
@@ -111,15 +120,8 @@ func (s *Server) readerHandler(w http.ResponseWriter, r *http.Request) {
 // pagesGridHandler serves /images/{id}/pages. Renders a thumbnail grid
 // of every page; clicking a cell opens the reader at that page.
 func (s *Server) pagesGridHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		s.notFoundHandler(w, r)
-		return
-	}
-	img, err := loadImage(r.Context(), s.db(), id)
-	if err != nil || img.FileType != models.FileTypeCBZ || img.PageCount == nil || *img.PageCount < 1 {
-		s.notFoundHandler(w, r)
+	img, ok := s.loadMangaImage(w, r)
+	if !ok {
 		return
 	}
 	back := parseBackContext(r)
@@ -127,7 +129,7 @@ func (s *Server) pagesGridHandler(w http.ResponseWriter, r *http.Request) {
 	// itself; the back link from the grid lands on the detail page,
 	// not back on the grid.
 	backQS, backKVQS := back.ReaderQS(false)
-	_, imageTags, _ := s.tagSvc().GetImageTags(id)
+	_, imageTags, _ := s.tagSvc().GetImageTags(img.ID)
 	data := pagesGridData{
 		baseData:  s.base(r, "gallery", filepath.Base(img.CanonicalPath)+" - Pages - "+s.booruName()),
 		Image:     *img,

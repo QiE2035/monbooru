@@ -110,10 +110,14 @@ func (s *Server) runScheduledActions() {
 
 	started := time.Now()
 	var failures []string
+	cancelled := false
 	defer func() {
 		info := "OK"
-		if len(failures) > 0 {
+		switch {
+		case len(failures) > 0:
 			info = strings.Join(failures, "; ")
+		case cancelled:
+			info = "cancelled"
 		}
 		s.recordScheduleRun(started, time.Since(started), info)
 	}()
@@ -138,6 +142,7 @@ func (s *Server) runScheduledActions() {
 	abort := func() bool {
 		if !s.jobs.IsScheduleHeld() {
 			logx.Infof("scheduler: run cancelled mid-flight; remaining phases skipped")
+			cancelled = true
 			return true
 		}
 		return false

@@ -77,7 +77,12 @@ CREATE TABLE IF NOT EXISTS images (
     -- visual surface. Added by ensureColumn on existing libraries;
     -- the matching idx_images_phash is created in db.Bootstrap.
     phash          INTEGER,
-    ingested_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    ingested_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    -- Upload-batch token (UnixNano) shared by every row from one web-UI
+    -- upload POST; NULL for watcher / sync / API rows. Lets the inbox
+    -- cluster view group a single drop as one batch regardless of the
+    -- 15-minute time-gap rule. Added by ensureColumn on existing libraries.
+    upload_batch   INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS image_paths (

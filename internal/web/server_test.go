@@ -103,6 +103,35 @@ func TestCustomCSS_ServesConfiguredFile(t *testing.T) {
 	}
 }
 
+func TestCustomCSS_RevalidationHeaders(t *testing.T) {
+	srv := newTestServer(t)
+	cssPath := filepath.Join(t.TempDir(), "custom.css")
+	if err := os.WriteFile(cssPath, []byte(`:root{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.Server.CustomCSS = cssPath
+
+	req := httptest.NewRequest("GET", "/custom.css", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if cc := w.Header().Get("Cache-Control"); cc != "private, no-cache" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "private, no-cache")
+	}
+	etag := w.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("expected an ETag so the browser revalidates an edited stylesheet")
+	}
+
+	req2 := httptest.NewRequest("GET", "/custom.css", nil)
+	req2.Header.Set("If-None-Match", etag)
+	w2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w2, req2)
+	if w2.Code != http.StatusNotModified {
+		t.Errorf("conditional GET with the ETag expected 304, got %d", w2.Code)
+	}
+}
+
 // TestCustomCSSPathAllowed: the path scope check must accept paths
 // under config dir / /config / /data and reject every other absolute
 // or relative path - including the operator footgun /etc/passwd.
@@ -614,9 +643,8 @@ func TestGalleryHTMXPartialReturnsGrid(t *testing.T) {
 }
 
 func TestGalleryEmptyFolderDialogRendered(t *testing.T) {
-	// Empty folders are deleted automatically without a dialog prompt;
-	// verify the page still loads cleanly when no `empty_folder` param is
-	// supplied.
+	// Emptied folders are kept, not auto-deleted; this is just a smoke
+	// check that the gallery still renders cleanly with no special params.
 	srv := newTestServer(t)
 	h := srv.Handler()
 

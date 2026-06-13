@@ -21,6 +21,7 @@ var (
 	ErrTagNotFound          = errors.New("tag not found")
 	ErrCategoryNotFound     = errors.New("category not found")
 	ErrBuiltinCategory      = errors.New("cannot delete built-in category")
+	ErrBuiltinCategoryName  = errors.New("cannot rename a built-in category")
 	ErrReservedCategoryName = errors.New("this name is used by a search filter (e.g. " + reservedCategoryHint() + ")")
 	ErrNonCanonicalRating   = errors.New("rating category accepts only general, sensitive, questionable, explicit")
 	ErrRatingTagImmutable   = errors.New("rating category tags cannot be renamed, merged, deleted, or moved")
@@ -440,7 +441,7 @@ func (s *Service) RenameCategory(id int64, newName string) error {
 		return ErrCategoryNotFound
 	}
 	if isBuiltin == 1 {
-		return ErrBuiltinCategory
+		return ErrBuiltinCategoryName
 	}
 	_, err := s.db.Write.Exec(
 		`UPDATE tag_categories SET name = ? WHERE id = ?`, newName, id,
@@ -492,6 +493,7 @@ func (s *Service) DeleteCategoryMoveOrDelete(id int64, action string, targetID i
 		return ErrBuiltinCategory
 	}
 
+	var closure []int64
 	switch action {
 	case "delete_all":
 		rows, err := tx.Query(`SELECT id FROM tags WHERE category_id = ?`, id)
@@ -503,10 +505,12 @@ func (s *Service) DeleteCategoryMoveOrDelete(id int64, action string, targetID i
 		if scanErr != nil {
 			return scanErr
 		}
-		for _, tid := range tagIDs {
-			if _, err := tx.Exec(`DELETE FROM image_tags WHERE tag_id = ?`, tid); err != nil {
-				return err
-			}
+		// Route through the same closure sweep DeleteTag uses so an implied
+		// child in a surviving category isn't orphaned when its only parent
+		// here is deleted.
+		closure, err = deleteTagsTx(tx, tagIDs)
+		if err != nil {
+			return err
 		}
 		if _, err := tx.Exec(`DELETE FROM tags WHERE category_id = ?`, id); err != nil {
 			return err
@@ -530,7 +534,13 @@ func (s *Service) DeleteCategoryMoveOrDelete(id int64, action string, targetID i
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if len(closure) > 0 {
+		return s.RecalcIDs(closure)
+	}
+	return nil
 }
 
 // ValidateTagName lowercases + trims name and checks it against the
@@ -648,8 +658,8 @@ func tagFilterWhere(filter TagFilter) (string, []any) {
 		args = append(args, *filter.CategoryID)
 	}
 	if filter.Prefix != "" {
-		where += " AND t.name LIKE ?"
-		args = append(args, filter.Prefix+"%")
+		where += " AND t.name LIKE ? ESCAPE '\\'"
+		args = append(args, db.EscapeLike(filter.Prefix)+"%")
 	}
 	switch filter.Origin {
 	case "auto":
@@ -1325,6 +1335,27 @@ func (s *Service) RemoveTagFromImage(imageID, tagID int64) error {
 // a single write-pool transaction, mirroring AddTagsToOneImage's batch
 // shape. Per-id implied-closure cleanup is preserved; the txn rollback
 // covers partial failures so the row's tag state stays consistent.
+// scanTagIDsTx runs query within tx and collects its tag_id column.
+func scanTagIDsTx(tx *sql.Tx, query string, args ...any) ([]int64, error) {
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	ids, scanErr := db.ScanIDs(rows)
+	_ = rows.Close()
+	return ids, scanErr
+}
+
+// removeTagIDsFromImageTx removes each tag from imageID inside tx.
+func removeTagIDsFromImageTx(tx *sql.Tx, imageID int64, tagIDs []int64) error {
+	for _, tagID := range tagIDs {
+		if err := removeTagFromImageTx(tx, imageID, tagID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) RemoveTagsFromOneImage(imageID int64, tagIDs []int64) error {
 	if len(tagIDs) == 0 {
 		return nil
@@ -1334,10 +1365,8 @@ func (s *Service) RemoveTagsFromOneImage(imageID int64, tagIDs []int64) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, tagID := range tagIDs {
-		if err := removeTagFromImageTx(tx, imageID, tagID); err != nil {
-			return err
-		}
+	if err := removeTagIDsFromImageTx(tx, imageID, tagIDs); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -1421,19 +1450,12 @@ func (s *Service) RemoveUserTagsFromImage(imageID int64) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	rows, err := tx.Query(`SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 0`, imageID)
+	tagIDs, err := scanTagIDsTx(tx, `SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 0`, imageID)
 	if err != nil {
 		return err
 	}
-	tagIDs, scanErr := db.ScanIDs(rows)
-	_ = rows.Close()
-	if scanErr != nil {
-		return scanErr
-	}
-	for _, tagID := range tagIDs {
-		if err := removeTagFromImageTx(tx, imageID, tagID); err != nil {
-			return err
-		}
+	if err := removeTagIDsFromImageTx(tx, imageID, tagIDs); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -1448,31 +1470,19 @@ func (s *Service) RemoveAutoTagsFromImage(imageID int64, taggerNames []string) e
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var (
-		rows *sql.Rows
-	)
+	var tagIDs []int64
 	if len(taggerNames) == 0 {
-		rows, err = tx.Query(`SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 1`, imageID)
+		tagIDs, err = scanTagIDsTx(tx, `SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 1`, imageID)
 	} else {
 		placeholders, nameArgs := db.InPlaceholders(taggerNames)
 		args := append([]any{imageID}, nameArgs...)
-		rows, err = tx.Query(
-			`SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 1 AND tagger_name IN (`+placeholders+`)`,
-			args...,
-		)
+		tagIDs, err = scanTagIDsTx(tx, `SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 1 AND tagger_name IN (`+placeholders+`)`, args...)
 	}
 	if err != nil {
 		return err
 	}
-	tagIDs, scanErr := db.ScanIDs(rows)
-	_ = rows.Close()
-	if scanErr != nil {
-		return scanErr
-	}
-	for _, tagID := range tagIDs {
-		if err := removeTagFromImageTx(tx, imageID, tagID); err != nil {
-			return err
-		}
+	if err := removeTagIDsFromImageTx(tx, imageID, tagIDs); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -1484,14 +1494,9 @@ func (s *Service) RemoveAllTagsFromImage(imageID int64) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	rows, err := tx.Query(`SELECT tag_id FROM image_tags WHERE image_id = ?`, imageID)
+	tagIDs, err := scanTagIDsTx(tx, `SELECT tag_id FROM image_tags WHERE image_id = ?`, imageID)
 	if err != nil {
 		return err
-	}
-	tagIDs, scanErr := db.ScanIDs(rows)
-	_ = rows.Close()
-	if scanErr != nil {
-		return scanErr
 	}
 
 	if len(tagIDs) > 0 {
@@ -1947,25 +1952,21 @@ func (s *Service) SuggestTagsInCategory(prefix, categoryName string, limit int) 
 // names are part of the data model) so the row itself stays. Delete on
 // one of them strips its image_tags rows instead - the user-visible
 // "remove this rating from every image" the UI exposes.
-func (s *Service) DeleteTag(id int64) error {
-	if s.isRatingTag(id) {
-		return s.stripTagFromAllImages(id)
-	}
-	tx, err := s.db.Write.Begin()
+// deleteTagsTx strips ids from every image - including each id's transitive
+// implied closure - and removes their aliases, inside tx. It does not delete
+// the tag rows themselves: the single-tag and whole-category callers delete
+// those by different keys. The returned closure is the set of implied
+// descendants the caller must RecalcIDs after commit.
+func deleteTagsTx(tx *sql.Tx, ids []int64) ([]int64, error) {
+	closure, err := transitiveImpliedTx(tx, ids)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("walk implied closure: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	closure, err := transitiveImpliedTx(tx, []int64{id})
-	if err != nil {
-		return fmt.Errorf("walk implied closure: %w", err)
+	for _, id := range ids {
+		if _, err := tx.Exec(`DELETE FROM image_tags WHERE tag_id = ?`, id); err != nil {
+			return nil, fmt.Errorf("strip parent image_tags: %w", err)
+		}
 	}
-
-	if _, err := tx.Exec(`DELETE FROM image_tags WHERE tag_id = ?`, id); err != nil {
-		return fmt.Errorf("strip parent image_tags: %w", err)
-	}
-
 	// Tier order: transitiveImpliedTx returns BFS, so dropping rows in
 	// that order makes deeper tiers see the now-gone upstream rows when
 	// they re-check whether any remaining parent on the image still
@@ -1981,12 +1982,30 @@ func (s *Service) DeleteTag(id int64) error {
 			   )`,
 			impID, impID,
 		); err != nil {
-			return fmt.Errorf("sweep implied %d: %w", impID, err)
+			return nil, fmt.Errorf("sweep implied %d: %w", impID, err)
 		}
 	}
+	for _, id := range ids {
+		if _, err := tx.Exec(`DELETE FROM tags WHERE canonical_tag_id = ?`, id); err != nil {
+			return nil, fmt.Errorf("delete aliases: %w", err)
+		}
+	}
+	return closure, nil
+}
 
-	if _, err := tx.Exec(`DELETE FROM tags WHERE canonical_tag_id = ?`, id); err != nil {
-		return fmt.Errorf("delete aliases: %w", err)
+func (s *Service) DeleteTag(id int64) error {
+	if s.isRatingTag(id) {
+		return s.stripTagFromAllImages(id)
+	}
+	tx, err := s.db.Write.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	closure, err := deleteTagsTx(tx, []int64{id})
+	if err != nil {
+		return err
 	}
 	res, err := tx.Exec(`DELETE FROM tags WHERE id = ?`, id)
 	if err != nil {

@@ -61,6 +61,33 @@ func TestMoveImage_IntoSubfolder(t *testing.T) {
 	}
 }
 
+func TestMoveImage_RefusesSourceOutsideGallery(t *testing.T) {
+	database, env, galleryDir := setupSyncTest(t)
+	srcPath := createTestPNGFile(t, galleryDir, "drift.png")
+	if _, _, err := Ingest(database, galleryDir, env.thumbnailsPath, srcPath, "png", ""); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	var id int64
+	if err := database.Read.QueryRow(`SELECT id FROM images`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	// Drift canonical_path outside the gallery root; MoveImage must refuse
+	// rather than relocate an out-of-tree file in.
+	outside := filepath.Join(t.TempDir(), "outside.png")
+	if err := os.WriteFile(outside, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`UPDATE images SET canonical_path = ? WHERE id = ?`, outside, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MoveImage(database, galleryDir, id, "dst"); err == nil {
+		t.Fatal("expected MoveImage to refuse a source outside the gallery root")
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Errorf("outside file should be untouched: %v", err)
+	}
+}
+
 func TestMoveImage_FilenameCollisionAutosuffixes(t *testing.T) {
 	database, env, galleryDir := setupSyncTest(t)
 	srcPath := createTestPNGFileSize(t, galleryDir, "pic.png", 10, 10)

@@ -156,6 +156,42 @@ session_lifetime_days = 0
 	}
 }
 
+func TestEnvOverrideSessionLifetimeRevalidates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "monbooru.toml")
+	if err := os.WriteFile(path, []byte(`
+[[galleries]]
+name = "default"
+gallery_path = "/gallery"
+
+[paths]
+data_path = "/data"
+
+[auth]
+session_lifetime_days = 30
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("MONBOORU_AUTH_SESSION_LIFETIME_DAYS", "0")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Auth.SessionLifetimeDays != 7 {
+		t.Errorf("env=0 SessionLifetimeDays = %d, want 7 (clamped after override)", cfg.Auth.SessionLifetimeDays)
+	}
+
+	t.Setenv("MONBOORU_AUTH_SESSION_LIFETIME_DAYS", "notanint")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Auth.SessionLifetimeDays != 30 {
+		t.Errorf("unparseable env SessionLifetimeDays = %d, want 30 (kept)", cfg.Auth.SessionLifetimeDays)
+	}
+}
+
 func TestThumbnailFitDefaultsAndClamps(t *testing.T) {
 	cases := []struct {
 		name string
