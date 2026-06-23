@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -130,20 +131,16 @@ func applyCreateProvenance(g Gallery, imageID int64, source, url, collection str
 		updates = append(updates, "url = ?")
 		args = append(args, url)
 	}
+	if len(updates) > 0 {
+		args = append(args, imageID)
+		if _, err := g.DB.Write.Exec(`UPDATE images SET `+strings.Join(updates, ", ")+` WHERE id = ?`, args...); err != nil {
+			return err
+		}
+	}
 	if collection != "" {
-		updates = append(updates, "series = ?")
-		args = append(args, collection)
+		return gallery.SetHomeCollection(g.DB, imageID, collection, order)
 	}
-	if order != nil {
-		updates = append(updates, "series_order = ?")
-		args = append(args, *order)
-	}
-	if len(updates) == 0 {
-		return nil
-	}
-	args = append(args, imageID)
-	_, err := g.DB.Write.Exec(`UPDATE images SET `+strings.Join(updates, ", ")+` WHERE id = ?`, args...)
-	return err
+	return nil
 }
 
 // canDecodeImage opens path and runs image.DecodeConfig on the first
@@ -165,29 +162,38 @@ func canDecodeImage(path string) bool {
 
 // imageResponse is the JSON representation of an image.
 type imageResponse struct {
-	ID            int64          `json:"id"`
-	SHA256        string         `json:"sha256"`
-	CanonicalPath string         `json:"canonical_path"`
-	Aliases       []string       `json:"aliases"`
-	FileType      string         `json:"file_type"`
-	Width         *int           `json:"width"`
-	Height        *int           `json:"height"`
-	FileSize      int64          `json:"file_size"`
-	IsFavorited   bool           `json:"is_favorited"`
-	IsInbox       bool           `json:"is_inbox"`
-	IsMissing     bool           `json:"is_missing"`
-	AutoTaggedAt  *time.Time     `json:"auto_tagged_at"`
-	SourceType    string         `json:"source_type"`
-	Origin        string         `json:"origin"`
-	Source        string         `json:"source"`
-	URL           string         `json:"url"`
-	PageCount     *int           `json:"page_count"`
-	Series        string         `json:"collection"`
-	SeriesOrder   *int           `json:"collection_order"`
-	Phash         *string        `json:"phash"`
-	IngestedAt    time.Time      `json:"ingested_at"`
-	ThumbnailURL  string         `json:"thumbnail_url"`
-	Tags          []imageTagJSON `json:"tags"`
+	ID            int64            `json:"id"`
+	SHA256        string           `json:"sha256"`
+	CanonicalPath string           `json:"canonical_path"`
+	Aliases       []string         `json:"aliases"`
+	FileType      string           `json:"file_type"`
+	Width         *int             `json:"width"`
+	Height        *int             `json:"height"`
+	FileSize      int64            `json:"file_size"`
+	IsFavorited   bool             `json:"is_favorited"`
+	IsInbox       bool             `json:"is_inbox"`
+	IsMissing     bool             `json:"is_missing"`
+	AutoTaggedAt  *time.Time       `json:"auto_tagged_at"`
+	SourceType    string           `json:"source_type"`
+	Origin        string           `json:"origin"`
+	Source        string           `json:"source"`
+	URL           string           `json:"url"`
+	PageCount     *int             `json:"page_count"`
+	Series        string           `json:"collection"`
+	SeriesOrder   *int             `json:"collection_order"`
+	Collections   []collectionJSON `json:"collections,omitempty"`
+	Phash         *string          `json:"phash"`
+	IngestedAt    time.Time        `json:"ingested_at"`
+	ThumbnailURL  string           `json:"thumbnail_url"`
+	Tags          []imageTagJSON   `json:"tags"`
+}
+
+// collectionJSON is one membership in imageResponse.Collections. The
+// scalar collection / collection_order fields above mirror the home
+// membership for backwards compatibility; this array carries them all.
+type collectionJSON struct {
+	Name  string `json:"name"`
+	Order *int   `json:"order"`
 }
 
 type imageTagJSON struct {
@@ -270,6 +276,13 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 	}
 
 	resp := makeImageResponse(g, img, tags, aliases)
+	if cols, err := gallery.CollectionsForImage(g.DB, imageID); err != nil {
+		logx.Warnf("buildImageResponse collections: %v", err)
+	} else {
+		for _, c := range cols {
+			resp.Collections = append(resp.Collections, collectionJSON{Name: c.Name, Order: c.Order})
+		}
+	}
 	return &resp, nil
 }
 
@@ -395,44 +408,45 @@ func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
 		updates = append(updates, "url = ?")
 		args = append(args, u)
 	}
-	if body.Collection != nil {
-		c := strings.TrimSpace(*body.Collection)
-		if err := validateImageCollection(c); err != nil {
-			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
-		}
-		updates = append(updates, "series = ?")
-		args = append(args, c)
-		cacheAffecting = true
-		// A stranded order next to "(none)" never surfaces in collection:
-		// search; null it in the same write when the collection is being
-		// cleared and no replacement order is supplied.
-		if c == "" && body.CollectionOrder == nil {
-			updates = append(updates, "series_order = ?")
-			args = append(args, nil)
-		}
-	}
-	if body.CollectionOrder != nil {
-		n := *body.CollectionOrder
-		if n < 1 {
-			apiError(w, http.StatusBadRequest, "invalid_request", "collection_order must be 1 or higher")
-			return
-		}
-		// An order is only meaningful next to a non-empty collection: take
-		// the incoming label when one is supplied, else the stored one.
-		anchor := ""
-		if body.Collection != nil {
-			anchor = strings.TrimSpace(*body.Collection)
-		} else if err := g.DB.Read.QueryRow(`SELECT series FROM images WHERE id = ?`, id).Scan(&anchor); err != nil {
+	// Collection / collection_order map onto the home membership; the
+	// resolved label and order are applied through SetHomeCollection after
+	// the main UPDATE so image_collections stays in sync. An absent order
+	// next to a present label keeps the stored position (rename is sticky).
+	setHome := false
+	var homeName string
+	var homeOrder *int
+	if body.Collection != nil || body.CollectionOrder != nil {
+		var curSeries string
+		var curOrder sql.NullInt64
+		if err := g.DB.Read.QueryRow(`SELECT series, series_order FROM images WHERE id = ?`, id).Scan(&curSeries, &curOrder); err != nil {
 			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
-		if strings.TrimSpace(anchor) == "" {
-			apiError(w, http.StatusBadRequest, "invalid_request", "collection_order requires a non-empty collection")
-			return
+		homeName = curSeries
+		if body.Collection != nil {
+			c := strings.TrimSpace(*body.Collection)
+			if err := validateImageCollection(c); err != nil {
+				apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+				return
+			}
+			homeName = c
 		}
-		updates = append(updates, "series_order = ?")
-		args = append(args, n)
+		if body.CollectionOrder != nil {
+			n := *body.CollectionOrder
+			if n < 1 {
+				apiError(w, http.StatusBadRequest, "invalid_request", "collection_order must be 1 or higher")
+				return
+			}
+			if homeName == "" {
+				apiError(w, http.StatusBadRequest, "invalid_request", "collection_order requires a non-empty collection")
+				return
+			}
+			homeOrder = &n
+		} else if homeName != "" && curOrder.Valid {
+			v := int(curOrder.Int64)
+			homeOrder = &v
+		}
+		setHome = true
 		cacheAffecting = true
 	}
 	if body.IsFavorited != nil {
@@ -445,15 +459,23 @@ func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
 		args = append(args, boolToInt(*body.IsInbox))
 		cacheAffecting = true
 	}
-	if len(updates) == 0 {
+	if len(updates) == 0 && !setHome {
 		apiError(w, http.StatusBadRequest, "invalid_request", "no editable fields supplied")
 		return
 	}
 
-	args = append(args, id)
-	if _, err := g.DB.Write.Exec(`UPDATE images SET `+strings.Join(updates, ", ")+` WHERE id = ?`, args...); err != nil {
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
+	if len(updates) > 0 {
+		args = append(args, id)
+		if _, err := g.DB.Write.Exec(`UPDATE images SET `+strings.Join(updates, ", ")+` WHERE id = ?`, args...); err != nil {
+			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+	}
+	if setHome {
+		if err := gallery.SetHomeCollection(g.DB, id, homeName, homeOrder); err != nil {
+			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
 	}
 	// source / url don't feed the cached aggregates, but collection,
 	// favorite, and inbox do (sidebar collection list, fav/inbox counts,
@@ -861,7 +883,9 @@ func (h *Handler) deleteImage(w http.ResponseWriter, r *http.Request) {
 	folderRemoved := false
 	if r.URL.Query().Get("delete_empty_folder") == "true" && !result.IsMissing && result.FolderPath != "" {
 		fullFolderPath := filepath.Join(g.GalleryPath, result.FolderPath)
-		if entries, readErr := os.ReadDir(fullFolderPath); readErr == nil && len(entries) == 0 {
+		if !gallery.PathInside(g.GalleryPath, fullFolderPath) {
+			logx.Warnf("api deleteImage: refusing to remove folder %q outside gallery root %q", fullFolderPath, g.GalleryPath)
+		} else if entries, readErr := os.ReadDir(fullFolderPath); readErr == nil && len(entries) == 0 {
 			if removeErr := os.Remove(fullFolderPath); removeErr == nil {
 				folderRemoved = true
 			} else {
@@ -922,6 +946,9 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 		Limit:      limit,
 		RandomSeed: randomSeed,
 	}
+	if sortStr == "order" {
+		sq.OrderCollection = search.PinnedCollectionName(expr)
+	}
 
 	result, err := search.Execute(g.DB, sq)
 	if err != nil {
@@ -951,12 +978,7 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 		images = append(images, makeImageResponse(g, img, tagsByID[img.ID], aliasesByID[img.ID]))
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"page":    result.Page,
-		"limit":   result.Limit,
-		"total":   result.Total,
-		"results": images,
-	})
+	writePage(w, result.Page, result.Limit, result.Total, images)
 }
 
 // loadAliasesForImages batch-loads non-canonical image_paths rows for

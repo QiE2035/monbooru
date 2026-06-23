@@ -78,7 +78,7 @@
         <tr><td><code>folderonly:path/to</code></td><td>Only images directly in that folder (no subfolders); use <code>folderonly:</code> for the gallery root alone.</td></tr>
         <tr><td><code>folder:"path with spaces"</code></td><td>Folder path with spaces (use quotes).</td></tr>
         <tr><td><code>source:"source name"</code></td><td>Exact-match against the source label.</td></tr>
-        <tr><td><code>collection:"collection name"</code></td><td>Exact-match against the collection label.</td></tr>
+        <tr><td><code>collection:"collection name"</code></td><td>Matches any image filed under that collection. An image can belong to several collections; this matches any of them. Bare <code>collection:</code> matches images with no collection.</td></tr>
       </tbody>
     </table>
 
@@ -137,7 +137,7 @@
       <tbody>
         <tr><td>Newest</td><td>Sort by ingest date (default for most searches). Use the order toggle (↓/↑) next to the sort select to flip direction.</td></tr>
         <tr><td>File size</td><td>Sort by file size, largest first.</td></tr>
-        <tr><td>Order</td><td>Group by collection alphabetically, then by the per-image order field. Images without a collection sit at the start; images with a collection but no order sit after the numbered ones.</td></tr>
+        <tr><td>Collection order</td><td>Group by collection alphabetically, then by the per-image order field. Images without a collection sit at the start; images with a collection but no order sit after the numbered ones. When the search pins a single <code>collection:</code>, the results read in that collection's own order.</td></tr>
         <tr><td>Random (⇄)</td><td>Shuffle images randomly. Stable across page turns; click ⇄ again to re-shuffle.</td></tr>
       </tbody>
     </table>
@@ -230,6 +230,7 @@
     </ul>
     <p>Open the <a href="/relations">Relations</a> page to start a session to walk candidate pairs, and cleanup duplicates.</p>
     <p>From any image's detail page, <strong>Add a relation</strong> opens a dialog for declaring an edge against another image directly without going through a session. If the chosen pair already carries a different relation, the dialog surfaces an <strong>Overwrite existing relation</strong> button that replaces the conflicting edge in one transaction.</p>
+    <p><strong>Collections</strong> are a lighter grouping that sits apart from the relation graph. An image can belong to several collections, each with its own optional order. Edit them from the <strong>Collections</strong> row on the detail page: <code>[+ add]</code> files the image under a collection (with an optional position), <code>[edit]</code> changes a membership, and <code>[&times;]</code> removes one. Images sharing a collection appear in the <strong>Same collection</strong> section below the related-images panel. The <a href="/collections">Collections</a> page lists every collection with a preview of its contents; from there you can <strong>rename</strong> a collection across all its members (renaming onto an existing name merges the two) or <strong>dissolve</strong> one, which drops the label from every image while leaving the images and files in place.</p>
   </section>
 
   <hr class="help-sep">

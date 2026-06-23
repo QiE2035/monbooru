@@ -37,18 +37,20 @@ func pathTaggerName(w http.ResponseWriter, r *http.Request, name string) (string
 // swaps it into the dialog target the caller hands it; default config
 // drops 4xx swaps and the operator would otherwise see no feedback.
 func formInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
-	raw := strings.TrimSpace(r.FormValue(name))
-	if raw == "" {
+	// Status 200 so HTMX swaps the flash into the dialog (it drops 4xx swaps).
+	writeFieldFlash := func(verb string) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, `<div class="flash flash-err">Missing %s.</div>`, html.EscapeString(name))
+		_, _ = fmt.Fprintf(w, `<div class="flash flash-err">%s %s.</div>`, verb, html.EscapeString(name))
+	}
+	raw := strings.TrimSpace(r.FormValue(name))
+	if raw == "" {
+		writeFieldFlash("Missing")
 		return 0, false
 	}
 	v, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, `<div class="flash flash-err">Invalid %s.</div>`, html.EscapeString(name))
+		writeFieldFlash("Invalid")
 		return 0, false
 	}
 	return v, true

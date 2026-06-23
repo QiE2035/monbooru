@@ -156,6 +156,31 @@ session_lifetime_days = 0
 	}
 }
 
+func TestPageSizeClampsAboveMax(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "monbooru.toml")
+	if err := os.WriteFile(path, []byte(`
+[[galleries]]
+name = "default"
+gallery_path = "/gallery"
+
+[paths]
+data_path = "/data"
+
+[ui]
+page_size = 50000
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.UI.PageSize != MaxPageSize {
+		t.Errorf("PageSize = %d, want %d (clamped)", cfg.UI.PageSize, MaxPageSize)
+	}
+}
+
 func TestEnvOverrideSessionLifetimeRevalidates(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "monbooru.toml")

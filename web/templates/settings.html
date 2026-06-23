@@ -110,7 +110,7 @@
             {{if eq .Name $active}}<span class="status-badge status-ok">active</span>{{end}}
             {{if eq .Name $cfg.DefaultGallery}}<span class="status-badge status-ok">default</span>{{end}}
           </td>
-          <td class="gallery-info"><span title="?gallery={{.Name}}">{{.Images}} img · {{.Tags}} tags</span></td>
+          <td class="gallery-info"><span title="?gallery={{.Name}}">{{.Images}} img{{if .Images}} · {{.Tags}} tags{{end}}</span></td>
           <td>
             {{if ne .Name $active}}
             <form hx-post="/internal/gallery/switch" hx-target="#flash-galleries" hx-swap="innerHTML" style="display:inline">

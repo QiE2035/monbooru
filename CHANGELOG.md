@@ -1,5 +1,20 @@
 # Changelog
 
+## [v1.11.0] - 2026-06-23
+### Added
+- An image can belong to multiple collections, each with its own order.
+- A Collections page at `/collections` to browse, rename, or dissolve them.
+
+### Changed
+- Docker: ffmpeg and ffprobe now come from BtbN's maintained static builds.
+- The top-bar "Go to monloader" link opens monloader's queue in the same tab.
+
+### Fixed
+- Config: `page_size` is capped so a large value can't break the gallery page.
+
+### Removed
+- The Favorites, Collections, and AI sidebar sections.
+
 ## [v1.10.2] - 2026-06-13
 ### Added
 - Settings: upload folder applied to web-UI uploads.

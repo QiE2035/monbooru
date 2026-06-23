@@ -346,14 +346,11 @@ func framesForTagging(canonPath, fileType, mangaCacheDir string, imageID int64) 
 	switch fileType {
 	case "mp4", "webm":
 		positions := []float64{0.10, 0.30, 0.50, 0.70, 0.90}
-		frames, err := gallery.ExtractVideoFrames(canonPath, os.TempDir(), positions)
+		frames, _ := gallery.ExtractVideoFrames(canonPath, os.TempDir(), positions)
 		cleanup := func() {
 			for _, p := range frames {
 				os.Remove(p)
 			}
-		}
-		if err != nil {
-			return frames, cleanup
 		}
 		return frames, cleanup
 	case "cbz":

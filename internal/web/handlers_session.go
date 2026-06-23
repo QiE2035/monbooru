@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -225,8 +226,8 @@ func loadNextPair(cx *galleryCtx, order string, ceiling *Ceiling) (*sessionPairV
 	view.A.Height = aH
 	view.B.Width = bW
 	view.B.Height = bH
-	view.A.Filename = baseNameOf(aPath)
-	view.B.Filename = baseNameOf(bPath)
+	view.A.Filename = path.Base(aPath)
+	view.B.Filename = path.Base(bPath)
 	view.A.TagCount = countTags(cx, view.A.ID)
 	view.B.TagCount = countTags(cx, view.B.ID)
 	view.LeftID = view.A.ID
@@ -358,15 +359,6 @@ func loadTagDelta(cx *galleryCtx, leftID, rightID int64) (left []string, right [
 		}
 	}
 	return left, right, rows.Err()
-}
-
-func baseNameOf(p string) string {
-	for i := len(p) - 1; i >= 0; i-- {
-		if p[i] == '/' {
-			return p[i+1:]
-		}
-	}
-	return p
 }
 
 func countTags(cx *galleryCtx, id int64) int {
@@ -517,7 +509,7 @@ func writeDuplicatePostDecideHeaders(w http.ResponseWriter, cx *galleryCtx, left
 	w.Header().Set("X-Relations-Duplicate-ID", strconv.FormatInt(nonOriginal, 10))
 	w.Header().Set("X-Relations-Duplicate-OriginalID", strconv.FormatInt(original, 10))
 	w.Header().Set("X-Relations-Duplicate-GroupID", strconv.FormatInt(gid, 10))
-	w.Header().Set("X-Relations-Duplicate-Filename", baseNameOf(canonical))
+	w.Header().Set("X-Relations-Duplicate-Filename", path.Base(canonical))
 	if hasUnique > 0 {
 		w.Header().Set("X-Relations-Duplicate-HasUniqueTags", "1")
 	} else {

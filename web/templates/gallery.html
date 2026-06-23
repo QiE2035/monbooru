@@ -19,7 +19,7 @@
     <select name="sort" id="search-sort">
       <option value="newest"   {{if eq .Sort "newest"}}selected{{end}}>Newest</option>
       <option value="filesize" {{if eq .Sort "filesize"}}selected{{end}}>File size</option>
-      <option value="order"    {{if eq .Sort "order"}}selected{{end}}>Order</option>
+      <option value="order"    {{if eq .Sort "order"}}selected{{end}}>Collection order</option>
       {{if eq .Sort "random"}}<option value="random" selected>Random</option>{{end}}
     </select>
     <select name="order">
@@ -292,7 +292,13 @@
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <input type="hidden" id="batch-collection-scope">
     <div class="field">
-      <label>Collection label (leave blank to clear)</label>
+      <div class="radio-row">
+        <label><input type="radio" name="mode" value="add" checked> Add to collection</label>
+        <label><input type="radio" name="mode" value="remove"> Remove from collection</label>
+      </div>
+    </div>
+    <div class="field">
+      <label>Collection label</label>
       <div class="series-input-wrap">
         <input type="text" name="collection" id="batch-collection-input" maxlength="200"
                autocomplete="off"
@@ -939,6 +945,8 @@ function openBatchCollectionDialog(scope) {
   if (scope === 'selection' && document.querySelectorAll('.thumb-checkbox:checked').length === 0) return;
   scopeCount(scope, document.getElementById('batch-collection-count'), document.getElementById('batch-collection-noun'));
   document.getElementById('batch-collection-scope').value = scope;
+  var addRadio = document.querySelector('#batch-collection-dialog input[name="mode"][value="add"]');
+  if (addRadio) addRadio.checked = true;
   var input = document.getElementById('batch-collection-input');
   if (input) input.value = '';
   var sg = document.getElementById('batch-collection-suggest');
@@ -952,7 +960,9 @@ function openBatchCollectionDialog(scope) {
 function confirmBatchCollection() {
   var scope = document.getElementById('batch-collection-scope').value;
   var collectionEl = document.getElementById('batch-collection-input');
-  var params = ['collection=' + encodeURIComponent(collectionEl ? collectionEl.value : '')];
+  var modeEl = document.querySelector('#batch-collection-dialog input[name="mode"]:checked');
+  var mode = modeEl ? modeEl.value : 'add';
+  var params = ['collection=' + encodeURIComponent(collectionEl ? collectionEl.value : ''), 'mode=' + mode];
   if (scope === 'search') {
     params = params.concat(searchScopeParts());
   } else {

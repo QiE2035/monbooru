@@ -330,7 +330,7 @@ func TestSidebarFolderLink_SinglePercentEncoded(t *testing.T) {
 func TestDetailCollectionLink_SinglePercentEncoded(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "s.png", 9, 9)
-	if _, err := srv.db().Write.Exec(`UPDATE images SET series=? WHERE id=?`, "touhou series", id); err != nil {
+	if err := gallery.SetHomeCollection(srv.db(), id, "touhou series", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1725,24 +1725,40 @@ func TestServeThumbnail_InvalidatesOnIDReuse(t *testing.T) {
 		t.Fatal("ETag missing on initial thumbnail serve")
 	}
 
+	// Record the first thumbnail's mtime so we can force the rewrite's mtime
+	// to a known, strictly-later value below — the ETag is keyed on
+	// info.ModTime().Unix() (one-second resolution).
+	cx := srv.Active()
+	firstThumbPath := gallery.ThumbnailPath(cx.ThumbnailsPath, id)
+	firstInfo, err := os.Stat(firstThumbPath)
+	if err != nil {
+		t.Fatalf("stat first thumbnail: %v", err)
+	}
+
 	// Delete the image (this also unlinks the thumbnail file) then re-ingest
 	// a new image with different content. SQLite hands back the same id (no
-	// AUTOINCREMENT on images.id), so the URL is identical but the bytes
-	// behind it must not be served from a If-None-Match=304 fast path.
-	cx := srv.Active()
+	// AUTOINCREMENT on images.id and, with this row being the only one, the
+	// table is empty after the delete so the next insert reuses id 1), so the
+	// URL is identical but the bytes behind it must not be served from a
+	// If-None-Match=304 fast path.
 	if _, err := gallery.DeleteImage(cx.DB, cx.GalleryPath, cx.ThumbnailsPath, id,
 		func(int64) error { return nil }, nil,
 	); err != nil {
 		t.Fatalf("DeleteImage: %v", err)
 	}
-	// Sleep one second so the second thumbnail's mtime differs from the
-	// first (the ETag is keyed on info.ModTime().Unix(), one-second
-	// resolution; without this the rewrite could land within the same
-	// integer second and the ETags would collide).
-	time.Sleep(1100 * time.Millisecond)
 	newID := seedImage(t, srv, "second.png", 12, 12)
 	if newID != id {
-		t.Skipf("id was not reused (got %d, expected %d); SQLite reuse rule did not fire", newID, id)
+		t.Fatalf("test premise broken: id was not reused (got %d, want %d); "+
+			"the only image was deleted so the re-ingest must reuse the id", newID, id)
+	}
+
+	// Force the rewritten thumbnail's mtime two seconds past the first so the
+	// ETag's mtime component deterministically differs, replacing the old
+	// 1100 ms sleep that hoped the rewrite landed in a later integer second.
+	newThumbPath := gallery.ThumbnailPath(cx.ThumbnailsPath, newID)
+	forcedMtime := firstInfo.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(newThumbPath, forcedMtime, forcedMtime); err != nil {
+		t.Fatalf("chtimes new thumbnail: %v", err)
 	}
 
 	req2 := httptest.NewRequest("GET", thumbURL, nil)
@@ -1771,11 +1787,9 @@ func TestUpdateExternal_AbsentFieldsLeaveOthersAlone(t *testing.T) {
 	csrf := srv.csrfToken("anon")
 
 	seedAll := url.Values{
-		"_csrf":            {csrf},
-		"source":           {"danbooru"},
-		"url":              {"https://example.com/art"},
-		"collection":       {"my set"},
-		"collection_order": {"3"},
+		"_csrf":  {csrf},
+		"source": {"danbooru"},
+		"url":    {"https://example.com/art"},
 	}
 	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(seedAll.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1784,6 +1798,12 @@ func TestUpdateExternal_AbsentFieldsLeaveOthersAlone(t *testing.T) {
 	srv.Handler().ServeHTTP(w, req)
 	if w.Code/100 != 2 && w.Code != http.StatusSeeOther {
 		t.Fatalf("seed external fields: %d %s", w.Code, w.Body.String())
+	}
+	// Collection lives on its own endpoint; seed it so the source-only
+	// update below can be shown to leave it untouched.
+	seedOrder := 3
+	if err := gallery.SetHomeCollection(srv.Active().DB, id, "my set", &seedOrder); err != nil {
+		t.Fatal(err)
 	}
 
 	sourceOnly := url.Values{"_csrf": {csrf}, "source": {"updated"}}
@@ -1817,15 +1837,15 @@ func TestUpdateExternal_AbsentFieldsLeaveOthersAlone(t *testing.T) {
 	}
 }
 
-// TestUpdateExternal_RejectsCollectionOrderWithoutCollection: an
-// order without an anchoring collection label is meaningless.
-func TestUpdateExternal_RejectsCollectionOrderWithoutCollection(t *testing.T) {
+// setCollection requires a non-empty label; an order with no label is
+// rejected before any membership is written.
+func TestSetCollection_RejectsEmptyLabel(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "ext_so.png", 10, 10)
 	csrf := srv.csrfToken("anon")
 
 	form := url.Values{"_csrf": {csrf}, "collection": {""}, "collection_order": {"5"}}
-	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/collections/set", id), strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-CSRF-Token", csrf)
 	req.Header.Set("HX-Request", "true")
@@ -1835,72 +1855,62 @@ func TestUpdateExternal_RejectsCollectionOrderWithoutCollection(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 (htmx swap target), got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "non-empty collection label") {
+	if !strings.Contains(w.Body.String(), "collection label required") {
 		t.Errorf("body missing the validation message: %s", w.Body.String())
 	}
-	var stored sql.NullInt64
-	_ = srv.Active().DB.Read.QueryRow(`SELECT series_order FROM images WHERE id = ?`, id).Scan(&stored)
-	if stored.Valid {
-		t.Errorf("collection_order should remain NULL, got %d", stored.Int64)
+	if cols, _ := gallery.CollectionsForImage(srv.Active().DB, id); len(cols) != 0 {
+		t.Errorf("no membership should be created, got %#v", cols)
 	}
 }
 
-// Setting collection="" while a stored order is non-NULL must null
-// that order in the same transaction; otherwise the detail page
-// renders an orphan #N next to "(none)" and the collection: search
-// never surfaces the row.
-func TestUpdateExternal_ClearingCollectionNullsOrder(t *testing.T) {
+// Removing the home collection clears the series mirror and its order.
+func TestRemoveCollection_ClearsHome(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "ext_clear.png", 10, 10)
 	csrf := srv.csrfToken("anon")
 
-	// Seed with collection + order set.
-	seed := url.Values{"_csrf": {csrf}, "collection": {"My Set"}, "collection_order": {"5"}}
-	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(seed.Encode()))
+	order := 5
+	if err := gallery.SetHomeCollection(srv.Active().DB, id, "My Set", &order); err != nil {
+		t.Fatal(err)
+	}
+
+	clr := url.Values{"_csrf": {csrf}, "collection": {"My Set"}}
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/collections/remove", id), strings.NewReader(clr.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-CSRF-Token", csrf)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 	if w.Code/100 != 2 && w.Code != http.StatusSeeOther {
-		t.Fatalf("seed: %d %s", w.Code, w.Body.String())
-	}
-
-	// Clear the collection without sending an explicit order.
-	clr := url.Values{"_csrf": {csrf}, "collection": {""}}
-	req = httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(clr.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("X-CSRF-Token", csrf)
-	w = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code/100 != 2 && w.Code != http.StatusSeeOther {
-		t.Fatalf("clear collection: %d %s", w.Code, w.Body.String())
+		t.Fatalf("remove collection: %d %s", w.Code, w.Body.String())
 	}
 
 	var collection string
-	var order sql.NullInt64
+	var ord sql.NullInt64
 	if err := srv.Active().DB.Read.QueryRow(
 		`SELECT series, series_order FROM images WHERE id = ?`, id,
-	).Scan(&collection, &order); err != nil {
+	).Scan(&collection, &ord); err != nil {
 		t.Fatal(err)
 	}
 	if collection != "" {
 		t.Errorf("collection = %q, want empty", collection)
 	}
-	if order.Valid {
-		t.Errorf("collection_order = %d (valid=true), want NULL", order.Int64)
+	if ord.Valid {
+		t.Errorf("collection_order = %d (valid=true), want NULL", ord.Int64)
+	}
+	if cols, _ := gallery.CollectionsForImage(srv.Active().DB, id); len(cols) != 0 {
+		t.Errorf("memberships = %#v, want none", cols)
 	}
 }
 
-// TestUpdateExternal_RejectsZeroOrNegativeOrder: zero and negative
-// integers fall outside the 1-based position model.
-func TestUpdateExternal_RejectsZeroOrNegativeOrder(t *testing.T) {
+// Zero and negative integers fall outside the 1-based position model.
+func TestSetCollection_RejectsZeroOrNegativeOrder(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "ext_neg.png", 10, 10)
 	csrf := srv.csrfToken("anon")
 
 	for _, raw := range []string{"0", "-3"} {
 		form := url.Values{"_csrf": {csrf}, "collection": {"My Set"}, "collection_order": {raw}}
-		req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(form.Encode()))
+		req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/collections/set", id), strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("X-CSRF-Token", csrf)
 		req.Header.Set("HX-Request", "true")
@@ -1913,10 +1923,8 @@ func TestUpdateExternal_RejectsZeroOrNegativeOrder(t *testing.T) {
 			t.Errorf("collection_order=%q body missing validation message: %s", raw, w.Body.String())
 		}
 	}
-	var stored sql.NullInt64
-	_ = srv.Active().DB.Read.QueryRow(`SELECT series_order FROM images WHERE id = ?`, id).Scan(&stored)
-	if stored.Valid {
-		t.Errorf("collection_order should remain NULL, got %d", stored.Int64)
+	if cols, _ := gallery.CollectionsForImage(srv.Active().DB, id); len(cols) != 0 {
+		t.Errorf("no membership should be created, got %#v", cols)
 	}
 }
 

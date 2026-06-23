@@ -40,72 +40,16 @@ func scalarCountUnder(database *db.DB, baseWhere string, excludeIDs []int64) (in
 	return n, nil
 }
 
-// VisibleCountUnder returns the count of non-missing images excluding
-// any whose tag list intersects excludeIDs. Delegates to the existing
-// covering scan when excludeIDs is empty.
-func VisibleCountUnder(database *db.DB, excludeIDs []int64) (int, error) {
-	return scalarCountUnder(database, "i.is_missing = 0", excludeIDs)
-}
-
-// InboxCountUnder is the inbox analogue: visible AND is_inbox = 1,
-// with rating-ceiling-hidden images dropped.
+// InboxCountUnder counts non-missing inbox images (is_inbox = 1),
+// dropping any whose tag list intersects excludeIDs (the rating ceiling).
 func InboxCountUnder(database *db.DB, excludeIDs []int64) (int, error) {
 	return scalarCountUnder(database, "i.is_missing = 0 AND i.is_inbox = 1", excludeIDs)
-}
-
-// FavoritedCountUnder is the favourited analogue.
-func FavoritedCountUnder(database *db.DB, excludeIDs []int64) (int, error) {
-	return scalarCountUnder(database, "i.is_missing = 0 AND i.is_favorited = 1", excludeIDs)
 }
 
 // PhashMissingUnder is the relations-hub "PhashMissing" analogue:
 // non-missing images with NULL phash, minus the ceiling-hidden ones.
 func PhashMissingUnder(database *db.DB, excludeIDs []int64) (int, error) {
 	return scalarCountUnder(database, "i.phash IS NULL AND i.is_missing = 0", excludeIDs)
-}
-
-// aggregateSourceCounts folds (source_type, count) rows into the
-// SourceCounts buckets shared by the ceiling-aware and blind paths.
-func aggregateSourceCounts(rows *sql.Rows) (SourceCounts, error) {
-	var out SourceCounts
-	for rows.Next() {
-		var src string
-		var n int
-		if err := rows.Scan(&src, &n); err != nil {
-			return out, err
-		}
-		switch src {
-		case "a1111":
-			out.A1111 += n
-			out.AI += n
-		case "comfyui":
-			out.Comfyui += n
-			out.AI += n
-		case "a1111,comfyui":
-			out.A1111 += n
-			out.Comfyui += n
-			out.AI += n
-		case "none", "":
-			out.None += n
-		}
-	}
-	return out, rows.Err()
-}
-
-// SourceCountsUnderQuery mirrors SourceCountsQuery with the ceiling
-// predicate folded in. The GROUP BY rides the same source_type scan;
-// the NOT EXISTS subquery hits idx_image_tags_image.
-func SourceCountsUnderQuery(database *db.DB, excludeIDs []int64) (SourceCounts, error) {
-	where, args := excludeNotExists("i.id", excludeIDs)
-	rows, err := database.Read.Query(
-		`SELECT i.source_type, COUNT(*) FROM images i WHERE i.is_missing = 0`+where+` GROUP BY i.source_type`,
-		args...,
-	)
-	if err != nil {
-		return SourceCounts{}, err
-	}
-	defer func() { _ = rows.Close() }()
-	return aggregateSourceCounts(rows)
 }
 
 // topLabelCountsUnder is the shared SELECT col, COUNT(*) shape behind
@@ -143,14 +87,6 @@ func topLabelCountsUnder[T any](
 		out = append(out, convert(label, count))
 	}
 	return out, rows.Err()
-}
-
-// SeriesCountsUnderQuery mirrors SeriesCountsQuery with the ceiling
-// predicate. The partial index on `series != ”` still seeds the seek;
-// the NOT EXISTS predicate adds the per-row taint check.
-func SeriesCountsUnderQuery(database *db.DB, limit int, excludeIDs []int64) ([]SeriesCount, error) {
-	return topLabelCountsUnder(database, "series", excludeIDs, limit,
-		func(label string, count int) SeriesCount { return SeriesCount{Series: label, Count: count} })
 }
 
 // SourceLabelCountsUnderQuery mirrors SourceLabelCountsQuery with the

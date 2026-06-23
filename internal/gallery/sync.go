@@ -16,10 +16,6 @@ import (
 	"github.com/leqwin/monbooru/internal/tags"
 )
 
-// imageDecodeConfig is image.DecodeConfig spelled inline so the
-// applyInPlaceEdit helper doesn't need a fresh import block.
-var imageDecodeConfig = image.DecodeConfig
-
 // SyncResult summarizes the outcome of a gallery sync.
 type SyncResult struct {
 	Added      int
@@ -37,40 +33,13 @@ type FolderNode struct {
 	Children []FolderNode
 }
 
-// SourceCounts holds the non-missing image counts feeding the sidebar's
-// Source tree.
-type SourceCounts struct {
-	AI      int // a1111 + comfyui + combined
-	A1111   int // standalone or combined
-	Comfyui int // standalone or combined
-	None    int
-}
-
-// SeriesCount is one row of the sidebar's Series section: a series
-// label and the number of non-missing image rows tagged with it.
-// Series spans every file type so operators can group images, videos,
-// and archives under a shared label.
-type SeriesCount struct {
-	Series string
-	Count  int
-}
-
 // SourceLabelCount is one row of the sidebar's Sources section: a
 // per-image source label and the count of non-missing image rows
-// carrying it. Mirrors SeriesCount; the column is partial-indexed on
+// carrying it. The column is partial-indexed on
 // `source != ”` so the read hits it directly.
 type SourceLabelCount struct {
 	Source string
 	Count  int
-}
-
-// SeriesCountsQuery returns the top series labels (by row count desc)
-// across non-missing rows of any file type. Empty series strings are
-// excluded - the index is partial on `series != ”` so the read hits
-// it directly. Sorted Count desc, then alphabetical to make the
-// sidebar deterministic.
-func SeriesCountsQuery(database *db.DB, limit int) ([]SeriesCount, error) {
-	return SeriesCountsUnderQuery(database, limit, nil)
 }
 
 // SourceLabelCountsQuery returns the top source labels (by row count
@@ -80,11 +49,6 @@ func SeriesCountsQuery(database *db.DB, limit int) ([]SeriesCount, error) {
 // deterministic sidebar.
 func SourceLabelCountsQuery(database *db.DB, limit int) ([]SourceLabelCount, error) {
 	return SourceLabelCountsUnderQuery(database, limit, nil)
-}
-
-// SourceCountsQuery returns the source-tree counts for the given database.
-func SourceCountsQuery(database *db.DB) (SourceCounts, error) {
-	return SourceCountsUnderQuery(database, nil)
 }
 
 // syncFileInfo is one walk-result entry: the on-disk path plus the SHA
@@ -611,7 +575,7 @@ func applyInPlaceEdit(database *db.DB, galleryPath, thumbnailsPath, path, fileTy
 	} else {
 		f, openErr := os.Open(path)
 		if openErr == nil {
-			if cfg2, _, decErr := imageDecodeConfig(f); decErr == nil {
+			if cfg2, _, decErr := image.DecodeConfig(f); decErr == nil {
 				w, h := cfg2.Width, cfg2.Height
 				imgWidth, imgHeight = &w, &h
 			}

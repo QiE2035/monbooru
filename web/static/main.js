@@ -10,11 +10,10 @@ var chordTimeoutMs = 500;
 // Map of <leader, secondary> chords. Each value is either a string URL
 // (navigated via location.assign) or a function executed with no args.
 //
-// `e` leader edits a metadata field on the detail page. The secondaries
-// trigger the existing .btn-edit-external click handler so the dialog
-// opens with the prior value pre-filled - no separate seeding path.
-// `o` order / `s` source / `c` collection / `u` url; on pages without
-// the matching edit button the chord no-ops.
+// `e` leader edits a metadata field on the detail page. `s` source /
+// `u` url trigger the .btn-edit-external dialog with the prior value
+// pre-filled; `c` opens the add-to-collection dialog. On pages without
+// the matching control the chord no-ops.
 var chordMap = {
   g: {
     g: '/',
@@ -25,9 +24,8 @@ var chordMap = {
     h: '/help',
   },
   e: {
-    o: function () { clickEditField('order'); },
     s: function () { clickEditField('source'); },
-    c: function () { clickEditField('collection'); },
+    c: function () { var b = document.querySelector('.btn-add-collection'); if (b) b.click(); },
     u: function () { clickEditField('url'); },
   },
 };
@@ -1148,16 +1146,6 @@ document.addEventListener('mouseout', function(e) {
   img.onerror = null;
 });
 
-// Sidebar tag filter (client-side substring match, no HTMX)
-document.addEventListener('input', function(e) {
-  if (e.target.id !== 'sidebar-filter') return;
-  const q = e.target.value.toLowerCase();
-  document.querySelectorAll('.tag-entry').forEach(function(el) {
-    const name = (el.dataset.name || '').toLowerCase();
-    el.style.display = (!q || name.includes(q)) ? '' : 'none';
-  });
-});
-
 // Tag-input (detail page) clears the invalid-tag flash as soon as the user
 // starts fixing the input, so the error isn't stuck on-screen through the
 // next submit.
@@ -1487,7 +1475,7 @@ function onExternalEditResponse(event, dialogID) {
 // actionFlashSlots is the ordered list of per-page slot ids the shared
 // flash helpers fall through. Each page that wants action feedback ships
 // one of these slots in its template; the page only ever has one of them.
-var actionFlashSlots = ['gallery-flash', 'detail-flash', 'tag-flash', 'cat-flash'];
+var actionFlashSlots = ['gallery-flash', 'detail-flash', 'tag-flash', 'cat-flash', 'collection-flash'];
 
 function findActionFlashSlot() {
   for (var i = 0; i < actionFlashSlots.length; i++) {
@@ -1720,34 +1708,15 @@ function initFolderTree() {
     currentFolder = folderMatch[1] || folderMatch[2];
   }
 
-  // Force the AI source section open when the current query targets an
-  // ai: predicate, and its sub-tree when the query picks an a1111 / comfyui
-  // / any variant.
-  var sourceMatch = q.match(/(?:^|\s)ai:([a-z0-9_,-]+)/i);
-  var sourceVal = sourceMatch ? sourceMatch[1].toLowerCase() : '';
-  var sourceOpen = urlChanged && sourceVal !== '';
-  var sourceAIOpen = urlChanged && (sourceVal === 'any' || sourceVal === 'a1111' || sourceVal === 'comfyui');
-
   // Folder tree main toggle (show/hide whole tree).
   // Use onclick assignment (not addEventListener) to prevent duplicate handlers
   // from multiple calls (e.g. HTMX partial swaps fire htmx:afterSettle repeatedly).
   initSectionToggle('folder-tree-toggle', 'folder-tree-list', '__tree__', false);
-  initSectionToggle('source-tree-toggle', 'source-tree-list', '__source__', sourceOpen);
-  // Force the Collections section open when the query targets one so
-  // the user lands with the matching entry already visible.
-  var collectionMatch = q.match(/(?:^|\s)collection:(?:"([^"]+)"|([^\s]+))/);
-  var collectionOpen = urlChanged && !!collectionMatch;
-  initSectionToggle('series-tree-toggle', 'series-tree-list', '__series__', collectionOpen);
-  // Sources panel: same auto-open behaviour when the current query targets
-  // a specific source label, so the matching row is visible on landing.
+  // Sources panel: auto-open when the current query targets a specific
+  // source label, so the matching row is visible on landing.
   var sourceLabelMatch = q.match(/(?:^|\s)source:(?:"([^"]+)"|([^\s]+))/);
   var sourceLabelOpen = urlChanged && !!sourceLabelMatch;
   initSectionToggle('source-labels-toggle', 'source-labels-list', '__sources__', sourceLabelOpen);
-  // Favorites quick-filter panel: collapse by default; auto-open when
-  // the active query already targets the predicate so the matching row
-  // renders visible without an extra click.
-  var favQueryActive = urlChanged && /(?:^|\s)fav:(?:true|false)\b/.test(q);
-  initSectionToggle('favorites-filter-toggle', 'favorites-filter-list', '__favorites__', favQueryActive);
   var treeToggle = document.getElementById('folder-tree-toggle');
   var treeList = document.getElementById('folder-tree-list');
 
@@ -1758,12 +1727,11 @@ function initFolderTree() {
     var list = document.getElementById(targetId);
     if (!list) return;
 
-    // urlDriven: this expansion comes from navigation context (current folder
-    // or active source filter). Gated by urlChanged so a same-view sidebar
-    // rebuild (watcher refresh, job progress) leaves the user's collapse
-    // alone - only a real URL change re-asserts the navigation-driven open.
-    var urlDriven = (currentFolder && (currentFolder === path || currentFolder.startsWith(path + '/'))) ||
-      (path === '__ai_source__' && sourceAIOpen);
+    // urlDriven: this expansion comes from navigation context (the current
+    // folder). Gated by urlChanged so a same-view sidebar rebuild (watcher
+    // refresh, job progress) leaves the user's collapse alone - only a real
+    // URL change re-asserts the navigation-driven open.
+    var urlDriven = currentFolder && (currentFolder === path || currentFolder.startsWith(path + '/'));
     var shouldExpand = expanded.has(path) || (urlChanged && urlDriven);
 
     if (shouldExpand) {
@@ -1772,7 +1740,7 @@ function initFolderTree() {
       // Force the parent tree open only when navigation drives this
       // expansion. The parent's open/close otherwise stays under the
       // user's control via initSectionToggle's own cookie key.
-      if (urlChanged && urlDriven && treeList && path !== '__ai_source__') {
+      if (urlChanged && urlDriven && treeList) {
         treeList.style.display = '';
         if (treeToggle) treeToggle.textContent = '▼';
       }
@@ -2094,7 +2062,7 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
   if (isDone && _pendingGalleryReload) {
     _pendingGalleryReload = false;
     if (finishedAt) _lastReloadedFinishedAt = finishedAt;
-    if (document.getElementById('gallery-grid') || document.getElementById('tags-page')) {
+    if (document.getElementById('gallery-grid') || document.getElementById('tags-page') || document.getElementById('collections-page')) {
       var pendingDone = el.querySelector('.job-done');
       if (pendingDone) stashGalleryFlash(pendingDone.textContent || '', 'ok');
       window.location.reload();

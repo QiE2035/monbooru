@@ -125,16 +125,42 @@ func (s *Server) querySourceLabels(prefix string, limit int) []string {
 		prefix, limit, "source suggest")
 }
 
-// queryCollectionLabels lifts the SQL out of collectionSuggest so the
-// search-bar `collection:` autocomplete can reuse it from
-// systemSuggestLevel2 without duplicating the indexed-range query.
-// NOCASE on the bounds + idx_images_series_nocase keeps the suggest in
-// step with the case-insensitive `collection:` search filter.
+// queryCollectionLabels returns distinct collection names whose prefix
+// matches the typed value, read off image_collections so additional
+// memberships (not just the home mirror) surface. Drives both the
+// detail / batch dialogs and the search-bar `collection:` autocomplete.
+// NOCASE bounds + idx_image_collections_name keep it in step with the
+// case-insensitive `collection:` filter.
 func (s *Server) queryCollectionLabels(prefix string, limit int) []string {
-	return s.pagedDistinctIndexedLabels(
-		"series", "idx_images_series_nocase",
-		"series != ''",
-		prefix, limit, "collection suggest")
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if prefix == "" {
+		rows, err = s.db().Read.Query(
+			`SELECT DISTINCT name FROM image_collections
+			 ORDER BY name LIMIT ?`, limit)
+	} else {
+		lo, hi := nocasePrefixRange(prefix)
+		rows, err = s.db().Read.Query(
+			`SELECT DISTINCT name FROM image_collections
+			 WHERE name >= ? AND name < ?
+			 ORDER BY name LIMIT ?`, lo, hi, limit)
+	}
+	if err != nil {
+		logx.Warnf("collection suggest: %v", err)
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var sv string
+		if err := rows.Scan(&sv); err != nil {
+			continue
+		}
+		out = append(out, sv)
+	}
+	return out
 }
 
 // pagedDistinctIndexedLabels emits the shared SELECT DISTINCT col

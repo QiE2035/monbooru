@@ -947,12 +947,10 @@ func TestSidebarBrowseReturnsBrowseSections(t *testing.T) {
 		t.Fatalf("expected 200, got %d\nbody: %s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	// Folder tree + source filter + saved searches markup; per-page tag
-	// groups must not leak in.
-	for _, sel := range []string{"folder-tree-section", "source-filter-section"} {
-		if !strings.Contains(body, sel) {
-			t.Errorf("sidebar-browse missing %q\nbody: %s", sel, body)
-		}
+	// The folder-tree browse section renders; the per-page tag groups must
+	// not leak into the browse-only partial.
+	if !strings.Contains(body, "folder-tree-section") {
+		t.Errorf("sidebar-browse missing %q\nbody: %s", "folder-tree-section", body)
 	}
 	if strings.Contains(body, `id="tag-groups"`) {
 		t.Error("sidebar-browse should not render the per-page tag-groups block")
@@ -1200,6 +1198,28 @@ func TestDeleteImage_FallsBackToGalleryOnLastImage(t *testing.T) {
 	got := w.Header().Get("HX-Redirect")
 	if strings.HasPrefix(got, "/images/") {
 		t.Errorf("last-image redirect = %q, want gallery URL", got)
+	}
+}
+
+// TestDeleteImage_NotFound exercises the 404 leg of deleteImage's
+// 404-vs-500 split: gallery.DeleteImage's canonical-path lookup returns
+// a wrapped sql.ErrNoRows for a non-existent id, the handler unwraps it
+// with errors.Is and serves http.NotFound. (The sibling 500 leg —
+// "Delete failed; check server log." on an operational failure such as a
+// busy write pool or FK violation — can't be triggered from here without
+// injecting a DB error, so only this main branch is covered.)
+func TestDeleteImage_NotFound(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+
+	req := httptest.NewRequest("DELETE", "/images/999999", nil)
+	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("DELETE of a missing id expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

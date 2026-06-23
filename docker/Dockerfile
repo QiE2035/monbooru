@@ -36,17 +36,19 @@ RUN ARCH=$(dpkg --print-architecture) && \
     mkdir -p /opt/ort && \
     cp /tmp/onnxruntime-linux-${ONNX_ARCH}-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION} /opt/ort/libonnxruntime.so
 
-# Static ffmpeg + ffprobe (no shared-lib deps, so they drop straight into a distroless image).
+# ffmpeg + ffprobe. BtbN's builds bundle their codecs statically but link
+# glibc dynamically; the distroless cc base provides it.
+ARG FFMPEG_RELEASE=n8.1
 RUN ARCH=$(dpkg --print-architecture) && \
     case "$ARCH" in \
-      amd64) FF_ARCH="amd64" ;; \
-      arm64) FF_ARCH="arm64" ;; \
+      amd64) FF_ARCH="linux64" ;; \
+      arm64) FF_ARCH="linuxarm64" ;; \
       *) echo "Unsupported arch: $ARCH" && exit 1 ;; \
     esac && \
-    curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${FF_ARCH}-static.tar.xz" -o /tmp/ffmpeg.tar.xz && \
+    curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-${FFMPEG_RELEASE}-latest-${FF_ARCH}-gpl-${FFMPEG_RELEASE#n}.tar.xz" -o /tmp/ffmpeg.tar.xz && \
     mkdir -p /tmp/ff /opt/ffmpeg && \
     tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ff --strip-components=1 && \
-    cp /tmp/ff/ffmpeg /tmp/ff/ffprobe /opt/ffmpeg/
+    cp /tmp/ff/bin/ffmpeg /tmp/ff/bin/ffprobe /opt/ffmpeg/
 
 # Stage 3: runtime.
 FROM gcr.io/distroless/cc-debian13:nonroot

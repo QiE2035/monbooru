@@ -32,6 +32,30 @@ type lightManifest struct {
 	Images  []lightManifestImage `json:"images"`
 }
 
+// decodeLightManifest reads a tags.json manifest and rejects an
+// unsupported version. The caller owns opening/closing the reader (zip
+// entry vs file on disk).
+func decodeLightManifest(r io.Reader) (lightManifest, error) {
+	var mf lightManifest
+	if err := json.NewDecoder(r).Decode(&mf); err != nil {
+		return mf, fmt.Errorf("decode tags.json: %w", err)
+	}
+	if mf.Version != lightManifestVersion {
+		return mf, fmt.Errorf("unsupported light export version %d (expected %d)", mf.Version, lightManifestVersion)
+	}
+	return mf, nil
+}
+
+// tagToken renders a tag as the manifest stores it: a bare name for the
+// general category (or an unattributed JOIN row), else "category:name"
+// so non-general attribution round-trips.
+func tagToken(category, name string) string {
+	if category == "general" || category == "" {
+		return name
+	}
+	return category + ":" + name
+}
+
 // importSourceNative is the tagger_name attached to image_tags rows
 // produced by monbooru-native imports (full export and light archive).
 // Compat translators pass their format name (`hydrus`...) so the
@@ -129,11 +153,7 @@ func writeLightManifest(cx *galleryCtx, w io.Writer) error {
 				bw.objEnd()
 				return err
 			}
-			if tcat == "general" {
-				tagsList = append(tagsList, tname)
-			} else {
-				tagsList = append(tagsList, tcat+":"+tname)
-			}
+			tagsList = append(tagsList, tagToken(tcat, tname))
 		}
 		_ = tagRows.Close()
 		rel := filepath.ToSlash(filepath.Join(r.folder, filepath.Base(r.canonical)))
@@ -154,11 +174,10 @@ func replaceFromLightArchive(manifest *zip.File, galleryFiles []*zip.File, dbPat
 	if err != nil {
 		return fmt.Errorf("open tags.json: %w", err)
 	}
-	var mf lightManifest
-	err = json.NewDecoder(mc).Decode(&mf)
+	mf, err := decodeLightManifest(mc)
 	_ = mc.Close()
 	if err != nil {
-		return fmt.Errorf("decode tags.json: %w", err)
+		return err
 	}
 	files := make([]translatedFile, 0, len(galleryFiles))
 	for _, f := range galleryFiles {
@@ -251,14 +270,10 @@ func replaceFromLightManifest(srcPath, dbPath, thumbsPath, galleryPath string) e
 	if err != nil {
 		return fmt.Errorf("open tags.json: %w", err)
 	}
-	var mf lightManifest
-	err = json.NewDecoder(f).Decode(&mf)
+	mf, err := decodeLightManifest(f)
 	_ = f.Close()
 	if err != nil {
-		return fmt.Errorf("decode tags.json: %w", err)
-	}
-	if mf.Version != lightManifestVersion {
-		return fmt.Errorf("unsupported light export version %d (expected %d)", mf.Version, lightManifestVersion)
+		return err
 	}
 	if err := resetDBAndThumbs(dbPath, thumbsPath); err != nil {
 		return err
@@ -458,12 +473,9 @@ func mergeFromJSON(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 		return fmt.Errorf("open json: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	var exp galleryExport
-	if err := json.NewDecoder(f).Decode(&exp); err != nil {
-		return fmt.Errorf("decode json: %w", err)
-	}
-	if exp.Version < galleryExportMinSupported || exp.Version > galleryExportVersion {
-		return fmt.Errorf("unsupported export version %d (supported: %d..%d)", exp.Version, galleryExportMinSupported, galleryExportVersion)
+	exp, err := decodeGalleryExport(f)
+	if err != nil {
+		return err
 	}
 	applyMergeRecords(cx, readExportMergeRecords(exp), importSourceNative, maxFileSizeMB)
 	return nil
@@ -478,14 +490,10 @@ func mergeFromLightJSON(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error
 	if err != nil {
 		return fmt.Errorf("open tags.json: %w", err)
 	}
-	var mf lightManifest
-	err = json.NewDecoder(f).Decode(&mf)
+	mf, err := decodeLightManifest(f)
 	_ = f.Close()
 	if err != nil {
-		return fmt.Errorf("decode tags.json: %w", err)
-	}
-	if mf.Version != lightManifestVersion {
-		return fmt.Errorf("unsupported light export version %d (expected %d)", mf.Version, lightManifestVersion)
+		return err
 	}
 	records := make([]mergeRecord, 0, len(mf.Images))
 	for _, img := range mf.Images {
@@ -526,14 +534,10 @@ func mergeFromZip(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 		if err != nil {
 			return fmt.Errorf("open tags.json: %w", err)
 		}
-		var mf lightManifest
-		err = json.NewDecoder(rc).Decode(&mf)
+		mf, err := decodeLightManifest(rc)
 		_ = rc.Close()
 		if err != nil {
-			return fmt.Errorf("decode tags.json: %w", err)
-		}
-		if mf.Version != lightManifestVersion {
-			return fmt.Errorf("unsupported light export version %d (expected %d)", mf.Version, lightManifestVersion)
+			return err
 		}
 		for _, img := range mf.Images {
 			records = append(records, mergeRecord{SHA256: img.SHA256, Tags: img.Tags, SourcePath: img.Path})
@@ -561,14 +565,10 @@ func mergeFromZip(cx *galleryCtx, tmpPath string, maxFileSizeMB int) error {
 		if err != nil {
 			return err
 		}
-		var exp galleryExport
-		err = json.NewDecoder(rc).Decode(&exp)
+		exp, err := decodeGalleryExport(rc)
 		_ = rc.Close()
 		if err != nil {
-			return fmt.Errorf("decode inner json: %w", err)
-		}
-		if exp.Version < galleryExportMinSupported || exp.Version > galleryExportVersion {
-			return fmt.Errorf("unsupported export version %d (supported: %d..%d)", exp.Version, galleryExportMinSupported, galleryExportVersion)
+			return err
 		}
 		records = readExportMergeRecords(exp)
 	default:
@@ -695,11 +695,7 @@ func readDBMergeRecords(src *db.DB) ([]mergeRecord, error) {
 				_ = tagRows.Close()
 				return nil, err
 			}
-			if c == "general" {
-				tagsList = append(tagsList, n)
-			} else {
-				tagsList = append(tagsList, c+":"+n)
-			}
+			tagsList = append(tagsList, tagToken(c, n))
 		}
 		_ = tagRows.Close()
 		recs = append(recs, mergeRecord{
@@ -723,12 +719,7 @@ func readExportMergeRecords(exp galleryExport) []mergeRecord {
 		if t.IsAlias == 1 {
 			continue
 		}
-		cat := catByID[t.CategoryID]
-		if cat == "general" || cat == "" {
-			tagTokens[t.ID] = t.Name
-		} else {
-			tagTokens[t.ID] = cat + ":" + t.Name
-		}
+		tagTokens[t.ID] = tagToken(catByID[t.CategoryID], t.Name)
 	}
 	byImg := map[int64][]string{}
 	for _, it := range exp.ImageTags {

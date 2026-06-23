@@ -259,11 +259,7 @@ func applyImpliedClosureTx(tx *sql.Tx, imageID int64, implied []int64, ratingCat
 		if n, _ := res.RowsAffected(); n == 0 {
 			continue
 		}
-		if _, err := tx.Exec(
-			`UPDATE tags SET usage_count = usage_count + 1
-			 WHERE id = ? AND (SELECT is_missing FROM images WHERE id = ?) = 0`,
-			id, imageID,
-		); err != nil {
+		if err := bumpTagUsageTx(tx, id, imageID); err != nil {
 			return err
 		}
 		// If this newly-inserted implied tag is a rating, mark for the

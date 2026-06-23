@@ -29,11 +29,11 @@ func (s *Server) findRelationPairsPost(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.Lock()
 	distance := s.cfg.Relations.DefaultDistance
 	s.cfgMu.Unlock()
-	if distance < 0 || distance > 12 {
+	if distance < 0 || distance > maxPhashDistance {
 		distance = 4
 	}
 	if v := r.FormValue("distance"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 12 {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= maxPhashDistance {
 			distance = n
 		}
 	}

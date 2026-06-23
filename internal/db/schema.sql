@@ -109,6 +109,17 @@ CREATE TABLE IF NOT EXISTS image_tags (
     PRIMARY KEY (image_id, tag_id)
 );
 
+-- Per-image collection membership. An image can belong to several
+-- collections, each with its own position. images.series / series_order
+-- mirror one "home" membership so the global order-sort and the
+-- adjacency cursor keep riding the scalar columns.
+CREATE TABLE IF NOT EXISTS image_collections (
+    image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+    name     TEXT    NOT NULL COLLATE NOCASE,
+    position INTEGER,
+    PRIMARY KEY (image_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS tag_implications (
     parent_tag_id  INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     implied_tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
@@ -280,6 +291,11 @@ CREATE INDEX IF NOT EXISTS idx_tags_alias_canonical ON tags(canonical_tag_id, na
 -- Bootstrap drops that one explicitly when upgrading.
 CREATE INDEX IF NOT EXISTS idx_image_tags_tag_image ON image_tags(tag_id, image_id);
 CREATE INDEX IF NOT EXISTS idx_image_tags_image  ON image_tags(image_id);
+-- Covers the collection: filter (name -> image_id semi-join), the
+-- sidebar collection counts (GROUP BY name), and the pinned-order
+-- position lookup. The PRIMARY KEY (image_id, name) covers the inverse
+-- "collections of one image" read.
+CREATE INDEX IF NOT EXISTS idx_image_collections_name ON image_collections(name, image_id, position);
 CREATE INDEX IF NOT EXISTS idx_tag_implications_implied ON tag_implications(implied_tag_id);
 CREATE INDEX IF NOT EXISTS idx_image_tags_user_tag ON image_tags(tag_id) WHERE is_auto = 0;
 CREATE INDEX IF NOT EXISTS idx_image_tags_auto_tagger ON image_tags(tagger_name)

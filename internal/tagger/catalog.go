@@ -100,15 +100,21 @@ func LoadCatalog(modelPath string) []CatalogEntry {
 	return out
 }
 
+// curlSteps builds the `mkdir -p <dir>` + per-file `curl` step list that
+// downloads the entry's files into targetDir.
+func (c CatalogEntry) curlSteps(targetDir string) []string {
+	steps := []string{"mkdir -p " + shellSingleQuote(targetDir)}
+	for _, f := range c.Files {
+		dst := targetDir + "/" + f.Filename
+		steps = append(steps, "curl -L -o "+shellSingleQuote(dst)+" "+shellSingleQuote(f.URL))
+	}
+	return steps
+}
+
 // HostCommand renders the `mkdir + curl` chain a user runs on the host
 // (no docker). Paths are relative to the model path.
 func (c CatalogEntry) HostCommand() string {
-	parts := []string{"mkdir -p " + shellSingleQuote(c.Name)}
-	for _, f := range c.Files {
-		dst := c.Name + "/" + f.Filename
-		parts = append(parts, "curl -L -o "+shellSingleQuote(dst)+" "+shellSingleQuote(f.URL))
-	}
-	return strings.Join(parts, " && \\\n")
+	return strings.Join(c.curlSteps(c.Name), " && \\\n")
 }
 
 // DockerCommand renders a `docker exec <container> sh -c '...'` chain that
@@ -118,13 +124,7 @@ func (c CatalogEntry) DockerCommand(containerName string) string {
 	if containerName == "" {
 		containerName = "monbooru"
 	}
-	target := "/models/" + c.Name
-	parts := []string{"mkdir -p " + shellSingleQuote(target)}
-	for _, f := range c.Files {
-		dst := target + "/" + f.Filename
-		parts = append(parts, "curl -L -o "+shellSingleQuote(dst)+" "+shellSingleQuote(f.URL))
-	}
-	inner := strings.Join(parts, " && ")
+	inner := strings.Join(c.curlSteps("/models/"+c.Name), " && ")
 	return fmt.Sprintf("docker exec %s sh -c %s", containerName, shellSingleQuote(inner))
 }
 

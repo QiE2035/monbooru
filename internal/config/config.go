@@ -373,35 +373,37 @@ func envBool(key string, cur bool) bool {
 	return b
 }
 
+// envStr returns the override value, or cur when the var is unset/empty.
+func envStr(key, cur string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return cur
+}
+
 func applyEnvOverrides(cfg *Config) {
-	if v := os.Getenv("MONBOORU_SERVER_BIND_ADDRESS"); v != "" {
-		cfg.Server.BindAddress = v
-	}
-	if v := os.Getenv("MONBOORU_SERVER_BASE_URL"); v != "" {
-		cfg.Server.BaseURL = v
-	}
+	cfg.Server.BindAddress = envStr("MONBOORU_SERVER_BIND_ADDRESS", cfg.Server.BindAddress)
+	cfg.Server.BaseURL = envStr("MONBOORU_SERVER_BASE_URL", cfg.Server.BaseURL)
+	// DATA_PATH stays inline: setting it must also recompute the derived paths.
 	if v := os.Getenv("MONBOORU_PATHS_DATA_PATH"); v != "" {
 		cfg.Paths.DataPath = v
 		fillDerivedPaths(cfg)
 	}
-	if v := os.Getenv("MONBOORU_PATHS_MODEL_PATH"); v != "" {
-		cfg.Paths.ModelPath = v
-	}
+	cfg.Paths.ModelPath = envStr("MONBOORU_PATHS_MODEL_PATH", cfg.Paths.ModelPath)
 	cfg.Gallery.WatchEnabled = envBool("MONBOORU_GALLERY_WATCH_ENABLED", cfg.Gallery.WatchEnabled)
 	cfg.Gallery.MaxFileSizeMB = envInt("MONBOORU_GALLERY_MAX_FILE_SIZE_MB", cfg.Gallery.MaxFileSizeMB)
 	cfg.Tagger.UseCUDA = envBool("MONBOORU_TAGGER_USE_CUDA", cfg.Tagger.UseCUDA)
 	cfg.Auth.EnablePassword = envBool("MONBOORU_AUTH_ENABLE_PASSWORD", cfg.Auth.EnablePassword)
-	if v := os.Getenv("MONBOORU_AUTH_PASSWORD_HASH"); v != "" {
-		cfg.Auth.PasswordHash = v
-	}
+	cfg.Auth.PasswordHash = envStr("MONBOORU_AUTH_PASSWORD_HASH", cfg.Auth.PasswordHash)
 	cfg.Auth.SessionLifetimeDays = envInt("MONBOORU_AUTH_SESSION_LIFETIME_DAYS", cfg.Auth.SessionLifetimeDays)
-	if v := os.Getenv("MONBOORU_AUTH_API_TOKEN"); v != "" {
-		cfg.Auth.APIToken = v
-	}
-	if v := os.Getenv("MONBOORU_LOG_LEVEL"); v != "" {
-		cfg.Log.Level = v
-	}
+	cfg.Auth.APIToken = envStr("MONBOORU_AUTH_API_TOKEN", cfg.Auth.APIToken)
+	cfg.Log.Level = envStr("MONBOORU_LOG_LEVEL", cfg.Log.Level)
 }
+
+// MaxPageSize caps UI.PageSize. A gallery page binds one SQL variable per
+// row (the cached-id projection, the API tag/alias loaders); this keeps a
+// single page well under SQLite's SQLITE_MAX_VARIABLE_NUMBER (32766).
+const MaxPageSize = 1000
 
 func validate(cfg *Config) error {
 	if cfg.Server.BindAddress == "" {
@@ -456,9 +458,12 @@ func validate(cfg *Config) error {
 	// PageSize must be positive: the API path divides by it
 	// (offset/limit) and would panic on zero. Snap to the documented
 	// default rather than surface a startup error for a user-fixable
-	// config typo.
+	// config typo, and cap it so a page's IN-clause can't overflow the
+	// SQL variable limit.
 	if cfg.UI.PageSize <= 0 {
 		cfg.UI.PageSize = 40
+	} else if cfg.UI.PageSize > MaxPageSize {
+		cfg.UI.PageSize = MaxPageSize
 	}
 	// ThumbnailFit gates the gallery grid CSS; an unknown value would
 	// leave the template class blank. Snap to the default.

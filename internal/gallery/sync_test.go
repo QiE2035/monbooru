@@ -999,14 +999,43 @@ func TestWatcher_AliasPathRemovalDoesNotMarkMissing(t *testing.T) {
 		t.Fatal("watcher did not register the duplicate as a non-canonical alias")
 	}
 
+	// Positive control: a distinct canonical file whose removal IS a
+	// mark-missing trigger. The watcher processes events in order, so once
+	// the control flips to missing the earlier alias removal has been
+	// processed too - the negative assertion below needs no blind settle.
+	controlPath := createTestPNGFileSize(t, galleryDir, "control.png", 12, 12)
+	deadline = time.Now().Add(8 * time.Second)
+	var controlID int64
+	for time.Now().Before(deadline) {
+		if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path = ?`, controlPath).Scan(&controlID); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if controlID == 0 {
+		t.Fatal("watcher did not ingest the control file")
+	}
+
 	if err := os.Remove(aliasPath); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(controlPath); err != nil {
+		t.Fatal(err)
+	}
 
-	// Give the debounce + mark-missing path time to fire (or wrongly fire).
-	// A negative assertion needs a settle window; mirror the positive
-	// test's 8-second budget so a slow CI doesn't false-pass.
-	time.Sleep(2 * time.Second)
+	deadline = time.Now().Add(8 * time.Second)
+	controlMissing := false
+	for time.Now().Before(deadline) {
+		var m int
+		if err := database.Read.QueryRow(`SELECT is_missing FROM images WHERE id = ?`, controlID).Scan(&m); err == nil && m == 1 {
+			controlMissing = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !controlMissing {
+		t.Fatal("watcher did not mark the control canonical file missing")
+	}
 
 	var isMissing int
 	if err := database.Read.QueryRow(`SELECT is_missing FROM images WHERE id = ?`, imgID).Scan(&isMissing); err != nil {

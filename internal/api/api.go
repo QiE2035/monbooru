@@ -202,6 +202,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// writePage emits the paginated envelope documented by paginatedSchema:
+// {page, limit, total, results}.
+func writePage(w http.ResponseWriter, page, limit, total int, results any) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"page":    page,
+		"limit":   limit,
+		"total":   total,
+		"results": results,
+	})
+}
+
 // parsePage reads page + limit from the query string and clamps limit
 // to maxLimit. `page_size` is accepted as a synonym for `limit` so a
 // caller using the more common page_size convention isn't silently

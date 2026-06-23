@@ -1147,15 +1147,7 @@ func addTagToImageTxReportingDup(tx *sql.Tx, imageID, tagID int64, isAuto bool, 
 		}
 		promoted, _ = upd.RowsAffected()
 	} else {
-		// usage_count is the visible-image count for the tag; RecalcDB
-		// rebuilds it that way. Adding a tag to a missing image must
-		// not bump it, otherwise the next unrelated mutation that
-		// triggers RecalcIDs silently drops the count back down.
-		if _, err := tx.Exec(
-			`UPDATE tags SET usage_count = usage_count + 1
-			 WHERE id = ? AND (SELECT is_missing FROM images WHERE id = ?) = 0`,
-			tagID, imageID,
-		); err != nil {
+		if err := bumpTagUsageTx(tx, tagID, imageID); err != nil {
 			return false, false, err
 		}
 	}
@@ -1371,6 +1363,30 @@ func (s *Service) RemoveTagsFromOneImage(imageID int64, tagIDs []int64) error {
 	return tx.Commit()
 }
 
+// bumpTagUsageTx increments a tag's usage_count for one image, skipping
+// the bump when the image is missing. usage_count tracks visible images
+// only (RecalcDB rebuilds it that way), so counting a missing image would
+// be silently corrected back down by the next RecalcIDs.
+func bumpTagUsageTx(tx *sql.Tx, tagID, imageID int64) error {
+	_, err := tx.Exec(
+		`UPDATE tags SET usage_count = usage_count + 1
+		 WHERE id = ? AND (SELECT is_missing FROM images WHERE id = ?) = 0`,
+		tagID, imageID,
+	)
+	return err
+}
+
+// dropTagUsageTx is the symmetric decrement: a missing image was never
+// counted, so removing its row must not decrement either.
+func dropTagUsageTx(tx *sql.Tx, tagID, imageID int64) error {
+	_, err := tx.Exec(
+		`UPDATE tags SET usage_count = MAX(0, usage_count - 1)
+		 WHERE id = ? AND (SELECT is_missing FROM images WHERE id = ?) = 0`,
+		tagID, imageID,
+	)
+	return err
+}
+
 func removeTagFromImageTx(tx *sql.Tx, imageID, tagID int64) error {
 	// Walk the parent's implication closure before deleting so we know
 	// which implied rows might lose their last justifying parent. The
@@ -1392,13 +1408,7 @@ func removeTagFromImageTx(tx *sql.Tx, imageID, tagID int64) error {
 		return nil
 	}
 
-	// Symmetric to the add path: a missing image was never counted in
-	// usage_count, so removing the row must not decrement it either.
-	if _, err := tx.Exec(
-		`UPDATE tags SET usage_count = MAX(0, usage_count - 1)
-		 WHERE id = ? AND (SELECT is_missing FROM images WHERE id = ?) = 0`,
-		tagID, imageID,
-	); err != nil {
+	if err := dropTagUsageTx(tx, tagID, imageID); err != nil {
 		return err
 	}
 
@@ -1430,11 +1440,7 @@ func removeTagFromImageTx(tx *sql.Tx, imageID, tagID int64) error {
 		); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(
-			`UPDATE tags SET usage_count = MAX(0, usage_count - 1)
-			 WHERE id = ? AND (SELECT is_missing FROM images WHERE id = ?) = 0`,
-			impID, imageID,
-		); err != nil {
+		if err := dropTagUsageTx(tx, impID, imageID); err != nil {
 			return err
 		}
 	}

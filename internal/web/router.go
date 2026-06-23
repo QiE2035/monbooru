@@ -579,7 +579,7 @@ func contextMiddlewareBypass(path string) bool {
 // into any gallery are picked up in real time, not just the active one.
 //
 // Also spawns a pre-warm goroutine per gallery that populates the FolderTree,
-// SourceCounts, and VisibleCount caches. The first user request then hits
+// source-label, and visible-count caches. The first user request then hits
 // warm caches instead of paying a cold aggregation scan against every
 // visible image - on libraries with tens of thousands of images that walk
 // was the dominant contributor to first-sidebar latency.
@@ -644,6 +644,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /images/{id}", s.deleteImage)
 	mux.HandleFunc("POST /images/{id}/canonical-path", s.promoteCanonical)
 	mux.HandleFunc("POST /images/{id}/external", s.updateExternal)
+	mux.HandleFunc("POST /images/{id}/collections/set", s.setCollection)
+	mux.HandleFunc("POST /images/{id}/collections/remove", s.removeCollection)
 	mux.HandleFunc("POST /images/{id}/move", s.moveImage)
 	mux.HandleFunc("DELETE /images/{id}/aliases/{pathID}", s.deleteAlias)
 
@@ -661,6 +663,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /tags/categories/{id}/rename", s.renameCategoryPost)
 	mux.HandleFunc("DELETE /tags/categories/{id}", s.deleteCategoryDelete)
 	mux.HandleFunc("GET /tags/categories/{id}/count", s.categoryCountHandler)
+
+	mux.HandleFunc("GET /collections", s.collectionsHandler)
+	mux.HandleFunc("POST /collections/rename", s.renameCollectionPost)
+	mux.HandleFunc("POST /collections/dissolve", s.dissolveCollectionPost)
 
 	mux.HandleFunc("GET /categories", s.categoriesHandler)
 

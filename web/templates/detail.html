@@ -28,7 +28,7 @@
       <select name="sort" id="search-sort">
         <option value="newest"   {{if eq .BackSort "newest"}}selected{{end}}>Newest</option>
         <option value="filesize" {{if eq .BackSort "filesize"}}selected{{end}}>File size</option>
-        <option value="order"    {{if eq .BackSort "order"}}selected{{end}}>Order</option>
+        <option value="order"    {{if eq .BackSort "order"}}selected{{end}}>Collection order</option>
       </select>
       <select name="order">
         <option value="desc" {{if ne .BackOrder "asc"}}selected{{end}}>↓</option>
@@ -127,6 +127,39 @@
       <div class="dialog-actions">
         <button type="submit">Save</button>
         <button type="button" onclick="document.getElementById('external-edit-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="collection-dialog">
+    <form id="collection-form" hx-post="/images/{{.Image.ID}}/collections/set"
+          hx-target="#collection-error"
+          hx-swap="innerHTML"
+          hx-on::after-request="onExternalEditResponse(event, 'collection-dialog')">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <input type="hidden" id="collection-prev" name="prev" value="">
+      <p>Collection: <strong id="collection-dialog-title">add</strong></p>
+      <div class="field">
+        <label>Collection label (max 200 chars)</label>
+        <div class="series-input-wrap">
+          <input id="collection-name-input" type="text" name="collection" maxlength="200" autocomplete="off"
+                 hx-get="/internal/collection/suggest"
+                 hx-trigger="input changed delay:200ms"
+                 hx-target="#collection-suggest"
+                 hx-swap="innerHTML"
+                 hx-vals='js:{prefix: document.getElementById("collection-name-input").value}'
+                 onkeydown="handleSuggestKey(event, 'collection-suggest', 'collection-name-input')">
+          <div id="collection-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label>Order within collection (optional, 1 or higher)</label>
+        <input id="collection-order-input" type="number" name="collection_order" min="1">
+      </div>
+      <div id="collection-error"></div>
+      <div class="dialog-actions">
+        <button type="submit">Save</button>
+        <button type="button" onclick="document.getElementById('collection-dialog').close()">Cancel</button>
       </div>
     </form>
   </dialog>
@@ -419,18 +452,31 @@
         input.focus();
         input.select();
       });
+      function openCollectionDialog(name, order) {
+        var dlg = document.getElementById('collection-dialog');
+        if (!dlg) return;
+        document.getElementById('collection-prev').value = name || '';
+        document.getElementById('collection-name-input').value = name || '';
+        document.getElementById('collection-order-input').value = order || '';
+        document.getElementById('collection-dialog-title').textContent = name ? 'edit ' + name : 'add';
+        document.getElementById('collection-suggest').innerHTML = '';
+        document.getElementById('collection-error').innerHTML = '';
+        dlg.showModal();
+        var input = document.getElementById('collection-name-input');
+        input.focus();
+        input.select();
+      }
+      document.addEventListener('click', function(e) {
+        if (!e.target.closest) return;
+        if (e.target.closest('.btn-add-collection')) { openCollectionDialog('', ''); return; }
+        var ed = e.target.closest('.btn-edit-collection');
+        if (ed) openCollectionDialog(ed.dataset.name, ed.dataset.order);
+      });
       function externalEditShape(field) {
         switch (field) {
           case 'url':
             return {title: 'URL', label: 'Original URL (must start with http:// or https://; max 2048 chars)',
                     type: 'url', name: 'url', maxlength: '2048', placeholder: 'https://...'};
-          case 'collection':
-            return {title: 'Collection', label: 'Collection label (max 200 chars)',
-                    type: 'text', name: 'collection', maxlength: '200',
-                    suggestURL: '/internal/collection/suggest'};
-          case 'order':
-            return {title: 'Order within collection', label: 'Order (optional, 1 or higher; leave blank to clear)',
-                    type: 'number', name: 'collection_order', min: '1'};
           default:
             return {title: 'Source', label: 'Source label (max 200 chars)',
                     type: 'text', name: 'source', maxlength: '200',
@@ -529,13 +575,27 @@
               {{if .Image.URL}}<a href="{{.Image.URL}}" target="_blank" rel="noopener noreferrer" class="meta-url-value">{{.Image.URL}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
               <button type="button" class="btn-sm btn-edit-external" data-field="url" data-value="{{.Image.URL}}" title="Edit URL">[edit]</button>
             </td></tr>
-            <tr><th>Collection</th><td>
-              {{if .Image.Series}}<a href="/?q={{urlQ (printf "collection:\"%s\"" (qval .Image.Series))}}" class="meta-source-value" title="Search this collection">{{.Image.Series}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
-              <button type="button" class="btn-sm btn-edit-external" data-field="collection" data-value="{{.Image.Series}}" title="Edit collection">[edit]</button>
-            </td></tr>
-            <tr><th>Order</th><td>
-              {{if .Image.SeriesOrder}}<span class="meta-source-value">#{{deref .Image.SeriesOrder}}</span>{{else}}<span class="field-hint">(none)</span>{{end}}
-              <button type="button" class="btn-sm btn-edit-external" data-field="order" data-value="{{if .Image.SeriesOrder}}{{deref .Image.SeriesOrder}}{{end}}" title="Edit order">[edit]</button>
+            <tr><th>Collections</th><td>
+              {{if .Collections}}
+              <ul class="collection-list">
+                {{range .Collections}}
+                <li class="collection-item">
+                  <a href="/?q={{urlQ (printf "collection:\"%s\"" (qval .Name))}}" class="meta-source-value" title="Search this collection">{{.Name}}</a>{{if .Order}} <span class="series-pill-order">#{{deref .Order}}</span>{{end}}
+                  <button type="button" class="btn-link-accent btn-edit-collection" data-name="{{.Name}}" data-order="{{if .Order}}{{deref .Order}}{{end}}" title="Edit">[edit]</button>
+                  <form method="POST" action="/images/{{$.Image.ID}}/collections/remove"
+                        hx-post="/images/{{$.Image.ID}}/collections/remove" hx-swap="none"
+                        hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+                        hx-confirm="Remove this image from {{.Name}}?" data-confirm-ok="Remove"
+                        style="display:inline">
+                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="collection" value="{{.Name}}">
+                    <button type="submit" class="btn-link-accent" title="Remove from collection">[×]</button>
+                  </form>
+                </li>
+                {{end}}
+              </ul>
+              {{else}}<span class="field-hint">(none)</span>{{end}}
+              <button type="button" class="btn-link-accent btn-add-collection" title="Add to a collection">[+ add]</button>
             </td></tr>
           </tbody>
         </table>

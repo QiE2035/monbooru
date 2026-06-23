@@ -146,7 +146,7 @@ func (s *Server) settingsGeneralPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfg.Gallery.DefaultUploadFolder = uploadFolder
 	if n, err := strconv.Atoi(r.FormValue("page_size")); err == nil && n > 0 {
-		s.cfg.UI.PageSize = n
+		s.cfg.UI.PageSize = min(n, config.MaxPageSize)
 	}
 	if fit := r.FormValue("thumbnail_fit"); fit == "square" || fit == "natural" {
 		s.cfg.UI.ThumbnailFit = fit

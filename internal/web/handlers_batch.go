@@ -699,21 +699,29 @@ func (s *Server) runBulkToggle(ids []int64, column, progressNoun, cancelNoun, su
 	s.jobs.Complete(fmt.Sprintf("%s for %d image(s).", successNoun, processed))
 }
 
-// batchCollection assigns a collection label to every image in
-// `scope=search` (q + sort + order) or every checked id in
-// `scope=selection`. Mirrors batchInbox's id-collection shape; the
-// per-chunk UPDATE writes the same label to every row, so a 100k-row
-// job is one indexed write per 500-row chunk. The underlying column
-// is still named `series` for schema stability.
+// batchCollection adds or removes a collection label across every image
+// in `scope=search` (q + sort + order) or every checked id in
+// `scope=selection`. `mode=add` (default) files each image under the
+// label, keeping any other memberships; `mode=remove` drops the label.
+// One indexed write per 500-row chunk.
 func (s *Server) batchCollection(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
 	collectionVal := strings.TrimSpace(r.FormValue("collection"))
+	if collectionVal == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeInlineFlash(w, "err", "Collection label required.")
+		return
+	}
 	if len(collectionVal) > maxExternalSourceLen {
 		w.WriteHeader(http.StatusBadRequest)
 		writeInlineFlash(w, "err", "Collection label too long.")
 		return
+	}
+	mode := r.FormValue("mode")
+	if mode != "remove" {
+		mode = "add"
 	}
 
 	ids, ok := s.resolveBatchScope(w, r, "batch-collection")
@@ -728,29 +736,66 @@ func (s *Server) batchCollection(w http.ResponseWriter, r *http.Request) {
 	if !s.startJob(w, models.JobTypeTag) {
 		return
 	}
-	go s.runBatchCollection(ids, collectionVal)
+	go s.runBatchCollection(ids, collectionVal, mode)
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// runBatchCollection writes the collection label across the supplied id
-// list in chunks. Every row gets the same label; series_order is left
-// untouched.
-func (s *Server) runBatchCollection(ids []int64, label string) {
+// runBatchCollection adds or removes the label across the supplied id
+// list in chunks. Add keeps existing memberships (a row with no home
+// adopts the label); remove drops the membership and promotes another to
+// home (or clears the mirror) for rows whose home was the removed label.
+func (s *Server) runBatchCollection(ids []int64, label, mode string) {
 	ctx := s.jobs.Context()
 	const chunkSize = 500
 	total := len(ids)
+	remove := mode == "remove"
+	verb := "adding to collection"
+	if remove {
+		verb = "removing from collection"
+	}
 
-	processed, cancelled, err := chunkedJob(ctx, s.jobs, ids, chunkSize, "setting collection", func(chunk []int64) error {
+	processed, cancelled, err := chunkedJob(ctx, s.jobs, ids, chunkSize, verb, func(chunk []int64) error {
 		placeholders, chunkArgs := db.InPlaceholders(chunk)
+		labelArgs := append([]any{label}, chunkArgs...)
 		tx, err := s.db().Write.Begin()
 		if err != nil {
 			return err
 		}
-		args := append([]any{label}, chunkArgs...)
+		defer func() { _ = tx.Rollback() }()
+		if remove {
+			if _, err := tx.Exec(
+				`DELETE FROM image_collections WHERE name = ? AND image_id IN (`+placeholders+`)`,
+				labelArgs...,
+			); err != nil {
+				return err
+			}
+			// Rebind the home mirror for rows whose home was the removed label.
+			if _, err := tx.Exec(
+				`UPDATE images SET
+				   series = COALESCE((SELECT name FROM image_collections c WHERE c.image_id = images.id
+				                      ORDER BY c.position IS NULL, c.position, c.name LIMIT 1), ''),
+				   series_order = (SELECT position FROM image_collections c WHERE c.image_id = images.id
+				                   ORDER BY c.position IS NULL, c.position, c.name LIMIT 1)
+				 WHERE series = ? COLLATE NOCASE AND id IN (`+placeholders+`)`,
+				labelArgs...,
+			); err != nil {
+				return err
+			}
+			return tx.Commit()
+		}
 		if _, err := tx.Exec(
-			`UPDATE images SET series = ? WHERE id IN (`+placeholders+`)`, args...,
+			`INSERT INTO image_collections (image_id, name, position)
+			 SELECT id, ?, NULL FROM images WHERE id IN (`+placeholders+`)
+			 ON CONFLICT(image_id, name) DO NOTHING`,
+			labelArgs...,
 		); err != nil {
-			_ = tx.Rollback()
+			return err
+		}
+		if _, err := tx.Exec(
+			`UPDATE images SET series = ?, series_order = NULL
+			 WHERE series = '' AND id IN (`+placeholders+`)`,
+			labelArgs...,
+		); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -763,14 +808,14 @@ func (s *Server) runBatchCollection(ids []int64, label string) {
 	s.Active().InvalidateCaches()
 
 	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("series cancelled (%d/%d set)", processed, total))
+		s.jobs.Complete(fmt.Sprintf("collection cancelled (%d/%d processed)", processed, total))
 		return
 	}
-	if label == "" {
-		s.jobs.Complete(fmt.Sprintf("Cleared series on %d image(s).", processed))
+	if remove {
+		s.jobs.Complete(fmt.Sprintf("Removed %d image(s) from collection.", processed))
 		return
 	}
-	s.jobs.Complete(fmt.Sprintf("Set collection on %d image(s).", processed))
+	s.jobs.Complete(fmt.Sprintf("Added %d image(s) to collection.", processed))
 }
 
 func (s *Server) deleteFolderPost(w http.ResponseWriter, r *http.Request) {

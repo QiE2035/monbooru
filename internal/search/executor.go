@@ -37,6 +37,10 @@ type Query struct {
 	// result holds the full match set, and the detail page reads it
 	// instead of refetching. Empty disables both sides.
 	CacheKey string
+	// OrderCollection names the single pinned collection whose per-image
+	// position drives the order-sort. Empty falls back to the home-mirror
+	// columns (i.series, i.series_order).
+	OrderCollection string
 }
 
 // imageRowColumns is the canonical SELECT list shared by Execute and
@@ -155,6 +159,10 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	where = andDefaultVisible(where, hasMissingFilter)
 
 	orderClause := buildOrder(q.Sort, q.Order, q.RandomSeed)
+	var orderArgs []any
+	if q.Sort == "order" && q.OrderCollection != "" {
+		orderClause, orderArgs = collectionOrderClause(q.OrderCollection, q.Order)
+	}
 
 	offset := (page - 1) * limit
 
@@ -199,8 +207,9 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 		indexHint, where, orderClause,
 	)
 
-	dataArgs := make([]any, len(args), len(args)+2)
-	copy(dataArgs, args)
+	dataArgs := make([]any, 0, len(args)+len(orderArgs)+2)
+	dataArgs = append(dataArgs, args...)
+	dataArgs = append(dataArgs, orderArgs...)
 	dataArgs = append(dataArgs, limit, offset)
 	rows, err := database.Read.Query(dataSQL, dataArgs...)
 	if err != nil {
@@ -245,7 +254,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 			AdjacencyCacheSet(q.CacheKey, ids)
 		} else if page == 1 && AdjacencyCacheTryAcquireFan(q.CacheKey) {
 			defer AdjacencyCacheReleaseFan(q.CacheKey)
-			ids := fetchSortedMatchIDs(database, indexHint, where, args, orderClause, total)
+			ids := fetchSortedMatchIDs(database, indexHint, where, args, orderClause, orderArgs, total)
 			if len(ids) > 0 {
 				AdjacencyCacheSet(q.CacheKey, ids)
 			}
@@ -272,10 +281,7 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 	if offset >= total {
 		return &models.SearchResult{Page: page, Limit: limit, Total: total}, nil
 	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
+	end := min(offset+limit, total)
 	pageIDs := ids[offset:end]
 
 	placeholders, args := db.InPlaceholders(pageIDs)
@@ -319,7 +325,7 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 // so subsequent page-flips and detail prev/next ride the cache. Errors
 // degrade to a nil slice; the caller skips populate and the next render
 // retries.
-func fetchSortedMatchIDs(database *db.DB, indexHint, where string, args []any, orderClause string, total int) []int64 {
+func fetchSortedMatchIDs(database *db.DB, indexHint, where string, args []any, orderClause string, orderArgs []any, total int) []int64 {
 	n := total
 	if n > adjacencyCacheMaxIDs {
 		n = adjacencyCacheMaxIDs
@@ -328,8 +334,9 @@ func fetchSortedMatchIDs(database *db.DB, indexHint, where string, args []any, o
 		`SELECT i.id FROM images i%s WHERE %s %s LIMIT ?`,
 		indexHint, where, orderClause,
 	)
-	qargs := make([]any, len(args), len(args)+1)
-	copy(qargs, args)
+	qargs := make([]any, 0, len(args)+len(orderArgs)+1)
+	qargs = append(qargs, args...)
+	qargs = append(qargs, orderArgs...)
 	qargs = append(qargs, n)
 	rows, err := database.Read.Query(sql, qargs...)
 	if err != nil {
@@ -498,8 +505,6 @@ func columnFilterIndexHint(expr Expr, sort string) string {
 		}
 	case "source":
 		return " INDEXED BY idx_images_source_nocase_visible"
-	case "collection":
-		return " INDEXED BY idx_images_series_nocase"
 	case "type", "mime":
 		// High-cardinality IN-lists (type:image covers ~80% of rows,
 		// mime:png+jpeg about 60%) defeat the partial file-type
@@ -609,10 +614,7 @@ func adjacencyTotalEstimate(database *db.DB, expr Expr) (int, bool) {
 		if !rok {
 			return 0, false
 		}
-		if l < r {
-			return l, true
-		}
-		return r, true
+		return min(l, r), true
 	case OrExpr:
 		l, lok := adjacencyTotalEstimate(database, e.Left)
 		if !lok {
@@ -1266,11 +1268,7 @@ func fastCountNot(database *db.DB, e NotExpr) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	n := visible - used
-	if n < 0 {
-		n = 0
-	}
-	return n, true
+	return max(visible-used, 0), true
 }
 
 func fastCountAnd(database *db.DB, e AndExpr) (int, bool) {
@@ -1282,10 +1280,7 @@ func fastCountAnd(database *db.DB, e AndExpr) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	minN := l
-	if r < minN {
-		minN = r
-	}
+	minN := min(l, r)
 	if minN < fastApproxThreshold {
 		return 0, false
 	}
@@ -1309,9 +1304,7 @@ func fastCountOr(database *db.DB, e OrExpr) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	if sum > v {
-		sum = v
-	}
+	sum = min(sum, v)
 	return sum, true
 }
 
@@ -1604,11 +1597,7 @@ func fastCountTagged(database *db.DB, e FilterExpr) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	n := visible - untagged
-	if n < 0 {
-		n = 0
-	}
-	return n, true
+	return max(visible-untagged, 0), true
 }
 
 // fastCountInbox returns the visible count for inbox:true / inbox:false
@@ -1710,6 +1699,42 @@ func orderCursor(series string, order sql.NullInt64, id int64, desc bool) (befor
 		after = "(i.series > ? OR (i.series = ? AND i.series_order IS NULL AND i.id > ?))"
 		beforeArgs = []any{series, series, id}
 		afterArgs = []any{series, series, id}
+	}
+	return
+}
+
+// collectionCursor is orderCursor for a single pinned collection: the
+// total order is (position NULLS-last, id), read off a JOINed pc.position
+// column rather than the home-mirror series columns, matching
+// collectionOrderClause. The query must JOIN image_collections AS pc.
+func collectionCursor(pos sql.NullInt64, id int64, desc bool) (before, after, fwd, rev string, beforeArgs, afterArgs []any) {
+	if desc {
+		fwd = "ORDER BY pc.position IS NULL, pc.position DESC, i.id DESC"
+		rev = "ORDER BY pc.position IS NULL DESC, pc.position ASC, i.id ASC"
+		if pos.Valid {
+			before = "(pc.position IS NOT NULL AND (pc.position, i.id) > (?, ?))"
+			after = "(pc.position IS NULL OR (pc.position, i.id) < (?, ?))"
+		} else {
+			before = "(pc.position IS NOT NULL OR (pc.position IS NULL AND i.id > ?))"
+			after = "(pc.position IS NULL AND i.id < ?)"
+		}
+	} else {
+		fwd = "ORDER BY pc.position IS NULL, pc.position ASC, i.id ASC"
+		rev = "ORDER BY pc.position IS NULL DESC, pc.position DESC, i.id DESC"
+		if pos.Valid {
+			before = "(pc.position IS NOT NULL AND (pc.position, i.id) < (?, ?))"
+			after = "(pc.position IS NULL OR (pc.position, i.id) > (?, ?))"
+		} else {
+			before = "(pc.position IS NOT NULL OR (pc.position IS NULL AND i.id < ?))"
+			after = "(pc.position IS NULL AND i.id > ?)"
+		}
+	}
+	if pos.Valid {
+		beforeArgs = []any{pos.Int64, id}
+		afterArgs = []any{pos.Int64, id}
+	} else {
+		beforeArgs = []any{id}
+		afterArgs = []any{id}
 	}
 	return
 }
@@ -1823,11 +1848,25 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		args = append(args, bucketLo, bucketHi)
 	}
 
+	collOrder := q.Sort == "order" && q.OrderCollection != ""
+	var pcPos sql.NullInt64
+	if collOrder {
+		// The pinned collection's own position drives the cursor; a missing
+		// membership or NULL position sorts in the trailing null group.
+		_ = database.Read.QueryRow(
+			`SELECT position FROM image_collections WHERE image_id = ? AND name = ?`,
+			currentID, q.OrderCollection).Scan(&pcPos)
+	}
+
 	var keyCol string
 	var keyVal any
 	var prevCmp, nextCmp, prevSort, nextSort string
 	var prevArgs, nextArgs []any
-	if q.Sort == "order" {
+	if collOrder {
+		before, after, fwd, rev, bArgs, aArgs := collectionCursor(pcPos, currentID, q.Order == "desc")
+		prevCmp, prevSort, prevArgs = before, rev, bArgs
+		nextCmp, nextSort, nextArgs = after, fwd, aArgs
+	} else if q.Sort == "order" {
 		before, after, fwd, rev, bArgs, aArgs := orderCursor(series, seriesOrder, currentID, q.Order == "desc")
 		prevCmp, prevSort, prevArgs = before, rev, bArgs
 		nextCmp, nextSort, nextArgs = after, fwd, aArgs
@@ -1880,7 +1919,15 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 	lookup := func(cursorCmp, sort string, cursorArgs []any) *int64 {
 		var sql string
 		var qargs []any
-		if folderActive {
+		if collOrder {
+			qargs = make([]any, 0, len(args)+len(cursorArgs)+1)
+			qargs = append(qargs, q.OrderCollection)
+			qargs = append(qargs, args...)
+			qargs = append(qargs, cursorArgs...)
+			sql = fmt.Sprintf(
+				"SELECT i.id FROM images i JOIN image_collections pc ON pc.image_id = i.id AND pc.name = ? WHERE %s AND %s %s LIMIT 1",
+				where, cursorCmp, sort)
+		} else if folderActive {
 			// UNION ALL of the equality and range legs, each pinned to
 			// idx_images_folder_nocase_visible so the planner runs two
 			// tight seeks instead of one OR-of-(equality, range) that
@@ -1978,11 +2025,23 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 
 	where = andDefaultVisible(where, hasMissingFilter)
 
+	collOrder := q.Sort == "order" && q.OrderCollection != ""
+	var pcPos sql.NullInt64
+	if collOrder {
+		_ = database.Read.QueryRowContext(ctx,
+			`SELECT position FROM image_collections WHERE image_id = ? AND name = ?`,
+			currentID, q.OrderCollection).Scan(&pcPos)
+	}
+
 	var keyCol string
 	var keyVal any
 	var beforeCmp string
 	var beforeArgs []any
-	if q.Sort == "order" {
+	if collOrder {
+		before, _, _, _, bArgs, _ := collectionCursor(pcPos, currentID, q.Order == "desc")
+		beforeCmp = before
+		beforeArgs = bArgs
+	} else if q.Sort == "order" {
 		before, _, _, _, bArgs, _ := orderCursor(series, seriesOrder, currentID, q.Order == "desc")
 		beforeCmp = before
 		beforeArgs = bArgs
@@ -2022,7 +2081,15 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 
 	var sql string
 	var qargs []any
-	if folderActive {
+	if collOrder {
+		sql = fmt.Sprintf(
+			"SELECT COUNT(*) FROM images i JOIN image_collections pc ON pc.image_id = i.id AND pc.name = ? WHERE %s AND %s",
+			where, beforeCmp)
+		qargs = make([]any, 0, len(args)+len(beforeArgs)+1)
+		qargs = append(qargs, q.OrderCollection)
+		qargs = append(qargs, args...)
+		qargs = append(qargs, beforeArgs...)
+	} else if folderActive {
 		legSQL := "SELECT 1 FROM images i INDEXED BY idx_images_folder_nocase_visible WHERE %s AND " + where + " AND " + beforeCmp
 		sql = "SELECT COUNT(*) FROM (" +
 			fmt.Sprintf(legSQL, "i.folder_path = ? COLLATE NOCASE") +
@@ -2282,6 +2349,46 @@ func SuggestTagsWithFilter(database *db.DB, expr Expr, prefix, categoryName stri
 		}
 	}
 	return out, nil
+}
+
+// collectionOrderClause sorts a result set pinned to one collection by
+// that collection's per-image position (NULLs last in both directions),
+// then id. The position is read from the join table so an image filed
+// under several collections sorts by the pinned one, not its home order.
+func collectionOrderClause(name, order string) (string, []any) {
+	dir := "ASC"
+	if order == "desc" {
+		dir = "DESC"
+	}
+	sub := "(SELECT position FROM image_collections WHERE image_id = i.id AND name = ?)"
+	clause := "ORDER BY " + sub + " IS NULL, " + sub + " " + dir + ", i.id " + dir
+	return clause, []any{name, name}
+}
+
+// PinnedCollectionName returns the single collection: value asserted at the
+// top level of expr, or "" when none or several are present. When exactly
+// one is pinned the order sort reads that collection's own position.
+func PinnedCollectionName(expr Expr) string {
+	seen := map[string]struct{}{}
+	last := ""
+	var walk func(Expr)
+	walk = func(e Expr) {
+		switch v := e.(type) {
+		case AndExpr:
+			walk(v.Left)
+			walk(v.Right)
+		case FilterExpr:
+			if v.Key == "collection" && v.Val != "" {
+				seen[strings.ToLower(v.Val)] = struct{}{}
+				last = v.Val
+			}
+		}
+	}
+	walk(expr)
+	if len(seen) == 1 {
+		return last
+	}
+	return ""
 }
 
 func buildOrder(sort, order string, randomSeed int64) string {
@@ -2684,6 +2791,14 @@ func (b *whereBuilder) dualMetadataLike(sdCol, comfyCol, val string) string {
 	return "(" + sm + " OR " + cm + ")"
 }
 
+// fileTypeBuckets is the set of file_type values a type:/mime: query may
+// resolve to: the membership allowlist for both, and the every-bucket cap
+// for type:'s "any media" short-circuit.
+var fileTypeBuckets = map[string]bool{
+	"jpeg": true, "png": true, "webp": true, "gif": true,
+	"mp4": true, "webm": true, "cbz": true,
+}
+
 // fileTypeInClause emits `i.file_type IN (...)`. Pass tautologyCap=nil
 // to skip the every-bucket short-circuit - the type: aliases (image /
 // archive / animated) want it, the mime: filter doesn't.
@@ -2857,10 +2972,6 @@ func (b *whereBuilder) buildTypeFilter(e FilterExpr) string {
 		"archive":  {"cbz"},
 		"animated": {"gif", "mp4", "webm"},
 	}
-	all := map[string]bool{
-		"jpeg": true, "png": true, "webp": true, "gif": true,
-		"mp4": true, "webm": true, "cbz": true,
-	}
 	seen := map[string]bool{}
 	for _, v := range strings.Split(strings.ToLower(e.Val), ",") {
 		v = strings.TrimSpace(v)
@@ -2875,7 +2986,7 @@ func (b *whereBuilder) buildTypeFilter(e FilterExpr) string {
 			seen[ft] = true
 		}
 	}
-	return fileTypeInClause(seen, all)
+	return fileTypeInClause(seen, fileTypeBuckets)
 }
 
 // buildCollectionFilter matches the operator-edited per-row collection
@@ -2886,8 +2997,14 @@ func (b *whereBuilder) buildTypeFilter(e FilterExpr) string {
 // saved as "My Comic Series" still matches the user typing
 // `collection:"my comic series"`.
 func (b *whereBuilder) buildCollectionFilter(e FilterExpr) string {
+	// Bare `collection:` means "no collection" - the mirror is empty
+	// exactly when the image has no membership, so the indexed equality
+	// stays. A named value rides the join table's name index.
+	if e.Val == "" {
+		return "i.series = ''"
+	}
 	b.args = append(b.args, e.Val)
-	return "i.series = ? COLLATE NOCASE"
+	return "i.id IN (SELECT image_id FROM image_collections WHERE name = ?)"
 }
 
 func (b *whereBuilder) buildPagesFilter(e FilterExpr) string {
@@ -2966,14 +3083,10 @@ func (b *whereBuilder) buildMimeFilter(e FilterExpr) string {
 	if val == "" {
 		return "1=0"
 	}
-	allowed := map[string]bool{
-		"jpeg": true, "png": true, "webp": true, "gif": true,
-		"mp4": true, "webm": true, "cbz": true,
-	}
 	seen := map[string]bool{}
 	for _, v := range strings.Split(val, ",") {
 		v = strings.TrimSpace(v)
-		if allowed[v] {
+		if fileTypeBuckets[v] {
 			seen[v] = true
 		}
 	}

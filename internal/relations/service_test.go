@@ -870,6 +870,120 @@ func TestRemoveDerivativeEdgeSwappedSides(t *testing.T) {
 	}
 }
 
+// TestClearDerivativeSourceOf pins the detail-page "Replace existing
+// source" path: declaring a source -> derivative edge then calling
+// ClearDerivativeSourceOf(derivative) drops exactly that edge, leaving
+// the derivative free to be re-sourced.
+func TestClearDerivativeSourceOf(t *testing.T) {
+	database, svc := setupTestDB(t)
+	source := insertImage(t, database, "source", 100)
+	derivative := insertImage(t, database, "derivative", 200)
+	if err := svc.AddDerivativeEdge(source, derivative); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ClearDerivativeSourceOf(derivative); err != nil {
+		t.Fatalf("ClearDerivativeSourceOf: %v", err)
+	}
+	var n int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM derivative_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("derivative_edges remaining = %d, want 0", n)
+	}
+	// The whole point of clearing the source is that a fresh source can be
+	// declared; the per-derivative uniqueness no longer blocks it.
+	newSource := insertImage(t, database, "newsource", 300)
+	if err := svc.AddDerivativeEdge(newSource, derivative); err != nil {
+		t.Fatalf("re-source after clear: %v", err)
+	}
+	var srcID int64
+	if err := database.Read.QueryRow(
+		`SELECT source_image_id FROM derivative_edges WHERE derivative_image_id = ?`, derivative,
+	).Scan(&srcID); err != nil {
+		t.Fatal(err)
+	}
+	if srcID != newSource {
+		t.Fatalf("source after re-source = %d, want %d", srcID, newSource)
+	}
+}
+
+// TestClearDerivativeSourceOfKeepsSiblingsAndSubtree confirms the clear
+// is scoped to the named derivative's incoming edge only: a sibling
+// sharing the same source keeps its edge, and edges below the cleared
+// node (where it was itself a source) are untouched - so the tree stays
+// consistent rather than collapsing.
+func TestClearDerivativeSourceOfKeepsSiblingsAndSubtree(t *testing.T) {
+	database, svc := setupTestDB(t)
+	source := insertImage(t, database, "source", 100)
+	target := insertImage(t, database, "target", 200)   // its incoming edge gets cleared
+	sibling := insertImage(t, database, "sibling", 300) // shares source with target
+	child := insertImage(t, database, "child", 400)     // derivative of target
+	for _, e := range []struct{ src, der int64 }{
+		{source, target},
+		{source, sibling},
+		{target, child},
+	} {
+		if err := svc.AddDerivativeEdge(e.src, e.der); err != nil {
+			t.Fatalf("seed edge (%d -> %d): %v", e.src, e.der, err)
+		}
+	}
+
+	if err := svc.ClearDerivativeSourceOf(target); err != nil {
+		t.Fatalf("ClearDerivativeSourceOf: %v", err)
+	}
+
+	// target's incoming edge is gone.
+	var hasIncoming int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM derivative_edges WHERE derivative_image_id = ?`, target,
+	).Scan(&hasIncoming); err != nil {
+		t.Fatal(err)
+	}
+	if hasIncoming != 0 {
+		t.Fatalf("target still has %d incoming edge(s), want 0", hasIncoming)
+	}
+	// The sibling's edge from the same source survives.
+	var siblingSrc int64
+	if err := database.Read.QueryRow(
+		`SELECT source_image_id FROM derivative_edges WHERE derivative_image_id = ?`, sibling,
+	).Scan(&siblingSrc); err != nil {
+		t.Fatalf("sibling edge dropped, want intact: %v", err)
+	}
+	if siblingSrc != source {
+		t.Fatalf("sibling source = %d, want %d", siblingSrc, source)
+	}
+	// The subtree below target (target -> child) is untouched: clearing an
+	// incoming edge must not orphan or delete outgoing edges.
+	var childSrc int64
+	if err := database.Read.QueryRow(
+		`SELECT source_image_id FROM derivative_edges WHERE derivative_image_id = ?`, child,
+	).Scan(&childSrc); err != nil {
+		t.Fatalf("child edge dropped, want intact: %v", err)
+	}
+	if childSrc != target {
+		t.Fatalf("child source = %d, want %d (target)", childSrc, target)
+	}
+	// Two edges remain in total (source->sibling, target->child).
+	var n int
+	if err := database.Read.QueryRow(`SELECT COUNT(*) FROM derivative_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("derivative_edges = %d, want 2 (sibling + subtree intact)", n)
+	}
+}
+
+// TestClearDerivativeSourceOfNoEdge is the idempotent / no-op case: the
+// detail affordance may fire on a derivative that has no source, and a
+// bare DELETE must not error.
+func TestClearDerivativeSourceOfNoEdge(t *testing.T) {
+	_, svc := setupTestDB(t)
+	if err := svc.ClearDerivativeSourceOf(42); err != nil {
+		t.Fatalf("ClearDerivativeSourceOf on sourceless derivative: %v", err)
+	}
+}
+
 func TestReverseVersionEdgeMidChainRaisesTypedError(t *testing.T) {
 	database, svc := setupTestDB(t)
 	a := insertImage(t, database, "a", 100)

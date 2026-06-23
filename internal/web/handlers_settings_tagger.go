@@ -343,38 +343,40 @@ func (s *Server) settingsTaggerThresholdsResetPost(w http.ResponseWriter, r *htt
 	})
 }
 
+// resolveTaggerInstance looks up the named tagger in the configured
+// instances, falling back to the discovery default so a never-enabled
+// row can still open its dialogs (seeding from the catalog when
+// possible). ok=false means the tagger isn't in cfg or on disk.
+func (s *Server) resolveTaggerInstance(name string) (config.TaggerInstance, bool) {
+	s.cfgMu.Lock()
+	for _, t := range s.cfg.Tagger.Taggers {
+		if t.Name == name {
+			s.cfgMu.Unlock()
+			return t, true
+		}
+	}
+	s.cfgMu.Unlock()
+	for _, t := range tagger.DiscoverTaggers(s.cfg) {
+		if t.Name == name {
+			return t.TaggerInstance, true
+		}
+	}
+	return config.TaggerInstance{}, false
+}
+
 // thresholdDialogData assembles the per-row state the template renders:
 // one entry per category the profile is expected to emit, plus any
 // extra categories carrying an existing override (so a dispatch-driven
 // override stays editable). global is the live ConfidenceThreshold.
 // ok=false means the tagger isn't in cfg or on disk.
 func (s *Server) thresholdDialogData(name string) (rows []thresholdRow, global float64, ok bool) {
-	s.cfgMu.Lock()
-	var inst config.TaggerInstance
-	for _, t := range s.cfg.Tagger.Taggers {
-		if t.Name == name {
-			inst = t
-			ok = true
-			break
-		}
+	inst, ok := s.resolveTaggerInstance(name)
+	if !ok {
+		return nil, 0, false
 	}
+	s.cfgMu.Lock()
 	modelPath := s.cfg.Paths.ModelPath
 	s.cfgMu.Unlock()
-
-	if !ok {
-		// Fall back to the discovery default so a never-enabled row can
-		// still open the dialog, seeding from the catalog when possible.
-		for _, t := range tagger.DiscoverTaggers(s.cfg) {
-			if t.Name == name {
-				inst = t.TaggerInstance
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return nil, 0, false
-		}
-	}
 	global = inst.ConfidenceThreshold
 
 	tagsFile := inst.TagsFile
@@ -562,30 +564,13 @@ func (s *Server) settingsTaggerGalleriesPost(w http.ResponseWriter, r *http.Requ
 // "no galleries", which surfaces as the master toggle off and every
 // row unchecked.
 func (s *Server) galleryDialogData(name string) (rows []taggerGalleryRow, allChecked bool, ok bool) {
-	s.cfgMu.Lock()
-	var inst config.TaggerInstance
-	for _, t := range s.cfg.Tagger.Taggers {
-		if t.Name == name {
-			inst = t
-			ok = true
-			break
-		}
+	inst, ok := s.resolveTaggerInstance(name)
+	if !ok {
+		return nil, false, false
 	}
+	s.cfgMu.Lock()
 	galleries := append([]config.Gallery(nil), s.cfg.Galleries...)
 	s.cfgMu.Unlock()
-
-	if !ok {
-		for _, t := range tagger.DiscoverTaggers(s.cfg) {
-			if t.Name == name {
-				inst = t.TaggerInstance
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return nil, false, false
-		}
-	}
 	allChecked = inst.Galleries == nil
 	picked := map[string]bool{}
 	for _, n := range inst.Galleries {

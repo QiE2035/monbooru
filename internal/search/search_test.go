@@ -653,7 +653,7 @@ func ingestTestManga(t *testing.T, database *db.DB, env *searchEnv, name string,
 		t.Fatalf("Ingest cbz: %v", err)
 	}
 	if series != "" {
-		if _, err := database.Write.Exec(`UPDATE images SET series = ? WHERE id = ?`, series, rec.ID); err != nil {
+		if err := gallery.SetHomeCollection(database, rec.ID, series, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -731,6 +731,118 @@ func TestExecute_CollectionExactMatch(t *testing.T) {
 	}
 	if res.Total != 1 {
 		t.Errorf("collection:Naruto total = %d, want 1", res.Total)
+	}
+}
+
+// collection: matches an image filed under that name as an additional
+// membership, not just its home collection.
+func TestExecute_CollectionMatchesExtraMembership(t *testing.T) {
+	database, env := setupSearchDB(t)
+	id := ingestTestManga(t, database, env, "naruto.cbz", "Naruto")
+	if err := gallery.AddCollectionMembership(database, id, "Shonen", nil); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Execute(database, Query{
+		Expr: FilterExpr{Key: "collection", Val: "Shonen"},
+		Page: 1, Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 {
+		t.Errorf("collection:Shonen total = %d, want 1 (matches an extra membership)", res.Total)
+	}
+}
+
+// A pinned collection reads in that collection's own position order even
+// when it is an extra membership whose order differs from the home order.
+func TestExecute_CollectionPinnedOrder(t *testing.T) {
+	database, env := setupSearchDB(t)
+	a := ingestTestImageWithID(t, database, env, "a.png")
+	b := ingestTestImageWithID(t, database, env, "b.png")
+	if err := gallery.AddCollectionMembership(database, a, "HomeA", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := gallery.AddCollectionMembership(database, b, "HomeB", nil); err != nil {
+		t.Fatal(err)
+	}
+	o2, o1 := 2, 1
+	if err := gallery.AddCollectionMembership(database, a, "Arc", &o2); err != nil {
+		t.Fatal(err)
+	}
+	if err := gallery.AddCollectionMembership(database, b, "Arc", &o1); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Execute(database, Query{
+		Expr:            FilterExpr{Key: "collection", Val: "Arc"},
+		Sort:            "order",
+		Order:           "asc",
+		OrderCollection: "Arc",
+		Page:            1, Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Results) != 2 {
+		t.Fatalf("got %d results, want 2", len(res.Results))
+	}
+	if res.Results[0].ID != b || res.Results[1].ID != a {
+		t.Errorf("pinned order = [%d,%d], want [%d,%d] (Arc positions 1 then 2)",
+			res.Results[0].ID, res.Results[1].ID, b, a)
+	}
+}
+
+// ExecuteAdjacent and RankInQuery walk the pinned collection's own position
+// order on a cache miss, not the home-mirror order. Here Arc order is
+// [b(pos 1), a(pos 2)] while the home order (HomeA before HomeB) is [a, b].
+func TestExecuteAdjacent_CollectionPinnedOrder(t *testing.T) {
+	database, env := setupSearchDB(t)
+	a := ingestTestImageWithID(t, database, env, "a.png")
+	b := ingestTestImageWithID(t, database, env, "b.png")
+	if err := gallery.AddCollectionMembership(database, a, "HomeA", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := gallery.AddCollectionMembership(database, b, "HomeB", nil); err != nil {
+		t.Fatal(err)
+	}
+	o2, o1 := 2, 1
+	if err := gallery.AddCollectionMembership(database, a, "Arc", &o2); err != nil {
+		t.Fatal(err)
+	}
+	if err := gallery.AddCollectionMembership(database, b, "Arc", &o1); err != nil {
+		t.Fatal(err)
+	}
+	q := Query{
+		Expr:            FilterExpr{Key: "collection", Val: "Arc"},
+		Sort:            "order",
+		Order:           "asc",
+		OrderCollection: "Arc",
+	}
+	prev, next, err := ExecuteAdjacent(database, q, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prev != nil {
+		t.Errorf("prev of b = %d, want nil (b is first in Arc order)", *prev)
+	}
+	if next == nil || *next != a {
+		t.Errorf("next of b = %v, want %d", next, a)
+	}
+	prev, next, err = ExecuteAdjacent(database, q, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prev == nil || *prev != b {
+		t.Errorf("prev of a = %v, want %d", prev, b)
+	}
+	if next != nil {
+		t.Errorf("next of a = %d, want nil (a is last in Arc order)", *next)
+	}
+	if rank, err := RankInQuery(context.Background(), database, q, b); err != nil || rank != 0 {
+		t.Errorf("rank of b = %d (err %v), want 0", rank, err)
+	}
+	if rank, err := RankInQuery(context.Background(), database, q, a); err != nil || rank != 1 {
+		t.Errorf("rank of a = %d (err %v), want 1", rank, err)
 	}
 }
 
@@ -5392,7 +5504,7 @@ func TestExecute_WithAutoTaggedAt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.Total == 0 {
-		t.Skip("no images in DB")
+		t.Fatal("Execute returned no rows after ingest")
 	}
 	// At least one image should have AutoTaggedAt set
 	found := false
@@ -5895,5 +6007,308 @@ func TestExecute_PhashMalformed(t *testing.T) {
 		if res.Total != 0 {
 			t.Fatalf("%q matched %d rows, want 0", q, res.Total)
 		}
+	}
+}
+
+// TestExecute_ModelSamplerFilters pins the `model:` and `sampler:`
+// filters end-to-end (audit F001). Each maps to a distinct column pair -
+// model -> sd_metadata.model / comfyui_metadata.model_checkpoint,
+// sampler -> sd_metadata.sampler / comfyui_metadata.sampler - so a
+// wrong-column or wrong-field regression would return silently wrong
+// results. Seed one A1111 row and one ComfyUI row with known values,
+// then assert each filter returns exactly its carrier and the negation
+// excludes it.
+func TestExecute_ModelSamplerFilters(t *testing.T) {
+	database, env := setupSearchDB(t)
+	sdID := ingestTestImageWithID(t, database, env, "ms_sd.png")
+	comfyID := ingestTestImageWithID(t, database, env, "ms_comfy.png")
+
+	if _, err := database.Write.Exec(
+		`INSERT INTO sd_metadata (image_id, model, sampler) VALUES (?, ?, ?)`,
+		sdID, "dreamshaper_v8", "euler_a",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(
+		`INSERT INTO comfyui_metadata (image_id, model_checkpoint, sampler) VALUES (?, ?, ?)`,
+		comfyID, "sdxl_base", "dpmpp_2m",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(query string, wantIDs []int64) {
+		t.Helper()
+		expr, err := Parse(query)
+		if err != nil {
+			t.Fatalf("parse %q: %v", query, err)
+		}
+		res, err := Execute(database, Query{Expr: expr, Sort: "newest", Order: "asc", Page: 1, Limit: 40})
+		if err != nil {
+			t.Fatalf("execute %q: %v", query, err)
+		}
+		gotIDs := make([]int64, len(res.Results))
+		for i, im := range res.Results {
+			gotIDs[i] = im.ID
+		}
+		if len(gotIDs) != len(wantIDs) {
+			t.Fatalf("%q: got ids %v, want %v", query, gotIDs, wantIDs)
+		}
+		for i := range gotIDs {
+			if gotIDs[i] != wantIDs[i] {
+				t.Fatalf("%q at %d: got %d, want %d", query, i, gotIDs[i], wantIDs[i])
+			}
+		}
+	}
+
+	// model: resolves against the A1111 `model` column and the ComfyUI
+	// `model_checkpoint` column.
+	check("model:dreamshaper_v8", []int64{sdID})
+	check("model:sdxl_base", []int64{comfyID})
+	// sampler: resolves against `sampler` in both tables.
+	check("sampler:euler_a", []int64{sdID})
+	check("sampler:dpmpp_2m", []int64{comfyID})
+
+	// Negation excludes the named carrier and surfaces the rest.
+	check("-model:dreamshaper_v8", []int64{comfyID})
+	check("-sampler:dpmpp_2m", []int64{sdID})
+}
+
+// TestExecute_SizeRatioRange exercises the two-sided `X..Y` range form
+// of `size:` and `ratio:` through Execute (audit F003). The equality /
+// comparison forms are covered elsewhere; the range parsers
+// (parseSizeValueAny / parseFloatValue) that tryRangeComp hands the
+// bounds to are otherwise dark. Seed rows with known file_size and
+// width/height and assert the range brackets correctly.
+func TestExecute_SizeRatioRange(t *testing.T) {
+	database, env := setupSearchDB(t)
+	smallID := ingestTestImageWithID(t, database, env, "sr_small.png")
+	midID := ingestTestImageWithID(t, database, env, "sr_mid.png")
+	bigID := ingestTestImageWithID(t, database, env, "sr_big.png")
+
+	// file_size in bytes: 1 KiB, 3 KiB, 9 KiB. The range size:2kb..5kb
+	// must bracket only the middle row.
+	if _, err := database.Write.Exec(`UPDATE images SET file_size = ? WHERE id = ?`, 1*1024, smallID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`UPDATE images SET file_size = ? WHERE id = ?`, 3*1024, midID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`UPDATE images SET file_size = ? WHERE id = ?`, 9*1024, bigID); err != nil {
+		t.Fatal(err)
+	}
+
+	// width/height give ratios 0.5 (portrait), 1.5 (the target), 3.0
+	// (wide). ratio:1.2..1.8 must bracket only the middle row.
+	if _, err := database.Write.Exec(`UPDATE images SET width = 50, height = 100 WHERE id = ?`, smallID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`UPDATE images SET width = 150, height = 100 WHERE id = ?`, midID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`UPDATE images SET width = 300, height = 100 WHERE id = ?`, bigID); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(query string, wantIDs []int64) {
+		t.Helper()
+		expr, err := Parse(query)
+		if err != nil {
+			t.Fatalf("parse %q: %v", query, err)
+		}
+		res, err := Execute(database, Query{Expr: expr, Sort: "newest", Order: "asc", Page: 1, Limit: 40})
+		if err != nil {
+			t.Fatalf("execute %q: %v", query, err)
+		}
+		gotIDs := make([]int64, len(res.Results))
+		for i, im := range res.Results {
+			gotIDs[i] = im.ID
+		}
+		if len(gotIDs) != len(wantIDs) {
+			t.Fatalf("%q: got ids %v, want %v", query, gotIDs, wantIDs)
+		}
+		for i := range gotIDs {
+			if gotIDs[i] != wantIDs[i] {
+				t.Fatalf("%q at %d: got %d, want %d", query, i, gotIDs[i], wantIDs[i])
+			}
+		}
+	}
+
+	check("size:2kb..5kb", []int64{midID})
+	check("ratio:1.2..1.8", []int64{midID})
+}
+
+// TestExecute_GeneratedCompound hits buildGeneratedFilter, the
+// general-path builder used when `generated:` is a non-driving leg of a
+// compound query (audit F004). The bare `generated:HASH` test rides the
+// dedicated fast-count path and never reaches this builder, which uses a
+// different EXISTS shape. A `tag OR generated:<hash>` query forces the
+// general WHERE path; assert both legs surface.
+func TestExecute_GeneratedCompound(t *testing.T) {
+	database, env := setupSearchDB(t)
+	tagID := ingestTestImageWithID(t, database, env, "gc_tag.png")
+	genID := ingestTestImageWithID(t, database, env, "gc_gen.png")
+	_ = ingestTestImageWithID(t, database, env, "gc_other.png")
+
+	attachTag(t, database, tagID, getOrCreateTagID(t, database, "sometag"))
+	if _, err := database.Write.Exec(
+		`INSERT INTO sd_metadata (image_id, generation_hash) VALUES (?, ?)`,
+		genID, "abc123",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	expr, err := Parse("sometag OR generated:abc123")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	res, err := Execute(database, Query{Expr: expr, Sort: "newest", Order: "asc", Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	gotIDs := make([]int64, len(res.Results))
+	for i, im := range res.Results {
+		gotIDs[i] = im.ID
+	}
+	wantIDs := []int64{tagID, genID}
+	if len(gotIDs) != len(wantIDs) {
+		t.Fatalf("got ids %v, want %v", gotIDs, wantIDs)
+	}
+	for i := range gotIDs {
+		if gotIDs[i] != wantIDs[i] {
+			t.Fatalf("at %d: got %d, want %d", i, gotIDs[i], wantIDs[i])
+		}
+	}
+}
+
+// TestExecute_RelationVocabulary_PartialPresence seeds a mixed subset of
+// relation sources - one duplicate group, one version chain, and one
+// series/collection carrier - leaving alt and derivative empty (audit
+// F012). The existing TestExecute_RelationVocabulary covers only the
+// all-empty / all-populated extremes, so the per-flag branches in
+// relationAnyClauseForPresence / relationNoneClauseForPresence that emit
+// or drop a UNION leg based on relPresence are never exercised on a
+// partial mix; a dropped-leg regression (e.g. version populated but its
+// UNION omitted) would pass. Assert relation:any / relation:none per
+// case under that mix.
+func TestExecute_RelationVocabulary_PartialPresence(t *testing.T) {
+	database, env := setupSearchDB(t)
+	dupA := ingestTestImageWithID(t, database, env, "pp_dup_a.png")
+	dupB := ingestTestImageWithID(t, database, env, "pp_dup_b.png")
+	verChild := ingestTestImageWithID(t, database, env, "pp_ver_child.png")
+	verParent := ingestTestImageWithID(t, database, env, "pp_ver_parent.png")
+	coll := ingestTestImageWithID(t, database, env, "pp_coll.png")
+	none := ingestTestImageWithID(t, database, env, "pp_none.png")
+
+	// Duplicate group: dupA is the original, dupA + dupB are members.
+	if _, err := database.Write.Exec(`INSERT INTO dup_groups (id, original_image_id) VALUES (1, ?)`, dupA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(`INSERT INTO dup_group_members (image_id, group_id) VALUES (?, 1), (?, 1)`, dupA, dupB); err != nil {
+		t.Fatal(err)
+	}
+	// Version chain: verChild -> verParent.
+	if _, err := database.Write.Exec(`INSERT INTO version_edges (child_image_id, parent_image_id) VALUES (?, ?)`, verChild, verParent); err != nil {
+		t.Fatal(err)
+	}
+	// Series/collection carrier.
+	if _, err := database.Write.Exec(`UPDATE images SET series = 'My Set' WHERE id = ?`, coll); err != nil {
+		t.Fatal(err)
+	}
+	// alt and derivative tables stay empty - their UNION legs must drop.
+
+	check := func(query string, wantIDs []int64) {
+		t.Helper()
+		expr, err := Parse(query)
+		if err != nil {
+			t.Fatalf("parse %q: %v", query, err)
+		}
+		res, err := Execute(database, Query{Expr: expr, Sort: "newest", Order: "asc", Page: 1, Limit: 40})
+		if err != nil {
+			t.Fatalf("execute %q: %v", query, err)
+		}
+		gotIDs := make([]int64, len(res.Results))
+		for i, im := range res.Results {
+			gotIDs[i] = im.ID
+		}
+		if len(gotIDs) != len(wantIDs) {
+			t.Fatalf("%q: got ids %v, want %v", query, gotIDs, wantIDs)
+		}
+		for i := range gotIDs {
+			if gotIDs[i] != wantIDs[i] {
+				t.Fatalf("%q at %d: got %d, want %d", query, i, gotIDs[i], wantIDs[i])
+			}
+		}
+	}
+
+	// Per-kind sanity: the populated sources resolve, the empty ones
+	// fold to a constant-false.
+	check("relation:duplicate", []int64{dupA, dupB})
+	check("relation:version", []int64{verChild, verParent})
+	check("relation:collection", []int64{coll})
+	check("relation:alternate", []int64{})
+	check("relation:derivative", []int64{})
+
+	// any = union of the populated legs only (dup + version + series).
+	check("relation:any", []int64{dupA, dupB, verChild, verParent, coll})
+	// none = the complement; only the unrelated row survives.
+	check("relation:none", []int64{none})
+}
+
+// TestExecute_FolderEscapedQuote runs a backslash-escaped quoted folder
+// filter through Execute (audit F018). The parser side is pinned by
+// TestParse_Filter_QuotedWithEscapedQuote, but no test confirmed the
+// parsed value resolves through the value-binding side. Ingest an image
+// whose folder name contains a double-quote, then query
+// folder:"a\"b" and assert it surfaces.
+func TestExecute_FolderEscapedQuote(t *testing.T) {
+	database, env := setupSearchDB(t)
+
+	subDir := filepath.Join(env.galleryDir, `a"b`)
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A second image at the root so the filter has something to exclude.
+	ingestTestImage(t, database, env, "root.png")
+
+	ingestCounter++
+	img := image.NewRGBA(image.Rect(0, 0, 10+ingestCounter, 10))
+	path := filepath.Join(subDir, "foo.png")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := gallery.Ingest(database, env.galleryDir, env.thumbnailsDir, path, "png", ""); err != nil {
+		t.Fatalf("ingest foo.png: %v", err)
+	}
+
+	var wantID int64
+	if err := database.Read.QueryRow(`SELECT id FROM images WHERE canonical_path LIKE '%foo.png'`).Scan(&wantID); err != nil {
+		t.Fatal(err)
+	}
+
+	expr, err := Parse(`folder:"a\"b"`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if f, ok := expr.(FilterExpr); !ok || f.Key != "folder" || f.Val != `a"b` {
+		t.Fatalf("parsed to %#v, want FilterExpr{folder, a\"b}", expr)
+	}
+	res, err := Execute(database, Query{Expr: expr, Sort: "newest", Order: "asc", Page: 1, Limit: 40})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(res.Results) != 1 || res.Results[0].ID != wantID {
+		gotIDs := make([]int64, len(res.Results))
+		for i, im := range res.Results {
+			gotIDs[i] = im.ID
+		}
+		t.Fatalf(`folder:"a\"b" got ids %v, want [%d]`, gotIDs, wantID)
 	}
 }

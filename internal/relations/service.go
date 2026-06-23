@@ -511,14 +511,7 @@ func mergeDupGroupsTx(tx *sql.Tx, groupIDs []int64, keepOriginalFrom int64) erro
 	if keepOriginalFrom != 0 && keepOriginalFrom != survivor {
 		// Caller asked to inherit a non-survivor's original. Copy it onto
 		// the survivor row before we delete the source group.
-		valid := false
-		for _, gid := range others {
-			if gid == keepOriginalFrom {
-				valid = true
-				break
-			}
-		}
-		if valid {
+		if slices.Contains(others, keepOriginalFrom) {
 			var original int64
 			if err := tx.QueryRow(
 				`SELECT original_image_id FROM dup_groups WHERE id = ?`, keepOriginalFrom,

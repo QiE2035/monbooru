@@ -56,6 +56,20 @@ const galleryExportMinSupported = 1
 // row, so it doesn't track full-export schema bumps.
 const lightManifestVersion = 1
 
+// decodeGalleryExport reads a full-export JSON document and rejects any
+// version outside the supported range. The caller owns opening/closing
+// the reader.
+func decodeGalleryExport(r io.Reader) (galleryExport, error) {
+	var exp galleryExport
+	if err := json.NewDecoder(r).Decode(&exp); err != nil {
+		return exp, fmt.Errorf("decode export: %w", err)
+	}
+	if exp.Version < galleryExportMinSupported || exp.Version > galleryExportVersion {
+		return exp, fmt.Errorf("unsupported export version %d (supported: %d..%d)", exp.Version, galleryExportMinSupported, galleryExportVersion)
+	}
+	return exp, nil
+}
+
 // galleryExport is the root JSON document. Field order mirrors schema.sql so a
 // human opening the file reads the schema top-down.
 type galleryExport struct {
@@ -650,12 +664,9 @@ func replaceDBFromJSON(srcPath, dbPath, thumbsPath, galleryPath string) error {
 		return fmt.Errorf("open json: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	var exp galleryExport
-	if err := json.NewDecoder(f).Decode(&exp); err != nil {
-		return fmt.Errorf("decode json: %w", err)
-	}
-	if exp.Version < galleryExportMinSupported || exp.Version > galleryExportVersion {
-		return fmt.Errorf("unsupported export version %d (supported: %d..%d)", exp.Version, galleryExportMinSupported, galleryExportVersion)
+	exp, err := decodeGalleryExport(f)
+	if err != nil {
+		return err
 	}
 
 	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
@@ -1042,14 +1053,10 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		}
 	}
 	for _, r := range exp.Tags {
-		var canonical any
-		if r.CanonicalTagID.Valid {
-			canonical = r.CanonicalTagID.Int64
-		}
 		if _, err := tx.Exec(
 			`INSERT INTO tags (id, name, category_id, usage_count, is_alias, canonical_tag_id, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, r.Name, r.CategoryID, r.UsageCount, r.IsAlias, canonical, r.CreatedAt,
+			r.ID, r.Name, r.CategoryID, r.UsageCount, r.IsAlias, nullInt64Arg(r.CanonicalTagID), r.CreatedAt,
 		); err != nil {
 			return fmt.Errorf("insert tag %d: %w", r.ID, err)
 		}
@@ -1063,34 +1070,23 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		}
 	}
 	for _, r := range exp.Images {
-		var width, height, auto, pageCount, durationSec, seriesOrder any
-		if r.Width.Valid {
-			width = r.Width.Int64
-		}
-		if r.Height.Valid {
-			height = r.Height.Int64
-		}
-		if r.AutoTaggedAt.Valid {
-			auto = r.AutoTaggedAt.String
-		}
-		if r.PageCount.Valid {
-			pageCount = r.PageCount.Int64
-		}
-		if r.DurationSeconds.Valid {
-			durationSec = r.DurationSeconds.Float64
-		}
-		if r.SeriesOrder.Valid {
-			seriesOrder = r.SeriesOrder.Int64
-		}
 		if _, err := tx.Exec(
 			`INSERT INTO images (id, sha256, canonical_path, folder_path, file_type, width, height,
 			                    file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, ingested_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, r.SHA256, r.CanonicalPath, r.FolderPath, r.FileType, width, height,
-			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, auto, r.SourceType, r.Origin, r.Source, r.URL, pageCount, durationSec, r.Series, seriesOrder, r.IngestedAt,
+			r.ID, r.SHA256, r.CanonicalPath, r.FolderPath, r.FileType, nullInt64Arg(r.Width), nullInt64Arg(r.Height),
+			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, nullStringArg(r.AutoTaggedAt), r.SourceType, r.Origin, r.Source, r.URL, nullInt64Arg(r.PageCount), nullFloat64Arg(r.DurationSeconds), r.Series, nullInt64Arg(r.SeriesOrder), r.IngestedAt,
 		); err != nil {
 			return fmt.Errorf("insert image %d: %w", r.ID, err)
 		}
+	}
+	// Seed image_collections from the imported home labels; exports predate
+	// the join table so the membership rows derive from images.series.
+	if _, err := tx.Exec(
+		`INSERT OR IGNORE INTO image_collections (image_id, name, position)
+		 SELECT id, series, series_order FROM images WHERE series != ''`,
+	); err != nil {
+		return fmt.Errorf("seed image_collections: %w", err)
 	}
 	for _, r := range exp.ImagePaths {
 		if _, err := tx.Exec(

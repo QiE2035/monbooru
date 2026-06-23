@@ -14,19 +14,23 @@ import (
 	"github.com/leqwin/monbooru/internal/relations"
 )
 
-// relationsPhashDistance returns the operator-configured Find-pairs
-// default Hamming distance (clamped to the documented 0..12 range).
-// Reads through cfgMu so a Settings -> Relations save is honoured on
-// the next page render without a restart.
-func (s *Server) relationsPhashDistance() int {
+// maxPhashDistance is the documented upper bound on the Find-pairs
+// Hamming distance.
+const maxPhashDistance = 12
+
+// findPairsDistance returns the operator-configured Find-pairs default
+// Hamming distance (saturating into the documented 0..maxPhashDistance
+// range). Reads through cfgMu so a Settings -> Relations save is
+// honoured on the next page render without a restart.
+func (s *Server) findPairsDistance() int {
 	s.cfgMu.Lock()
 	d := s.cfg.Relations.DefaultDistance
 	s.cfgMu.Unlock()
 	if d < 0 {
 		return 0
 	}
-	if d > 12 {
-		return 12
+	if d > maxPhashDistance {
+		return maxPhashDistance
 	}
 	return d
 }
@@ -36,7 +40,7 @@ func (s *Server) relationsPhashDistance() int {
 // every settings edit so a TOML save propagates without restart.
 func applyRelationsConfig(rc config.RelationsConfig) {
 	d := rc.DefaultDistance
-	if d < 0 || d > 12 {
+	if d < 0 || d > maxPhashDistance {
 		d = 4
 	}
 	relations.IncrementalProbeDistance.Store(int32(d))
@@ -52,7 +56,7 @@ func (s *Server) settingsRelationsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d, err := strconv.Atoi(r.FormValue("default_distance"))
-	if err != nil || d < 0 || d > 12 {
+	if err != nil || d < 0 || d > maxPhashDistance {
 		w.WriteHeader(http.StatusBadRequest)
 		writeInlineFlash(w, "err", "Distance must be an integer 0..12.")
 		return
@@ -526,6 +530,31 @@ func humanISODate(s string) string {
 	return t.UTC().Format("2006-01-02")
 }
 
+// sortedRootsDesc returns the keys of rootSet sorted by id descending,
+// so the newest root sorts first.
+func sortedRootsDesc(rootSet map[int64]bool) []int64 {
+	roots := make([]int64, 0, len(rootSet))
+	for r := range rootSet {
+		roots = append(roots, r)
+	}
+	sort.Slice(roots, func(i, j int) bool { return roots[i] > roots[j] })
+	return roots
+}
+
+// finalizeCards orders cards by CreatedAt descending (newest first) and
+// trims to limit when positive, returning the trimmed slice and the
+// pre-trim total.
+func finalizeCards(cards []browseCard, limit int) ([]browseCard, int) {
+	total := len(cards)
+	sort.SliceStable(cards, func(i, j int) bool {
+		return cards[i].CreatedAt > cards[j].CreatedAt
+	})
+	if limit > 0 && len(cards) > limit {
+		cards = cards[:limit]
+	}
+	return cards, total
+}
+
 // loadVersionChainCards reads every version_edge into memory, walks
 // each chain from its root (a parent with no incoming edge) down to
 // its leaf, and emits one card per chain. The flat Members slice is
@@ -570,11 +599,7 @@ func loadVersionChainCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]brows
 			rootSet[em.parent] = true
 		}
 	}
-	roots := make([]int64, 0, len(rootSet))
-	for r := range rootSet {
-		roots = append(roots, r)
-	}
-	sort.Slice(roots, func(i, j int) bool { return roots[i] > roots[j] })
+	roots := sortedRootsDesc(rootSet)
 	cards := make([]browseCard, 0, len(roots))
 	for _, root := range roots {
 		members := []int64{root}
@@ -603,15 +628,9 @@ func loadVersionChainCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]brows
 			CreatedAt:   humanISOTime(latestTS),
 		})
 	}
-	total := len(cards)
-	// Order by the newest edge in each chain, descending, so freshly
-	// declared chains land at the top.
-	sort.SliceStable(cards, func(i, j int) bool {
-		return cards[i].CreatedAt > cards[j].CreatedAt
-	})
-	if limit > 0 && len(cards) > limit {
-		cards = cards[:limit]
-	}
+	// Order by the newest edge in each chain so freshly declared chains
+	// land at the top.
+	cards, total := finalizeCards(cards, limit)
 	return cards, total, nil
 }
 
@@ -660,11 +679,7 @@ func loadDerivativeTreeCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]bro
 			rootSet[src] = true
 		}
 	}
-	roots := make([]int64, 0, len(rootSet))
-	for r := range rootSet {
-		roots = append(roots, r)
-	}
-	sort.Slice(roots, func(i, j int) bool { return roots[i] > roots[j] })
+	roots := sortedRootsDesc(rootSet)
 	cards := make([]browseCard, 0, len(roots))
 	for _, root := range roots {
 		var members []int64
@@ -681,13 +696,7 @@ func loadDerivativeTreeCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]bro
 			CreatedAt: humanISOTime(latestTS),
 		})
 	}
-	total := len(cards)
-	sort.SliceStable(cards, func(i, j int) bool {
-		return cards[i].CreatedAt > cards[j].CreatedAt
-	})
-	if limit > 0 && len(cards) > limit {
-		cards = cards[:limit]
-	}
+	cards, total := finalizeCards(cards, limit)
 	return cards, total, nil
 }
 

@@ -325,6 +325,15 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 			return nil, false, fmt.Errorf("inserting manga_metadata: %w", err)
 		}
 	}
+	// Mirror the prefilled home collection into image_collections.
+	if prefilledSeries != "" {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO image_collections (image_id, name, position) VALUES (?, ?, NULL)`,
+			imgID, prefilledSeries,
+		); err != nil {
+			return nil, false, fmt.Errorf("inserting image_collection: %w", err)
+		}
+	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, false, fmt.Errorf("committing ingest: %w", err)

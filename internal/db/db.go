@@ -254,6 +254,14 @@ func Bootstrap(db *DB) error {
 	// filter the executor emits (no `series != ''` clause), so SQLite
 	// can match the partial WHERE against any collection: query.
 	b.exec("create idx_images_series_nocase", `CREATE INDEX IF NOT EXISTS idx_images_series_nocase ON images(series COLLATE NOCASE)`)
+	// Seed image_collections from the legacy single-collection columns on
+	// the first boot after the table appears. The NOT EXISTS guard makes
+	// it a no-op once any membership row exists, so later boots never
+	// re-seed rows the operator has since edited.
+	b.exec("seed image_collections from series",
+		`INSERT OR IGNORE INTO image_collections (image_id, name, position)
+		 SELECT id, series, series_order FROM images
+		 WHERE series != '' AND NOT EXISTS (SELECT 1 FROM image_collections)`)
 	// NOCASE-collated companion for folder: equality - same shape as
 	// idx_images_folder_visible (already partial WHERE is_missing = 0)
 	// but with the COLLATE NOCASE that the folder: filter uses, so the
@@ -510,13 +518,6 @@ func Bootstrap(db *DB) error {
 	return b.err
 }
 
-func exec(db *DB, label, sql string) error {
-	if _, err := db.Write.Exec(sql); err != nil {
-		return fmt.Errorf("%s: %w", label, err)
-	}
-	return nil
-}
-
 // bootstrapper threads the first migration error through a long
 // sequence of calls so each migration step lands as one statement.
 // Same shape as jsonWriter in internal/web/gallery_io.go.
@@ -529,7 +530,9 @@ func (b *bootstrapper) exec(label, sql string) {
 	if b.err != nil {
 		return
 	}
-	b.err = exec(b.db, label, sql)
+	if _, err := b.db.Write.Exec(sql); err != nil {
+		b.err = fmt.Errorf("%s: %w", label, err)
+	}
 }
 
 func (b *bootstrapper) ensureColumn(table, column, alterSQL string) {

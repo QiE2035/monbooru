@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,16 +19,12 @@ import (
 
 // relatedTile is the small struct the relations partial reads from.
 // Each tile carries the image's id, thumbnail URL, and a single-letter
-// type marker. Collection siblings (rows sharing images.series with the
-// current image) reuse the same shape but stash the series label and
-// optional order so the template can render a series-pill chip instead
-// of the relation marker.
+// type marker. Collection siblings render in their own section below the
+// panel, not as tiles here.
 type relatedTile struct {
-	ID          int64
-	Marker      string // O, D, A, V<-, V->, S, >; empty when the tile is a collection sibling
-	Label       string // hover-title and badge text
-	Series      string // collection label; empty for relation tiles
-	SeriesOrder *int64 // 1-based collection order; nil when unset or for relation tiles
+	ID     int64
+	Marker string // O, D, A, V<-, V->, S, >
+	Label  string // hover-title and badge text
 }
 
 // relatedEntriesGet renders the lazy-loaded "Related entries" panel
@@ -54,12 +51,16 @@ func (s *Server) relatedEntriesGet(w http.ResponseWriter, r *http.Request) {
 	if sErr != nil {
 		logx.Warnf("collection siblings load %d: %v", id, sErr)
 	}
-	tiles := flattenRelationsForPanel(rels, id, siblings)
+	if len(siblings) > relatedPanelCap {
+		siblings = siblings[:relatedPanelCap]
+	}
+	tiles := flattenRelationsForPanel(rels, id)
 	paths := loadImagePaths(r.Context(), cx.DB, id)
 	back := parseBackContext(r)
 	s.renderTemplate(w, "partials/related_entries.html", map[string]any{
 		"ImageID":       id,
 		"Tiles":         tiles,
+		"Collection":    siblings,
 		"ImagePaths":    paths,
 		"CSRFToken":     s.csrfToken(sessionFromContext(r.Context())),
 		"ActiveGallery": s.activeName,
@@ -71,37 +72,35 @@ func (s *Server) relatedEntriesGet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// relatedPanelCap bounds both the relation tiles and the collection
+// siblings shown in the compact detail panel; the full set lives on the
+// /images/{id}/relations page reached via [See all].
+const relatedPanelCap = 6
+
 // collectionSibling carries the bits the related-entries panel and the
-// see-all grid need to render a series-pill for a row that shares
-// images.series with the current image. Empty Series means "this image
-// has no collection"; callers skip the section in that case.
+// see-all grid need to render a card for an image that shares a
+// collection with the current one. Series is the shared collection's
+// name; Order is the sibling's position within it.
 type collectionSibling struct {
 	ID     int64
 	Series string
 	Order  *int64
 }
 
-// loadCollectionSiblings returns every non-missing image that shares
-// images.series with the named row, oldest order first then by id. The
-// result excludes the row itself; an empty slice means the image has no
-// collection or is the only member.
+// loadCollectionSiblings returns every non-missing image that shares any
+// collection with imageID, grouped by collection name then position. Each
+// row names the shared collection so a card can label which one it joins.
+// The result excludes the image itself.
 func loadCollectionSiblings(cx *galleryCtx, imageID int64) ([]collectionSibling, error) {
-	var series sql.NullString
-	if err := cx.DB.Read.QueryRow(`SELECT series FROM images WHERE id = ?`, imageID).Scan(&series); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if !series.Valid || series.String == "" {
-		return nil, nil
-	}
 	rows, err := cx.DB.Read.Query(
-		`SELECT id, series_order FROM images
-		 WHERE series = ? AND id != ? AND is_missing = 0
-		 ORDER BY series_order IS NULL, series_order, id
+		`SELECT jc.image_id, jc.name, jc.position
+		 FROM image_collections self
+		 JOIN image_collections jc ON jc.name = self.name
+		 JOIN images i ON i.id = jc.image_id
+		 WHERE self.image_id = ? AND jc.image_id != ? AND i.is_missing = 0
+		 ORDER BY jc.name, jc.position IS NULL, jc.position, jc.image_id
 		 LIMIT 200`,
-		series.String, imageID,
+		imageID, imageID,
 	)
 	if err != nil {
 		return nil, err
@@ -110,9 +109,8 @@ func loadCollectionSiblings(cx *galleryCtx, imageID int64) ([]collectionSibling,
 	var out []collectionSibling
 	for rows.Next() {
 		var sib collectionSibling
-		sib.Series = series.String
 		var ord sql.NullInt64
-		if scanErr := rows.Scan(&sib.ID, &ord); scanErr != nil {
+		if scanErr := rows.Scan(&sib.ID, &sib.Series, &ord); scanErr != nil {
 			return nil, scanErr
 		}
 		if ord.Valid {
@@ -124,27 +122,19 @@ func loadCollectionSiblings(cx *galleryCtx, imageID int64) ([]collectionSibling,
 	return out, rows.Err()
 }
 
-// flattenRelationsForPanel produces an ordered tile list (max 6) for
-// the compact Relations panel: collection siblings sharing
-// images.series with the current row land first so the operator's
-// most concrete "what else belongs with this image" cue is visible
-// without scrolling; declared relations (dup-group, alt-group,
-// version neighbours, derivative neighbours) follow in declaration
-// order. The seen set still de-duplicates so a relation that also
-// shares the collection isn't surfaced twice.
-func flattenRelationsForPanel(rels *relations.ImageRelations, self int64, siblings []collectionSibling) []relatedTile {
-	const cap = 6
+// flattenRelationsForPanel produces an ordered tile list (max
+// relatedPanelCap) of declared relations for the compact panel:
+// dup-group, alt-group, version neighbours, derivative neighbours, in
+// declaration order. Collection siblings render in their own section.
+func flattenRelationsForPanel(rels *relations.ImageRelations, self int64) []relatedTile {
 	var tiles []relatedTile
 	seen := map[int64]bool{self: true}
 	add := func(t relatedTile) {
-		if len(tiles) >= cap || seen[t.ID] {
+		if len(tiles) >= relatedPanelCap || seen[t.ID] {
 			return
 		}
 		seen[t.ID] = true
 		tiles = append(tiles, t)
-	}
-	for _, sib := range siblings {
-		add(relatedTile{ID: sib.ID, Label: "collection", Series: sib.Series, SeriesOrder: sib.Order})
 	}
 	if rels.DupGroup != nil {
 		for _, m := range rels.DupGroup.Members {
@@ -443,6 +433,9 @@ func collectionWithSelf(siblings []collectionSibling, self models.Image) []colle
 	merged = append(merged, collectionSibling{ID: self.ID, Series: self.Series, Order: order})
 	sort.SliceStable(merged, func(i, j int) bool {
 		a, b := merged[i], merged[j]
+		if !strings.EqualFold(a.Series, b.Series) {
+			return strings.ToLower(a.Series) < strings.ToLower(b.Series)
+		}
 		aNull, bNull := a.Order == nil, b.Order == nil
 		if aNull != bNull {
 			return !aNull
@@ -1064,14 +1057,7 @@ func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
 				writeInlineFlash(w, "err", "Invalid keep_original_from.")
 				return
 			}
-			inSet := false
-			for _, id := range ids {
-				if id == v {
-					inSet = true
-					break
-				}
-			}
-			if !inSet {
+			if !slices.Contains(ids, v) {
 				w.WriteHeader(http.StatusBadRequest)
 				writeInlineFlash(w, "err", "keep_original_from must be one of the merging groups.")
 				return

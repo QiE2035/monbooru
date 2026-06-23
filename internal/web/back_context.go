@@ -31,26 +31,28 @@ func parseBackContext(r *http.Request) backContext {
 	}
 }
 
-// URLValues materialises the back-* fields as a url.Values, dropping
-// empty entries so a missing field doesn't appear in the encoded query.
-func (b backContext) URLValues() url.Values {
+// values materialises the fields as a url.Values under the given key
+// prefix, dropping empty entries so a missing field doesn't appear in
+// the encoded query.
+func (b backContext) values(prefix string) url.Values {
 	v := url.Values{}
-	if b.Q != "" {
-		v.Set("back_q", b.Q)
-	}
-	if b.Sort != "" {
-		v.Set("back_sort", b.Sort)
-	}
-	if b.Order != "" {
-		v.Set("back_order", b.Order)
-	}
-	if b.Page != "" {
-		v.Set("back_page", b.Page)
-	}
-	if b.Seed != "" {
-		v.Set("back_seed", b.Seed)
+	for _, f := range []struct{ key, val string }{
+		{"q", b.Q},
+		{"sort", b.Sort},
+		{"order", b.Order},
+		{"page", b.Page},
+		{"seed", b.Seed},
+	} {
+		if f.val != "" {
+			v.Set(prefix+f.key, f.val)
+		}
 	}
 	return v
+}
+
+// URLValues materialises the back-* fields (back_-prefixed keys).
+func (b backContext) URLValues() url.Values {
+	return b.values("back_")
 }
 
 // QueryString returns the encoded back_* fragment prefixed with sep
@@ -82,23 +84,7 @@ func (b backContext) GalleryURL() string {
 	if b == (backContext{}) {
 		return "/"
 	}
-	v := url.Values{}
-	if b.Q != "" {
-		v.Set("q", b.Q)
-	}
-	if b.Sort != "" {
-		v.Set("sort", b.Sort)
-	}
-	if b.Order != "" {
-		v.Set("order", b.Order)
-	}
-	if b.Page != "" {
-		v.Set("page", b.Page)
-	}
-	if b.Seed != "" {
-		v.Set("seed", b.Seed)
-	}
-	return "/?" + v.Encode()
+	return "/?" + b.values("").Encode()
 }
 
 // ReaderQS returns the two query fragments the reader template needs:

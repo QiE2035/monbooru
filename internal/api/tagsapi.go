@@ -64,10 +64,5 @@ func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {
 		results = append(results, toTagResponse(&t))
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"page":    offset/limit + 1,
-		"limit":   limit,
-		"total":   total,
-		"results": results,
-	})
+	writePage(w, offset/limit+1, limit, total, results)
 }

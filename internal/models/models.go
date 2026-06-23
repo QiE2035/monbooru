@@ -59,6 +59,13 @@ type Image struct {
 	UploadBatch   *int64 // shared token across one web-UI upload POST; NULL for watcher/sync/API rows. Groups a drop into one inbox cluster.
 }
 
+// Collection is one membership of an image: a collection label plus an
+// optional position within it. An image can carry several.
+type Collection struct {
+	Name  string
+	Order *int // position within Name; nil = unordered
+}
+
 // MangaMetadata mirrors sd_metadata / comfyui_metadata for the manga
 // feature: parsed read-only ComicInfo.xml descriptors surfaced on the
 // detail page. The authoritative page count lives on Image.PageCount;

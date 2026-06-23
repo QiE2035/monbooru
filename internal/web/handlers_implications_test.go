@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -239,6 +241,143 @@ func TestRunImplicationPropagation_ChunkedAcrossBoundary(t *testing.T) {
 		t.Errorf("job type = %q", st.JobType)
 	}
 }
+
+// implSummaryRe matches the documented partial-progress summary the
+// implication-propagation chunk loop emits when cancelled mid-run:
+// "applying implication cancelled (N/total)". Pinned as a shape (any N)
+// because the precise chunk boundary the cancel lands on is timing-
+// dependent; the branch and the format are what the test guards.
+var implSummaryRe = regexp.MustCompile(`^applying implication cancelled \((\d+)/(\d+)\)$`)
+
+// TestRunImplicationPropagation_CancelledMidRun pins the chunk-loop's
+// ctx.Err() branch and the documented "cancelled (N/total)" summary that
+// TestRunImplicationPropagation_ChunkedAcrossBoundary (which only asserts
+// the completed post-job state) never reaches. A flip of that branch to
+// jobs.Fail, or a lost processed count, would regress silently otherwise.
+//
+// Determinism note: cancelling before the worker starts is NOT viable —
+// runImplicationPropagation's first step is a QueryContext read of the
+// carriers, and database/sql fails any read on an already-cancelled
+// context, which would take the Fail path instead of the chunk-loop
+// branch. So the worker runs in a goroutine, and the test cancels the
+// moment the read has finished and the chunk loop has begun (observed via
+// the "0/N…" progress message chunkedJob emits before its first ctx.Err()
+// check). With more than one chunk, the post-chunk-1 ctx.Err() boundary
+// then deterministically catches the cancel. The poll is a deadline-
+// bounded runtime.Gosched busy-wait, not a fixed time.Sleep settle.
+func TestRunImplicationPropagation_CancelledMidRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("seeds many images to span chunk boundaries; skipping in short mode")
+	}
+	srv := newTestServer(t)
+	parent, err := srv.tagSvc().GetOrCreateTag("parent", srv.Active().GeneralCategoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// > one 500-row chunk so there is a second ctx.Err() boundary after the
+	// first (slow) chunk: the cancel, issued the instant the read completes,
+	// lands either before chunk 1 (processed 0) or during it (caught at the
+	// chunk-2 boundary, processed 500) — never after the whole loop drains,
+	// since chunk 1's per-image transactions dwarf the cancel latency.
+	// Direct inserts (the propagation loop, not ingest, is under test).
+	const carriers = 600
+	for i := 0; i < carriers; i++ {
+		res, err := srv.db().Write.Exec(
+			`INSERT INTO images (sha256, canonical_path, folder_path, file_type, file_size, source_type, origin)
+			 VALUES (?, ?, '', 'png', 1024, 'image', 'test')`,
+			fmt.Sprintf("%064x", i+1), fmt.Sprintf("c%05d.png", i),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		if err := srv.tagSvc().AddTagToImage(id, parent.ID, false, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	implied, err := srv.tagSvc().GetOrCreateTag("implied", srv.Active().GeneralCategoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.tagSvc().AddImplication(parent.ID, implied.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reserve the job slot ourselves (mirroring startImplicationPropagation)
+	// and run the worker directly so we own the cancel timing.
+	if err := srv.jobs.Start(models.JobTypeTag); err != nil {
+		t.Fatalf("reserve job: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		srv.runImplicationPropagation(parent.ID, implied.ID, "add")
+		close(done)
+	}()
+
+	// Wait until the read has finished and the chunk loop is live: chunkedJob
+	// sets Total and emits "applying implication 0/5000…" before its first
+	// ctx.Err() check. A deadline-bounded Gosched busy-wait, no sleep.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st := srv.jobs.Get()
+		if st.Total == carriers && strings.Contains(st.Message, "applying implication") {
+			break
+		}
+		if !st.Running { // worker already returned (unexpected this early)
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("chunk loop did not start within 5s")
+		}
+		runtime.Gosched()
+	}
+	srv.jobs.Cancel()
+
+	// Drain to completion (deadline-bounded Gosched wait, no sleep).
+	drainDeadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case <-done:
+			goto drained
+		default:
+		}
+		if time.Now().After(drainDeadline) {
+			t.Fatal("worker did not finish within 5s of cancel")
+		}
+		runtime.Gosched()
+	}
+drained:
+
+	st := srv.jobs.Get()
+	summary := st.Summary
+	if summary == "" {
+		summary = st.Message
+	}
+	m := implSummaryRe.FindStringSubmatch(summary)
+	if m == nil {
+		t.Fatalf("cancel summary = %q, want shape %q", summary, implSummaryRe.String())
+	}
+	if st.Error != "" {
+		t.Errorf("cancelled run must Complete with a summary, not Fail: error=%q", st.Error)
+	}
+	// N must be a partial count: a whole-multiple-of-500 boundary strictly
+	// below the total (the loop was interrupted, not run to completion).
+	processed, _ := strconv.Atoi(m[1])
+	total, _ := strconv.Atoi(m[2])
+	if total != carriers {
+		t.Errorf("summary total = %d, want %d", total, carriers)
+	}
+	if processed < 0 || processed >= carriers {
+		t.Errorf("cancelled processed = %d, want a partial count in [0,%d)", processed, carriers)
+	}
+	if processed%chunkSizeImplication != 0 {
+		t.Errorf("cancelled processed = %d, want a 500-row chunk boundary", processed)
+	}
+}
+
+// chunkSizeImplication mirrors the const chunkSize inside
+// runImplicationPropagation; the cancel always lands on a multiple of it.
+const chunkSizeImplication = 500
 
 // TestImplicationsDialogHandler_NonHTMXRedirects pins the HX-Request
 // gate: a direct (non-htmx) GET of the dialog URL redirects to the

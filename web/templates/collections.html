@@ -1,0 +1,157 @@
+{{define "collections.html"}}
+{{template "layout_head" .}}
+{{$prefix := .Prefix}}
+{{$sort := .Sort}}
+<div id="sidebar-inner">
+  <div class="sidebar-section">
+    <h3>Filter</h3>
+    <form action="/collections" method="get" class="tags-filter-row">
+      <input type="text" name="q" value="{{$prefix}}" placeholder="Search collections…">
+      <input type="hidden" name="sort" value="{{$sort}}">
+      <button type="submit">OK</button>
+    </form>
+
+    <div class="filter-group">
+      <span class="filter-label">Sort</span>
+      <a class="filter-btn{{if eq $sort "size"}} active{{end}}" href="/collections?q={{$prefix}}&sort=size">By size</a>
+      <a class="filter-btn{{if eq $sort "name"}} active{{end}}" href="/collections?q={{$prefix}}&sort=name">By name</a>
+    </div>
+  </div>
+</div>
+{{template "layout_mid" .}}
+
+<div id="collections-page">
+  <h2 id="collections-page-header">
+    <span>Collections <span class="count-badge">{{.Total}}</span></span>
+  </h2>
+
+  <div id="collection-flash"></div>
+
+  <ul class="relations-cards">
+    {{$gallery := .ActiveGallery}}
+    {{range .Collections}}
+    {{$q := printf `collection:"%s"` (qval .Name)}}
+    <li class="relations-card" data-name="{{.Name}}">
+      <div class="collection-card-head">
+        <a href="/?q={{urlQ $q}}" title="Browse {{.Name}}"><strong>{{.Name}}</strong></a>
+        <span class="field-hint">{{.Count}} image{{if ne .Count 1}}s{{end}}</span>
+        <button type="button" class="btn-link-accent btn-rename-collection" data-name="{{.Name}}">[rename]</button>
+        <button type="button" class="btn-link-accent btn-dissolve-collection" data-name="{{.Name}}">[dissolve]</button>
+      </div>
+      <div class="collection-preview">
+        {{range .Samples}}
+        <a href="/images/{{.ID}}" class="relations-card-thumb" title="Image {{.ID}}">
+          <img src="/thumbnails/{{$gallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy">
+          {{with .Order}}<span class="relations-card-id">#{{.}}</span>{{end}}
+        </a>
+        {{else}}
+        <span class="field-hint">No previewable images.</span>
+        {{end}}
+      </div>
+    </li>
+    {{else}}
+    {{if $prefix}}
+    <li class="no-results">No collections match "{{$prefix}}".</li>
+    {{else}}
+    <li class="no-results">No collections yet. Add an image to a collection to create one.</li>
+    {{end}}
+    {{end}}
+  </ul>
+
+  {{$base := printf "/collections?q=%s&sort=%s&page=" .Prefix .Sort}}
+  {{template "partials/pagination.html" (dict "Base" $base "Page" .Page "Total" .TotalPages)}}
+</div>
+
+<dialog id="collection-rename-dialog">
+  <form id="collection-rename-form">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <input type="hidden" id="collection-rename-prev" name="prev" value="">
+    <p>Rename <strong id="collection-rename-src"></strong></p>
+    <div class="field">
+      <label>New name (renaming onto an existing collection merges them)</label>
+      <div class="series-input-wrap">
+        <input id="collection-rename-input" type="text" name="name" maxlength="200" required autocomplete="off"
+               hx-get="/internal/collection/suggest"
+               hx-trigger="input changed delay:200ms"
+               hx-target="#collection-rename-suggest"
+               hx-swap="innerHTML"
+               hx-vals='js:{prefix: document.getElementById("collection-rename-input").value}'
+               onkeydown="handleSuggestKey(event, 'collection-rename-suggest', 'collection-rename-input')">
+        <div id="collection-rename-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
+      </div>
+    </div>
+    <div id="collection-rename-error"></div>
+    <div class="dialog-actions">
+      <button type="submit">Rename</button>
+      <button type="button" onclick="document.getElementById('collection-rename-dialog').close()">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+document.querySelectorAll('.btn-rename-collection').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var name = this.dataset.name;
+    document.getElementById('collection-rename-prev').value = name;
+    document.getElementById('collection-rename-src').textContent = name;
+    document.getElementById('collection-rename-error').innerHTML = '';
+    document.getElementById('collection-rename-suggest').innerHTML = '';
+    var input = document.getElementById('collection-rename-input');
+    input.value = name;
+    document.getElementById('collection-rename-dialog').showModal();
+    input.focus();
+    input.select();
+  });
+});
+
+document.getElementById('collection-rename-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var prev = document.getElementById('collection-rename-prev').value;
+  var name = document.getElementById('collection-rename-input').value.trim();
+  var err = document.getElementById('collection-rename-error');
+  err.innerHTML = '';
+  if (!name) { err.innerHTML = '<div class="flash flash-err">New name required.</div>'; return; }
+  var csrf = getCSRFToken();
+  fetch('/collections/rename', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
+    body: 'prev=' + encodeURIComponent(prev) + '&name=' + encodeURIComponent(name) + '&_csrf=' + encodeURIComponent(csrf)
+  }).then(function(res) {
+    if (res.status === 202) {
+      document.getElementById('collection-rename-dialog').close();
+      _pendingGalleryReload = true;
+      if (typeof refreshJobStatus === 'function') refreshJobStatus();
+    } else {
+      res.text().then(function(t) { err.innerHTML = t || '<div class="flash flash-err">Rename failed.</div>'; });
+    }
+  }).catch(function() { err.innerHTML = '<div class="flash flash-err">Rename request failed.</div>'; });
+});
+
+document.querySelectorAll('.btn-dissolve-collection').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var name = this.dataset.name;
+    showConfirm('Dissolve "' + name + '"? The collection label is removed from every image in it.', function() {
+      var csrf = getCSRFToken();
+      fetch('/collections/dissolve', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
+        body: 'collection=' + encodeURIComponent(name) + '&_csrf=' + encodeURIComponent(csrf)
+      }).then(function(res) {
+        if (res.status === 202) {
+          _pendingGalleryReload = true;
+          if (typeof refreshJobStatus === 'function') refreshJobStatus();
+        } else {
+          res.text().then(function(t) {
+            document.getElementById('collection-flash').innerHTML = t || '<div class="flash flash-err">Dissolve failed.</div>';
+          });
+        }
+      }).catch(function() {
+        document.getElementById('collection-flash').innerHTML = '<div class="flash flash-err">Dissolve request failed.</div>';
+      });
+    }, 'The images and the files on disk are not deleted.', 'Dissolve');
+  });
+});
+</script>
+
+{{template "layout_end" .}}
+{{end}}

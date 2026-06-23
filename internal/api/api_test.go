@@ -349,6 +349,44 @@ func TestGetImage_ValidID(t *testing.T) {
 	}
 }
 
+func TestGetImage_IncludesCollectionsArray(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "collections_api.png", 10, 10)
+	if err := gallery.AddCollectionMembership(env.database, id, "Alpha", nil); err != nil {
+		t.Fatal(err)
+	}
+	order := 4
+	if err := gallery.AddCollectionMembership(env.database, id, "Beta", &order); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/images/%d", id), nil)
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	// The scalar collection field still mirrors the home membership.
+	if resp["collection"] != "Alpha" {
+		t.Errorf("collection = %v, want Alpha", resp["collection"])
+	}
+	cols, ok := resp["collections"].([]any)
+	if !ok || len(cols) != 2 {
+		t.Fatalf("collections = %v, want 2 entries", resp["collections"])
+	}
+	names := map[string]bool{}
+	for _, c := range cols {
+		names[c.(map[string]any)["name"].(string)] = true
+	}
+	if !names["Alpha"] || !names["Beta"] {
+		t.Errorf("collections names = %v, want Alpha and Beta", names)
+	}
+}
+
 func TestGetImage_InvalidID(t *testing.T) {
 	mux := newTestMux(t)
 	req := httptest.NewRequest("GET", "/api/v1/images/notanumber", nil)
@@ -1425,6 +1463,51 @@ func TestDeleteImage_EmptyFolderKeptByDefault(t *testing.T) {
 	}
 	if _, err := os.Stat(subDir); err != nil {
 		t.Errorf("empty parent folder should be kept by default; stat err = %v", err)
+	}
+}
+
+// A folder_path that drifted outside the gallery root (hand-edited DB,
+// renamed mount) must not let delete_empty_folder remove a directory
+// outside the tree.
+func TestDeleteImage_DeleteEmptyFolderRefusesTraversal(t *testing.T) {
+	env := newTestEnv(t)
+
+	subDir := filepath.Join(env.galleryDir, "trav")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	imgPath := filepath.Join(subDir, "x.png")
+	f, err := os.Create(imgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, 8, 8))); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	record, _, err := gallery.Ingest(env.database, env.galleryDir, env.thumbDir, imgPath, "png", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(imgPath)
+
+	escapeDir := filepath.Join(filepath.Dir(env.galleryDir), "mb_escape_test")
+	if err := os.MkdirAll(escapeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.database.Write.Exec(
+		`UPDATE images SET folder_path = ? WHERE id = ?`, "../mb_escape_test", record.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("DELETE",
+		fmt.Sprintf("/api/v1/images/%d?delete_empty_folder=true", record.ID), nil)
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if _, err := os.Stat(escapeDir); err != nil {
+		t.Errorf("folder outside the gallery root must not be removed; stat err = %v", err)
 	}
 }
 

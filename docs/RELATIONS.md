@@ -15,11 +15,12 @@ images, plus a "not related" rejection list so a pair never resurfaces:
 - **Not related** - a rejected pair recorded so the find-pairs queue
   never surfaces it again.
 
-Collections (`images.series` plus an optional within-collection
-order) are a parallel grouping mechanism. They show up alongside
-relations on the detail page and search via `collection:<value>` and
-`relation:collection`, but they are not part of the duplicate /
-alternate / version / derivative graph.
+Collections (the `image_collections` membership table) are a parallel
+grouping mechanism. An image can belong to several collections, each
+with its own order. They render in their own "Same collection" section
+below the Related-images panel on the detail page and are searchable via
+`collection:<value>` and `relation:collection`, but they are not part of
+the duplicate / alternate / version / derivative graph.
 
 ## Find candidate pairs
 

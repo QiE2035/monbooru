@@ -51,15 +51,7 @@
        class="related-mini-card related-entry-card" title="{{.Label}}: image {{.ID}}">
       <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy"
            onerror="this.parentElement.innerHTML='<span class=thumb-fail title=&quot;preview unavailable&quot;>?</span>'">
-      {{if .Series}}
-        <span class="series-pill" title="Collection: {{.Series}}{{if .SeriesOrder}} #{{deref64 .SeriesOrder}}{{end}}">
-          <span class="series-pill-name">{{.Series}}</span>
-          {{if .SeriesOrder}}<span class="series-pill-order">#{{deref64 .SeriesOrder}}</span>{{end}}
-        </span>
-        <span class="relation-marker" title="Same collection">Same collection</span>
-      {{else}}
-        <span class="relation-marker" title="{{.Label}}">{{.Marker}}</span>
-      {{end}}
+      <span class="relation-marker" title="{{.Label}}">{{.Marker}}</span>
     </a>
     {{end}}
   </div>
@@ -67,4 +59,28 @@
   <p class="field-hint">No declared relations yet.</p>
   {{end}}
 </div>
+
+{{if .Collection}}
+<div class="related-images same-collection">
+  <div class="related-entries-header">
+    <h3>Same collection</h3>
+    <div class="related-entries-actions">
+      <a class="btn-link-accent" href="/images/{{.ImageID}}/relations?back_q={{urlQ .BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}">[See all]</a>
+    </div>
+  </div>
+  <div class="related-mini-grid">
+    {{range .Collection}}
+    <a href="/images/{{.ID}}?ref={{$.ImageID}}&back_q={{urlQ $.BackQ}}&back_sort={{$.BackSort}}&back_order={{$.BackOrder}}{{if $.BackPage}}&back_page={{$.BackPage}}{{end}}{{if $.BackSeed}}&back_seed={{$.BackSeed}}{{end}}"
+       class="related-mini-card related-entry-card" title="Collection {{.Series}}: image {{.ID}}">
+      <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy"
+           onerror="this.parentElement.innerHTML='<span class=thumb-fail title=&quot;preview unavailable&quot;>?</span>'">
+      <span class="series-pill" title="Collection: {{.Series}}{{if .Order}} #{{deref64 .Order}}{{end}}">
+        <span class="series-pill-name">{{.Series}}</span>
+        {{if .Order}}<span class="series-pill-order">#{{deref64 .Order}}</span>{{end}}
+      </span>
+    </a>
+    {{end}}
+  </div>
+</div>
+{{end}}
 {{end}}

@@ -7,37 +7,6 @@ import (
 	"testing"
 )
 
-// TestSidebar_CeilingAwareFavoritedCounts pins the Favorites row on
-// /internal/sidebar - both Favorites and Not-favorites should respect
-// the ceiling so the totals add up to the ceiling-aware visible count.
-func TestSidebar_CeilingAwareFavoritedCounts(t *testing.T) {
-	srv := newTestServer(t)
-	cx := srv.Active()
-	safe, explicit := seedRatedPair(t, srv)
-	// Mark both as favorites; under ceiling=sensitive only safe stays.
-	for _, id := range []int64{safe, explicit} {
-		if _, err := srv.db().Write.Exec(`UPDATE images SET is_favorited = 1 WHERE id = ?`, id); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cx.InvalidateCaches()
-
-	req := httptest.NewRequest("GET", "/internal/sidebar?ids=", nil)
-	req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: "sensitive"})
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("sidebar expected 200, got %d", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, "Favorites (1)") {
-		t.Errorf("expected Favorites (1) under ceiling=sensitive; body slice: %s", favSlice(body))
-	}
-	if !strings.Contains(body, "Not favorites (0)") {
-		t.Errorf("expected Not favorites (0) (no non-favourite visible rows); body slice: %s", favSlice(body))
-	}
-}
-
 // TestRelationsHub_PhashMissingHonoursCeiling: two images, both
 // phash NULL'd manually after ingest, one explicit-rated. The hub's
 // PhashMissing count must drop from 2 to 1 when the operator's
@@ -75,10 +44,6 @@ func TestRelationsHub_PhashMissingHonoursCeiling(t *testing.T) {
 	if !strings.Contains(body, "<strong>1</strong>") || !strings.Contains(body, "without a phash") {
 		t.Errorf("ceiling=sensitive: expected 1 image without a phash; body slice: %s", phashMissingSlice(body))
 	}
-}
-
-func favSlice(body string) string {
-	return sliceAround(body, "favorites-filter-section", 400)
 }
 
 func phashMissingSlice(body string) string {
@@ -126,7 +91,7 @@ func TestGallery_HiddenByCeilingIndicator(t *testing.T) {
 	}
 
 	// ceiling=sensitive: matches drops to 1, footer cell carries the
-	// "1 hidden images in the current search" label.
+	// "1 hidden image in the current search" label.
 	req = httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: "sensitive"})
 	w = httptest.NewRecorder()
@@ -135,7 +100,7 @@ func TestGallery_HiddenByCeilingIndicator(t *testing.T) {
 	if !strings.Contains(body, `class="result-count">1</span>`) {
 		t.Errorf("ceiling=sensitive: expected 1 match; got: %s", statusSlice(body))
 	}
-	if !strings.Contains(body, `id="footer-hidden"`) || !strings.Contains(body, "1 hidden images in the current search") {
+	if !strings.Contains(body, `id="footer-hidden"`) || !strings.Contains(body, "1 hidden image in the current search") {
 		t.Errorf("ceiling=sensitive: expected footer hidden indicator with 1; got: %s", footerHiddenSlice(body))
 	}
 }
@@ -175,7 +140,7 @@ func TestGallery_HiddenByCeilingIndicator_FilteredQuery(t *testing.T) {
 	if !strings.Contains(body, `class="result-count">1</span>`) {
 		t.Errorf("expected 1 match (general only); got: %s", statusSlice(body))
 	}
-	if !strings.Contains(body, `id="footer-hidden"`) || !strings.Contains(body, "1 hidden images in the current search") {
+	if !strings.Contains(body, `id="footer-hidden"`) || !strings.Contains(body, "1 hidden image in the current search") {
 		t.Errorf("expected 1 hidden footer indicator; got: %s", footerHiddenSlice(body))
 	}
 }

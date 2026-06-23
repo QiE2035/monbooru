@@ -6,8 +6,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
-	"fmt"
-	"html"
 	"log"
 	"mime"
 	"net/http"
@@ -47,13 +45,7 @@ func (s *Server) validateCSRF(sessionID, token string) bool {
 // inline, everything else gets a plain http.Error.
 func parseFormOK(w http.ResponseWriter, r *http.Request) bool {
 	if err := r.ParseForm(); err != nil {
-		if isHTMXRequest(r) {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = fmt.Fprintf(w, `<div class="flash flash-err">Bad form data: %s</div>`, html.EscapeString(err.Error()))
-			return false
-		}
-		http.Error(w, "bad form: "+err.Error(), http.StatusBadRequest)
+		flashErr(w, r, http.StatusBadRequest, "Bad form data: "+err.Error())
 		return false
 	}
 	return true

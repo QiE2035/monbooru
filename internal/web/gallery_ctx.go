@@ -42,12 +42,9 @@ type galleryCtx struct {
 	// the next reader re-populates from SQLite. The int counts are pointers
 	// so "not cached" is distinguishable from "cached zero".
 	folderTree        atomic.Pointer[[]gallery.FolderNode]
-	sourceCounts      atomic.Pointer[gallery.SourceCounts]
-	seriesCounts      atomic.Pointer[[]gallery.SeriesCount]
 	sourceLabelCounts atomic.Pointer[[]gallery.SourceLabelCount]
 	visibleCount      atomic.Pointer[int]
 	inboxCount        atomic.Pointer[int]
-	favoritedCount    atomic.Pointer[int]
 	tagCount          atomic.Pointer[int]
 	collectionsCount  atomic.Pointer[int]
 	phashMissing      atomic.Pointer[int]
@@ -58,13 +55,9 @@ type galleryCtx struct {
 	// The maps are stored by atomic pointer so reads are lock-free; the
 	// helper below performs copy-on-write to add a level. Three active
 	// ceilings × N galleries at steady state is trivial storage.
-	visibleCountUnder      atomic.Pointer[map[string]int]
 	inboxCountUnder        atomic.Pointer[map[string]int]
-	favoritedCountUnder    atomic.Pointer[map[string]int]
 	phashMissingUnder      atomic.Pointer[map[string]int]
 	folderTreeUnder        atomic.Pointer[map[string][]gallery.FolderNode]
-	sourceCountsUnder      atomic.Pointer[map[string]gallery.SourceCounts]
-	seriesCountsUnder      atomic.Pointer[map[string][]gallery.SeriesCount]
 	sourceLabelCountsUnder atomic.Pointer[map[string][]gallery.SourceLabelCount]
 
 	// bkTree is the in-memory phash index used by the find-pairs job
@@ -115,22 +108,15 @@ func (cx *galleryCtx) InvalidateCaches() {
 		return
 	}
 	cx.folderTree.Store(nil)
-	cx.sourceCounts.Store(nil)
-	cx.seriesCounts.Store(nil)
 	cx.sourceLabelCounts.Store(nil)
 	cx.visibleCount.Store(nil)
 	cx.inboxCount.Store(nil)
-	cx.favoritedCount.Store(nil)
 	cx.tagCount.Store(nil)
 	cx.collectionsCount.Store(nil)
 	cx.phashMissing.Store(nil)
-	cx.visibleCountUnder.Store(nil)
 	cx.inboxCountUnder.Store(nil)
-	cx.favoritedCountUnder.Store(nil)
 	cx.phashMissingUnder.Store(nil)
 	cx.folderTreeUnder.Store(nil)
-	cx.sourceCountsUnder.Store(nil)
-	cx.seriesCountsUnder.Store(nil)
 	cx.sourceLabelCountsUnder.Store(nil)
 	if cx.DB != nil {
 		cx.DB.InvalidateCachedCounts()
@@ -162,20 +148,6 @@ func cachedValue[V any](slot *atomic.Pointer[V], query func() (V, error)) (V, er
 // invalidated by InvalidateCaches.
 func (cx *galleryCtx) FolderTree() ([]gallery.FolderNode, error) {
 	return cachedValue(&cx.folderTree, func() ([]gallery.FolderNode, error) { return gallery.FolderTree(cx.DB) })
-}
-
-// SourceCounts returns the cached source-tree counts or queries them on
-// demand. The cache is invalidated by InvalidateCaches.
-func (cx *galleryCtx) SourceCounts() (gallery.SourceCounts, error) {
-	return cachedValue(&cx.sourceCounts, func() (gallery.SourceCounts, error) { return gallery.SourceCountsQuery(cx.DB) })
-}
-
-// SeriesCounts returns the cached top-25 series labels for the
-// gallery's non-missing manga rows. Empty when no manga carries a
-// series label - the sidebar partial gates rendering on the slice
-// being non-empty.
-func (cx *galleryCtx) SeriesCounts() ([]gallery.SeriesCount, error) {
-	return cachedValue(&cx.seriesCounts, func() ([]gallery.SeriesCount, error) { return gallery.SeriesCountsQuery(cx.DB, 25) })
 }
 
 // SourceLabelCounts returns the cached top-25 source labels for the
@@ -216,14 +188,6 @@ func (cx *galleryCtx) InboxCount() (int, error) {
 	return cx.cachedCount(&cx.inboxCount, `SELECT COUNT(*) FROM images WHERE is_missing = 0 AND is_inbox = 1`)
 }
 
-// FavoritedCount returns the cached count of visible favourited images
-// (is_favorited = 1, is_missing = 0). Used by the sidebar's Favorites
-// panel to surface "<N> favourites / <M> not favourites" without
-// running a search per render.
-func (cx *galleryCtx) FavoritedCount() (int, error) {
-	return cx.cachedCount(&cx.favoritedCount, `SELECT COUNT(*) FROM images WHERE is_missing = 0 AND is_favorited = 1`)
-}
-
 // TagCount returns the cached count of non-alias tags or queries it on demand.
 // Surfaced in the Settings galleries table and the layout footer; uncached the
 // query runs once per render per gallery, which adds up on multi-gallery boxes.
@@ -231,13 +195,16 @@ func (cx *galleryCtx) TagCount() (int, error) {
 	return cx.cachedCount(&cx.tagCount, `SELECT COUNT(*) FROM tags WHERE is_alias = 0`)
 }
 
-// CollectionsCount returns the cached count of distinct non-empty
-// collection labels (the `series` column) across non-missing images.
-// Surfaced in the layout footer. Reads off idx_images_series (partial
-// on `series != ”`) so the GROUP BY scans only labelled rows.
+// CollectionsCount returns the cached count of distinct collection
+// labels across non-missing images, surfaced in the layout footer. The
+// distinct-label skip-scan with a short-circuiting per-label EXISTS keeps
+// the cost (re-paid on the first render after any cache drop) at the
+// label count, not the membership count.
 func (cx *galleryCtx) CollectionsCount() (int, error) {
 	return cx.cachedCount(&cx.collectionsCount,
-		`SELECT COUNT(*) FROM (SELECT 1 FROM images WHERE is_missing = 0 AND series != '' GROUP BY series)`)
+		`SELECT COUNT(*) FROM (SELECT DISTINCT name FROM image_collections) d
+		 WHERE EXISTS (SELECT 1 FROM image_collections c JOIN images i ON i.id = c.image_id
+		   WHERE c.name = d.name AND i.is_missing = 0)`)
 }
 
 // lookupByCeiling reads a per-ceiling cache slot; returns (zero, false)
@@ -288,24 +255,12 @@ func ceilingCached[V any](c *Ceiling, blind func() (V, error), slot *atomic.Poin
 	return v, nil
 }
 
-// VisibleCountUnder returns the count of non-missing images excluding
-// any whose tag list intersects the ceiling's excluded rating ids. An
-// inactive ceiling delegates to the blind VisibleCount.
-func (cx *galleryCtx) VisibleCountUnder(c *Ceiling) (int, error) {
-	return ceilingCached(c, cx.VisibleCount, &cx.visibleCountUnder,
-		func() (int, error) { return gallery.VisibleCountUnder(cx.DB, c.ExcludedTagIDs()) })
-}
-
-// InboxCountUnder is the inbox analogue of VisibleCountUnder.
+// InboxCountUnder returns the count of visible inbox images excluding any
+// whose tag list intersects the ceiling's excluded rating ids. An inactive
+// ceiling delegates to the blind InboxCount.
 func (cx *galleryCtx) InboxCountUnder(c *Ceiling) (int, error) {
 	return ceilingCached(c, cx.InboxCount, &cx.inboxCountUnder,
 		func() (int, error) { return gallery.InboxCountUnder(cx.DB, c.ExcludedTagIDs()) })
-}
-
-// FavoritedCountUnder is the favourited analogue.
-func (cx *galleryCtx) FavoritedCountUnder(c *Ceiling) (int, error) {
-	return ceilingCached(c, cx.FavoritedCount, &cx.favoritedCountUnder,
-		func() (int, error) { return gallery.FavoritedCountUnder(cx.DB, c.ExcludedTagIDs()) })
 }
 
 // PhashMissingUnder returns the relations-hub "PhashMissing" count
@@ -344,20 +299,6 @@ func (cx *galleryCtx) FolderTreeUnder(c *Ceiling) ([]gallery.FolderNode, error) 
 		func() ([]gallery.FolderNode, error) { return gallery.FolderTreeUnder(cx.DB, c.ExcludedTagIDs()) })
 }
 
-// SourceCountsUnder returns the ceiling-aware AI source breakdown.
-func (cx *galleryCtx) SourceCountsUnder(c *Ceiling) (gallery.SourceCounts, error) {
-	return ceilingCached(c, cx.SourceCounts, &cx.sourceCountsUnder,
-		func() (gallery.SourceCounts, error) { return gallery.SourceCountsUnderQuery(cx.DB, c.ExcludedTagIDs()) })
-}
-
-// SeriesCountsUnder returns the ceiling-aware top-25 collection labels.
-func (cx *galleryCtx) SeriesCountsUnder(c *Ceiling) ([]gallery.SeriesCount, error) {
-	return ceilingCached(c, cx.SeriesCounts, &cx.seriesCountsUnder,
-		func() ([]gallery.SeriesCount, error) {
-			return gallery.SeriesCountsUnderQuery(cx.DB, 25, c.ExcludedTagIDs())
-		})
-}
-
 // SourceLabelCountsUnder returns the ceiling-aware top-25 source labels.
 func (cx *galleryCtx) SourceLabelCountsUnder(c *Ceiling) ([]gallery.SourceLabelCount, error) {
 	return ceilingCached(c, cx.SourceLabelCounts, &cx.sourceLabelCountsUnder,
@@ -375,12 +316,9 @@ func (cx *galleryCtx) warmCaches() {
 		return
 	}
 	cx.FolderTree()        //nolint:errcheck
-	cx.SourceCounts()      //nolint:errcheck
-	cx.SeriesCounts()      //nolint:errcheck
 	cx.SourceLabelCounts() //nolint:errcheck
 	cx.VisibleCount()      //nolint:errcheck
 	cx.InboxCount()        //nolint:errcheck
-	cx.FavoritedCount()    //nolint:errcheck
 	cx.TagCount()          //nolint:errcheck
 	cx.CollectionsCount()  //nolint:errcheck
 }

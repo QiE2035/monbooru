@@ -24,10 +24,11 @@
       <a href="/?q=inbox:true" {{if .InboxNavActive}} class="active"{{end}}>Inbox{{if gt .InboxCount 0}} ({{.InboxCount}}){{end}}</a>
       <a href="/categories" {{if eq .ActiveNav "categories"}} class="active"{{end}}>Categories</a>
       <a href="/tags"    {{if eq .ActiveNav "tags"}}    class="active"{{end}}>Tags</a>
+      <a href="/collections" {{if eq .ActiveNav "collections"}} class="active"{{end}}>Collections</a>
       <a href="/relations" {{if eq .ActiveNav "relations"}} class="active"{{end}}>Relations</a>
       <a href="/settings"{{if eq .ActiveNav "settings"}}class="active"{{end}}>Settings</a>
       <a href="/help"    {{if eq .ActiveNav "help"}}    class="active"{{end}}>Help</a>
-      {{if .MonloaderURL}}<span class="nav-sep"></span><a href="{{.MonloaderURL}}" target="_blank" rel="noopener">Go to monloader</a>{{end}}
+      {{if .MonloaderURL}}<span class="nav-sep"></span><a href="{{.MonloaderURL}}/queue">Go to monloader</a>{{end}}
     </nav>
     <div id="topbar-right">
       <div id="job-status"
@@ -83,8 +84,10 @@
       {{end}}{{end}}
       <span class="footer-sep">·</span>
       <span>{{.VisibleCount}} img</span>
+      {{if .VisibleCount}}
       <span class="footer-sep">·</span>
       <span>{{.TagCount}} tags</span>
+      {{end}}
       <span class="footer-sep">·</span>
       <span>{{.CollectionsCount}} collections</span>
       {{if .Degraded}}<span class="footer-sep">·</span><span class="footer-degraded">degraded</span>{{end}}
@@ -94,7 +97,7 @@
       {{/* {{with}} keeps the cell empty (and `:empty` CSS-hidden) on every
            non-gallery surface where the handler flattens baseData into a
            map without the HiddenByCeiling key. */}}
-      <span id="footer-hidden" class="footer-hidden">{{with .HiddenByCeiling}}<span class="footer-sep-strong">::</span>{{.}} hidden images in the current search{{end}}</span>
+      <span id="footer-hidden" class="footer-hidden">{{with .HiddenByCeiling}}<span class="footer-sep-strong">::</span>{{.}} hidden {{plural . "image" "images"}} in the current search{{end}}</span>
     </div>
     <div id="footer-right">
       page loaded in <span id="page-load-ms">{{pageLoadMs .RequestStart}}</span> ms · <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="/api/v1/docs" target="_blank" rel="noopener">API</a>
@@ -178,9 +181,8 @@
             <tr><td><kbd>m</kbd></td><td>Move dialog</td></tr>
             <tr><td><kbd>Delete</kbd></td><td>Delete image</td></tr>
             <tr><td><kbd>Space</kbd></td><td>Play / pause</td></tr>
-            <tr><td><kbd>e o</kbd></td><td>Edit Order</td></tr>
             <tr><td><kbd>e s</kbd></td><td>Edit Source</td></tr>
-            <tr><td><kbd>e c</kbd></td><td>Edit Collection</td></tr>
+            <tr><td><kbd>e c</kbd></td><td>Add to collection</td></tr>
             <tr><td><kbd>e u</kbd></td><td>Edit URL</td></tr>
             <tr><td><kbd>R</kbd></td><td>Open in reader</td></tr>
             <tr><td><kbd>P</kbd></td><td>See all pages</td></tr>

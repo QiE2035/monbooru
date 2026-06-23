@@ -1,49 +1,4 @@
 {{define "partials/sidebar_browse.html"}}
-  {{/* Favorites shortcut sits at the top: it covers the most frequent
-       triage navigation. Collections, source labels, folders, and the
-       AI source breakdown follow, in that order so deliberate per-image
-       groupings rank above filesystem layout. */}}
-  {{if or (gt .FavoritedCount 0) (gt .NonFavoritedCount 0)}}
-  <div id="favorites-filter-section">
-    <div class="sidebar-section-header">
-      <span class="sidebar-section-title">Favorites</span>
-      <button id="favorites-filter-toggle" class="folder-toggle-btn" data-target="favorites-filter-list">▶</button>
-    </div>
-    <ul id="favorites-filter-list" class="folder-tree" style="display:none">
-      <li class="folder-node-wrap">
-        <div class="folder-node-row">
-          <span class="folder-spacer"></span>
-          <a href="/?q=fav:true" class="folder-link{{if eq .Query "fav:true"}} active{{end}}">Favorites ({{.FavoritedCount}})</a>
-        </div>
-      </li>
-      <li class="folder-node-wrap">
-        <div class="folder-node-row">
-          <span class="folder-spacer"></span>
-          <a href="/?q=fav:false" class="folder-link{{if eq .Query "fav:false"}} active{{end}}">Not favorites ({{.NonFavoritedCount}})</a>
-        </div>
-      </li>
-    </ul>
-  </div>
-  {{end}}
-  {{if .SeriesCounts}}
-  <div id="series-filter-section">
-    <div class="sidebar-section-header">
-      <span class="sidebar-section-title">Collections</span>
-      <button id="series-tree-toggle" class="folder-toggle-btn" data-target="series-tree-list">▶</button>
-    </div>
-    <ul id="series-tree-list" class="folder-tree" style="display:none">
-      {{range .SeriesCounts}}
-      {{$active := printf `collection:"%s"` (qval .Series)}}
-      <li class="folder-node-wrap">
-        <div class="folder-node-row">
-          <span class="folder-spacer"></span>
-          <a href="/?q={{urlQ $active}}" class="folder-link{{if eq $.Query $active}} active{{end}}" title="{{.Series}}">{{.Series}} ({{.Count}})</a>
-        </div>
-      </li>
-      {{end}}
-    </ul>
-  </div>
-  {{end}}
   {{if .SourceLabelCounts}}
   <div id="source-labels-section">
     <div class="sidebar-section-header">
@@ -84,44 +39,6 @@
     </ul>
   </div>
   {{end}}
-  {{if .SourceCounts}}
-  {{$src := .SourceCounts}}
-  <div id="source-filter-section">
-    <div class="sidebar-section-header">
-      <span class="sidebar-section-title">AI</span>
-      <button id="source-tree-toggle" class="folder-toggle-btn" data-target="source-tree-list">▶</button>
-    </div>
-    <ul id="source-tree-list" class="folder-tree" style="display:none">
-      <li class="folder-node-wrap">
-        <div class="folder-node-row">
-          <span class="folder-spacer"></span>
-          <a href="/?q=ai:none" class="folder-link{{if eq $.Query "ai:none"}} active{{end}}">Non-AI ({{$src.None}})</a>
-        </div>
-      </li>
-      <li class="folder-node-wrap">
-        <div class="folder-node-row">
-          <button class="folder-toggle-btn folder-expand-btn" data-path="__ai_source__" data-target="fc-__ai_source__" title="Toggle AI">▶</button>
-          <a href="/?q=ai:any" class="folder-link{{if eq $.Query "ai:any"}} active{{end}}">AI ({{$src.AI}})</a>
-        </div>
-        <ul id="fc-__ai_source__" class="folder-children" style="display:none">
-          <li class="folder-node-wrap">
-            <div class="folder-node-row">
-              <span class="folder-spacer"></span>
-              <a href="/?q=ai:a1111" class="folder-link{{if eq $.Query "ai:a1111"}} active{{end}}">a1111 ({{$src.A1111}})</a>
-            </div>
-          </li>
-          <li class="folder-node-wrap">
-            <div class="folder-node-row">
-              <span class="folder-spacer"></span>
-              <a href="/?q=ai:comfyui" class="folder-link{{if eq $.Query "ai:comfyui"}} active{{end}}">comfyui ({{$src.Comfyui}})</a>
-            </div>
-          </li>
-        </ul>
-      </li>
-    </ul>
-  </div>
-  {{end}}
-
   {{/* Saved searches */}}
   {{if .SavedSearches}}
   <div id="saved-searches-section">

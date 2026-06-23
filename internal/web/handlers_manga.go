@@ -193,30 +193,12 @@ func loadMangaMeta(ctx context.Context, database *db.DB, imageID int64) *models.
 	m.Manga = nullToString(manga)
 	m.AgeRating = nullToString(ageRating)
 	m.RawXML = nullToString(rawXML)
-	if count.Valid {
-		v := int(count.Int64)
-		m.Count = &v
-	}
-	if year.Valid {
-		v := int(year.Int64)
-		m.Year = &v
-	}
-	if month.Valid {
-		v := int(month.Int64)
-		m.Month = &v
-	}
-	if day.Valid {
-		v := int(day.Int64)
-		m.Day = &v
-	}
-	if xmlPageCount.Valid {
-		v := int(xmlPageCount.Int64)
-		m.XMLPageCount = &v
-	}
-	if communityRating.Valid {
-		v := communityRating.Float64
-		m.CommunityRating = &v
-	}
+	m.Count = nullToIntPtr(count)
+	m.Year = nullToIntPtr(year)
+	m.Month = nullToIntPtr(month)
+	m.Day = nullToIntPtr(day)
+	m.XMLPageCount = nullToIntPtr(xmlPageCount)
+	m.CommunityRating = nullToFloatPtr(communityRating)
 	return &m
 }
 
@@ -225,4 +207,20 @@ func nullToString(n sql.NullString) string {
 		return n.String
 	}
 	return ""
+}
+
+func nullToIntPtr(n sql.NullInt64) *int {
+	if !n.Valid {
+		return nil
+	}
+	v := int(n.Int64)
+	return &v
+}
+
+func nullToFloatPtr(n sql.NullFloat64) *float64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Float64
+	return &v
 }

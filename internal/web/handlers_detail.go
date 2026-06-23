@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leqwin/monbooru/internal/gallery"
 	"github.com/leqwin/monbooru/internal/logx"
 	meta "github.com/leqwin/monbooru/internal/metadata"
 	"github.com/leqwin/monbooru/internal/models"
@@ -28,6 +29,7 @@ type detailData struct {
 	GenericMeta  []models.SDParam
 	MangaMeta    *models.MangaMetadata // populated for cbz rows when ComicInfo.xml was parsed
 	IsManga      bool                  // shorthand for FileType == "cbz" so the template doesn't string-compare
+	Collections  []models.Collection   // every collection this image belongs to, ordered for display
 	ImagePaths   []models.ImagePath
 	ThumbnailURL string
 	PrevID       *int64
@@ -206,16 +208,18 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		genericMeta []models.SDParam
 		mangaMeta   *models.MangaMetadata
 		imagePaths  []models.ImagePath
+		collections []models.Collection
 		prevID      *int64
 		nextID      *int64
 	)
 	isManga := img.FileType == models.FileTypeCBZ
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(6)
 	go func() { defer wg.Done(); _, imageTags, _ = s.tagSvc().GetImageTags(id) }()
 	go func() { defer wg.Done(); sdMeta = loadSDMeta(ctx, s.db(), id) }()
 	go func() { defer wg.Done(); comfyMeta = loadComfyMeta(ctx, s.db(), id) }()
 	go func() { defer wg.Done(); imagePaths = loadImagePaths(ctx, s.db(), id) }()
+	go func() { defer wg.Done(); collections, _ = gallery.CollectionsForImage(s.db(), id) }()
 	go func() {
 		defer wg.Done()
 		// Skip the generic-EXIF/text-chunk extraction for manga - the
@@ -276,6 +280,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		GenericMeta:    genericMeta,
 		MangaMeta:      mangaMeta,
 		IsManga:        isManga,
+		Collections:    collections,
 		ImagePaths:     imagePaths,
 		ThumbnailURL:   fmt.Sprintf("/thumbnails/%s/%d.jpg", s.activeName, id),
 		PrevID:         prevID,
@@ -293,7 +298,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		ImageTaggers:   imageTaggers,
 		HasUserTags:    hasUserTags,
 		Aliases:        s.aliasesForImageTags(imageTags),
-		PhashDistance:  s.relationsPhashDistance(),
+		PhashDistance:  s.findPairsDistance(),
 	}
 	s.renderTemplate(w, "detail.html", data)
 }
@@ -361,11 +366,15 @@ func (s *Server) findAdjacentImages(currentID int64, queryStr, sortStr, orderStr
 
 func adjacentSearchQuery(queryStr, sortStr, orderStr, seedStr string, ceiling *Ceiling) search.Query {
 	expr, _ := search.Parse(queryStr)
+	pinnedCollection := search.PinnedCollectionName(expr)
 	expr = ceiling.Apply(expr)
 	sq := search.Query{
 		Expr:  expr,
 		Sort:  sortStr,
 		Order: orderStr,
+	}
+	if sortStr == "order" {
+		sq.OrderCollection = pinnedCollection
 	}
 	if sortStr == "random" && seedStr != "" {
 		if seed, err := strconv.ParseInt(seedStr, 10, 64); err == nil {

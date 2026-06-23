@@ -509,6 +509,102 @@ func TestSuggestTags_PrefixFirst(t *testing.T) {
 	}
 }
 
+// TestSuggestTagsInCategory pins the category-scoped tag-input
+// autocomplete (the `category:prefix` shape): it must return only
+// prefix matches that live in the named category, sorted by
+// usage_count DESC, and must exclude alias rows and substring-only
+// matches.
+func TestSuggestTagsInCategory(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	character, err := svc.CreateCategory("character", "#112233")
+	if err != nil {
+		// "character" is a built-in; reuse it rather than re-creating.
+		if err != ErrCategoryExists {
+			t.Fatalf("CreateCategory(character): %v", err)
+		}
+		cats, lerr := svc.ListCategories()
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		for i := range cats {
+			if cats[i].Name == "character" {
+				character = &cats[i]
+				break
+			}
+		}
+	}
+	if character == nil {
+		t.Fatal("character category not found")
+	}
+
+	// Two character tags matching the "par" prefix; one matching tag in a
+	// different category (must be excluded); one character tag that only
+	// matches as a substring (must be excluded since this is prefix-only);
+	// and one character alias whose name also matches the prefix (must be
+	// excluded by the is_alias = 0 filter). The alias's canonical target
+	// has a non-matching name so only the alias would surface if the
+	// filter were wrong.
+	parade, _ := svc.GetOrCreateTag("parade", character.ID)
+	parasol, _ := svc.GetOrCreateTag("parasol", character.ID)
+	_, _ = svc.GetOrCreateTag("parade_general", catID)      // wrong category
+	_, _ = svc.GetOrCreateTag("comparable", character.ID)   // substring, not prefix
+	canon, _ := svc.GetOrCreateTag("honored", character.ID) // alias target, no "par" prefix
+	if _, err := svc.CreateAlias("parka_alias", character.ID, canon.ID); err != nil {
+		t.Fatalf("CreateAlias: %v", err)
+	}
+
+	// Make parasol the more-used of the two prefix matches so usage_count
+	// DESC ordering is observable: parasol used by two images, parade by
+	// one.
+	imgA := insertTestImage(t, database, "cat_suggest_a")
+	imgB := insertTestImage(t, database, "cat_suggest_b")
+	imgC := insertTestImage(t, database, "cat_suggest_c")
+	for _, img := range []int64{imgA, imgB} {
+		if err := svc.AddTagToImage(img, parasol.ID, false, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := svc.AddTagToImage(imgC, parade.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := svc.SuggestTagsInCategory("par", "character", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := tagNames(results)
+	want := []string{"parasol", "parade"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SuggestTagsInCategory = %v, want %v (only prefix matches in the named category, usage DESC, no alias/substring)", got, want)
+	}
+	for _, r := range results {
+		if r.CategoryName != "character" {
+			t.Errorf("tag %q has category %q, want character", r.Name, r.CategoryName)
+		}
+	}
+
+	// Limit is honoured.
+	one, err := svc.SuggestTagsInCategory("par", "character", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one) != 1 || one[0].Name != "parasol" {
+		t.Errorf("limit=1 returned %v, want [parasol] (highest usage)", tagNames(one))
+	}
+
+	// A prefix with no matches in the category yields an empty result.
+	none, err := svc.SuggestTagsInCategory("zzz", "character", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Errorf("no-match prefix returned %v, want empty", tagNames(none))
+	}
+}
+
 func TestRelatedImages(t *testing.T) {
 	database, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)

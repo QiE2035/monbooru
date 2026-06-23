@@ -21,22 +21,24 @@ func extractSDFromJPEG(path string) (*models.SDMetadata, error) {
 	if err != nil {
 		return nil, nil
 	}
+	return sdFromEXIF(x), nil
+}
 
+// sdFromEXIF decodes A1111 parameters from an EXIF UserComment tag,
+// returning nil when the tag is absent or not A1111-shaped.
+func sdFromEXIF(x *exif.Exif) *models.SDMetadata {
 	tag, err := x.Get(exif.UserComment)
 	if err != nil {
-		return nil, nil
+		return nil
 	}
-
 	raw, err := tag.StringVal()
 	if err != nil {
-		return nil, nil
+		return nil
 	}
-
 	// EXIF UserComment may carry a charset prefix like "ASCII\x00\x00\x00".
 	text := strings.TrimPrefix(raw, "ASCII\x00\x00\x00")
 	text = strings.TrimLeft(text, "\x00")
-
-	return parseA1111Parameters(text), nil
+	return parseA1111Parameters(text)
 }
 
 // parseA1111Parameters parses A1111's parameter-string format. Returns

@@ -215,20 +215,20 @@ func TestServeMangaPage_RejectsTraversal(t *testing.T) {
 	}
 }
 
-func TestUpdateExternal_AcceptsCollection(t *testing.T) {
+func TestSetCollection_Adds(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedManga(t, srv, "m.cbz", [][]byte{
 		tinyPNG(t, 8, 8, color.RGBA{0, 0, 0, 255}),
 	})
 	h := srv.Handler()
 	body := strings.NewReader("collection=Naruto&_csrf=" + srv.csrfToken("anon"))
-	req := httptest.NewRequest("POST", "/images/"+strconv.FormatInt(id, 10)+"/external", body)
+	req := httptest.NewRequest("POST", "/images/"+strconv.FormatInt(id, 10)+"/collections/set", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusSeeOther && w.Code != http.StatusOK && w.Code != http.StatusNoContent {
-		t.Fatalf("update collection status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("set collection status = %d, body = %s", w.Code, w.Body.String())
 	}
 	cx := srv.Active()
 	var got string
@@ -236,7 +236,53 @@ func TestUpdateExternal_AcceptsCollection(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got != "Naruto" {
-		t.Errorf("collection (DB col 'series') = %q, want %q", got, "Naruto")
+		t.Errorf("home collection (DB col 'series') = %q, want %q", got, "Naruto")
+	}
+	cols, err := gallery.CollectionsForImage(cx.DB, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cols) != 1 || cols[0].Name != "Naruto" {
+		t.Errorf("memberships = %#v, want one Naruto", cols)
+	}
+}
+
+// Adding several memberships keeps the first as the home mirror;
+// removing the home promotes the next, and removing the last clears it.
+func TestCollectionMembership_PromoteHomeOnRemove(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "multi.png", 7, 7)
+	d := srv.Active().DB
+	if err := gallery.AddCollectionMembership(d, id, "First", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := gallery.AddCollectionMembership(d, id, "Second", nil); err != nil {
+		t.Fatal(err)
+	}
+	home := func() string {
+		var s string
+		if err := d.Read.QueryRow(`SELECT series FROM images WHERE id = ?`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if home() != "First" {
+		t.Errorf("home = %q, want First", home())
+	}
+	if cols, _ := gallery.CollectionsForImage(d, id); len(cols) != 2 {
+		t.Fatalf("memberships = %d, want 2", len(cols))
+	}
+	if err := gallery.RemoveCollectionMembership(d, id, "First"); err != nil {
+		t.Fatal(err)
+	}
+	if home() != "Second" {
+		t.Errorf("after removing home, series = %q, want Second", home())
+	}
+	if err := gallery.RemoveCollectionMembership(d, id, "Second"); err != nil {
+		t.Fatal(err)
+	}
+	if home() != "" {
+		t.Errorf("after removing all, series = %q, want empty", home())
 	}
 }
 
@@ -259,13 +305,13 @@ func snippet(s, needle string) string {
 // carry both a collection label and an integer order, surfaced via
 // the same /external endpoint and collection: filter that the manga
 // path uses.
-func TestUpdateExternal_CollectionAcceptsNonMangaPlusOrder(t *testing.T) {
+func TestSetCollection_NonMangaWithOrder(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "non-manga.png", 16, 16)
 	h := srv.Handler()
 
 	body := strings.NewReader("collection=Vol1&collection_order=7&_csrf=" + srv.csrfToken("anon"))
-	req := httptest.NewRequest("POST", "/images/"+strconv.FormatInt(id, 10)+"/external", body)
+	req := httptest.NewRequest("POST", "/images/"+strconv.FormatInt(id, 10)+"/collections/set", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
 	w := httptest.NewRecorder()
@@ -289,27 +335,6 @@ func TestUpdateExternal_CollectionAcceptsNonMangaPlusOrder(t *testing.T) {
 	}
 }
 
-// SeriesCountsQuery surfaces non-manga rows in the sidebar's Series
-// section alongside cbz rows; the count is unscoped by file type.
-func TestSeriesCounts_IncludesNonMangaRows(t *testing.T) {
-	srv := newTestServer(t)
-	imgID := seedImage(t, srv, "img.png", 8, 8)
-	cx := srv.Active()
-	if _, err := cx.DB.Write.Exec(
-		`UPDATE images SET series = 'TheSeries' WHERE id = ?`, imgID,
-	); err != nil {
-		t.Fatalf("set series: %v", err)
-	}
-	cx.InvalidateCaches()
-	got, err := cx.SeriesCounts()
-	if err != nil {
-		t.Fatalf("SeriesCounts: %v", err)
-	}
-	if len(got) != 1 || got[0].Series != "TheSeries" || got[0].Count != 1 {
-		t.Errorf("SeriesCounts = %#v, want one TheSeries=1 row", got)
-	}
-}
-
 // /internal/collection/suggest returns existing labels matching the
 // typed prefix - used by the detail-page edit dialog and the batch
 // dialogs. The DB column is still named `series` for schema stability.
@@ -317,10 +342,10 @@ func TestCollectionSuggest_PrefixMatch(t *testing.T) {
 	srv := newTestServer(t)
 	id1 := seedImage(t, srv, "a.png", 4, 4)
 	id2 := seedImage(t, srv, "b.png", 5, 5)
-	if _, err := srv.Active().DB.Write.Exec(
-		`UPDATE images SET series = CASE id WHEN ? THEN 'Naruto' WHEN ? THEN 'Bleach' END
-		 WHERE id IN (?, ?)`, id1, id2, id1, id2,
-	); err != nil {
+	if err := gallery.SetHomeCollection(srv.Active().DB, id1, "Naruto", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := gallery.SetHomeCollection(srv.Active().DB, id2, "Bleach", nil); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest("GET", "/internal/collection/suggest?prefix=Nar", nil)
@@ -343,9 +368,7 @@ func TestCollectionSuggest_PrefixMatch(t *testing.T) {
 func TestCollectionSuggest_CaseInsensitivePrefix(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "a.png", 4, 4)
-	if _, err := srv.Active().DB.Write.Exec(
-		`UPDATE images SET series = 'Cat Series' WHERE id = ?`, id,
-	); err != nil {
+	if err := gallery.SetHomeCollection(srv.Active().DB, id, "Cat Series", nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, prefix := range []string{"cat", "Cat", "CAT"} {
@@ -361,10 +384,9 @@ func TestCollectionSuggest_CaseInsensitivePrefix(t *testing.T) {
 	}
 }
 
-// batch-collection writes the same label across every image in the
-// selection in chunked transactions. The per-image order column
-// (series_order, kept by name for schema stability) is intentionally
-// not touched - that's set via the detail page, not the bulk surface.
+// batch-collection adds the label across every image in the selection in
+// chunked transactions. Fresh rows (no prior collection) adopt it as the
+// home mirror with a NULL order - order is set per-image on the detail page.
 func TestBatchCollection_AssignsLabel(t *testing.T) {
 	srv := newTestServer(t)
 	var ids []int64
@@ -414,6 +436,105 @@ func TestBatchCollection_AssignsLabel(t *testing.T) {
 		if order.Valid {
 			t.Errorf("ids[%d]: collection_order should remain NULL, got %d", i, order.Int64)
 		}
+	}
+}
+
+// Batch add is additive: an image already in a collection keeps it and
+// gains the new one; its home (the series mirror) is left untouched.
+func TestBatchCollection_AddsKeepingExisting(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "existing.png", 9, 9)
+	if err := gallery.SetHomeCollection(srv.Active().DB, id, "Original", nil); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"_csrf":      {srv.csrfToken("anon")},
+		"scope":      {"selection"},
+		"collection": {"Added"},
+		"ids":        {strconv.FormatInt(id, 10)},
+	}
+	req := httptest.NewRequest("POST", "/internal/batch-collection", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("batch-collection: %d, %s", w.Code, w.Body.String())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !srv.jobs.IsRunning() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var home string
+	if err := srv.Active().DB.Read.QueryRow(`SELECT series FROM images WHERE id = ?`, id).Scan(&home); err != nil {
+		t.Fatal(err)
+	}
+	if home != "Original" {
+		t.Errorf("home = %q, want Original (unchanged)", home)
+	}
+	names := map[string]bool{}
+	cols, err := gallery.CollectionsForImage(srv.Active().DB, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cols {
+		names[c.Name] = true
+	}
+	if !names["Original"] || !names["Added"] {
+		t.Errorf("memberships = %#v, want both Original and Added", cols)
+	}
+}
+
+// Batch remove drops the named membership; when it was the home, another
+// membership is promoted into the mirror.
+func TestBatchCollection_RemoveMode(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "rm.png", 11, 11)
+	d := srv.Active().DB
+	if err := gallery.SetHomeCollection(d, id, "Drop", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := gallery.AddCollectionMembership(d, id, "Keep", nil); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"_csrf":      {srv.csrfToken("anon")},
+		"scope":      {"selection"},
+		"collection": {"Drop"},
+		"mode":       {"remove"},
+		"ids":        {strconv.FormatInt(id, 10)},
+	}
+	req := httptest.NewRequest("POST", "/internal/batch-collection", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("batch-collection remove: %d, %s", w.Code, w.Body.String())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !srv.jobs.IsRunning() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cols, err := gallery.CollectionsForImage(d, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cols) != 1 || cols[0].Name != "Keep" {
+		t.Errorf("memberships = %#v, want only Keep", cols)
+	}
+	var home string
+	if err := d.Read.QueryRow(`SELECT series FROM images WHERE id = ?`, id).Scan(&home); err != nil {
+		t.Fatal(err)
+	}
+	if home != "Keep" {
+		t.Errorf("home = %q, want Keep (promoted)", home)
 	}
 }
 

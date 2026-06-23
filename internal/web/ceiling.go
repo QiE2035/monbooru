@@ -19,10 +19,10 @@ const ratingCeilingCookieName = "monbooru_rating_ceiling"
 // excluded tag ids and the optional tainted-image set.
 //
 // A Ceiling is safe to share across goroutines for one request. The
-// sidebar handlers fan out to 6 worker goroutines that all consult the
-// same *Ceiling; the mutex below guards the lazy caches against the
-// resulting concurrent first-access. The hot path (cache hit) reads
-// the cached slice / map directly under a single sync.Mutex acquire.
+// sidebar handlers fan out worker goroutines that all consult the same
+// *Ceiling; the mutex below guards the lazy caches against the resulting
+// concurrent first-access. The hot path (cache hit) reads the cached
+// slice / map directly under a single sync.Mutex acquire.
 type Ceiling struct {
 	level string
 	cx    *galleryCtx

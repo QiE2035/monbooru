@@ -267,17 +267,13 @@ const (
 )
 
 // updateExternal writes the operator-edited images.source / images.url
-// / collection / collection_order fields. The form may carry any
-// subset; an absent key leaves the existing value alone, while an empty
-// key clears it. The detail-page dialogs each ship only their own field
-// (Source, URL, Collection, Order), so opening one and saving never
-// clobbers the others. URLs must start with http:// or https:// so the
-// rendered <a href> survives both the html/template scheme sanitiser
-// and the explicit allowlist below.
-//
-// The DB column is still named `series` (kept for schema stability
-// across the rename); the form keys and validation messages carry the
-// new "collection" vocabulary.
+// fields. The form may carry either; an absent key leaves the existing
+// value alone, while an empty key clears it. The detail-page dialogs
+// each ship only their own field (Source, URL), so opening one and
+// saving never clobbers the other. URLs must start with http:// or
+// https:// so the rendered <a href> survives both the html/template
+// scheme sanitiser and the explicit allowlist below. Collections live in
+// image_collections and are edited through setCollection / removeCollection.
 //
 // HTMX callers (the detail-page dialogs) get a flash-err fragment on
 // validation failures so the dialog stays open with the user's input
@@ -323,68 +319,6 @@ func (s *Server) updateExternal(w http.ResponseWriter, r *http.Request) {
 		updates = append(updates, "url = ?")
 		args = append(args, raw)
 	}
-	collectionChanged := false
-	hasCollection := r.Form.Has("collection")
-	collectionVal := strings.TrimSpace(r.FormValue("collection"))
-	if hasCollection {
-		// Cap mirrors images.source - the field is small free-form text
-		// and search hits an exact-match index either way.
-		if len(collectionVal) > maxExternalSourceLen {
-			externalErr(w, r, fmt.Sprintf("collection too long (max %d chars)", maxExternalSourceLen), http.StatusBadRequest)
-			return
-		}
-		updates = append(updates, "series = ?")
-		args = append(args, collectionVal)
-		collectionChanged = true
-		// Symmetry with the "order has no collection to anchor" reject:
-		// clearing the collection while leaving an order behind would
-		// leave a `#N` chip stranded next to "(none)" and a row the
-		// `collection:` search filter never surfaces. Null the order in
-		// the same write unless the form is also setting one explicitly.
-		if collectionVal == "" && !r.Form.Has("collection_order") {
-			updates = append(updates, "series_order = ?")
-			args = append(args, nil)
-		}
-	}
-	if r.Form.Has("collection_order") {
-		raw := strings.TrimSpace(r.FormValue("collection_order"))
-		var val any
-		if raw != "" {
-			n, err := strconv.Atoi(raw)
-			if err != nil {
-				externalErr(w, r, "collection_order must be an integer or empty", http.StatusBadRequest)
-				return
-			}
-			if n < 1 {
-				externalErr(w, r, "collection_order must be 1 or higher", http.StatusBadRequest)
-				return
-			}
-			// An order without a collection anchor is nonsense - the
-			// detail page renders "(none) #5" and collection: search
-			// never surfaces it. Check the incoming value when present,
-			// fall back to the stored row otherwise.
-			if hasCollection {
-				if collectionVal == "" {
-					externalErr(w, r, "collection_order requires a non-empty collection label", http.StatusBadRequest)
-					return
-				}
-			} else {
-				var existing string
-				if err := s.db().Read.QueryRow(`SELECT series FROM images WHERE id = ?`, id).Scan(&existing); err != nil {
-					externalErr(w, r, "image not found", http.StatusNotFound)
-					return
-				}
-				if strings.TrimSpace(existing) == "" {
-					externalErr(w, r, "collection_order requires a non-empty collection label", http.StatusBadRequest)
-					return
-				}
-			}
-			val = n
-		}
-		updates = append(updates, "series_order = ?")
-		args = append(args, val)
-		collectionChanged = true
-	}
 	if len(updates) == 0 {
 		externalErr(w, r, "no fields supplied", http.StatusBadRequest)
 		return
@@ -402,15 +336,6 @@ func (s *Server) updateExternal(w http.ResponseWriter, r *http.Request) {
 		externalErr(w, r, "image not found", http.StatusNotFound)
 		return
 	}
-	// images.source/url feed the exact-match `source:` filter and the
-	// detail-page render, but not the cached folder/source-counts
-	// aggregates - which key off source_type, not source. The collection
-	// label IS surfaced in the cached SeriesCounts list, though, so
-	// invalidate when it changed.
-	if collectionChanged {
-		s.Active().InvalidateCaches()
-	}
-
 	if isHTMXRequest(r) {
 		// The detail dialogs each ship one field per submit; the first one
 		// present names the flash. Order matches the dialog list order.
@@ -420,10 +345,6 @@ func (s *Server) updateExternal(w http.ResponseWriter, r *http.Request) {
 			label = "Source"
 		case r.Form.Has("url"):
 			label = "URL"
-		case r.Form.Has("collection"):
-			label = "Collection"
-		case r.Form.Has("collection_order"):
-			label = "Order"
 		}
 		if label != "" {
 			setFlashHeader(w, label+" updated.", "ok", nil)
@@ -446,6 +367,90 @@ func externalErr(w http.ResponseWriter, r *http.Request, msg string, code int) {
 		return
 	}
 	http.Error(w, msg, code)
+}
+
+// setCollection upserts one membership for an image: adding the image to a
+// collection, updating that collection's position, or (with a prev value)
+// renaming an existing membership. The detail dialog ships one membership
+// per submit and gets HX-Refresh on success, matching updateExternal.
+func (s *Server) setCollection(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		externalErr(w, r, "bad form", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("collection"))
+	if name == "" {
+		externalErr(w, r, "collection label required", http.StatusBadRequest)
+		return
+	}
+	if len(name) > maxExternalSourceLen {
+		externalErr(w, r, fmt.Sprintf("collection too long (max %d chars)", maxExternalSourceLen), http.StatusBadRequest)
+		return
+	}
+	var order *int
+	if raw := strings.TrimSpace(r.FormValue("collection_order")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			externalErr(w, r, "order must be an integer or empty", http.StatusBadRequest)
+			return
+		}
+		if n < 1 {
+			externalErr(w, r, "order must be 1 or higher", http.StatusBadRequest)
+			return
+		}
+		order = &n
+	}
+	if prev := strings.TrimSpace(r.FormValue("prev")); prev != "" && !strings.EqualFold(prev, name) {
+		if err := gallery.RemoveCollectionMembership(s.db(), id, prev); err != nil {
+			externalErr(w, r, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := gallery.AddCollectionMembership(s.db(), id, name, order); err != nil {
+		externalErr(w, r, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.Active().InvalidateCaches()
+	if isHTMXRequest(r) {
+		setFlashHeader(w, "Collection updated.", "ok", nil)
+		w.Header().Set("HX-Refresh", "true")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, "/images/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// removeCollection drops one membership from an image.
+func (s *Server) removeCollection(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		externalErr(w, r, "bad form", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("collection"))
+	if name == "" {
+		externalErr(w, r, "collection label required", http.StatusBadRequest)
+		return
+	}
+	if err := gallery.RemoveCollectionMembership(s.db(), id, name); err != nil {
+		externalErr(w, r, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.Active().InvalidateCaches()
+	if isHTMXRequest(r) {
+		setFlashHeader(w, "Collection removed.", "ok", nil)
+		w.Header().Set("HX-Refresh", "true")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, "/images/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 func (s *Server) deleteAlias(w http.ResponseWriter, r *http.Request) {

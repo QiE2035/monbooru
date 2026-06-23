@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -849,5 +850,367 @@ func TestExtractSDFromWebP_NotWebP(t *testing.T) {
 	}
 	if sd != nil {
 		t.Error("expected nil for non-WebP data")
+	}
+}
+
+// makeJPEGWithEXIFTag writes an in-memory JPEG whose APP1 EXIF segment
+// carries a single ASCII (type 2) IFD0 tag with the given tag id and
+// value. It mirrors makeJPEGWithUserComment's layout but lets the caller
+// pick a non-UserComment tag (e.g. 0x010E ImageDescription, 0x013B
+// Artist) so collectEXIFTags surfaces it as a key/value row instead of
+// skipping it. goexif loads IFD0 against its combined field map, so any
+// known tag id placed here is Walk-able.
+func makeJPEGWithEXIFTag(t *testing.T, tagID uint16, value string) string {
+	t.Helper()
+	var tiff bytes.Buffer
+	tiff.WriteString("II")
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(0x002A)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint32(8)); err != nil {
+		t.Fatal(err)
+	}
+	// IFD0: 1 entry, then 4-byte next-IFD = 0.
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(1)); err != nil { // entry count
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, tagID); err != nil { // tag id
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(2)); err != nil { // type ASCII
+		t.Fatal(err)
+	}
+	payload := append([]byte(value), 0)                                                    // NUL-terminated ASCII
+	if err := binary.Write(&tiff, binary.LittleEndian, uint32(len(payload))); err != nil { // count
+		t.Fatal(err)
+	}
+	// IFD0 ends at 8+2+12+4 = 26 bytes; the value sits immediately after.
+	dataOffset := uint32(8 + 2 + 12 + 4)
+	if err := binary.Write(&tiff, binary.LittleEndian, dataOffset); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint32(0)); err != nil { // next IFD
+		t.Fatal(err)
+	}
+	tiff.Write(payload)
+
+	exif := []byte{'E', 'x', 'i', 'f', 0, 0}
+	exif = append(exif, tiff.Bytes()...)
+	app1Len := uint16(len(exif) + 2)
+
+	var jpeg bytes.Buffer
+	jpeg.Write([]byte{0xFF, 0xD8}) // SOI
+	jpeg.Write([]byte{0xFF, 0xE1}) // APP1
+	if err := binary.Write(&jpeg, binary.BigEndian, app1Len); err != nil {
+		t.Fatal(err)
+	}
+	jpeg.Write(exif)
+	jpeg.Write([]byte{0xFF, 0xD9}) // EOI
+
+	path := filepath.Join(t.TempDir(), "exif.jpg")
+	if err := os.WriteFile(path, jpeg.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestExtractGeneric_JPEGEXIFTags is the positive EXIF path for the
+// detail-page "other metadata" panel: ExtractGeneric on a JPEG carrying
+// a plain ASCII IFD0 tag (ImageDescription) must surface it as a
+// key/value row.
+func TestExtractGeneric_JPEGEXIFTags(t *testing.T) {
+	t.Parallel()
+	// 0x010E = ImageDescription, an ASCII tag goexif maps from IFD0.
+	path := makeJPEGWithEXIFTag(t, 0x010E, "a scenic photo")
+
+	params := ExtractGeneric(path, "jpeg")
+	got := map[string]string{}
+	for _, p := range params {
+		got[p.Key] = p.Val
+	}
+	val, ok := got["ImageDescription"]
+	if !ok {
+		t.Fatalf("expected an ImageDescription row, got %+v", params)
+	}
+	// goexif renders ASCII string tags JSON-quoted; the value must be present.
+	if !strings.Contains(val, "a scenic photo") {
+		t.Errorf("ImageDescription = %q, want it to contain %q", val, "a scenic photo")
+	}
+}
+
+// TestExtractGeneric_JPEGNumericTag drives the numeric branch of the
+// Walk -> Tag.String() rendering: an Orientation SHORT (type 3) tag is
+// stored inline in the value/offset field and must stringify to its
+// integer without panicking, surfacing as a generic row.
+func TestExtractGeneric_JPEGNumericTag(t *testing.T) {
+	t.Parallel()
+	var tiff bytes.Buffer
+	tiff.WriteString("II")
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(0x002A)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint32(8)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(1)); err != nil { // entry count
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(0x0112)); err != nil { // Orientation
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(3)); err != nil { // SHORT
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint32(1)); err != nil { // count
+		t.Fatal(err)
+	}
+	// SHORT count=1 sits inline in the 4-byte value field (value 6, then pad).
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(6)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint16(0)); err != nil { // pad
+		t.Fatal(err)
+	}
+	if err := binary.Write(&tiff, binary.LittleEndian, uint32(0)); err != nil { // next IFD
+		t.Fatal(err)
+	}
+
+	exif := append([]byte("Exif\x00\x00"), tiff.Bytes()...)
+	app1Len := make([]byte, 2)
+	binary.BigEndian.PutUint16(app1Len, uint16(len(exif)+2))
+	jpeg := append([]byte{0xFF, 0xD8, 0xFF, 0xE1}, app1Len...)
+	jpeg = append(jpeg, exif...)
+	jpeg = append(jpeg, 0xFF, 0xD9)
+
+	path := filepath.Join(t.TempDir(), "orient.jpg")
+	if err := os.WriteFile(path, jpeg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	params := ExtractGeneric(path, "jpeg")
+	got := map[string]string{}
+	for _, p := range params {
+		got[p.Key] = p.Val
+	}
+	val, ok := got["Orientation"]
+	if !ok {
+		t.Fatalf("expected an Orientation row, got %+v", params)
+	}
+	if !strings.Contains(val, "6") {
+		t.Errorf("Orientation = %q, want it to contain the integer 6", val)
+	}
+}
+
+// TestExtractGeneric_JPEGSkipsUserComment: UserComment is the SD source
+// and must be excluded from the generic panel (collectEXIFTags drops it),
+// so a JPEG whose only EXIF tag is UserComment yields no generic rows.
+func TestExtractGeneric_JPEGSkipsUserComment(t *testing.T) {
+	t.Parallel()
+	path := makeJPEGWithUserComment(t, 2, "some prompt text")
+	params := ExtractGeneric(path, "jpeg")
+	for _, p := range params {
+		if p.Key == "UserComment" {
+			t.Errorf("UserComment must be excluded from the generic panel, got %+v", params)
+		}
+	}
+}
+
+// TestExtractGeneric_PNGTextChunks: the PNG side of the generic panel.
+// Extra tEXt chunks surface as sorted key/value rows; the SD/ComfyUI
+// chunks (parameters/prompt/workflow) are consumed elsewhere and skipped.
+func TestExtractGeneric_PNGTextChunks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// A PNG with a generic "Author" tEXt chunk surfaces that row.
+	authorPath := dir + "/author.png"
+	if err := os.WriteFile(authorPath, makePNGWithTextChunk("Author", "Jane Doe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	params := ExtractGeneric(authorPath, "png")
+	if len(params) != 1 || params[0].Key != "Author" || params[0].Val != "Jane Doe" {
+		t.Fatalf("expected a single Author=Jane Doe row, got %+v", params)
+	}
+
+	// The SD/ComfyUI chunk keys are skipped, leaving no generic rows.
+	for _, skip := range []string{"parameters", "prompt", "workflow"} {
+		p := dir + "/" + skip + ".png"
+		if err := os.WriteFile(p, makePNGWithTextChunk(skip, "ignored"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := ExtractGeneric(p, "png"); len(got) != 0 {
+			t.Errorf("%q chunk must be skipped by the generic panel, got %+v", skip, got)
+		}
+	}
+}
+
+// TestExtractGeneric_MalformedNoPanic is the threat-model-critical case:
+// ExtractGeneric reads untrusted embedded data on every non-SD detail
+// render, so every malformed/garbage/truncated/empty input must return
+// without panicking and emit no entries (a stray "ERROR: ..." tag row
+// from goexif's Tag.String would also be a defect). goexif's own corrupt
+// fixtures (huge-tag / zero-length / max-uint32) confirm Decode *errors*
+// rather than panics; these cases drive that guard through ExtractGeneric
+// and its Walk/Tag.String path end to end.
+func TestExtractGeneric_MalformedNoPanic(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// (1) JPEG with a deliberately garbage EXIF blob: a valid APP1 marker
+	// declaring "Exif\0\0" but a TIFF body that is pure noise.
+	garbage := []byte{0xFF, 0xD8, 0xFF, 0xE1}
+	exif := append([]byte("Exif\x00\x00"), bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 16)...)
+	app1Len := make([]byte, 2)
+	binary.BigEndian.PutUint16(app1Len, uint16(len(exif)+2))
+	garbage = append(garbage, app1Len...)
+	garbage = append(garbage, exif...)
+	garbage = append(garbage, 0xFF, 0xD9)
+
+	// (2) JPEG with a TIFF header that declares a wildly out-of-range
+	// IFD0 offset, driving the decode/short-read error path.
+	var badTiff bytes.Buffer
+	badTiff.WriteString("II")
+	_ = binary.Write(&badTiff, binary.LittleEndian, uint16(0x002A))
+	_ = binary.Write(&badTiff, binary.LittleEndian, uint32(0xFFFFFFFF)) // bogus IFD0 offset
+	truncExif := append([]byte("Exif\x00\x00"), badTiff.Bytes()...)
+	truncLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(truncLen, uint16(len(truncExif)+2))
+	truncJPEG := append([]byte{0xFF, 0xD8, 0xFF, 0xE1}, truncLen...)
+	truncJPEG = append(truncJPEG, truncExif...)
+	truncJPEG = append(truncJPEG, 0xFF, 0xD9)
+
+	cases := []struct {
+		name     string
+		fileType string
+		data     []byte
+	}{
+		{"jpeg_garbage_exif", "jpeg", garbage},
+		{"jpeg_truncated_tiff", "jpeg", truncJPEG},
+		{"jpeg_no_exif", "jpeg", []byte{0xFF, 0xD8, 0xFF, 0xD9}}, // bare SOI+EOI
+		{"jpeg_not_a_jpeg", "jpeg", []byte("totally not a jpeg")},
+		{"jpeg_empty", "jpeg", nil},
+		{"png_no_text", "png", makeBarePNG()}, // valid PNG, no tEXt/iTXt chunks
+		{"png_not_a_png", "png", []byte("not a png at all")},
+		{"webp_garbage_exif", "webp", makeWebPGarbageEXIF()},
+		{"webp_not_a_webp", "webp", []byte("RIFFnope")},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), tc.name)
+			if err := os.WriteFile(path, tc.data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// The contract under test: no panic on adversarial input.
+			params := ExtractGeneric(path, tc.fileType)
+			if len(params) != 0 {
+				t.Errorf("malformed %s must emit no generic rows, got %+v", tc.name, params)
+			}
+		})
+	}
+
+	// Missing file: ExtractGeneric swallows IO errors and returns empty.
+	if got := ExtractGeneric(dir+"/does-not-exist.jpg", "jpeg"); len(got) != 0 {
+		t.Errorf("missing file must yield no rows, got %+v", got)
+	}
+	// Unsupported type short-circuits to nil.
+	if got := ExtractGeneric(dir+"/x.mp4", "mp4"); got != nil {
+		t.Errorf("unsupported type must yield nil, got %+v", got)
+	}
+}
+
+// makeBarePNG builds a valid PNG with only IHDR + IEND - no tEXt/iTXt
+// chunks - so the generic panel has nothing to surface.
+func makeBarePNG() []byte {
+	var buf bytes.Buffer
+	buf.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})
+	ihdr := make([]byte, 13)
+	ihdr[3] = 1 // width
+	ihdr[7] = 1 // height
+	ihdr[8] = 8 // bit depth
+	writeTestChunk(&buf, "IHDR", ihdr)
+	writeTestChunk(&buf, "IEND", nil)
+	return buf.Bytes()
+}
+
+// makeWebPGarbageEXIF builds a valid RIFF/WEBP container whose EXIF chunk
+// holds garbage TIFF bytes, so genericFromWebP reaches exif.Decode with
+// adversarial input.
+func makeWebPGarbageEXIF() []byte {
+	exifChunk := bytes.Repeat([]byte{0xDE, 0xAD, 0xBE, 0xEF}, 8)
+	var inner bytes.Buffer
+	inner.WriteString("WEBP")
+	inner.WriteString("EXIF")
+	size := make([]byte, 4)
+	binary.LittleEndian.PutUint32(size, uint32(len(exifChunk)))
+	inner.Write(size)
+	inner.Write(exifChunk)
+	if len(exifChunk)%2 == 1 {
+		inner.WriteByte(0)
+	}
+	var webp bytes.Buffer
+	webp.WriteString("RIFF")
+	riffSize := make([]byte, 4)
+	binary.LittleEndian.PutUint32(riffSize, uint32(inner.Len()))
+	webp.Write(riffSize)
+	webp.Write(inner.Bytes())
+	return webp.Bytes()
+}
+
+// TestExtractGeneric_WebPEXIFTags: the WebP side of the generic panel.
+// A RIFF/WEBP EXIF chunk carrying a plain ASCII IFD0 tag surfaces it as a
+// key/value row (UserComment stays excluded).
+func TestExtractGeneric_WebPEXIFTags(t *testing.T) {
+	t.Parallel()
+	// Reuse the JPEG fixture's TIFF body shape but wrap it in a WEBP EXIF
+	// chunk. 0x013B = Artist (ASCII).
+	var tiff bytes.Buffer
+	tiff.WriteString("II")
+	_ = binary.Write(&tiff, binary.LittleEndian, uint16(0x002A))
+	_ = binary.Write(&tiff, binary.LittleEndian, uint32(8))
+	_ = binary.Write(&tiff, binary.LittleEndian, uint16(1))      // entry count
+	_ = binary.Write(&tiff, binary.LittleEndian, uint16(0x013B)) // Artist
+	_ = binary.Write(&tiff, binary.LittleEndian, uint16(2))      // ASCII
+	payload := append([]byte("A. Photographer"), 0)
+	_ = binary.Write(&tiff, binary.LittleEndian, uint32(len(payload)))
+	_ = binary.Write(&tiff, binary.LittleEndian, uint32(8+2+12+4))
+	_ = binary.Write(&tiff, binary.LittleEndian, uint32(0))
+	tiff.Write(payload)
+
+	exifChunk := tiff.Bytes()
+	var inner bytes.Buffer
+	inner.WriteString("WEBP")
+	inner.WriteString("EXIF")
+	size := make([]byte, 4)
+	binary.LittleEndian.PutUint32(size, uint32(len(exifChunk)))
+	inner.Write(size)
+	inner.Write(exifChunk)
+	if len(exifChunk)%2 == 1 {
+		inner.WriteByte(0)
+	}
+	var webp bytes.Buffer
+	webp.WriteString("RIFF")
+	riffSize := make([]byte, 4)
+	binary.LittleEndian.PutUint32(riffSize, uint32(inner.Len()))
+	webp.Write(riffSize)
+	webp.Write(inner.Bytes())
+
+	path := filepath.Join(t.TempDir(), "artist.webp")
+	if err := os.WriteFile(path, webp.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	params := ExtractGeneric(path, "webp")
+	got := map[string]string{}
+	for _, p := range params {
+		got[p.Key] = p.Val
+	}
+	val, ok := got["Artist"]
+	if !ok {
+		t.Fatalf("expected an Artist row from WebP EXIF, got %+v", params)
+	}
+	if !strings.Contains(val, "A. Photographer") {
+		t.Errorf("Artist = %q, want it to contain %q", val, "A. Photographer")
 	}
 }

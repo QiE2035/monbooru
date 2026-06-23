@@ -24,6 +24,7 @@ RUN apt-get update && apt-get remove -y --purge 'cuda-compat-*' && \
 # Single layer: install build-only fetch tools, pull the CUDA-enabled ORT and a
 # static ffmpeg/ffprobe.
 ARG ORT_VERSION=1.21.0
+ARG FFMPEG_RELEASE=n8.1
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl xz-utils && \
     curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz" \
@@ -31,9 +32,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cp /tmp/onnxruntime-linux-x64-gpu-${ORT_VERSION}/lib/libonnxruntime*.so* /usr/lib/ && \
     ln -sf /usr/lib/libonnxruntime.so.${ORT_VERSION} /usr/lib/libonnxruntime.so && \
     ldconfig && \
-    curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" -o /tmp/ffmpeg.tar.xz && \
+    curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-${FFMPEG_RELEASE}-latest-linux64-gpl-${FFMPEG_RELEASE#n}.tar.xz" -o /tmp/ffmpeg.tar.xz && \
     mkdir -p /tmp/ff && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ff --strip-components=1 && \
-    cp /tmp/ff/ffmpeg /tmp/ff/ffprobe /usr/local/bin/ && \
+    cp /tmp/ff/bin/ffmpeg /tmp/ff/bin/ffprobe /usr/local/bin/ && \
     apt-get purge -y curl xz-utils && apt-get autoremove -y && \
     rm -rf /tmp/onnxruntime-* /tmp/ff /tmp/ffmpeg.tar.xz /var/lib/apt/lists/*
 

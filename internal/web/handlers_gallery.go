@@ -41,11 +41,7 @@ type galleryData struct {
 	Result            *models.SearchResult
 	SidebarTags       []models.Tag
 	FolderTree        []gallery.FolderNode
-	SourceCounts      gallery.SourceCounts
-	SeriesCounts      []gallery.SeriesCount
 	SourceLabelCounts []gallery.SourceLabelCount
-	FavoritedCount    int
-	NonFavoritedCount int
 	SavedSearches     []models.SavedSearch
 	SidebarURL        string                // populated on full-page renders so the placeholder can lazy-load the sidebar
 	EnabledTaggers    []tagger.TaggerStatus // gates the gallery's Auto-tag controls; mirrors detailData.EnabledTaggers
@@ -157,6 +153,7 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ceiling := resolveCeiling(r, s.Active())
+	pinnedCollection := search.PinnedCollectionName(expr)
 	expr = ceiling.Apply(expr)
 	sq := search.Query{
 		Expr:       expr,
@@ -166,6 +163,9 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		Page:       page,
 		Limit:      s.cfg.UI.PageSize,
 		CacheKey:   search.BuildAdjacencyCacheKey(s.activeName, queryStr, sortStr, orderStr, randomSeed, ceiling.Level()),
+	}
+	if sortStr == "order" {
+		sq.OrderCollection = pinnedCollection
 	}
 	// Unfiltered browse hits the full-visible count on every page; serve it
 	// from the per-gallery cache to skip the O(N) index scan. The cache
@@ -286,11 +286,7 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		Result:            result,
 		SidebarTags:       sb.Tags,
 		FolderTree:        sb.Folders,
-		SourceCounts:      sb.Sources,
-		SeriesCounts:      sb.Series,
 		SourceLabelCounts: sb.SourceLabels,
-		FavoritedCount:    sb.Favorited,
-		NonFavoritedCount: sb.NonFavorited,
 		SavedSearches:     sb.Saved,
 		EnabledTaggers:    tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
 		ActiveTagTerms:    computeActiveTagTerms(queryStr),
@@ -320,11 +316,7 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 type sidebarBundle struct {
 	Tags         []models.Tag
 	Folders      []gallery.FolderNode
-	Sources      gallery.SourceCounts
-	Series       []gallery.SeriesCount
 	SourceLabels []gallery.SourceLabelCount
-	Favorited    int
-	NonFavorited int
 	Saved        []models.SavedSearch
 }
 
@@ -373,16 +365,7 @@ func (s *Server) sidebarLoad(pageImageIDs []int64, ceiling *Ceiling) sidebarBund
 	}()
 	if cx := s.Active(); cx != nil {
 		sb.Folders, _ = cx.FolderTreeUnder(ceiling)
-		sb.Sources, _ = cx.SourceCountsUnder(ceiling)
-		sb.Series, _ = cx.SeriesCountsUnder(ceiling)
 		sb.SourceLabels, _ = cx.SourceLabelCountsUnder(ceiling)
-		visible, _ := cx.VisibleCountUnder(ceiling)
-		fav, _ := cx.FavoritedCountUnder(ceiling)
-		sb.Favorited = fav
-		sb.NonFavorited = visible - fav
-		if sb.NonFavorited < 0 {
-			sb.NonFavorited = 0
-		}
 	}
 	wg.Wait()
 	return sb
@@ -460,11 +443,7 @@ func (s *Server) gallerySidebar(w http.ResponseWriter, r *http.Request) {
 		"CSRFToken":         s.csrfToken(sessionFromContext(r.Context())),
 		"SidebarTags":       sb.Tags,
 		"FolderTree":        sb.Folders,
-		"SourceCounts":      sb.Sources,
-		"SeriesCounts":      sb.Series,
 		"SourceLabelCounts": sb.SourceLabels,
-		"FavoritedCount":    sb.Favorited,
-		"NonFavoritedCount": sb.NonFavorited,
 		"SavedSearches":     sb.Saved,
 		"ActiveTagTerms":    computeActiveTagTerms(queryStr),
 	})
@@ -480,14 +459,11 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 
 	var (
 		folders      []gallery.FolderNode
-		sources      gallery.SourceCounts
-		series       []gallery.SeriesCount
 		sourceLabels []gallery.SourceLabelCount
-		visible, fav int
 		saved        []models.SavedSearch
 	)
 	var wg sync.WaitGroup
-	wg.Add(6)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		if cx := s.Active(); cx != nil {
@@ -497,26 +473,7 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		if cx := s.Active(); cx != nil {
-			sources, _ = cx.SourceCountsUnder(ceiling)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		if cx := s.Active(); cx != nil {
-			series, _ = cx.SeriesCountsUnder(ceiling)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		if cx := s.Active(); cx != nil {
 			sourceLabels, _ = cx.SourceLabelCountsUnder(ceiling)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		if cx := s.Active(); cx != nil {
-			visible, _ = cx.VisibleCountUnder(ceiling)
-			fav, _ = cx.FavoritedCountUnder(ceiling)
 		}
 	}()
 	go func() {
@@ -539,20 +496,12 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	wg.Wait()
-	nonFav := visible - fav
-	if nonFav < 0 {
-		nonFav = 0
-	}
 
 	s.renderTemplate(w, "partials/sidebar_browse.html", map[string]any{
 		"Query":             queryStr,
 		"CSRFToken":         s.csrfToken(sessionFromContext(r.Context())),
 		"FolderTree":        folders,
-		"SourceCounts":      sources,
-		"SeriesCounts":      series,
 		"SourceLabelCounts": sourceLabels,
-		"FavoritedCount":    fav,
-		"NonFavoritedCount": nonFav,
 		"SavedSearches":     saved,
 	})
 }

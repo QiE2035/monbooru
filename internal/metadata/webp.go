@@ -5,43 +5,41 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/rwcarlsen/goexif/exif"
 )
 
+// exifMagic is the JPEG-style EXIF header WebP encoders may or may not
+// prepend to the RIFF EXIF chunk; we strip it on read and re-prepend a
+// known-good copy before handing the payload to exif.Decode.
+var exifMagic = []byte("Exif\x00\x00")
+
 // extractSDFromWebP reads A1111 metadata from a WebP's EXIF chunk.
-// WebP is a RIFF container; we walk the chunks to find "EXIF", then
-// re-prefix the "Exif\x00\x00" magic so exif.Decode finds it whether
-// or not the chunk already includes the prefix.
 func extractSDFromWebP(path string) (*models.SDMetadata, error) {
+	x, err := decodeWebPEXIF(path)
+	if err != nil || x == nil {
+		return nil, nil
+	}
+	return sdFromEXIF(x), nil
+}
+
+// decodeWebPEXIF walks the WebP RIFF container for its EXIF chunk and
+// decodes it, re-prefixing exifMagic so exif.Decode succeeds whether or
+// not the chunk already carries the header. Returns nil for non-WebP or
+// no EXIF chunk.
+func decodeWebPEXIF(path string) (*exif.Exif, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 	defer func() { _ = f.Close() }()
 
 	exifData, err := readWebPEXIF(f)
 	if err != nil || exifData == nil {
-		return nil, nil
+		return nil, err
 	}
-
-	x, err := exif.Decode(io.MultiReader(bytes.NewReader([]byte("Exif\x00\x00")), bytes.NewReader(exifData)))
-	if err != nil {
-		return nil, nil
-	}
-	tag, err := x.Get(exif.UserComment)
-	if err != nil {
-		return nil, nil
-	}
-	raw, err := tag.StringVal()
-	if err != nil {
-		return nil, nil
-	}
-	text := strings.TrimPrefix(raw, "ASCII\x00\x00\x00")
-	text = strings.TrimLeft(text, "\x00")
-	return parseA1111Parameters(text), nil
+	return exif.Decode(io.MultiReader(bytes.NewReader(exifMagic), bytes.NewReader(exifData)))
 }
 
 // maxWebPChunkBytes caps any single RIFF chunk we'll buffer. A forged
@@ -87,9 +85,9 @@ func readWebPEXIF(r io.Reader) ([]byte, error) {
 			_, _ = io.ReadFull(r, pad)
 		}
 		if chunkType == "EXIF" {
-			// Some encoders prepend the JPEG-style "Exif\x00\x00" magic;
-			// strip it so the caller can re-prepend a known-good copy.
-			data = bytes.TrimPrefix(data, []byte("Exif\x00\x00"))
+			// Some encoders prepend the JPEG-style EXIF magic; strip it so
+			// the caller can re-prepend a known-good copy.
+			data = bytes.TrimPrefix(data, exifMagic)
 			return data, nil
 		}
 	}
@@ -97,17 +95,8 @@ func readWebPEXIF(r io.Reader) ([]byte, error) {
 
 // genericFromWebP returns EXIF tags from a WebP file (UserComment excluded).
 func genericFromWebP(path string) []models.SDParam {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = f.Close() }()
-	exifData, err := readWebPEXIF(f)
-	if err != nil || exifData == nil {
-		return nil
-	}
-	x, err := exif.Decode(io.MultiReader(bytes.NewReader([]byte("Exif\x00\x00")), bytes.NewReader(exifData)))
-	if err != nil {
+	x, err := decodeWebPEXIF(path)
+	if err != nil || x == nil {
 		return nil
 	}
 	return collectEXIFTags(x)

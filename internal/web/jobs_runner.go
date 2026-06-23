@@ -38,10 +38,7 @@ func chunkedJob(ctx context.Context, mgr *jobs.Manager, ids []int64, chunkSize i
 		if ctx.Err() != nil {
 			return processed, true, nil
 		}
-		end := start + chunkSize
-		if end > total {
-			end = total
-		}
+		end := min(start+chunkSize, total)
 		chunk := ids[start:end]
 		if err := op(chunk); err != nil {
 			return processed, false, err
