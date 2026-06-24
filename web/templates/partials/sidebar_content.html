@@ -1,31 +1,37 @@
 {{define "partials/sidebar_content.html"}}
   {{$groups := groupByCategory .SidebarTags}}
   {{if $groups}}
-  <div id="tag-groups">
-    {{range $groups}}
-    <div class="tag-group" data-cat="{{.Name}}">
-      <div class="tag-group-header">
-        <span class="cat-dot" style="background:{{.Color}}"></span>
-        <span class="cat-name">{{.Name}}</span>
-        <button class="cat-collapse" title="Collapse">▾</button>
-      </div>
-      <ul class="tag-list-sidebar">
-        {{range .Tags}}
-        {{$q := printf "%s:%s" .CategoryName .Name}}
-        {{$active := or (index $.ActiveTagTerms $q) (index $.ActiveTagTerms .Name)}}
-        <li class="tag-entry" data-name="{{.Name}}">
-          <a href="/?q={{$q}}" class="tag-link" data-tag="{{$q}}" style="color:{{.CategoryColor}}">{{.Name}}</a>
-          {{if $active}}
-          <button class="tag-add-btn btn-tag-add active" data-tag="{{$q}}" title="Remove from current search">-</button>
-          {{else}}
-          <button class="tag-add-btn btn-tag-add" data-tag="{{$q}}" title="Add to current search">+</button>
-          {{end}}
-          <span class="tag-count">{{.UsageCount}}</span>
-        </li>
-        {{end}}
-      </ul>
+  <div id="tags-section">
+    <div class="sidebar-section-header">
+      <span class="sidebar-section-title">Tags</span>
+      <button id="tags-toggle" class="folder-toggle-btn" data-target="tag-groups">▼</button>
     </div>
-    {{end}}
+    <div id="tag-groups">
+      {{range $groups}}
+      <div class="tag-group" data-cat="{{.Name}}">
+        <div class="tag-group-header">
+          <span class="cat-dot" style="background:{{.Color}}"></span>
+          <span class="cat-name">{{.Name}}</span>
+          <button class="cat-collapse" title="Collapse">▾</button>
+        </div>
+        <ul class="tag-list-sidebar">
+          {{range .Tags}}
+          {{$q := printf "%s:%s" .CategoryName .Name}}
+          {{$active := or (index $.ActiveTagTerms $q) (index $.ActiveTagTerms .Name)}}
+          <li class="tag-entry" data-name="{{.Name}}">
+            <a href="/?q={{$q}}" class="tag-link" data-tag="{{$q}}" style="color:{{.CategoryColor}}">{{.Name}}</a>
+            {{if $active}}
+            <button class="tag-add-btn btn-tag-add active" data-tag="{{$q}}" title="Remove from current search">-</button>
+            {{else}}
+            <button class="tag-add-btn btn-tag-add" data-tag="{{$q}}" title="Add to current search">+</button>
+            {{end}}
+            <span class="tag-count">{{.UsageCount}}</span>
+          </li>
+          {{end}}
+        </ul>
+      </div>
+      {{end}}
+    </div>
   </div>
   {{end}}
 

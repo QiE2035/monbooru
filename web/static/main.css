@@ -209,7 +209,15 @@ button.footer-rating-link:hover { color: var(--fg); }
   border-right: 1px solid var(--border);
   overflow-y: auto;
   padding: 8px 0 8px 4px;
+  /* Reserve the scrollbar's own column (and force it off overlay) so the
+     right-aligned section chevrons never sit under it. */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
+#sidebar::-webkit-scrollbar { width: 8px; }
+#sidebar::-webkit-scrollbar-thumb { background: var(--border); }
+#sidebar::-webkit-scrollbar-track { background: transparent; }
 
 #content {
   flex: 1;
@@ -224,7 +232,7 @@ button.footer-rating-link:hover { color: var(--fg); }
   color: var(--fg-dim);
   text-transform: uppercase;
   letter-spacing: 1px;
-  padding: 4px 12px;
+  flex: 1;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -321,13 +329,20 @@ button.footer-rating-link:hover { color: var(--fg); }
   margin-top: 0;
   padding-top: 0;
 }
+/* Detail browse sections lazy-load into their own wrapper, so the first one
+   drops its :first-child divider; restore it under the per-image tags. */
+#tags-section + #detail-sidebar-browse {
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  padding-top: 4px;
+}
 .sidebar-section-header {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 6px;
   padding: 3px 8px;
 }
-#folder-tree-toggle, #source-labels-toggle {
+#folder-tree-toggle, #source-labels-toggle, #tags-toggle {
   background: none;
   border: none;
   padding: 0;
@@ -1252,8 +1267,8 @@ dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
   max-width: 300px;
 }
 .series-input-wrap input { width: 100%; }
-.series-suggest-dropdown,
-.tag-suggest-dropdown,
+.suggest-dropdown.series-suggest-dropdown,
+.suggest-dropdown.tag-suggest-dropdown,
 #search-suggest {
   position: absolute;
   top: 100%;

@@ -1,5 +1,14 @@
 # Changelog
 
+## [v1.11.1] - 2026-06-24
+### Added
+- Collapsible Tags header in the gallery and image-detail sidebars.
+- Keyboard shortcuts `g c o` and `g c a` to open Collections and Categories.
+- Keyboard shortcut `e` + digit to edit a collection on the detail page.
+
+### Fixed
+- Tag and source suggestion dropdowns no longer shift the add button when open.
+
 ## [v1.11.0] - 2026-06-23
 ### Added
 - An image can belong to multiple collections, each with its own order.

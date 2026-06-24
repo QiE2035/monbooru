@@ -39,6 +39,37 @@ Designed for organizing your local media collection, including AI-generated imag
 
 ---
 
+## Related applications
+
+Monbooru is a self-hosted offline library. Optional companions applications can be used for online features :
+
+```mermaid
+flowchart LR
+    web["- Any booru or gallery supported by gallery-dl<br/>- Direct image URL"]
+    sender["<b>monsender</b><br/>browser extension"]
+    loader["<b>monloader</b><br/>downloader"]
+    booru(["<b>monbooru</b><br/>Your self-hosted booru"])
+
+    web -->|browse| sender
+    sender -->|REST API| loader
+    web -.->|paste URL| loader
+    loader -->|REST API| booru
+
+    classDef hub  fill:#9d2235,stroke:#ef8f99,stroke-width:3px,color:#ffffff;
+    classDef tool fill:#1a1818,stroke:#9d2235,stroke-width:1.5px,color:#e8e4e2;
+    classDef src  fill:#1a1818,stroke:#a09898,stroke-width:1px,color:#a09898;
+
+    class booru hub;
+    class sender,loader tool;
+    class web src;
+```
+
+- **[monsender](https://github.com/leqwin/monsender)** : browser extension; sends the URL of the page you're currently browsing to monloader.
+- **[monloader](https://github.com/leqwin/monloader)** : downloader; fetches files and per-post metadata (via gallery-dl) and pushes them into a monbooru gallery over the REST API.
+- **monbooru** : this application; organizes, tags, and serves your collection. 
+
+---
+
 ## Quick start (Docker)
 
 Edit the volume paths in [`docker/docker-compose.yml`](docker/docker-compose.yml), then `docker compose up -d`. The app is available at `http://localhost:8080`.

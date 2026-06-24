@@ -1,24 +1,28 @@
 'use strict';
 
-// Chord state for the `g`-leader navigation. A second key within
-// chordTimeoutMs fires the chord; anything else cancels.
-var _chordPending = '';
+// Chord state for leader-key navigation. The next key within
+// chordTimeoutMs resolves the chord; anything else cancels.
+var _chordNode = null;
+var _chordLabel = '';
 var _chordTimer = null;
 var _chordHint = null;
 var chordTimeoutMs = 500;
 
-// Map of <leader, secondary> chords. Each value is either a string URL
-// (navigated via location.assign) or a function executed with no args.
-//
-// `e` leader edits a metadata field on the detail page. `s` source /
-// `u` url trigger the .btn-edit-external dialog with the prior value
-// pre-filled; `c` opens the add-to-collection dialog. On pages without
-// the matching control the chord no-ops.
+// Chord tree. A leaf is a string URL (navigated to) or a function run with
+// no args; a nested map is a sub-chord whose own keys resolve the next
+// step. `g` leads navigation (`g c a` categories, `g c o` collections).
+// `e` leads detail-page field edits: `s` source / `u` url open the
+// .btn-edit-external dialog pre-filled, `c` opens the add-to-collection
+// dialog, and a digit edits that Nth collection. On pages without the
+// matching control the chord no-ops.
 var chordMap = {
   g: {
     g: '/',
     i: '/?q=inbox:true',
-    c: '/categories',
+    c: {
+      a: '/categories',
+      o: '/collections',
+    },
     t: '/tags',
     s: '/settings',
     h: '/help',
@@ -35,19 +39,44 @@ function clickEditField(field) {
   if (btn) btn.click();
 }
 
+// editCollection opens the edit dialog for the Nth collection listed on the
+// detail page (1-based, render order). Returns false when out of range.
+function editCollection(n) {
+  var btns = document.querySelectorAll('.btn-edit-collection');
+  if (n < 1 || n > btns.length) return false;
+  btns[n - 1].click();
+  return true;
+}
+
 function clearChord() {
-  _chordPending = '';
+  _chordNode = null;
+  _chordLabel = '';
   if (_chordTimer) { clearTimeout(_chordTimer); _chordTimer = null; }
   if (_chordHint && _chordHint.parentNode) _chordHint.parentNode.removeChild(_chordHint);
   _chordHint = null;
 }
 
-function showChordHint(leader) {
+// enterChord arms a (sub-)chord: the next key is resolved against `node`,
+// expiring after chordTimeoutMs. `label` is the keys pressed so far.
+function enterChord(node, label) {
+  _chordNode = node;
+  _chordLabel = label;
+  showChordHint(node, label);
+  if (_chordTimer) clearTimeout(_chordTimer);
+  _chordTimer = setTimeout(clearChord, chordTimeoutMs);
+}
+
+function showChordHint(node, label) {
   if (_chordHint && _chordHint.parentNode) _chordHint.parentNode.removeChild(_chordHint);
   _chordHint = document.createElement('div');
   _chordHint.className = 'chord-leader-hint';
-  var keys = Object.keys(chordMap[leader] || {}).sort();
-  _chordHint.textContent = leader + ' → ' + keys.join(' / ');
+  var keys = Object.keys(node || {});
+  if (node === chordMap.e) {
+    var nCol = document.querySelectorAll('.btn-edit-collection').length;
+    for (var i = 1; i <= nCol && i <= 9; i++) keys.push(String(i));
+  }
+  keys.sort();
+  _chordHint.textContent = label + ' → ' + keys.join(' / ');
   document.body.appendChild(_chordHint);
 }
 
@@ -609,19 +638,29 @@ document.addEventListener('keydown', function(e) {
 
   if (isInput) return;
 
-  // Chord secondary: a leader is pending and this key is the secondary.
-  if (_chordPending) {
-    var leaderMap = chordMap[_chordPending];
-    var leader = _chordPending;
-    clearChord();
-    var action = leaderMap && leaderMap[e.key];
-    if (action) {
+  // Chord in progress: this key is the next step. A nested map descends one
+  // level (sub-chord); a string navigates; a function runs.
+  if (_chordNode) {
+    var node = _chordNode;
+    var label = _chordLabel;
+    var next = node[e.key];
+    if (next && typeof next === 'object') {
       e.preventDefault();
-      if (typeof action === 'string') window.location.href = action;
-      else action();
+      enterChord(next, label + ' ' + e.key);
       return;
     }
-    // Unknown secondary: fall through so the key still does its single-key job.
+    clearChord();
+    if (next !== undefined) {
+      e.preventDefault();
+      if (typeof next === 'string') window.location.href = next;
+      else next();
+      return;
+    }
+    // e + digit edits the Nth listed collection on the detail page.
+    if (node === chordMap.e && /^[1-9]$/.test(e.key)) {
+      if (editCollection(parseInt(e.key, 10))) { e.preventDefault(); return; }
+    }
+    // Unknown key: fall through so it still does its single-key job.
   }
 
   // ? overlay
@@ -659,25 +698,18 @@ document.addEventListener('keydown', function(e) {
     if (swDlg) { e.preventDefault(); swDlg.showModal(); return; }
   }
 
-  // Leader: g opens a 500ms window for the chord secondary.
+  // Leader: g opens a navigation chord window.
   if (e.key === 'g' && !e.ctrlKey && !e.metaKey && !e.altKey) {
     e.preventDefault();
-    _chordPending = 'g';
-    showChordHint('g');
-    if (_chordTimer) clearTimeout(_chordTimer);
-    _chordTimer = setTimeout(clearChord, chordTimeoutMs);
+    enterChord(chordMap.g, 'g');
     return;
   }
 
-  // Leader: e edits a detail-page metadata field (o order / s source /
-  // c collection / u url). Gated on the detail page so non-detail
-  // surfaces don't swallow a stray `e`.
+  // Leader: e opens the detail-page edit chord. Gated on the detail page so
+  // non-detail surfaces don't swallow a stray `e`.
   if (e.key === 'e' && !e.ctrlKey && !e.metaKey && !e.altKey && isDetailPage()) {
     e.preventDefault();
-    _chordPending = 'e';
-    showChordHint('e');
-    if (_chordTimer) clearTimeout(_chordTimer);
-    _chordTimer = setTimeout(clearChord, chordTimeoutMs);
+    enterChord(chordMap.e, 'e');
     return;
   }
 
@@ -1651,12 +1683,16 @@ function toggleFolderItem(btn, targetId, path) {
   setFolderCookie(state);
 }
 
-function initSectionToggle(toggleId, listId, cookieKey, forceOpen) {
+// The cookie records sections toggled off their default: an opened
+// default-collapsed section, or a collapsed default-open one (Tags).
+function initSectionToggle(toggleId, listId, cookieKey, forceOpen, defaultOpen) {
   var toggle = document.getElementById(toggleId);
   var list = document.getElementById(listId);
   if (!toggle || !list) return;
-  var expanded = getFolderCookie();
-  if (forceOpen || expanded.has(cookieKey)) {
+  var offDefault = getFolderCookie().has(cookieKey);
+  if (defaultOpen) {
+    if (offDefault) { list.style.display = 'none'; toggle.textContent = '▶'; }
+  } else if (forceOpen || offDefault) {
     list.style.display = '';
     toggle.textContent = '▼';
   }
@@ -1665,7 +1701,8 @@ function initSectionToggle(toggleId, listId, cookieKey, forceOpen) {
     var isCollapsed = list.style.display === 'none';
     list.style.display = isCollapsed ? '' : 'none';
     toggle.textContent = isCollapsed ? '▼' : '▶';
-    if (isCollapsed) state.add(cookieKey);
+    var nowOffDefault = defaultOpen ? !isCollapsed : isCollapsed;
+    if (nowOffDefault) state.add(cookieKey);
     else state.delete(cookieKey);
     setFolderCookie(state);
   };
@@ -1708,6 +1745,8 @@ function initFolderTree() {
     currentFolder = folderMatch[1] || folderMatch[2];
   }
 
+  // Tags section: open by default, collapse persists (inverse of the others).
+  initSectionToggle('tags-toggle', 'tag-groups', '__tags__', false, true);
   // Folder tree main toggle (show/hide whole tree).
   // Use onclick assignment (not addEventListener) to prevent duplicate handlers
   // from multiple calls (e.g. HTMX partial swaps fire htmx:afterSettle repeatedly).
