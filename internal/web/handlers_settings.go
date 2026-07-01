@@ -1,9 +1,11 @@
 package web
 
 import (
-	"crypto/rand"
+	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -92,6 +94,9 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	data["UnsupportedCount"] = len(unsupportedRows)
 	data["ScheduleStatus"] = s.ScheduleStatus()
 	data["Stats"] = s.gatherStats()
+	data["MonloaderPending"] = s.pairs.listPending()
+	data["MonloaderPaired"] = s.pairedWith("monloader")
+	data["MonloaderPeerURL"] = s.monloaderAPIBase()
 	s.renderTemplate(w, "settings.html", data)
 }
 
@@ -166,6 +171,7 @@ func (s *Server) settingsMonloaderPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfgMu.Lock()
 	s.cfg.Server.MonloaderURL = strings.TrimSpace(r.FormValue("monloader_url"))
+	s.cfg.Monloader.APIURL = strings.TrimSpace(r.FormValue("api_url"))
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
 		writeInlineFlash(w, "err", "Could not save: "+err.Error())
@@ -210,24 +216,170 @@ func (s *Server) settingsPasswordPost(w http.ResponseWriter, r *http.Request) {
 	s.renderAuthPasswordOOB(w, r)
 }
 
-func (s *Server) settingsTokenPost(w http.ResponseWriter, r *http.Request) {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		logx.Errorf("generating API token: %v", err)
-		writeInlineFlash(w, "err", "Failed to generate token.")
+func (s *Server) settingsTokenCreate(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
 		return
 	}
-	token := fmt.Sprintf("%x", buf)
-	s.cfgMu.Lock()
-	s.cfg.Auth.APIToken = token
-	s.cfgMu.Unlock()
-	if err := s.saveConfig(); err != nil {
+	name := strings.TrimSpace(r.FormValue("name"))
+	if err := config.ValidateTokenName(name); err != nil {
+		writeInlineFlash(w, "err", err.Error())
+		return
+	}
+	tok, secret := config.GenerateToken(name, config.AllScopes)
+	if err := s.withConfig(func(c *config.Config) error {
+		if c.TokenNameExists(name) {
+			return fmt.Errorf("a token named %q already exists", name)
+		}
+		c.Auth.Tokens = append(c.Auth.Tokens, tok)
+		return nil
+	}); err != nil {
+		writeInlineFlash(w, "err", err.Error())
+		return
+	}
+	logx.Infof("settings: API token %q created from %s", name, clientIP(r))
+	w.Header().Set("Cache-Control", "no-store")
+	s.renderTemplate(w, "partials/flash_token.html", map[string]any{"Token": secret})
+	s.renderAuthTokensOOB(w, r)
+	_, _ = w.Write([]byte(`<script>(function(){var i=document.getElementById('token-name-input');if(i)i.value='';})();</script>`))
+}
+
+// tokenPaired reports whether the token with the given id is managed by a
+// pairing, and so must be changed through the pairing rather than directly.
+func (s *Server) tokenPaired(id string) bool {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	for _, t := range s.cfg.Auth.Tokens {
+		if t.ID == id {
+			return t.Paired != ""
+		}
+	}
+	return false
+}
+
+func (s *Server) settingsTokenRevoke(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.tokenPaired(id) {
+		writeInlineFlash(w, "err", "This token is managed by a pairing; remove the pairing instead.")
+		return
+	}
+	var removed bool
+	if err := s.withConfig(func(c *config.Config) error {
+		removed = c.RemoveToken(id)
+		return nil
+	}); err != nil {
 		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
-	logx.Infof("settings: API token regenerated from %s", clientIP(r))
-	w.Header().Set("Cache-Control", "no-store")
-	s.renderTemplate(w, "partials/flash_token.html", map[string]any{"Token": token})
+	if !removed {
+		writeInlineFlash(w, "err", "Token not found.")
+		return
+	}
+	logx.Infof("settings: API token %s revoked from %s", id, clientIP(r))
+	writeInlineFlash(w, "ok", "Token revoked.")
+	s.renderAuthTokensOOB(w, r)
+}
+
+// renderAuthTokensOOB writes an out-of-band swap of the API-token list so it
+// reflects the latest set without a page reload.
+func (s *Server) renderAuthTokensOOB(w http.ResponseWriter, r *http.Request) {
+	s.cfgMu.Lock()
+	tokens := slices.Clone(s.cfg.Auth.Tokens)
+	s.cfgMu.Unlock()
+	s.renderTemplate(w, "partials/auth_tokens.html", map[string]any{
+		"Tokens":    tokens,
+		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
+		"OOB":       true,
+	})
+}
+
+type tokenScopeRow struct {
+	Name    string
+	Desc    string
+	Checked bool
+}
+
+func (s *Server) settingsTokenPrivilegesGet(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.cfgMu.Lock()
+	var scopes []string
+	var found, paired bool
+	for _, t := range s.cfg.Auth.Tokens {
+		if t.ID == id {
+			scopes = slices.Clone(t.Scopes)
+			paired = t.Paired != ""
+			found = true
+			break
+		}
+	}
+	s.cfgMu.Unlock()
+	if !found {
+		http.Error(w, "token not found", http.StatusNotFound)
+		return
+	}
+	descs := map[string]string{
+		config.ScopeRead:   "read - all GET endpoints",
+		config.ScopeWrite:  "write - create and modify",
+		config.ScopeDelete: "delete - destructive actions",
+	}
+	rows := make([]tokenScopeRow, 0, len(config.AllScopes))
+	for _, sc := range config.AllScopes {
+		rows = append(rows, tokenScopeRow{Name: sc, Desc: descs[sc], Checked: slices.Contains(scopes, sc)})
+	}
+	s.renderTemplate(w, "partials/token_privileges_dialog.html", map[string]any{
+		"ID":        id,
+		"Scopes":    rows,
+		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
+		"Paired":    paired,
+	})
+}
+
+func (s *Server) settingsTokenPrivilegesPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if s.tokenPaired(id) {
+		writeInlineFlash(w, "err", "This token is managed by a pairing; its privileges can't be changed.")
+		return
+	}
+	scopes := filterScopes(r.Form["scope"])
+	var found bool
+	if err := s.withConfig(func(c *config.Config) error {
+		found = c.SetTokenScopes(id, scopes)
+		return nil
+	}); err != nil {
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
+		return
+	}
+	if !found {
+		writeInlineFlash(w, "err", "Token not found.")
+		return
+	}
+	logx.Infof("settings: API token %s privileges updated from %s", id, clientIP(r))
+	setTokenSavedTrigger(w, "token-cfg-"+id)
+	_, _ = fmt.Fprintf(w,
+		`<span id="token-scopes-%s" hx-swap-oob="true">%s</span>`+
+			`<div id="flash-auth" hx-swap-oob="true"><div class="flash flash-ok">Token privileges saved.</div></div>`,
+		html.EscapeString(id), html.EscapeString(strings.Join(scopes, " ")))
+}
+
+// filterScopes keeps only recognized scopes, in canonical order, dropping
+// anything a tampered form might submit.
+func filterScopes(in []string) []string {
+	var out []string
+	for _, sc := range config.AllScopes {
+		if slices.Contains(in, sc) {
+			out = append(out, sc)
+		}
+	}
+	return out
+}
+
+// setTokenSavedTrigger fires a JS-side `token-saved` event naming the dialog to
+// close, mirroring the tagger config dialogs.
+func setTokenSavedTrigger(w http.ResponseWriter, dialogID string) {
+	payload, _ := json.Marshal(map[string]any{"token-saved": map[string]any{"dialog": dialogID}})
+	w.Header().Set("HX-Trigger", string(payload))
 }
 
 func (s *Server) settingsRemovePasswordPost(w http.ResponseWriter, r *http.Request) {

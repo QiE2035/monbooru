@@ -1,5 +1,23 @@
 # Changelog
 
+## [v1.12.0] - 2026-07-01
+### Added
+- Named, scoped API tokens managed in Settings, each with its own privileges.
+- Pairing with monloader from Settings: approval flow, connectivity light.
+
+### Changed
+- Monloader now connects via pairing; update monloader past v1.2.0 and re-pair (breaking).
+- `type:image` search now excludes gif, mp4, and webm.
+- Search flags a filter value that isn't in the filter's allowed set.
+- Relations browse offers [review again] on 2-member derivative trees.
+
+### Removed
+- The `auth.api_token` config value and `MONBOORU_AUTH_API_TOKEN` env var; use named tokens.
+
+### Fixed
+- Relations review-again reopens the exact pair instead of a different image.
+- Full-archive import clears the missing flag on the files it extracts.
+
 ## [v1.11.1] - 2026-06-24
 ### Added
 - Collapsible Tags header in the gallery and image-detail sidebars.

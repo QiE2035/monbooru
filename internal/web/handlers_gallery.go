@@ -14,6 +14,7 @@ import (
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/search"
+	"github.com/leqwin/monbooru/internal/searchkw"
 	"github.com/leqwin/monbooru/internal/tagger"
 )
 
@@ -31,7 +32,11 @@ const batchGapMinutes = 15
 
 type galleryData struct {
 	baseData
-	Query             string
+	Query string
+	// SearchWarning flags a closed-vocabulary filter value that matched
+	// nothing because the value itself is unrecognised (type:video), so the
+	// empty result doesn't read as "no images" when it means "bad value".
+	SearchWarning     string
 	Sort              string
 	Order             string
 	ThumbnailFit      string // "square" | "natural"; drives the grid's thumb-fit CSS class
@@ -277,6 +282,7 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	data := galleryData{
 		baseData:          s.base(r, "gallery", "Images - "+s.booruName()),
 		Query:             queryStr,
+		SearchWarning:     searchWarning(expr),
 		Sort:              sortStr,
 		Order:             orderStr,
 		ThumbnailFit:      s.cfg.UI.ThumbnailFit,
@@ -622,6 +628,51 @@ func collectionFilterActive(expr search.Expr) bool {
 	}
 	walk(expr)
 	return found
+}
+
+// searchWarning returns a note when the query carries a closed-vocabulary
+// filter whose value is unrecognised, so an empty result reads as "bad
+// value" rather than "no images". Empty when the query is clean.
+func searchWarning(expr search.Expr) string {
+	unknown := unknownFilterValues(expr)
+	if len(unknown) == 0 {
+		return ""
+	}
+	return "Unknown filter value: " + strings.Join(unknown, ", ")
+}
+
+// unknownFilterValues collects key:value leaves whose value falls outside a
+// closed-vocabulary keyword's set. Descends the whole tree so a negated or
+// OR-nested bad value is caught too.
+func unknownFilterValues(expr search.Expr) []string {
+	if expr == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	var walk func(search.Expr)
+	walk = func(e search.Expr) {
+		switch v := e.(type) {
+		case search.AndExpr:
+			walk(v.Left)
+			walk(v.Right)
+		case search.OrExpr:
+			walk(v.Left)
+			walk(v.Right)
+		case search.NotExpr:
+			walk(v.Expr)
+		case search.FilterExpr:
+			if !searchkw.ValueKnown(v.Key, v.Val) {
+				token := v.Key + ":" + v.Val
+				if !seen[token] {
+					seen[token] = true
+					out = append(out, token)
+				}
+			}
+		}
+	}
+	walk(expr)
+	return out
 }
 
 // inboxClustersActive narrows inboxFilterActive to the only sort

@@ -2959,16 +2959,16 @@ func (b *whereBuilder) buildMissingFilter(e FilterExpr) string {
 // buildTypeFilter emits a comma-separated union of named file-type
 // buckets:
 //
-//	image     -> jpeg / png / webp / gif / mp4 / webm
+//	image     -> jpeg / png / webp
 //	archive   -> cbz (cbz and zip archives of images; the ingest
 //	             collapses both extensions onto the 'cbz' file_type)
-//	animated  -> gif / mp4 / webm (subset of image)
+//	animated  -> gif / mp4 / webm
 //
 // `-type:animated` is the inverse via the parser's NotExpr; no
 // dedicated `animated:false` keyword exists.
 func (b *whereBuilder) buildTypeFilter(e FilterExpr) string {
 	buckets := map[string][]string{
-		"image":    {"jpeg", "png", "webp", "gif", "mp4", "webm"},
+		"image":    {"jpeg", "png", "webp"},
 		"archive":  {"cbz"},
 		"animated": {"gif", "mp4", "webm"},
 	}

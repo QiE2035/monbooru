@@ -6,6 +6,8 @@
 </div>
 {{/* OOB status line so the match count reflects the new search */}}
 <div id="gallery-status" class="status-bar" hx-swap-oob="true"><span id="result-count" class="result-count">{{.Result.Total}}</span> {{plural .Result.Total "match" "matches"}}</div>
+{{/* OOB search warning so a filter value outside its closed vocabulary is flagged on every search */}}
+<div id="search-warning" hx-swap-oob="true">{{if .SearchWarning}}<span class="field-hint">{{.SearchWarning}}</span>{{end}}</div>
 {{/* OOB footer cell so the "N hidden images in the current search" tracks the new search */}}
 <span id="footer-hidden" class="footer-hidden" hx-swap-oob="true">{{with .HiddenByCeiling}}<span class="footer-sep-strong">::</span>{{.}} hidden {{plural . "image" "images"}} in the current search{{end}}</span>
 {{/* OOB toolbar: keeps the Actions chooser button in sync with the current search.

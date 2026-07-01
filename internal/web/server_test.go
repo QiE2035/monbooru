@@ -301,6 +301,30 @@ func TestPageLoadIndicator_RenderedOnFullLayoutPages(t *testing.T) {
 	}
 }
 
+// While paired with monloader the footer renders the light partial inline. It
+// must resolve on typed page structs (e.g. galleryData on "/"), not only on
+// the poll handler's map - the regression was a template error on those pages.
+func TestMonloaderLight_RendersOnFullLayoutPages(t *testing.T) {
+	srv := newTestServer(t)
+	tok, _ := config.GenerateToken("monloader (paired)", config.AllScopes)
+	tok.Paired = "monloader"
+	srv.cfg.Auth.Tokens = []config.Token{tok}
+
+	for _, page := range []string{"/", "/tags", "/settings"} {
+		req := httptest.NewRequest("GET", page, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("GET %s expected 200, got %d", page, w.Code)
+			continue
+		}
+		if !strings.Contains(w.Body.String(), "checking monloader") {
+			t.Errorf("%s: monloader light shell missing", page)
+		}
+	}
+}
+
 func TestCustomCSS_LinkOmittedByDefault(t *testing.T) {
 	srv := newTestServer(t)
 
@@ -1057,8 +1081,14 @@ func TestToggleFavoriteReturnsButton(t *testing.T) {
 func TestToggleInboxReturnsButtonAndInvalidatesCount(t *testing.T) {
 	srv := newTestServer(t)
 	// insertTestImage creates a row with default is_inbox = 1 (the column
-	// default applies when the INSERT omits it).
+	// default applies when the INSERT omits it). A second inbox image keeps
+	// the count at 1 after the toggle so the OOB nav suffix is exercised.
 	id := insertTestImage(t, srv.db())
+	if _, err := srv.db().Write.Exec(`
+		INSERT INTO images (canonical_path, file_type, file_size, sha256, ingested_at)
+		VALUES ('/tmp/test2.jpg', 'jpg', 1024, 'def456', datetime('now'))`); err != nil {
+		t.Fatalf("insert second image: %v", err)
+	}
 	cx := srv.Active()
 	if cx == nil {
 		t.Fatal("active gallery missing")
@@ -1068,8 +1098,8 @@ func TestToggleInboxReturnsButtonAndInvalidatesCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InboxCount pre: %v", err)
 	}
-	if pre != 1 {
-		t.Errorf("expected 1 inbox image before toggle, got %d", pre)
+	if pre != 2 {
+		t.Errorf("expected 2 inbox images before toggle, got %d", pre)
 	}
 
 	h := srv.Handler()
@@ -1093,13 +1123,21 @@ func TestToggleInboxReturnsButtonAndInvalidatesCount(t *testing.T) {
 	if !strings.Contains(body, `title="Send to inbox (i)"`) {
 		t.Errorf("toggle inbox response title should name the action, got: %s", body)
 	}
+	// The response carries an out-of-band swap that refreshes the topbar
+	// inbox link so its count follows the toggle without a full reload.
+	if !strings.Contains(body, `id="inbox-nav"`) || !strings.Contains(body, `hx-swap-oob="true"`) {
+		t.Errorf("toggle inbox response missing inbox-nav OOB swap, got: %s", body)
+	}
+	if !strings.Contains(body, ">Inbox (1)</a>") {
+		t.Errorf("toggle inbox OOB should show the updated count, got: %s", body)
+	}
 
 	post, err := cx.InboxCount()
 	if err != nil {
 		t.Fatalf("InboxCount post: %v", err)
 	}
-	if post != 0 {
-		t.Errorf("expected 0 inbox images after toggle, got %d (cache may not have invalidated)", post)
+	if post != 1 {
+		t.Errorf("expected 1 inbox image after toggle, got %d (cache may not have invalidated)", post)
 	}
 }
 
@@ -1271,6 +1309,35 @@ func TestSettingsMonloaderPost(t *testing.T) {
 	}
 	if srv.cfg.Server.MonloaderURL != "http://localhost:8081" {
 		t.Errorf("MonloaderURL = %q, want http://localhost:8081", srv.cfg.Server.MonloaderURL)
+	}
+}
+
+// The top-bar "Go to monloader" link uses the configured web url, falls back
+// to the api url when the web url is blank, and is hidden only when both are
+// unset (trailing slash trimmed).
+func TestMonloaderTopbarLink(t *testing.T) {
+	srv := newTestServer(t)
+	get := func() string {
+		req := httptest.NewRequest("GET", "/", nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		return w.Body.String()
+	}
+
+	srv.cfg.Server.MonloaderURL = "http://localhost:8081/"
+	if !strings.Contains(get(), `href="http://localhost:8081/queue">Go to monloader`) {
+		t.Error("topbar should link the configured web url")
+	}
+
+	srv.cfg.Server.MonloaderURL = ""
+	srv.cfg.Monloader.APIURL = "http://monloader:8081"
+	if !strings.Contains(get(), `href="http://monloader:8081/queue">Go to monloader`) {
+		t.Error("topbar should fall back to the api url when the web url is blank")
+	}
+
+	srv.cfg.Monloader.APIURL = ""
+	if strings.Contains(get(), "Go to monloader") {
+		t.Error("topbar link should be hidden when both web and api url are unset")
 	}
 }
 

@@ -230,3 +230,23 @@ func TestCollectionFilterActive(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchWarning(t *testing.T) {
+	cases := []struct {
+		name, query, want string
+	}{
+		{"clean", "type:image 1girl", ""},
+		{"unknown type", "type:video", "Unknown filter value: type:video"},
+		{"negated unknown", "-mime:zzzz", "Unknown filter value: mime:zzzz"},
+		{"two unknown", "type:video fav:maybe", "Unknown filter value: type:video, fav:maybe"},
+		{"valid union", "type:image,archive", ""},
+		{"bad union element", "type:image,video", "Unknown filter value: type:image,video"},
+		{"open key untouched", "name:video source:booru", ""},
+	}
+	for _, c := range cases {
+		expr, _ := search.Parse(c.query)
+		if got := searchWarning(expr); got != c.want {
+			t.Errorf("%s: searchWarning(%q) = %q, want %q", c.name, c.query, got, c.want)
+		}
+	}
+}

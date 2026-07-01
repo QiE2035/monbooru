@@ -2,7 +2,8 @@
 
 ## Password login
 
-Off by default. To enable:
+Off by default. Enable via **Settings → Authentication** or set
+`auth.password_hash` in TOML and `auth.enable_password = true`. To generate the hash :
 
 ```bash
 # On the host:
@@ -11,15 +12,21 @@ Off by default. To enable:
 docker exec -it monbooru monbooru -hash-password 'your-password'
 ```
 
-The flag prints the bcrypt hash of the supplied password and exits.
-Paste the generated hash into **Settings → Authentication**, or set
-`auth.password_hash` in TOML and `auth.enable_password = true`. The
-login rate-limits per IP with exponential backoff.
+The login rate-limits per IP with exponential backoff.
 
 ## REST API
 
-Disabled by default. Enable it by generating a token in
-**Settings → Authentication**. Then:
+Disabled until you create at least one API token in
+**Settings → Authentication**. Tokens are named, individually revocable, and each carries a privilege set chosen in its
+**Config** dialog:
+
+- `read` - all `GET` endpoints (search, fetch, tags, ...)
+- `write` - `POST`/`PATCH` (upload, edit, tags, relations, ...)
+- `delete` - `DELETE` endpoints
+
+A request needs a token whose scopes cover the method, or it gets
+`403 insufficient_scope`. The secret is shown once at creation and stored
+only as a hash.
 
 ```bash
 curl -H "Authorization: Bearer <token>" \
@@ -30,4 +37,14 @@ curl -H "Authorization: Bearer <token>" \
 - OpenAPI spec: `/api/v1/openapi.json`.
 
 The HTML reference and the OpenAPI document are the source of truth
-for the wire shape. 
+for the wire shape.
+
+## Pairing with monloader
+
+To connect monloader without copying keys, open monloader and click
+**connect to monbooru**; the request appears under **Settings → Monloader**
+here for you to approve. monbooru
+then issues monloader a token (`read`+`write` by default) and stores the token monloader offers for the
+return direction, which drives the footer's "connected to monloader" light.
+Remove the pairing on either side; re-pairing requires removing the existing
+one first.

@@ -65,6 +65,20 @@ func writeInlineFlashHTML(w http.ResponseWriter, kind, body string) {
 	_, _ = w.Write([]byte(`<div class="flash flash-` + kind + `">` + body + `</div>`))
 }
 
+// writeFlashOOB swaps a flash into a slot out-of-band so the message outlives a
+// polling fragment that would otherwise overwrite the region it sat in. Empty
+// text clears the slot.
+func writeFlashOOB(w http.ResponseWriter, id, kind, text string) {
+	body := ""
+	if text != "" {
+		if kind == "" {
+			kind = "ok"
+		}
+		body = `<div class="flash flash-` + kind + `">` + html.EscapeString(text) + `</div>`
+	}
+	_, _ = w.Write([]byte(`<div id="` + id + `" hx-swap-oob="true">` + body + `</div>`))
+}
+
 func (s *Server) helpHandler(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "help.html", s.base(r, "help", "Help - "+s.booruName()).AsMap())
 }

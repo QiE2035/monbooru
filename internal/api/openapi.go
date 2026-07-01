@@ -26,6 +26,7 @@ func buildSpec(baseURL string) map[string]any {
 					"type":         "http",
 					"scheme":       "bearer",
 					"bearerFormat": "token",
+					"description":  "Named, scoped token from Settings -> Authentication. Scopes: read (GET), write (POST/PATCH), delete (DELETE); a token missing the scope gets 403 insufficient_scope.",
 				},
 			},
 			"schemas": map[string]any{
@@ -261,6 +262,7 @@ func buildSpec(baseURL string) map[string]any {
 						queryParam("q", "Search query (tag list, filters, wildcards)"),
 						queryParam("sort", "Sort field: newest, filesize, order, random"),
 						queryParam("order", "Sort order: asc, desc"),
+						queryParam("seed", "Random-sort seed for stable pagination when sort=random"),
 						queryParam("page", "Page number (1-based)"),
 						queryParam("limit", "Results per page (max 200)"),
 					},
@@ -785,7 +787,9 @@ func (h *Handler) openAPIJSON(w http.ResponseWriter, r *http.Request) {
 // loaded at runtime, so the page works offline.
 func (h *Handler) openAPIDocs(w http.ResponseWriter, r *http.Request) {
 	view := extractDocsView(buildSpec(h.cfg.Server.BaseURL))
-	view.APIEnabled = h.cfg.Auth.APIToken != ""
+	h.cfgMu.RLock()
+	view.APIEnabled = len(h.cfg.Auth.Tokens) > 0
+	h.cfgMu.RUnlock()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := docsTemplate.Execute(w, view); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
@@ -1028,7 +1032,7 @@ var docsTemplate = template.Must(template.New("api-docs").Parse(`<!DOCTYPE html>
  {{else}}
  <p style="color:#ffaa00;border:1px solid #ffaa00;padding:4px 8px;">API is disabled - generate a token in Settings → Authentication to enable it. All endpoints currently return <code>503 api_disabled</code>.</p>
  {{end}}
- <p>Every endpoint except <code>/docs</code> and <code>/openapi.json</code> requires <code>Authorization: Bearer &lt;token&gt;</code>. Generate a token from Settings → Authentication; while no token is set every authenticated endpoint returns <code>503 api_disabled</code>.</p>
+ <p>Every endpoint except <code>/docs</code> and <code>/openapi.json</code> requires <code>Authorization: Bearer &lt;token&gt;</code>. Create a named token in Settings → Authentication; while none exists every authenticated endpoint returns <code>503 api_disabled</code>. Tokens are scoped (read/write/delete); a request whose token lacks the scope gets <code>403 insufficient_scope</code>.</p>
  <p>Endpoints take an optional <code>?gallery=&lt;name&gt;</code> (or <code>X-Monbooru-Gallery</code> header) to target a specific gallery; omit both for the active one.</p>
  <p class="muted">Raw spec: <a href="/api/v1/openapi.json">openapi.json</a></p>
 

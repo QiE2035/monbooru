@@ -1,6 +1,10 @@
 package config
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -19,6 +24,7 @@ type Config struct {
 	DefaultGallery string          `toml:"default_gallery"`
 	Galleries      []Gallery       `toml:"galleries"`
 	Server         ServerConfig    `toml:"server"`
+	Monloader      MonloaderConfig `toml:"monloader"`
 	Paths          PathsConfig     `toml:"paths"`
 	Gallery        GalleryConfig   `toml:"gallery"`
 	Tagger         TaggerConfig    `toml:"tagger"`
@@ -61,6 +67,17 @@ type ServerConfig struct {
 	// instance; when set, a "Go to monloader" link shows in the top bar.
 	// Empty hides it.
 	MonloaderURL string `toml:"monloader_url"`
+}
+
+// MonloaderConfig is the server-side connection to the companion monloader,
+// used for the connectivity light and source refetches. APIURL is an optional
+// operator override for the LAN base monbooru calls; left blank, the address is
+// auto-detected at pairing from the source the request came from. APIToken is
+// the token monloader issued during pairing. The browser-facing link stays in
+// server.monloader_url.
+type MonloaderConfig struct {
+	APIURL   string `toml:"api_url"`
+	APIToken string `toml:"api_token,omitempty"`
 }
 
 // PathsConfig holds process-wide paths. Per-gallery DB and thumbnails
@@ -161,10 +178,131 @@ func (t TaggerInstance) AppliesToGallery(name string) bool {
 }
 
 type AuthConfig struct {
-	EnablePassword      bool   `toml:"enable_password"`
-	PasswordHash        string `toml:"password_hash"`
-	SessionLifetimeDays int    `toml:"session_lifetime_days"`
-	APIToken            string `toml:"api_token"`
+	EnablePassword      bool    `toml:"enable_password"`
+	PasswordHash        string  `toml:"password_hash"`
+	SessionLifetimeDays int     `toml:"session_lifetime_days"`
+	Tokens              []Token `toml:"tokens,omitempty"`
+}
+
+// API privilege scopes. A token grants any combination; new tokens default
+// to all of them.
+const (
+	ScopeRead   = "read"
+	ScopeWrite  = "write"
+	ScopeDelete = "delete"
+)
+
+// AllScopes is every scope a monbooru token can hold.
+var AllScopes = []string{ScopeRead, ScopeWrite, ScopeDelete}
+
+// Token is a named API credential. Only the secret's hash is stored; the
+// plaintext is shown once at creation. Paired is set by the monloader pairing
+// flow and names the peer; it is empty for operator-created tokens.
+type Token struct {
+	ID        string   `toml:"id"`
+	Name      string   `toml:"name"`
+	TokenHash string   `toml:"token_hash"`
+	Scopes    []string `toml:"scopes"`
+	CreatedAt string   `toml:"created_at"`
+	Paired    string   `toml:"paired,omitempty"`
+	PeerURL   string   `toml:"peer_url,omitempty"`
+}
+
+// HasScope reports whether the token carries the given scope.
+func (t Token) HasScope(scope string) bool { return slices.Contains(t.Scopes, scope) }
+
+// HashToken returns the hex SHA-256 of a bearer secret.
+func HashToken(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:])
+}
+
+// GenerateSecret returns a fresh 32-character hex bearer secret.
+func GenerateSecret() string {
+	buf := make([]byte, 16)
+	_, _ = rand.Read(buf)
+	return hex.EncodeToString(buf)
+}
+
+func newTokenID() string {
+	buf := make([]byte, 8)
+	_, _ = rand.Read(buf)
+	return hex.EncodeToString(buf)
+}
+
+// reservedTokenName matches names the pairing flow owns, so an operator
+// cannot create one that collides with or impersonates a paired token.
+func reservedTokenName(name string) bool {
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(name)), "(paired)")
+}
+
+// ValidateTokenName rejects empty and pairing-reserved names.
+func ValidateTokenName(name string) error {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return fmt.Errorf("token name must not be empty")
+	}
+	if reservedTokenName(n) {
+		return fmt.Errorf("token names ending in \"(paired)\" are reserved")
+	}
+	return nil
+}
+
+// GenerateToken builds a token from a name and scopes, returning the plaintext
+// secret (available only here). Call it outside any locked or replayed config
+// mutation so the id, secret, and timestamp are stable.
+func GenerateToken(name string, scopes []string) (Token, string) {
+	secret := GenerateSecret()
+	return Token{
+		ID:        newTokenID(),
+		Name:      name,
+		TokenHash: HashToken(secret),
+		Scopes:    scopes,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}, secret
+}
+
+// TokenNameExists reports whether a token already uses name (case-insensitive).
+func (cfg *Config) TokenNameExists(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	for _, t := range cfg.Auth.Tokens {
+		if strings.ToLower(t.Name) == n {
+			return true
+		}
+	}
+	return false
+}
+
+// FindTokenByHash returns the token whose stored hash matches, or nil.
+func (cfg *Config) FindTokenByHash(hash string) *Token {
+	for i := range cfg.Auth.Tokens {
+		if subtle.ConstantTimeCompare([]byte(cfg.Auth.Tokens[i].TokenHash), []byte(hash)) == 1 {
+			return &cfg.Auth.Tokens[i]
+		}
+	}
+	return nil
+}
+
+// RemoveToken drops the token with the given id, reporting whether it existed.
+func (cfg *Config) RemoveToken(id string) bool {
+	for i := range cfg.Auth.Tokens {
+		if cfg.Auth.Tokens[i].ID == id {
+			cfg.Auth.Tokens = append(cfg.Auth.Tokens[:i], cfg.Auth.Tokens[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// SetTokenScopes replaces a token's scopes, reporting whether it existed.
+func (cfg *Config) SetTokenScopes(id string, scopes []string) bool {
+	for i := range cfg.Auth.Tokens {
+		if cfg.Auth.Tokens[i].ID == id {
+			cfg.Auth.Tokens[i].Scopes = scopes
+			return true
+		}
+	}
+	return false
 }
 
 type UIConfig struct {
@@ -384,6 +522,7 @@ func envStr(key, cur string) string {
 func applyEnvOverrides(cfg *Config) {
 	cfg.Server.BindAddress = envStr("MONBOORU_SERVER_BIND_ADDRESS", cfg.Server.BindAddress)
 	cfg.Server.BaseURL = envStr("MONBOORU_SERVER_BASE_URL", cfg.Server.BaseURL)
+	cfg.Server.MonloaderURL = envStr("MONBOORU_SERVER_MONLOADER_URL", cfg.Server.MonloaderURL)
 	// DATA_PATH stays inline: setting it must also recompute the derived paths.
 	if v := os.Getenv("MONBOORU_PATHS_DATA_PATH"); v != "" {
 		cfg.Paths.DataPath = v
@@ -396,7 +535,8 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.Auth.EnablePassword = envBool("MONBOORU_AUTH_ENABLE_PASSWORD", cfg.Auth.EnablePassword)
 	cfg.Auth.PasswordHash = envStr("MONBOORU_AUTH_PASSWORD_HASH", cfg.Auth.PasswordHash)
 	cfg.Auth.SessionLifetimeDays = envInt("MONBOORU_AUTH_SESSION_LIFETIME_DAYS", cfg.Auth.SessionLifetimeDays)
-	cfg.Auth.APIToken = envStr("MONBOORU_AUTH_API_TOKEN", cfg.Auth.APIToken)
+	cfg.Monloader.APIURL = envStr("MONBOORU_MONLOADER_API_URL", cfg.Monloader.APIURL)
+	cfg.Monloader.APIToken = envStr("MONBOORU_MONLOADER_API_TOKEN", cfg.Monloader.APIToken)
 	cfg.Log.Level = envStr("MONBOORU_LOG_LEVEL", cfg.Log.Level)
 }
 

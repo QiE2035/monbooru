@@ -1051,6 +1051,15 @@ document.body.addEventListener('tagger-saved', function(e) {
   if (dlg && dlg.open) dlg.close();
 });
 
+// The per-token privileges dialog closes itself on a successful save; the row's
+// scopes cell and the parent flash arrive as OOB swaps.
+document.body.addEventListener('token-saved', function(e) {
+  var id = e.detail && e.detail.dialog;
+  if (!id) return;
+  var dlg = document.getElementById(id);
+  if (dlg && dlg.open) dlg.close();
+});
+
 // Per-tagger Galleries dialog helpers. taggerGalAllToggle disables and
 // force-checks the per-gallery boxes when "All galleries" is on so the
 // submitted state matches the rendered state. taggerGalSelect mass-sets

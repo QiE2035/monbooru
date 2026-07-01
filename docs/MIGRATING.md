@@ -38,9 +38,10 @@ What lands in Monbooru:
 
 - Each `<sha>.<ext>` keeps its filename (and folder structure) under
   the new gallery root.
-- When the basename is a 64-hex-char string, Monbooru reuses that as
-  the recorded SHA-256; otherwise the actual hash is computed at
-  ingest.
+- Each image's SHA-256 is computed from the file bytes at ingest. When
+  the basename is a 64-hex-char string (Hydrus names files after their
+  hash), that value is used to match the entry against an existing
+  image on a **Merge**.
 - Each sidecar's tags are attached to the image. Lines starting with
   `#` and blank lines are skipped. Tokens are routed by their
   Hydrus-style namespace prefix:
@@ -90,9 +91,10 @@ What lands in Monbooru:
   | 5 | meta |
   | (anything else / not in tags.csv) | general |
 
-- Blombooru's `hash` field is reused as the SHA-256 only when it is a
-  64-hex-char string. Older entries that ship an MD5 are silently
-  re-hashed on ingest.
+- Each extracted file's SHA-256 is computed from its bytes at ingest.
+  Blombooru's `hash` field is used only to match an entry against an
+  existing image on a **Merge**, and only when it is a 64-hex-char
+  string; older MD5 entries are ignored for matching.
 
 What is not preserved: albums, ratings, parent/child relations, mime
 types, durations, or any custom metadata. 

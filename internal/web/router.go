@@ -57,8 +57,9 @@ type imageTagSourceGroup struct {
 type Server struct {
 	cfg        *config.Config
 	configPath string
-	cfgMu      sync.Mutex // protects cfg writes and config.Save calls
+	cfgMu      sync.RWMutex // guards cfg reads/writes and config.Save calls
 	jobs       *jobs.Manager
+	pairs      *pairStore
 	sessions   *SessionStore
 	loginRL    *loginRateLimiter
 	csrfSecret []byte // per-instance HMAC key for CSRF tokens
@@ -414,6 +415,7 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 		cfg:         cfg,
 		configPath:  configPath,
 		jobs:        jobManager,
+		pairs:       newPairStore(),
 		sessions:    sessions,
 		loginRL:     newLoginRateLimiter(),
 		csrfSecret:  mustRandBytes(32),
@@ -569,6 +571,11 @@ func contextMiddlewareBypass(path string) bool {
 		// read lock.
 		return true
 	}
+	if path == "/internal/monloader-status" || strings.HasPrefix(path, "/settings/monloader/pair") {
+		// These poll / probe monloader over HTTP and touch no gallery context;
+		// holding the read lock across the outbound call would stall a switch.
+		return true
+	}
 	return strings.HasPrefix(path, "/static/") ||
 		strings.HasPrefix(path, "/thumbnails/") ||
 		strings.HasPrefix(path, "/settings/galleries")
@@ -676,7 +683,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/tagger", s.settingsTaggerPost)
 	mux.HandleFunc("POST /settings/auth/password", s.settingsPasswordPost)
 	mux.HandleFunc("POST /settings/auth/remove-password", s.settingsRemovePasswordPost)
-	mux.HandleFunc("POST /settings/auth/token", s.settingsTokenPost)
+	mux.HandleFunc("POST /settings/auth/tokens", s.settingsTokenCreate)
+	mux.HandleFunc("DELETE /settings/auth/tokens/{id}", s.settingsTokenRevoke)
+	mux.HandleFunc("GET /settings/auth/tokens/{id}/privileges", s.settingsTokenPrivilegesGet)
+	mux.HandleFunc("POST /settings/auth/tokens/{id}/privileges", s.settingsTokenPrivilegesPost)
 	mux.HandleFunc("PATCH /settings/categories/{id}", s.updateCategoryPatch)
 	mux.HandleFunc("POST /settings/schedule", s.settingsSchedulePost)
 	mux.HandleFunc("POST /settings/maintenance/prune-missing", s.pruneMissingImagesPost)
@@ -737,6 +747,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /help", s.helpHandler)
 
 	mux.HandleFunc("GET /internal/job/status", s.jobStatusHandler)
+	mux.HandleFunc("GET /internal/monloader-status", s.monloaderStatusHandler)
 	mux.HandleFunc("POST /internal/job/dismiss", s.jobDismissPost)
 	mux.HandleFunc("POST /internal/job/cancel", s.jobCancelPost)
 	mux.HandleFunc("POST /internal/sync", s.syncTrigger)
@@ -770,7 +781,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /settings/galleries/{name}/export", s.settingsGalleryExport)
 	mux.HandleFunc("POST /settings/galleries/{name}/import", s.settingsGalleryImport)
 
-	api.New(s.cfg, s.jobs, s.apiResolver, Version).Mount(mux)
+	mux.HandleFunc("POST /api/v1/pair/request", s.pairRequest)
+	mux.HandleFunc("GET /api/v1/pair/status", s.pairStatus)
+	mux.HandleFunc("POST /api/v1/pair/remove", s.pairTeardown)
+	mux.HandleFunc("GET /internal/monloader-pairing", s.monloaderPairingFragment)
+	mux.HandleFunc("POST /settings/monloader/pair/{id}/approve", s.monloaderPairApprove)
+	mux.HandleFunc("POST /settings/monloader/pair/{id}/deny", s.monloaderPairDeny)
+	mux.HandleFunc("POST /settings/monloader/pair/remove", s.monloaderPairRemove)
+
+	api.New(s.cfg, &s.cfgMu, s.jobs, s.apiResolver, Version).Mount(mux)
 
 	// Middleware order, outermost first: logging, context (RLock), session, CSRF.
 	var h http.Handler = mux
@@ -812,7 +831,7 @@ func (s *Server) apiResolver(name string) (api.Gallery, bool) {
 // level stays readable.
 func isNoisyPath(path string) bool {
 	switch path {
-	case "/internal/job/status", "/health":
+	case "/internal/job/status", "/internal/monloader-status", "/health":
 		return true
 	}
 	return strings.HasPrefix(path, "/static/") || strings.HasPrefix(path, "/thumbnails/")
@@ -897,7 +916,8 @@ type baseData struct {
 	BooruLogo    string
 	BooruFavicon string
 	// MonloaderURL is the browser-facing monloader base for the top-bar
-	// "Go to monloader" link, trailing slash trimmed; "" hides the link.
+	// "Go to monloader" link, trailing slash trimmed; falls back to the
+	// api url when unset, so only both being unset hides the link.
 	MonloaderURL  string
 	ActiveGallery string
 	Galleries     []config.Gallery
@@ -926,6 +946,14 @@ type baseData struct {
 	// middleware + handler work + template execution, not just the
 	// tail-end after base() runs.
 	RequestStart time.Time
+	// MonloaderPaired gates the footer "connected to monloader" light:
+	// it renders (and starts polling) only while a monloader pairing exists.
+	MonloaderPaired bool
+	// MonloaderConn / MonloaderVersion seed the light on the initial render;
+	// the poller swaps in live values. They live here so the partial resolves
+	// on every page struct, not just the poll handler's map.
+	MonloaderConn    string
+	MonloaderVersion string
 }
 
 // AsMap renders baseData as a string→any map for handlers that pass
@@ -947,6 +975,9 @@ func (b baseData) AsMap() map[string]any {
 		"BooruLogo":        b.BooruLogo,
 		"BooruFavicon":     b.BooruFavicon,
 		"MonloaderURL":     b.MonloaderURL,
+		"MonloaderPaired":  b.MonloaderPaired,
+		"MonloaderConn":    b.MonloaderConn,
+		"MonloaderVersion": b.MonloaderVersion,
 		"ActiveGallery":    b.ActiveGallery,
 		"Galleries":        b.Galleries,
 		"VisibleCount":     b.VisibleCount,
@@ -1002,7 +1033,8 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 		BooruName:        s.booruName(),
 		BooruLogo:        s.booruLogoURL(),
 		BooruFavicon:     s.booruFaviconURL(),
-		MonloaderURL:     strings.TrimRight(s.cfg.Server.MonloaderURL, "/"),
+		MonloaderURL:     s.monloaderWebBase(),
+		MonloaderPaired:  s.pairedWith("monloader"),
 		ActiveGallery:    s.activeName,
 		Galleries:        galleries,
 		VisibleCount:     visible,
@@ -1134,6 +1166,18 @@ func (s *Server) booruFaviconURL() string {
 		return "/custom.logo"
 	}
 	return "/static/favicon.png"
+}
+
+// monloaderWebBase is the browser-facing monloader base for the top-bar
+// "Go to monloader" link: the configured web url when set, else the api url.
+func (s *Server) monloaderWebBase() string {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	base := s.cfg.Server.MonloaderURL
+	if base == "" {
+		base = s.cfg.Monloader.APIURL
+	}
+	return strings.TrimRight(base, "/")
 }
 
 // uppercasePercentEscapes rewrites every %XX hex pair in s to use
@@ -1365,6 +1409,22 @@ func (s *Server) Close() {
 	for _, cx := range s.contexts {
 		cx.close()
 	}
+}
+
+// withConfig mutates the in-memory config under the write lock and persists it
+// atomically, so a read-modify-write on a config slice can't lose a concurrent
+// settings change. A non-nil fn error aborts the save.
+func (s *Server) withConfig(fn func(*config.Config) error) error {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	if err := fn(s.cfg); err != nil {
+		return err
+	}
+	if err := config.Save(s.cfg, s.configPath); err != nil {
+		logx.Errorf("config save: %v", err)
+		return err
+	}
+	return nil
 }
 
 // saveConfig acquires the config mutex, writes the config file, and returns

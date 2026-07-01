@@ -2,11 +2,11 @@
 package api
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/leqwin/monbooru/internal/config"
 	"github.com/leqwin/monbooru/internal/db"
@@ -56,6 +56,7 @@ type ResolverFunc func(name string) (Gallery, bool)
 // Handler is the root handler for all /api/v1/ routes.
 type Handler struct {
 	cfg      *config.Config
+	cfgMu    *sync.RWMutex // guards cfg.Auth.Tokens, mutated at runtime by the web layer
 	jobs     *jobs.Manager
 	resolver ResolverFunc
 	version  string
@@ -63,8 +64,9 @@ type Handler struct {
 
 // New creates a new API handler. version is surfaced on the /api/v1/ root so
 // clients (e.g. monloader) can read the server version without scraping HTML.
-func New(cfg *config.Config, jobManager *jobs.Manager, resolver ResolverFunc, version string) *Handler {
-	return &Handler{cfg: cfg, jobs: jobManager, resolver: resolver, version: version}
+// cfgMu is the web layer's config lock; token reads take it in shared mode.
+func New(cfg *config.Config, cfgMu *sync.RWMutex, jobManager *jobs.Manager, resolver ResolverFunc, version string) *Handler {
+	return &Handler{cfg: cfg, cfgMu: cfgMu, jobs: jobManager, resolver: resolver, version: version}
 }
 
 // resolveGallery picks the target gallery from ?gallery=... (preferred)
@@ -140,8 +142,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	}))
 }
 
-// auth wraps a handler with bearer-token authentication and the
-// configured-base-URL CORS check.
+// auth wraps a handler with bearer-token authentication, per-token scope
+// enforcement, and the configured-base-URL CORS check.
 func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -157,7 +159,9 @@ func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {
 			w.Header().Set("Access-Control-Allow-Origin", baseURL)
 		}
 
-		if h.cfg.Auth.APIToken == "" {
+		h.cfgMu.RLock()
+		if len(h.cfg.Auth.Tokens) == 0 {
+			h.cfgMu.RUnlock()
 			apiError(w, http.StatusServiceUnavailable, "api_disabled",
 				"API is disabled: generate an API token in Settings to enable it")
 			return
@@ -165,16 +169,38 @@ func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {
 		auth := r.Header.Get("Authorization")
 		const prefix = "Bearer "
 		if !strings.HasPrefix(auth, prefix) {
+			h.cfgMu.RUnlock()
 			apiError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid authorization header")
 			return
 		}
-		token := auth[len(prefix):]
-		if subtle.ConstantTimeCompare([]byte(token), []byte(h.cfg.Auth.APIToken)) != 1 {
+		tok := h.cfg.FindTokenByHash(config.HashToken(auth[len(prefix):]))
+		if tok == nil {
+			h.cfgMu.RUnlock()
 			apiError(w, http.StatusUnauthorized, "unauthorized", "invalid bearer token")
+			return
+		}
+		scope := scopeForMethod(r.Method)
+		hasScope := tok.HasScope(scope)
+		h.cfgMu.RUnlock()
+		if !hasScope {
+			apiError(w, http.StatusForbidden, "insufficient_scope", "token lacks the "+scope+" scope")
 			return
 		}
 
 		next(w, r)
+	}
+}
+
+// scopeForMethod maps an HTTP method to the privilege a token must hold:
+// writes for POST/PATCH/PUT, deletes for DELETE, reads for the rest.
+func scopeForMethod(method string) string {
+	switch method {
+	case http.MethodPost, http.MethodPatch, http.MethodPut:
+		return config.ScopeWrite
+	case http.MethodDelete:
+		return config.ScopeDelete
+	default:
+		return config.ScopeRead
 	}
 }
 

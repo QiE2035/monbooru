@@ -66,8 +66,7 @@ falls back to the bundled defaults.
 
 ## Link to monloader
 
-If you run a [monloader](https://github.com/leqwin/monloader) instance, set its browser URL in the settings to add a "Go to monloader"
-link in the top bar.
+If you run a [monloader](https://github.com/leqwin/monloader) instance, set its browser URL in the settings. Monbooru learns monloader's API address from the pairing, so the api url field can stay empty.
 
 ## Environment variables
 
@@ -77,6 +76,9 @@ All override the TOML config. Pattern: `MONBOORU_{SECTION}_{KEY}`.
 |---|---|---|
 | `MONBOORU_SERVER_BIND_ADDRESS` | `server.bind_address` | string |
 | `MONBOORU_SERVER_BASE_URL` | `server.base_url` | string |
+| `MONBOORU_SERVER_MONLOADER_URL` | `server.monloader_url` | string |
+| `MONBOORU_MONLOADER_API_URL` | `monloader.api_url` | string |
+| `MONBOORU_MONLOADER_API_TOKEN` | `monloader.api_token` | string |
 | `MONBOORU_PATHS_DATA_PATH` | `paths.data_path` | string |
 | `MONBOORU_PATHS_MODEL_PATH` | `paths.model_path` | string |
 | `MONBOORU_GALLERY_WATCH_ENABLED` | `gallery.watch_enabled` | bool |
@@ -85,7 +87,6 @@ All override the TOML config. Pattern: `MONBOORU_{SECTION}_{KEY}`.
 | `MONBOORU_AUTH_ENABLE_PASSWORD` | `auth.enable_password` | bool |
 | `MONBOORU_AUTH_PASSWORD_HASH` | `auth.password_hash` | string |
 | `MONBOORU_AUTH_SESSION_LIFETIME_DAYS` | `auth.session_lifetime_days` | int |
-| `MONBOORU_AUTH_API_TOKEN` | `auth.api_token` (the REST API bearer token) | string |
 | `MONBOORU_LOG_LEVEL` | `log.level` | `warn` / `info` / `debug` |
 
 Per-tagger settings (enable, confidence, worker count) live in the
@@ -111,8 +112,8 @@ variables:
 
 `log.level`:
 
-- `warn` (default) - warnings, errors, and explicit mutations (logins,
-  settings changes).
-- `info` - adds one line per non-noisy HTTP request and startup banners.
-- `debug` - adds static asset, thumbnail, `/health`, and
-  `/internal/job/status` hits.
+- `warn` (default) - warnings, errors, and failed / rate-limited logins.
+- `info` - adds one line per non-noisy HTTP request, startup banners, and
+  explicit mutations (successful logins, settings changes).
+- `debug` - adds static asset, thumbnail, `/health`,
+  `/internal/job/status`, and `/internal/monloader-status` hits.

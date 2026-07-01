@@ -59,8 +59,12 @@ func TestReviewAgainPost_DupGroup(t *testing.T) {
 	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusSeeOther {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	wantLoc := "/relations/session?a=" + strconv.FormatInt(a, 10) + "&b=" + strconv.FormatInt(b, 10)
+	if loc := w.Header().Get("Location"); loc != wantLoc {
+		t.Errorf("Location = %q, want %q", loc, wantLoc)
 	}
 
 	var n int
@@ -102,8 +106,12 @@ func TestReviewAgainPost_AltGroup(t *testing.T) {
 	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusSeeOther {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	wantLoc := "/relations/session?a=" + strconv.FormatInt(a, 10) + "&b=" + strconv.FormatInt(b, 10)
+	if loc := w.Header().Get("Location"); loc != wantLoc {
+		t.Errorf("Location = %q, want %q", loc, wantLoc)
 	}
 
 	var n int
@@ -115,6 +123,52 @@ func TestReviewAgainPost_AltGroup(t *testing.T) {
 	}
 	var queued int
 	if err := srv.db().Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs WHERE a_image_id = ? AND b_image_id = ?`, a, b).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 1 {
+		t.Errorf("potential_relation_pairs entries = %d, want 1", queued)
+	}
+}
+
+// Derivative review-again takes a, b (not a group_id) and drops the
+// single source -> derivative edge before requeuing the pair.
+func TestReviewAgainPost_DerivativeEdge(t *testing.T) {
+	srv := newTestServer(t)
+	source := insertRawImage(t, srv, "a.png", "")
+	deriv := insertRawImage(t, srv, "b.png", "")
+	if err := srv.Active().RelationsSvc.AddDerivativeEdge(source, deriv); err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{
+		"_csrf": {srv.csrfToken("anon")},
+		"type":  {"review-again"},
+		"kind":  {"derivative"},
+		"a":     {strconv.FormatInt(source, 10)},
+		"b":     {strconv.FormatInt(deriv, 10)},
+	}
+	req := httptest.NewRequest("POST", "/relations/remove", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	wantLoc := "/relations/session?a=" + strconv.FormatInt(source, 10) + "&b=" + strconv.FormatInt(deriv, 10)
+	if loc := w.Header().Get("Location"); loc != wantLoc {
+		t.Errorf("Location = %q, want %q", loc, wantLoc)
+	}
+
+	var n int
+	if err := srv.db().Read.QueryRow(`SELECT COUNT(*) FROM derivative_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("derivative_edges remaining = %d, want 0", n)
+	}
+	var queued int
+	if err := srv.db().Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs WHERE a_image_id = ? AND b_image_id = ?`, source, deriv).Scan(&queued); err != nil {
 		t.Fatal(err)
 	}
 	if queued != 1 {

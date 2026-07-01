@@ -27,9 +27,12 @@ Settings → Maintenance has the manual tools:
 - **Vacuum database** - `VACUUM` plus WAL checkpoint to release space.
 - **Free memory** - shrink SQLite caches, return the Go heap, release
   the auto-tagger from RAM/VRAM.
-- **Duplicates** - list and remove duplicate file paths.
 
 Each action reports how many rows it affected.
+
+To find and remove byte-identical duplicate file paths, use the SHA-256
+duplicates walker under **Relations -> Duplicates**; see
+[RELATIONS.md](RELATIONS.md).
 
 ## Schedule
 

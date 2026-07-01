@@ -138,6 +138,12 @@ button.footer-gallery {
 button.footer-gallery:hover { color: var(--fg); }
 .footer-sep { color: var(--border); }
 .footer-sep-strong { color: var(--fg-dim); font-weight: bold; margin: 0 4px; }
+.footer-conn { display: inline-flex; align-items: center; gap: 5px; }
+.footer-dot { width: 7px; height: 7px; display: inline-block; }
+.footer-dot-ok { background: var(--success); }
+.footer-dot-rejected { background: var(--warning); }
+.footer-dot-down { background: var(--error); }
+.footer-dot-checking { background: var(--fg-dim); }
 .footer-degraded { color: var(--warning); }
 .footer-rating-label { color: var(--fg-dim); }
 .footer-rating-active { color: var(--link); }
@@ -815,6 +821,8 @@ details summary:hover { color: var(--fg); }
 .flash-ok { color: var(--success); border: 1px solid var(--success); background: transparent; }
 .flash-warn { color: var(--warning); border: 1px solid var(--warning); background: transparent; }
 .flash-err { color: var(--error); border: 1px solid var(--error); background: transparent; }
+.pairing-pending { border: 1px solid var(--accent); padding: 8px 10px; margin: 8px 0; }
+.pairing-pending-msg { color: var(--accent); margin-bottom: 8px; }
 
 .settings-sub { margin-bottom: 12px; }
 .settings-sub h4 { font-size: 12px; color: var(--fg-dim); margin-bottom: 6px; }
@@ -847,6 +855,8 @@ details summary:hover { color: var(--fg); }
 .radio-row { display: flex; gap: 16px; }
 .radio-row label { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 0; }
 .field input[type="text"], .field input[type="number"], .field input[type="password"] { width: 100%; max-width: 300px; }
+/* The monloader URL pair sits two-up and holds long URLs, so its inputs fill the column. */
+#monloader .settings-cols .field input[type="text"] { max-width: none; }
 /* Settings fields: a brighter label anchors each field and the hint hugs its
    control, so it is unambiguous which hint and control belong to which field. */
 #settings-page .field { margin-bottom: 16px; }
@@ -1478,6 +1488,7 @@ section#tagger .tagger-table tr.tagger-sep td { color: var(--fg-dim); font-size:
 .gallery-table code { color: var(--fg-dim); font-size: 12px; }
 .gallery-info { color: var(--fg-dim); font-size: 11px; white-space: nowrap; }
 .gallery-table .gallery-status-cell { white-space: nowrap; min-width: 120px; }
+.gallery-path-cell code { overflow-wrap: anywhere; }
 .gallery-table th:nth-child(n+5),
 .gallery-table td:nth-child(n+5) { width: 1%; white-space: nowrap; text-align: right; }
 .gallery-table th:nth-child(n+5) { padding-right: 17px; }
@@ -1980,7 +1991,12 @@ details[open] > .relations-card-summary::before { content: "▼"; }
 
 @media (max-width: 480px) {
   #topbar { flex-wrap: wrap; height: auto; padding: 4px 8px; gap: 8px; row-gap: 4px; }
-  #nav { flex-basis: 100%; margin-left: 0; justify-content: flex-start; flex-wrap: wrap; }
+  /* When the bar wraps, the nav takes its own row(s). Give each item a
+     baseline and butt them together so the active-page underline sits on a
+     continuous rule, as it does on the topbar's bottom rule at full width,
+     instead of floating under a single label. */
+  #nav { flex-basis: 100%; margin-left: 0; justify-content: flex-start; flex-wrap: wrap; column-gap: 0; }
+  #nav a { border-bottom-color: var(--border); padding-left: 8px; padding-right: 8px; }
   #topbar-right { margin-left: auto; }
   #search-form > div.search-input-wrap { flex-basis: 100%; }
 }

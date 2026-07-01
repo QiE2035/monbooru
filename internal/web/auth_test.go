@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leqwin/monbooru/internal/config"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -556,7 +557,7 @@ func TestCSRFMiddleware_RejectsForeignToken(t *testing.T) {
 func TestCSRFMiddleware_APIRoutesBypass(t *testing.T) {
 	srv := newTestServer(t)
 	srv.cfgMu.Lock()
-	srv.cfg.Auth.APIToken = "bearer-1"
+	srv.cfg.Auth.Tokens = []config.Token{{ID: "t", Name: "t", TokenHash: config.HashToken("bearer-1"), Scopes: config.AllScopes}}
 	srv.cfgMu.Unlock()
 	h := srv.Handler()
 
@@ -612,5 +613,45 @@ func TestSameOriginReferer(t *testing.T) {
 				t.Errorf("sameOriginReferer(%q) = %q, want %q", tc.ref, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPairedTokenNotRevocable(t *testing.T) {
+	srv := newTestServer(t)
+	tok, _ := config.GenerateToken("monloader (paired)", config.AllScopes)
+	tok.Paired = "monloader"
+	srv.cfg.Auth.Tokens = []config.Token{tok}
+
+	req := httptest.NewRequest("DELETE", "/settings/auth/tokens/"+tok.ID, nil)
+	req.SetPathValue("id", tok.ID)
+	w := httptest.NewRecorder()
+	srv.settingsTokenRevoke(w, req)
+
+	if len(srv.cfg.Auth.Tokens) != 1 {
+		t.Fatalf("paired token was revoked directly; want it kept (manage via pairing)")
+	}
+	if !strings.Contains(w.Body.String(), "pairing") {
+		t.Errorf("expected a pairing hint, got %q", w.Body.String())
+	}
+}
+
+func TestPairedTokenPrivilegesLocked(t *testing.T) {
+	srv := newTestServer(t)
+	tok, _ := config.GenerateToken("monloader (paired)", config.AllScopes)
+	tok.Paired = "monloader"
+	srv.cfg.Auth.Tokens = []config.Token{tok}
+
+	form := url.Values{"scope": {config.ScopeRead}}
+	req := httptest.NewRequest("POST", "/settings/auth/tokens/"+tok.ID+"/privileges", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("id", tok.ID)
+	w := httptest.NewRecorder()
+	srv.settingsTokenPrivilegesPost(w, req)
+
+	if got := strings.Join(srv.cfg.Auth.Tokens[0].Scopes, " "); got != strings.Join(config.AllScopes, " ") {
+		t.Fatalf("paired token scopes changed to %q; want them unchanged (manage via pairing)", got)
+	}
+	if !strings.Contains(w.Body.String(), "pairing") {
+		t.Errorf("expected a pairing hint, got %q", w.Body.String())
 	}
 }

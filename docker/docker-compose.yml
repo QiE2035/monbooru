@@ -40,6 +40,8 @@ services:
       - /path/to/monbooru/data:/data
     environment:
       - MONBOORU_SERVER_BIND_ADDRESS=0.0.0.0:8080
+      # Base URL (The one you use to reach monbooru from the browser)
+      - MONBOORU_SERVER_BASE_URL=http://localhost:8080
     restart: unless-stopped
 
   ## monloader is an optional online boorus and galleries downloader
@@ -59,7 +61,7 @@ services:
       - /path/to/monloader/config:/config
     environment:
       - MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8081
-      - MONLOADER_MONBOORU_API_URL=http://monbooru:8080
+      - MONLOADER_SERVER_BASE_URL=http://localhost:8081
     depends_on:
       - monbooru
     restart: unless-stopped

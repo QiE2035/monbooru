@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/leqwin/monbooru/internal/config"
@@ -72,7 +73,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	cfg.Galleries[0].DBPath = filepath.Join(dir, "test.db")
 	cfg.Galleries[0].ThumbnailsPath = thumbDir
 	cfg.Gallery.MaxFileSizeMB = 100
-	cfg.Auth.APIToken = testAPIToken
+	cfg.Auth.Tokens = []config.Token{{ID: "test", Name: "test", TokenHash: config.HashToken(testAPIToken), Scopes: config.AllScopes}}
 
 	g := Gallery{
 		Name:           cfg.DefaultGallery,
@@ -82,7 +83,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		TagSvc:         tags.New(database),
 		RelationsSvc:   relations.New(database),
 	}
-	h := New(cfg, jobs.NewManager(), fixedResolver(g), "v-test")
+	h := New(cfg, new(sync.RWMutex), jobs.NewManager(), fixedResolver(g), "v-test")
 	raw := http.NewServeMux()
 	h.Mount(raw)
 	// Wrap the mux so every request carries the bearer token by default.
@@ -234,8 +235,8 @@ func TestAPIDisabledWhenNoToken(t *testing.T) {
 	t.Cleanup(func() { _ = database.Close() })
 
 	cfg := config.Default()
-	cfg.Auth.APIToken = ""
-	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
+	cfg.Auth.Tokens = nil
+	h := New(cfg, new(sync.RWMutex), jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
@@ -263,8 +264,8 @@ func TestBearerAuthRejectsInvalidToken(t *testing.T) {
 	t.Cleanup(func() { _ = database.Close() })
 
 	cfg := config.Default()
-	cfg.Auth.APIToken = "secret-token"
-	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
+	cfg.Auth.Tokens = []config.Token{{ID: "t", Name: "t", TokenHash: config.HashToken("secret-token"), Scopes: config.AllScopes}}
+	h := New(cfg, new(sync.RWMutex), jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
@@ -290,8 +291,8 @@ func TestBearerAuthAcceptsValidToken(t *testing.T) {
 	t.Cleanup(func() { _ = database.Close() })
 
 	cfg := config.Default()
-	cfg.Auth.APIToken = "secret-token"
-	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
+	cfg.Auth.Tokens = []config.Token{{ID: "t", Name: "t", TokenHash: config.HashToken("secret-token"), Scopes: config.AllScopes}}
+	h := New(cfg, new(sync.RWMutex), jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
@@ -303,6 +304,92 @@ func TestBearerAuthAcceptsValidToken(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
+}
+
+func TestBearerAuthEnforcesScopes(t *testing.T) {
+	dir := t.TempDir()
+	database, err := db.Open(dir + "/test.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.Bootstrap(database); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	cfg := config.Default()
+	cfg.Auth.Tokens = []config.Token{{ID: "ro", Name: "ro", TokenHash: config.HashToken("ro-token"), Scopes: []string{config.ScopeRead}}}
+	h := New(cfg, new(sync.RWMutex), jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
+	mux := http.NewServeMux()
+	h.Mount(mux)
+
+	get := httptest.NewRequest("GET", "/api/v1/tags", nil)
+	get.Header.Set("Authorization", "Bearer ro-token")
+	gw := httptest.NewRecorder()
+	mux.ServeHTTP(gw, get)
+	if gw.Code != http.StatusOK {
+		t.Errorf("read-only GET expected 200, got %d", gw.Code)
+	}
+
+	del := httptest.NewRequest("DELETE", "/api/v1/images/1", nil)
+	del.Header.Set("Authorization", "Bearer ro-token")
+	dw := httptest.NewRecorder()
+	mux.ServeHTTP(dw, del)
+	if dw.Code != http.StatusForbidden {
+		t.Errorf("read-only DELETE expected 403, got %d", dw.Code)
+	}
+	if !strings.Contains(dw.Body.String(), "insufficient_scope") {
+		t.Errorf("expected insufficient_scope, got %s", dw.Body.String())
+	}
+}
+
+// TestBearerAuthTokenReadRaceFree runs the auth path against a concurrent
+// token-slice churn (the pairing claim / unpair path) under -race.
+func TestBearerAuthTokenReadRaceFree(t *testing.T) {
+	dir := t.TempDir()
+	database, err := db.Open(dir + "/test.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.Bootstrap(database); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	cfg := config.Default()
+	tok, secret := config.GenerateToken("primary", config.AllScopes)
+	cfg.Auth.Tokens = []config.Token{tok}
+	var mu sync.RWMutex
+	h := New(cfg, &mu, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
+	mux := http.NewServeMux()
+	h.Mount(mux)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 300; i++ {
+			extra, _ := config.GenerateToken(fmt.Sprintf("x%d", i), config.AllScopes)
+			mu.Lock()
+			cfg.Auth.Tokens = append(cfg.Auth.Tokens, extra)
+			if len(cfg.Auth.Tokens) > 4 {
+				cfg.Auth.Tokens = cfg.Auth.Tokens[:1]
+			}
+			mu.Unlock()
+		}
+	}()
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 300; i++ {
+				req := httptest.NewRequest("GET", "/api/v1/tags", nil)
+				req.Header.Set("Authorization", "Bearer "+secret)
+				mux.ServeHTTP(httptest.NewRecorder(), req)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestOpenAPIDocs(t *testing.T) {
@@ -1300,7 +1387,7 @@ func TestCORSRejectsBadOrigin(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Server.BaseURL = "https://myapp.example.com"
-	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
+	h := New(cfg, new(sync.RWMutex), jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
@@ -1323,8 +1410,8 @@ func TestBearerAuth_MissingHeader(t *testing.T) {
 	t.Cleanup(func() { _ = database.Close() })
 
 	cfg := config.Default()
-	cfg.Auth.APIToken = "required-token"
-	h := New(cfg, jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
+	cfg.Auth.Tokens = []config.Token{{ID: "t", Name: "t", TokenHash: config.HashToken("required-token"), Scopes: config.AllScopes}}
+	h := New(cfg, new(sync.RWMutex), jobs.NewManager(), fixedResolver(Gallery{Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database)}), "v-test")
 	mux := http.NewServeMux()
 	h.Mount(mux)
 

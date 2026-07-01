@@ -7,12 +7,14 @@ on.
 Manage them at **Settings → Galleries**:
 
 - **Add** - give it a name and a path on disk. The Add form also
-  accepts an import file (.db / .json / .zip) so you can create a
-  populated gallery in one shot. Adding a gallery switches the active
-  gallery to it (runtime only; the default is restored on restart).
+  accepts an import file (.db / .sqlite / .json / .zip) so you can
+  create a populated gallery in one shot. Adding a gallery switches the
+  active gallery to it (runtime only; the default is restored on
+  restart).
 - **Switch** - runtime only; doesn't persist.
 - **Set default** - the gallery that loads on startup.
-- **Rename** / **Delete** - type the gallery name to confirm.
+- **Rename** - give it a new name.
+- **Delete** - type the gallery name to confirm.
 
 The footer shows the active gallery; click it to switch when more than
 one is configured.
@@ -53,7 +55,11 @@ The dialog has two modes:
 
 - **Merge** (the dialog's preselected radio) - add new images and tags
   from the upload to the target gallery. Existing rows are kept; tags
-  from the upload are layered onto matching SHA-256 rows.
+  from the upload are layered onto matching SHA-256 rows. A `.db` or
+  `.json` upload carries no image bytes, so it applies tags only; new
+  images arrive only from an upload that bundles files (a `.zip`, or a
+  light `tags.json` whose files are already on disk). A successful
+  merge also switches the active gallery to the target.
 - **Replace** - wipe the target gallery's DB and thumbnails, then load
   the upload into the empty gallery. Type-to-confirm the gallery's
   name. Refused on the active gallery and the default gallery (switch
@@ -61,3 +67,5 @@ The dialog has two modes:
 
 After Replace finishes, monbooru kicks off a thumbnail rebuild in the
 background and switches the active gallery to the freshly imported one.
+Import (either mode) is refused while another background job is running
+on the gallery.

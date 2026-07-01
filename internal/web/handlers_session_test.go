@@ -86,7 +86,7 @@ func TestSessionLoadNextPair_RatingCeilingFiltersBothSides(t *testing.T) {
 		t.Fatalf("excludeIDs len = %d, want 2 (questionable + explicit)", len(excludeIDs))
 	}
 
-	pair, visible, raw, err := loadNextPair(cx, "smallest_distance_first", ceiling)
+	pair, visible, raw, err := loadNextPair(cx, "smallest_distance_first", ceiling, 0, 0)
 	if err != nil {
 		t.Fatalf("loadNextPair: %v", err)
 	}
@@ -111,12 +111,64 @@ func TestSessionLoadNextPair_RatingCeilingFiltersBothSides(t *testing.T) {
 	if got := none.ExcludedTagIDs(); len(got) != 0 {
 		t.Errorf("ExcludedTagIDs(empty) returned %d ids, want 0", len(got))
 	}
-	_, visibleNo, rawNo, err := loadNextPair(cx, "smallest_distance_first", none)
+	_, visibleNo, rawNo, err := loadNextPair(cx, "smallest_distance_first", none, 0, 0)
 	if err != nil {
 		t.Fatalf("loadNextPair no-filter: %v", err)
 	}
 	if visibleNo != 2 || rawNo != 2 {
 		t.Errorf("no-filter counts: visible=%d raw=%d, want 2/2", visibleNo, rawNo)
+	}
+}
+
+// pairHas reports whether the loaded pair is exactly {x, y} in either
+// orientation.
+func pairHas(p *sessionPairView, x, y int64) bool {
+	if p == nil {
+		return false
+	}
+	return (p.A.ID == x && p.B.ID == y) || (p.A.ID == y && p.B.ID == x)
+}
+
+// review-again reopens the session on one exact pair: loadNextPair must
+// surface the pinned pair even when another pair sorts ahead of it, and
+// fall back to the ordered pick when the pin is not in the queue.
+func TestSessionLoadNextPair_PinsRequestedPair(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	if cx == nil {
+		t.Fatal("active gallery missing")
+	}
+	a := insertRawImage(t, srv, "pin_a.png", "")
+	b := insertRawImage(t, srv, "pin_b.png", "")
+	c := insertRawImage(t, srv, "pin_c.png", "")
+	// (a,c) at distance 0 sorts ahead of (a,b) at distance 5.
+	queueRow(t, srv.db(), a, c, 0)
+	queueRow(t, srv.db(), a, b, 5)
+	none := &Ceiling{level: "", cx: cx}
+
+	top, _, _, err := loadNextPair(cx, "smallest_distance_first", none, 0, 0)
+	if err != nil {
+		t.Fatalf("loadNextPair unpinned: %v", err)
+	}
+	if !pairHas(top, a, c) {
+		t.Fatalf("unpinned pick should be (a,c), got A=%d B=%d", top.A.ID, top.B.ID)
+	}
+
+	pinned, _, _, err := loadNextPair(cx, "smallest_distance_first", none, a, b)
+	if err != nil {
+		t.Fatalf("loadNextPair pinned: %v", err)
+	}
+	if !pairHas(pinned, a, b) {
+		t.Fatalf("pinned pick should be (a,b) despite sorting later, got A=%d B=%d", pinned.A.ID, pinned.B.ID)
+	}
+
+	// A pin that isn't queued falls back to the ordered pick.
+	fallback, _, _, err := loadNextPair(cx, "smallest_distance_first", none, a, 999999)
+	if err != nil {
+		t.Fatalf("loadNextPair fallback: %v", err)
+	}
+	if !pairHas(fallback, a, c) {
+		t.Fatalf("missing pin should fall back to (a,c), got A=%d B=%d", fallback.A.ID, fallback.B.ID)
 	}
 }
 

@@ -57,7 +57,7 @@
         <tr><td><code>name:vacation</code></td><td>Substring match against the filename (the path segment after the last "/"). Case-insensitive; folder names don't bleed in.</td></tr>
         <tr><td><code>size:&gt;=10MB</code></td><td>File size comparison. Accepts bare bytes or a unit suffix: <code>B</code>, <code>K</code>/<code>KB</code>/<code>KiB</code>, <code>M</code>/<code>MB</code>/<code>MiB</code>, <code>G</code>/<code>GB</code>/<code>GiB</code>, <code>T</code>/<code>TB</code>/<code>TiB</code>. Every unit is 1024-based.</td></tr>
         <tr><td><code>mime:png</code></td><td>File-type filter. Accepts the bare bucket (<code>png</code>, <code>jpeg</code>, <code>webp</code>, <code>gif</code>, <code>mp4</code>, <code>webm</code>, <code>cbz</code>) or the <code>image/...</code> / <code>video/...</code> form. Comma-separates as a union.</td></tr>
-        <tr><td><code>type:image</code> / <code>type:archive</code> / <code>type:animated</code></td><td>Narrow by file-type bucket. <code>image</code> = jpeg/png/webp/gif/mp4/webm, <code>archive</code> = cbz/zip (manga, image-zip..), <code>animated</code> = gif/mp4/webm. Comma-separates as a union.</td></tr>
+        <tr><td><code>type:image</code> / <code>type:archive</code> / <code>type:animated</code></td><td>Narrow by file-type bucket. <code>image</code> = jpeg/png/webp, <code>archive</code> = cbz/zip (manga, image-zip..), <code>animated</code> = gif/mp4/webm. Comma-separates as a union.</td></tr>
         <tr><td><code>width:&gt;=1920</code></td><td>Filter by image width.</td></tr>
         <tr><td><code>height:&lt;768</code></td><td>Filter by image height.</td></tr>
         <tr><td><code>ratio:&gt;=1.5</code></td><td>Aspect ratio (width / height) comparison.</td></tr>
@@ -90,7 +90,7 @@
         <tr><td><code>ai:a1111</code></td><td>Images generated with A1111/Forge</td></tr>
         <tr><td><code>ai:comfyui</code></td><td>Images generated with ComfyUI</td></tr>
         <tr><td><code>ai:none</code></td><td>Images with no detected generation metadata</td></tr>
-        <tr><td><code>generated:abcd1234abcd</code></td><td>Other images sharing the same generation recipe (prompt + model + sampler + steps + cfg, seed ignored). The hash is shown in the Generation data block on the detail page.</td></tr>
+        <tr><td><code>generated:abcd1234abcd</code></td><td>Other images sharing the same generation recipe (prompt + negative prompt + model + sampler + steps + cfg, seed ignored). The hash is shown in the Generation data block on the detail page.</td></tr>
         <tr><td><code>prompt:cat</code></td><td>Substring match across the SD or ComfyUI prompt (whichever the image carries).</td></tr>
         <tr><td><code>model:sdxl</code></td><td>Substring match against the SD model or ComfyUI checkpoint name.</td></tr>
         <tr><td><code>sampler:dpm</code></td><td>Substring match against the SD / ComfyUI sampler name.</td></tr>

@@ -447,6 +447,17 @@ func TestBuildWhere_MissingTrue(t *testing.T) {
 	}
 }
 
+func TestBuildWhere_TypeImage(t *testing.T) {
+	expr := FilterExpr{Key: "type", Val: "image"}
+	where, args, _ := buildWhere(expr)
+	if len(args) != 0 {
+		t.Fatalf("expected 0 args, got %d", len(args))
+	}
+	if !strings.Contains(where, "file_type IN ('jpeg', 'png', 'webp')") {
+		t.Errorf("where clause missing image set: %s", where)
+	}
+}
+
 func TestBuildWhere_TypeAnimated(t *testing.T) {
 	expr := FilterExpr{Key: "type", Val: "animated"}
 	where, args, _ := buildWhere(expr)

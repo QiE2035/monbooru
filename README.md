@@ -34,7 +34,7 @@ Designed for organizing your local media collection, including AI-generated imag
 - **Inbox workflow** : new images land in the inbox for review
 - **Multiple galleries** in one instance, each with its own filesystem and database; per-gallery export/import; import data from supported booru applications
 - **REST API** for third-party integrations
-- **Companion downloader** ([monloader](https://github.com/leqwin/monloader)) imports images and tags from supported boorus and galleries to monbooru.
+- **Monloader integration** ([monloader](https://github.com/leqwin/monloader)) imports images and tags from supported boorus and galleries to monbooru.
 - **Optional password login**
 
 ---
@@ -64,8 +64,8 @@ flowchart LR
     class web src;
 ```
 
-- **[monsender](https://github.com/leqwin/monsender)** : browser extension; sends the URL of the page you're currently browsing to monloader.
 - **[monloader](https://github.com/leqwin/monloader)** : downloader; fetches files and per-post metadata (via gallery-dl) and pushes them into a monbooru gallery over the REST API.
+- **[monsender](https://github.com/leqwin/monsender)** : browser extension; sends the URL of the page you're currently browsing to monloader.
 - **monbooru** : this application; organizes, tags, and serves your collection. 
 
 ---

@@ -37,6 +37,7 @@
 </div>
 
 <div id="gallery-flash"></div>
+<div id="search-warning">{{if .SearchWarning}}<span class="field-hint">{{.SearchWarning}}</span>{{end}}</div>
 
 <div id="gallery-status" class="status-bar"><span id="result-count" class="result-count">{{.Result.Total}}</span> {{plural .Result.Total "match" "matches"}}</div>
 

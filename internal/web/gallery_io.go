@@ -794,7 +794,15 @@ func replaceFromArchive(srcPath, dbPath, thumbsPath, galleryPath string, maxFile
 			return err
 		}
 	}
-	return nil
+
+	// applyInner reconciled is_missing before these files existed on disk;
+	// redo it now that the archive's images are extracted.
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("reopen db for reconcile: %w", err)
+	}
+	defer func() { _ = database.Close() }()
+	return reconcileMissingFiles(database, galleryPath)
 }
 
 // rebaseImagePaths rewrites every images.canonical_path and
@@ -944,11 +952,7 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 	// stays hidden until a manual Sync the import flow never queues). Mirrors
 	// what Sync does for vanished/reappeared files.
 	for _, r := range imgs {
-		newCanonical := filepath.Join(root, r.folder, filepath.Base(r.canonical))
-		flag := 1
-		if _, err := os.Stat(newCanonical); err == nil {
-			flag = 0
-		}
+		flag := fileMissingFlag(root, r.folder, r.canonical)
 		if _, err := tx.Exec(
 			`UPDATE images SET is_missing = ? WHERE id = ?`, flag, r.id,
 		); err != nil {
@@ -957,6 +961,54 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 	}
 
 	return tx.Commit()
+}
+
+// fileMissingFlag reports 1 when the image's canonical file is absent from
+// galleryRoot and 0 when it is present, matching what Sync records.
+func fileMissingFlag(galleryRoot, folder, canonical string) int {
+	if _, err := os.Stat(filepath.Join(galleryRoot, folder, filepath.Base(canonical))); err == nil {
+		return 0
+	}
+	return 1
+}
+
+// reconcileMissingFiles re-runs the is_missing reconcile against galleryPath.
+// The archive import installs the DB before extracting its bundled images, so
+// this second pass runs once the files are actually on disk.
+func reconcileMissingFiles(database *db.DB, galleryPath string) error {
+	root := strings.TrimRight(galleryPath, "/")
+	rows, err := database.Read.Query(`SELECT id, folder_path, canonical_path FROM images`)
+	if err != nil {
+		return fmt.Errorf("scan images for reconcile: %w", err)
+	}
+	type imgRow struct {
+		id        int64
+		folder    string
+		canonical string
+	}
+	var imgs []imgRow
+	for rows.Next() {
+		var r imgRow
+		if err := rows.Scan(&r.id, &r.folder, &r.canonical); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		imgs = append(imgs, r)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	for _, r := range imgs {
+		flag := fileMissingFlag(root, r.folder, r.canonical)
+		if _, err := database.Write.Exec(
+			`UPDATE images SET is_missing = ? WHERE id = ?`, flag, r.id,
+		); err != nil {
+			return fmt.Errorf("reconcile is_missing for image %d: %w", r.id, err)
+		}
+	}
+	return nil
 }
 
 // wipeDirContents removes everything inside dir but keeps the directory

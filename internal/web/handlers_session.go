@@ -87,7 +87,11 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 		saveSessionOrder(cx, order)
 	}
 	ceiling := resolveCeiling(r, cx)
-	pair, remaining, rawRemaining, err := loadNextPair(cx, order, ceiling)
+	// review-again links carry the exact pair to reopen; pin it so the
+	// operator lands on the pair they clicked, not whatever sorts first.
+	pinA, _ := strconv.ParseInt(r.URL.Query().Get("a"), 10, 64)
+	pinB, _ := strconv.ParseInt(r.URL.Query().Get("b"), 10, 64)
+	pair, remaining, rawRemaining, err := loadNextPair(cx, order, ceiling, pinA, pinB)
 	if err != nil {
 		logx.Warnf("session next pair: %v", err)
 		http.Error(w, "load pair", http.StatusInternalServerError)
@@ -174,7 +178,7 @@ func saveSessionOrder(cx *galleryCtx, mode string) {
 // Returns (pair, visible, raw, err): visible is the post-filter count,
 // raw is the unfiltered total - the difference is the "N pairs hidden
 // by your ceiling" the empty-queue branch surfaces.
-func loadNextPair(cx *galleryCtx, order string, ceiling *Ceiling) (*sessionPairView, int, int, error) {
+func loadNextPair(cx *galleryCtx, order string, ceiling *Ceiling, pinA, pinB int64) (*sessionPairView, int, int, error) {
 	var rawRemaining int
 	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs`).Scan(&rawRemaining); err != nil {
 		return nil, 0, 0, err
@@ -198,25 +202,50 @@ func loadNextPair(cx *galleryCtx, order string, ceiling *Ceiling) (*sessionPairV
 	if visible == 0 {
 		return nil, 0, rawRemaining, nil
 	}
-	selectQ := `
+	selectBase := `
 		SELECT p.a_image_id, p.b_image_id, p.distance,
 		       ia.canonical_path, COALESCE(ia.width, 0), COALESCE(ia.height, 0), ia.file_size, ia.file_type,
 		       ib.canonical_path, COALESCE(ib.width, 0), COALESCE(ib.height, 0), ib.file_size, ib.file_type
 		FROM potential_relation_pairs p
 		JOIN images ia ON ia.id = p.a_image_id
 		JOIN images ib ON ib.id = p.b_image_id`
+	orderedQ := selectBase
 	if where != "" {
-		selectQ += "\n\t\tWHERE " + where
+		orderedQ += "\n\t\tWHERE " + where
 	}
-	selectQ += "\n\t\t" + orderClauseForMode(order) + "\n\t\tLIMIT 1"
+	orderedQ += "\n\t\t" + orderClauseForMode(order) + "\n\t\tLIMIT 1"
+	query, qargs := orderedQ, args
+	if pinA > 0 && pinB > 0 {
+		lo, hi := pinA, pinB
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		pinnedQ := selectBase
+		if where != "" {
+			pinnedQ += "\n\t\tWHERE " + where + " AND p.a_image_id = ? AND p.b_image_id = ?"
+		} else {
+			pinnedQ += "\n\t\tWHERE p.a_image_id = ? AND p.b_image_id = ?"
+		}
+		pinnedQ += "\n\t\tLIMIT 1"
+		query, qargs = pinnedQ, append(append([]any{}, args...), lo, hi)
+	}
 	var aPath, bPath string
 	var aW, aH, bW, bH sql.NullInt64
 	view := sessionPairView{Order: order, Remaining: visible}
-	if err := cx.DB.Read.QueryRow(selectQ, args...).Scan(
-		&view.A.ID, &view.B.ID, &view.Distance,
-		&aPath, &aW, &aH, &view.A.FileSize, &view.A.FileType,
-		&bPath, &bW, &bH, &view.B.FileSize, &view.B.FileType,
-	); err != nil {
+	scan := func(q string, a ...any) error {
+		return cx.DB.Read.QueryRow(q, a...).Scan(
+			&view.A.ID, &view.B.ID, &view.Distance,
+			&aPath, &aW, &aH, &view.A.FileSize, &view.A.FileType,
+			&bPath, &bW, &bH, &view.B.FileSize, &view.B.FileType,
+		)
+	}
+	err := scan(query, qargs...)
+	if err == sql.ErrNoRows && pinA > 0 && pinB > 0 {
+		// Pinned pair isn't in the visible queue (already resolved, or
+		// hidden by the ceiling); fall back to the normal ordered pick.
+		err = scan(orderedQ, args...)
+	}
+	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, visible, rawRemaining, nil
 		}

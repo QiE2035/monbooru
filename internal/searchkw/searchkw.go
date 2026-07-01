@@ -8,6 +8,8 @@
 // usage and internal/search's gallery-using test fixtures.
 package searchkw
 
+import "strings"
+
 // Keywords lists every search-filter keyword in the order the
 // `system:` cheat-sheet dropdown surfaces them. Adding a future filter
 // is one edit here.
@@ -92,6 +94,53 @@ var Expansions = map[string][]string{
 	"relation":   {"duplicate", "original", "alternate", "version", "derivative", "source", "collection", "any", "none"},
 }
 
+// rangeKeys accept operator / numeric input, so their Expansions rows are
+// comparison operators rather than a closed value set to validate against.
+var rangeKeys = map[string]bool{
+	"width": true, "height": true, "date": true, "size": true,
+	"ratio": true, "tagcount": true, "duration": true, "pages": true,
+}
+
+// closedVocab is the membership-test view of Expansions for the keys
+// whose values are a fixed set (type, mime, the bool filters, ...).
+// Range keys and open-input keys (folder, source, name, ...) are absent,
+// so ValueKnown treats them as accepting anything.
+var closedVocab = func() map[string]map[string]struct{} {
+	m := make(map[string]map[string]struct{}, len(Expansions))
+	for key, vals := range Expansions {
+		if rangeKeys[key] {
+			continue
+		}
+		set := make(map[string]struct{}, len(vals))
+		for _, v := range vals {
+			set[v] = struct{}{}
+		}
+		m[key] = set
+	}
+	return m
+}()
+
+// ValueKnown reports whether val is a recognised value for a
+// closed-vocabulary key. Open-input and range keys always return true.
+// Comma-separated unions (type:, mime:) hold only when every element is
+// recognised, matching how the executor unions the buckets.
+func ValueKnown(key, val string) bool {
+	set, ok := closedVocab[key]
+	if !ok {
+		return true
+	}
+	for _, part := range strings.Split(strings.ToLower(val), ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if _, ok := set[part]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // Descriptions maps each filter keyword to a short English label the
 // cheat-sheet dropdown shows just left of the "system" column. Tag
 // categories surface in the level-1 list with a generic "category"
@@ -112,7 +161,7 @@ var Descriptions = map[string]string{
 	"folderonly": "folder (exact)",
 	"generated":  "generation recipe",
 	"rating":     "safety rating",
-	"type":       "image or archive",
+	"type":       "image / archive / animated",
 	"collection": "collection label",
 	"pages":      "page count",
 	"name":       "file name",
@@ -177,7 +226,7 @@ var ExpansionDescriptions = map[string]map[string]string{
 		"..": "range",
 	},
 	"type": {
-		"image":    "regular images and videos",
+		"image":    "regular images (jpeg / png / webp)",
 		"archive":  "cbz / zip archives",
 		"animated": "gif / mp4 / webm",
 	},

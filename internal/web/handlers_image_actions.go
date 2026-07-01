@@ -30,8 +30,9 @@ func (s *Server) ratingCeilingPost(w http.ResponseWriter, r *http.Request) {
 // toggleBoolColumn flips a 0/1 column in images via RETURNING, drops
 // the per-gallery caches, and writes one of two pre-rendered button
 // fragments depending on the new value. Shared by toggleFavorite and
-// toggleInbox.
-func (s *Server) toggleBoolColumn(w http.ResponseWriter, r *http.Request, column, onHTML, offHTML string) {
+// toggleInbox; oob (nil for favorite) appends an out-of-band fragment
+// so a layout counter can follow the flip.
+func (s *Server) toggleBoolColumn(w http.ResponseWriter, r *http.Request, column, onHTML, offHTML string, oob func(*http.Request) string) {
 	id, ok := pathInt64(w, r, "id")
 	if !ok {
 		return
@@ -58,12 +59,16 @@ func (s *Server) toggleBoolColumn(w http.ResponseWriter, r *http.Request, column
 	} else {
 		_, _ = w.Write([]byte(offHTML))
 	}
+	if oob != nil {
+		_, _ = w.Write([]byte(oob(r)))
+	}
 }
 
 func (s *Server) toggleFavorite(w http.ResponseWriter, r *http.Request) {
 	s.toggleBoolColumn(w, r, "is_favorited",
 		`<button type="submit" id="fav-btn" class="btn-fav active" title="Unfavorite">♥</button>`,
 		`<button type="submit" id="fav-btn" class="btn-fav" title="Favorite">♡</button>`,
+		nil,
 	)
 }
 
@@ -75,7 +80,28 @@ func (s *Server) toggleInbox(w http.ResponseWriter, r *http.Request) {
 	s.toggleBoolColumn(w, r, "is_inbox",
 		`<button type="submit" id="inbox-btn" class="btn-inbox active" title="Archive (i)">In inbox</button>`,
 		`<button type="submit" id="inbox-btn" class="btn-inbox" title="Send to inbox (i)">Archived</button>`,
+		s.inboxNavOOB,
 	)
+}
+
+// inboxNavOOB re-renders the topbar inbox link out-of-band so its count
+// follows the toggle; swapping the detail button alone leaves the layout
+// counter stale until the next full render. Mirrors base()'s ceiling-aware
+// InboxCountUnder so the OOB value matches a full render.
+func (s *Server) inboxNavOOB(r *http.Request) string {
+	cx := s.Active()
+	if cx == nil {
+		return ""
+	}
+	n, err := cx.InboxCountUnder(resolveCeiling(r, cx))
+	if err != nil {
+		return ""
+	}
+	suffix := ""
+	if n > 0 {
+		suffix = fmt.Sprintf(" (%d)", n)
+	}
+	return fmt.Sprintf(`<a id="inbox-nav" href="/?q=inbox:true" hx-swap-oob="true">Inbox%s</a>`, suffix)
 }
 
 func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {

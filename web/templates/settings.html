@@ -19,6 +19,9 @@
 {{$cfg  := index . "Config"}}
 {{$galleries := index . "Galleries"}}
 {{$active := index . "ActiveGallery"}}
+{{$monloaderPending := index . "MonloaderPending"}}
+{{$monloaderPaired := index . "MonloaderPaired"}}
+{{$monloaderPeerURL := index . "MonloaderPeerURL"}}
 
 <div id="settings-page">
   <h2>Settings</h2>
@@ -105,7 +108,7 @@
         {{range $galleries}}
         <tr>
           <td><strong>{{.Name}}</strong></td>
-          <td><code>{{.GalleryPath}}</code></td>
+          <td class="gallery-path-cell"><code>{{.GalleryPath}}</code></td>
           <td class="gallery-status-cell">
             {{if eq .Name $active}}<span class="status-badge status-ok">active</span>{{end}}
             {{if eq .Name $cfg.DefaultGallery}}<span class="status-badge status-ok">default</span>{{end}}
@@ -477,15 +480,26 @@
     <form hx-post="/settings/monloader" hx-target="#flash-monloader" hx-swap="innerHTML">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
       <div class="settings-sub">
-        <h4>Link</h4>
-        <div class="field">
-          <label for="monloader_url">monloader URL</label>
-          <input type="text" name="monloader_url" id="monloader_url" value="{{$cfg.Server.MonloaderURL}}" placeholder="http://localhost:8081">
-          <p class="field-hint">Browser URL of your monloader instance; adds a "Go to monloader" link in the top bar, hidden when empty.</p>
+        <h4>URLs</h4>
+        <div class="settings-cols">
+          <div class="field">
+            <label for="monloader_api_url">api url</label>
+            <input type="text" name="api_url" id="monloader_api_url" value="{{$cfg.Monloader.APIURL}}" placeholder="auto-detected from pairing">
+            <p class="field-hint">Internal URL monbooru uses to reach monloader. Blank = auto-detected from the pairing.</p>
+          </div>
+          <div class="field">
+            <label for="monloader_url">web url</label>
+            <input type="text" name="monloader_url" id="monloader_url" value="{{$cfg.Server.MonloaderURL}}" placeholder="http://localhost:8081">
+            <p class="field-hint">Browser URL for the "Go to monloader" top-bar link; blank = same as api url.</p>
+          </div>
         </div>
       </div>
       <div class="settings-actions"><button type="submit">Save</button></div>
     </form>
+    <div class="settings-sub">
+      <h4>Pairing</h4>
+      {{template "partials/monloader_pairing.html" (dict "Pending" $monloaderPending "Paired" $monloaderPaired "PeerURL" $monloaderPeerURL "CSRFToken" $csrf)}}
+    </div>
   </section>
 
   <section id="tagger" class="settings-section">
@@ -705,11 +719,13 @@
     <div class="settings-cols">
       {{template "partials/auth_password_section.html" (dict "AuthEnabled" $cfg.Auth.EnablePassword "CSRFToken" $csrf)}}
       <div class="settings-sub">
-        <h4>API Token</h4>
-        <form hx-post="/settings/auth/token" hx-target="#flash-auth" hx-swap="innerHTML"
-              hx-confirm="Regenerate the API token? Existing scripts and integrations using the current token will stop working.">
+        <h4>API Tokens</h4>
+        <p class="field-hint">Bearer tokens for the REST API. The secret is shown once, at creation.</p>
+        {{template "partials/auth_tokens.html" (dict "Tokens" $cfg.Auth.Tokens "CSRFToken" $csrf)}}
+        <form hx-post="/settings/auth/tokens" hx-target="#flash-auth" hx-swap="innerHTML" style="margin-top:8px">
           <input type="hidden" name="_csrf" value="{{$csrf}}">
-          <button type="submit">Regenerate API token</button>
+          <input type="text" id="token-name-input" name="name" placeholder="token name" maxlength="64" required>
+          <button type="submit">Create token</button>
         </form>
       </div>
     </div>

@@ -21,7 +21,7 @@
     </a>
     <nav id="nav">
       <a href="/"        {{if and (eq .ActiveNav "gallery") (not .InboxNavActive)}} class="active"{{end}}>Images</a>
-      <a href="/?q=inbox:true" {{if .InboxNavActive}} class="active"{{end}}>Inbox{{if gt .InboxCount 0}} ({{.InboxCount}}){{end}}</a>
+      <a id="inbox-nav" href="/?q=inbox:true" {{if .InboxNavActive}} class="active"{{end}}>Inbox{{if gt .InboxCount 0}} ({{.InboxCount}}){{end}}</a>
       <a href="/categories" {{if eq .ActiveNav "categories"}} class="active"{{end}}>Categories</a>
       <a href="/tags"    {{if eq .ActiveNav "tags"}}    class="active"{{end}}>Tags</a>
       <a href="/collections" {{if eq .ActiveNav "collections"}} class="active"{{end}}>Collections</a>
@@ -100,7 +100,7 @@
       <span id="footer-hidden" class="footer-hidden">{{with .HiddenByCeiling}}<span class="footer-sep-strong">::</span>{{.}} hidden {{plural . "image" "images"}} in the current search{{end}}</span>
     </div>
     <div id="footer-right">
-      page loaded in <span id="page-load-ms">{{pageLoadMs .RequestStart}}</span> ms · <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="/api/v1/docs" target="_blank" rel="noopener">API</a>
+      {{if .MonloaderPaired}}{{template "partials/monloader_light.html" .}} · {{end}}page loaded in <span id="page-load-ms">{{pageLoadMs .RequestStart}}</span> ms · <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="/api/v1/docs" target="_blank" rel="noopener">API</a>
     </div>
   </footer>
   <dialog id="confirm-dialog">

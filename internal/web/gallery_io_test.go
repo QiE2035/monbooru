@@ -188,6 +188,49 @@ func TestImportGalleryArchive_RestoresImagesAndDB(t *testing.T) {
 	}
 }
 
+func TestImportGalleryArchive_ClearsMissingAfterExtract(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+	cx := srv.Get("stock")
+	if cx == nil {
+		t.Fatal("stock gallery missing")
+	}
+
+	// An image whose canonical file lives in the gallery tree, so the archive
+	// bundles the bytes and the import must extract them back.
+	if err := os.WriteFile(filepath.Join(cx.GalleryPath, "pic.png"), []byte("bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cx.DB.Write.Exec(
+		`INSERT INTO images (sha256, canonical_path, folder_path, file_type, file_size, ingested_at)
+		 VALUES ('pic-sha', ?, '', 'png', 5, datetime('now'))`,
+		filepath.Join(cx.GalleryPath, "pic.png"),
+	); err != nil {
+		t.Fatalf("seed image: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := srv.ExportGalleryArchive("stock", "db", &buf); err != nil {
+		t.Fatal(err)
+	}
+	// Empty the tree so the pre-extract reconcile can't find the file; only
+	// the archive's extracted copy should clear is_missing.
+	if err := os.Remove(filepath.Join(cx.GalleryPath, "pic.png")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := srv.ImportGallery("stock", "zip", bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	cx = srv.Get("stock")
+	var missing int
+	if err := cx.DB.Read.QueryRow(`SELECT is_missing FROM images WHERE sha256 = 'pic-sha'`).Scan(&missing); err != nil {
+		t.Fatal(err)
+	}
+	if missing != 0 {
+		t.Errorf("is_missing = %d after archive import, want 0", missing)
+	}
+}
+
 func TestImportGallery_RebasesPathsToTargetGallery(t *testing.T) {
 	// The export's canonical_path points at the source gallery's root
 	// (say /source/gallery). Importing into a differently-mounted target

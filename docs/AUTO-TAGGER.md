@@ -25,8 +25,14 @@ own subfolder under the `models/` volume. Each subfolder needs:
 
 Reload the Settings page; the new tagger appears in the table.
 
+If a model needs preprocessing monbooru can't infer (input size,
+channel order, normalization, padding, output activation), drop an
+optional `tagger.json` next to `model.onnx` to pin it; the sidecar
+overrides the auto-detected profile.
+
 To run it, use the auto-tag button in the image detail or in batch
-actions.
+actions. "Auto-tag all current search" is capped at 50,000 images per
+run.
 
 Multiple taggers can run together; per-image results are merged so a
 tag detected by two taggers is inserted once with the higher
@@ -56,12 +62,14 @@ disable everything except `medium` and `meta`).
 When a tagger runs against a video (5 sampled frames) or an archive
 (every page), monbooru merges per-frame scores into a single set of
 tags per image. The `tagger.aggregation.min_hit_fraction` TOML knob
-(default `0.05`) controls how many frames a label must score above the
-threshold on to survive the merge: the cutoff is
-`clamp(ceil(min_hit_fraction × frame_count), 2, 10)`. A single noisy
-hit on a 200-page manga is not enough; the same label appearing on 10+
-pages does survive. Set the knob to `0` to revert to "any single hit
-wins". Static images are unaffected (always single-frame).
+(default `0.05`) controls how many frames a label must clear the
+pre-floor (`0.001`) on to survive the merge: the cutoff is
+`clamp(ceil(min_hit_fraction × frame_count), 2, 10)`. The per-category
+(or global) confidence threshold is then applied to the mean of that
+label's scores across the frames it hit. A single noisy hit on a
+200-page manga is not enough; the same label appearing on 10+ pages
+does survive. Set the knob to `0` to revert to "any single hit wins".
+Static images are unaffected (always single-frame).
 
 ## Per-gallery enabling
 
@@ -106,8 +114,8 @@ survives the failed override.
 
 ## GPU (CUDA)
 
-The default image is CPU-only (~210 MB). For GPU inference, switch to
-the `-cuda` image (~2.3 GB), pass the GPU into the container the usual
+The default image is CPU-only. For GPU inference, switch to
+the `-cuda` image, pass the GPU into the container the usual
 way, then enable **Settings → Auto-Tagger → Use GPU (CUDA)** (or set
 `MONBOORU_TAGGER_USE_CUDA=true`). GPU makes batch auto-tagging a lot faster.
 The current mode is shown as a badge. 
@@ -118,7 +126,7 @@ becomes the bottleneck.
 The very first GPU inference on a new host pays a one-time
 JIT-compilation cost, which takes a few minutes during the first inference. The
 compiled kernels are cached under `<data_path>/.nv-cache/`; every
-restart after that loads them in ~2 s. The cache can be set explicitly
+restart after that loads them quicker. The cache can be set explicitly
 with the standard `CUDA_CACHE_PATH` env var if you want it elsewhere.
 Mount the data path on a persistent volume so the cache survives
 container recycles.
@@ -132,7 +140,5 @@ TOML; `0` releases immediately after every run.
 
 By default the tagger runs in a forked subprocess (`tagger-worker`)
 that the parent supervises - idle release SIGTERMs the child so the
-kernel reclaims the CUDA libraries and the ONNX Runtime arena. The
-parent's RSS stays at the no-tagger baseline between runs regardless
-of how long the model stayed loaded. To run inference in the parent
+kernel reclaims the CUDA libraries and the ONNX Runtime arena. To run inference in the parent
 instead, set `MONBOORU_TAGGER_BACKEND=inproc` before launch.

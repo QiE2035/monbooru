@@ -754,17 +754,16 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 		}
 		msg = "Original updated."
 	case "review-again":
-		// "review-again" undoes a 2-member relation and pushes the
-		// same pair back into the session queue so the operator can
-		// reclassify. The `kind` field disambiguates which relation
-		// the dissolve targets (dup / alt / version / not_related);
-		// for dup / alt we accept a group_id and dissolve the whole
-		// 2-member group (the template only shows review-again on
-		// such groups), for version / not_related we accept a, b.
-		if !reviewAgainPost(w, r, cx) {
-			return
-		}
-		msg = "Pair queued for re-review."
+		// "review-again" undoes a 2-member relation and reopens the
+		// session on that exact pair. The `kind` field disambiguates
+		// which relation the dissolve targets (dup / alt / version /
+		// derivative / not_related); for dup / alt we accept a group_id
+		// and dissolve the whole 2-member group (the template only shows
+		// review-again on such groups), for version / derivative /
+		// not_related we accept a, b. reviewAgainPost writes its own
+		// response (a redirect to the pinned session, or an error flash).
+		reviewAgainPost(w, r, cx)
+		return
 	default:
 		w.WriteHeader(http.StatusBadRequest)
 		writeInlineFlash(w, "err", "Unknown relation type.")
@@ -775,19 +774,19 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 }
 
 // reviewAgainPost dissolves a 2-member relation, clears any matching
-// not_related_pairs row so the find-pairs job stops skipping it, and
-// pushes the pair onto potential_relation_pairs with distance=0 so it
-// lands at the top of the session queue. Returns true on success;
-// returns false after writing an error response so the caller can
-// abort the outer switch.
-func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) bool {
+// not_related_pairs row so the find-pairs job stops skipping it, queues
+// the pair onto potential_relation_pairs, and redirects to the session
+// pinned to that exact pair so the operator reclassifies the pair they
+// clicked rather than whatever sorts first. Writes its own response: a
+// redirect on success, an error flash otherwise.
+func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) {
 	subkind := r.FormValue("kind")
 	var a, b int64
 	switch subkind {
 	case "duplicate", "alternate":
 		gid, ok := formInt64(w, r, "group_id")
 		if !ok {
-			return false
+			return
 		}
 		var ar, br int64
 		err := cx.DB.Read.QueryRow(
@@ -795,49 +794,59 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) boo
 		).Scan(&ar, &br)
 		if err != nil {
 			writeRelationError(w, err)
-			return false
+			return
 		}
 		if ar == 0 || br == 0 || ar == br {
 			w.WriteHeader(http.StatusBadRequest)
 			writeInlineFlash(w, "err", "Group must have exactly two members.")
-			return false
+			return
 		}
 		a, b = ar, br
 		if subkind == "duplicate" {
 			if err := cx.RelationsSvc.DissolveDupGroup(gid); err != nil {
 				writeRelationError(w, err)
-				return false
+				return
 			}
 		} else {
 			if err := cx.RelationsSvc.DissolveAltGroup(gid); err != nil {
 				writeRelationError(w, err)
-				return false
+				return
 			}
 		}
 	case "version":
 		ar, br, ok := parseRelationPair(w, r)
 		if !ok {
-			return false
+			return
 		}
 		if err := cx.RelationsSvc.RemoveVersionEdge(ar, br); err != nil {
 			writeRelationError(w, err)
-			return false
+			return
+		}
+		a, b = ar, br
+	case "derivative":
+		ar, br, ok := parseRelationPair(w, r)
+		if !ok {
+			return
+		}
+		if err := cx.RelationsSvc.RemoveDerivativeEdge(ar, br); err != nil {
+			writeRelationError(w, err)
+			return
 		}
 		a, b = ar, br
 	case "not_related":
 		ar, br, ok := parseRelationPair(w, r)
 		if !ok {
-			return false
+			return
 		}
 		if err := cx.RelationsSvc.RemoveNotRelated(ar, br); err != nil {
 			writeRelationError(w, err)
-			return false
+			return
 		}
 		a, b = ar, br
 	default:
 		w.WriteHeader(http.StatusBadRequest)
 		writeInlineFlash(w, "err", "Unknown review-again kind.")
-		return false
+		return
 	}
 	// not_related_pairs is keyed (a,b) without canonical ordering;
 	// the existing AddNotRelated normalises before insert but the
@@ -849,11 +858,12 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) boo
 		a, b, b, a,
 	); err != nil {
 		writeRelationError(w, err)
-		return false
+		return
 	}
 	// potential_relation_pairs canonicalises (min, max). INSERT OR
 	// IGNORE keeps any pre-existing queue row alive at its real
-	// distance - the spec accepts the first-wins ordering here.
+	// distance; the session is pinned to this pair via the redirect
+	// below regardless of where it would otherwise sort.
 	lo, hi := a, b
 	if lo > hi {
 		lo, hi = hi, lo
@@ -863,9 +873,15 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) boo
 		lo, hi,
 	); err != nil {
 		writeRelationError(w, err)
-		return false
+		return
 	}
-	return true
+	dest := "/relations/session?a=" + strconv.FormatInt(lo, 10) + "&b=" + strconv.FormatInt(hi, 10)
+	if isHTMXRequest(r) {
+		w.Header().Set("HX-Redirect", dest)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
 // groupMembersTable returns the per-kind members-table name for

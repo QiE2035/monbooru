@@ -23,6 +23,9 @@ bind_address = "0.0.0.0:9090"
 base_url = "http://example.com"
 monloader_url = "http://localhost:8081"
 
+[monloader]
+api_url = "http://monloader:8081"
+
 [paths]
 data_path  = "/my/data"
 model_path = "/my/models"
@@ -62,6 +65,9 @@ level = "debug"
 	}
 	if cfg.Server.MonloaderURL != "http://localhost:8081" {
 		t.Errorf("MonloaderURL = %q", cfg.Server.MonloaderURL)
+	}
+	if cfg.Monloader.APIURL != "http://monloader:8081" {
+		t.Errorf("Monloader.APIURL = %q", cfg.Monloader.APIURL)
 	}
 	if len(cfg.Galleries) != 1 || cfg.Galleries[0].GalleryPath != "/my/gallery" {
 		t.Errorf("Galleries = %+v", cfg.Galleries)
@@ -512,6 +518,42 @@ func TestSaveAtomicTempInSameDir(t *testing.T) {
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), ".monbooru.toml.") {
 			t.Errorf("temp file left behind: %s", e.Name())
+		}
+	}
+}
+
+func TestGenerateTokenAndLookup(t *testing.T) {
+	cfg := Default()
+	tok, secret := GenerateToken("ci", []string{ScopeRead})
+	if len(secret) != 32 {
+		t.Errorf("secret length = %d, want 32", len(secret))
+	}
+	if tok.TokenHash != HashToken(secret) || tok.TokenHash == secret {
+		t.Error("token must store the hash, not the secret")
+	}
+	cfg.Auth.Tokens = append(cfg.Auth.Tokens, tok)
+	if !cfg.TokenNameExists("CI") {
+		t.Error("TokenNameExists should be case-insensitive")
+	}
+	got := cfg.FindTokenByHash(HashToken(secret))
+	if got == nil || !got.HasScope(ScopeRead) || got.HasScope(ScopeWrite) {
+		t.Errorf("lookup/scope mismatch: %+v", got)
+	}
+	if !cfg.SetTokenScopes(tok.ID, AllScopes) || !cfg.FindTokenByHash(HashToken(secret)).HasScope(ScopeDelete) {
+		t.Error("SetTokenScopes did not apply")
+	}
+	if !cfg.RemoveToken(tok.ID) || len(cfg.Auth.Tokens) != 0 {
+		t.Error("RemoveToken did not drop the token")
+	}
+}
+
+func TestValidateTokenNameReserved(t *testing.T) {
+	if err := ValidateTokenName("monloader"); err != nil {
+		t.Errorf("plain name rejected: %v", err)
+	}
+	for _, bad := range []string{"", "  ", "monloader (paired)", "X (PAIRED)"} {
+		if err := ValidateTokenName(bad); err == nil {
+			t.Errorf("ValidateTokenName(%q) = nil, want error", bad)
 		}
 	}
 }
