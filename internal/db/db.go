@@ -199,6 +199,7 @@ func Bootstrap(db *DB) error {
 	b.exec("drop superseded idx_image_tags_tag", `DROP INDEX IF EXISTS idx_image_tags_tag`)
 	b.ensureColumn("images", "source", `ALTER TABLE images ADD COLUMN source TEXT NOT NULL DEFAULT ''`)
 	b.ensureColumn("images", "url", `ALTER TABLE images ADD COLUMN url TEXT NOT NULL DEFAULT ''`)
+	b.ensureColumn("images", "note", `ALTER TABLE images ADD COLUMN note TEXT NOT NULL DEFAULT ''`)
 	// The historical idx_images_source pointed at images(source_type); the
 	// name now belongs to the new images(source) column. Drop the old
 	// shape unconditionally and let schema.sql / the recreate below
@@ -217,6 +218,15 @@ func Bootstrap(db *DB) error {
 	// executor doesn't emit).
 	b.exec("create idx_images_source_visible", `CREATE INDEX IF NOT EXISTS idx_images_source_visible ON images(source) WHERE is_missing = 0`)
 	b.exec("create idx_images_source_nocase_visible", `CREATE INDEX IF NOT EXISTS idx_images_source_nocase_visible ON images(source COLLATE NOCASE) WHERE is_missing = 0`)
+	// Seed image_sources from the legacy scalar source/url on the first boot
+	// after the table appears; the NOT EXISTS guard makes it a no-op once any
+	// origin row exists so later boots never re-seed edited rows. The scalars
+	// stay as the primary-origin mirror (gallery.SourcesForImage et al.).
+	b.exec("seed image_sources from scalar",
+		`INSERT OR IGNORE INTO image_sources (image_id, site, post_id, url)
+		 SELECT id, source, '', url FROM images
+		 WHERE (source != '' OR url != '') AND NOT EXISTS (SELECT 1 FROM image_sources)`)
+	b.ensureColumn("image_sources", "commentary", `ALTER TABLE image_sources ADD COLUMN commentary TEXT NOT NULL DEFAULT ''`)
 	b.ensureColumn("images", "page_count", `ALTER TABLE images ADD COLUMN page_count INTEGER`)
 	b.ensureColumn("images", "duration_seconds", `ALTER TABLE images ADD COLUMN duration_seconds REAL`)
 	// Partial visible duration index for the duration: filter. Excludes
@@ -321,6 +331,76 @@ func Bootstrap(db *DB) error {
 		BEGIN
 			UPDATE images SET tag_count = MAX(0, tag_count - 1) WHERE id = OLD.image_id;
 		END`)
+	// Per-label visible-member counts maintained by triggers, so the
+	// collections listing and counts read one row per label instead of
+	// scanning every membership with a per-row visibility probe. Rows
+	// decremented to 0 stay (filtered by visible_count > 0 on read);
+	// the label population is small so they never add up to anything.
+	b.backfillIfFreshTable("collection_counts",
+		`CREATE TABLE IF NOT EXISTS collection_counts (
+			name          TEXT PRIMARY KEY COLLATE NOCASE,
+			visible_count INTEGER NOT NULL DEFAULT 0
+		)`,
+		`INSERT INTO collection_counts (name, visible_count)
+		 SELECT c.name, SUM(EXISTS (SELECT 1 FROM images i WHERE i.id = c.image_id AND i.is_missing = 0))
+		 FROM image_collections c GROUP BY c.name`,
+		"backfill collection_counts")
+	// Membership-side triggers cover insert / delete / relabel; the WHEN
+	// visibility probe keeps memberships of missing images out of the
+	// count, matching the listing's is_missing = 0 filter.
+	b.exec("create trg_image_collections_count_ai", `CREATE TRIGGER IF NOT EXISTS trg_image_collections_count_ai
+		AFTER INSERT ON image_collections
+		WHEN EXISTS (SELECT 1 FROM images i WHERE i.id = NEW.image_id AND i.is_missing = 0)
+		BEGIN
+			INSERT INTO collection_counts (name, visible_count) VALUES (NEW.name, 1)
+			ON CONFLICT(name) DO UPDATE SET visible_count = visible_count + 1;
+		END`)
+	b.exec("create trg_image_collections_count_ad", `CREATE TRIGGER IF NOT EXISTS trg_image_collections_count_ad
+		AFTER DELETE ON image_collections
+		WHEN EXISTS (SELECT 1 FROM images i WHERE i.id = OLD.image_id AND i.is_missing = 0)
+		BEGIN
+			UPDATE collection_counts SET visible_count = MAX(0, visible_count - 1) WHERE name = OLD.name;
+		END`)
+	b.exec("create trg_image_collections_count_au", `CREATE TRIGGER IF NOT EXISTS trg_image_collections_count_au
+		AFTER UPDATE OF name ON image_collections
+		WHEN EXISTS (SELECT 1 FROM images i WHERE i.id = NEW.image_id AND i.is_missing = 0)
+		BEGIN
+			UPDATE collection_counts SET visible_count = MAX(0, visible_count - 1) WHERE name = OLD.name;
+			INSERT INTO collection_counts (name, visible_count) VALUES (NEW.name, 1)
+			ON CONFLICT(name) DO UPDATE SET visible_count = visible_count + 1;
+		END`)
+	// Image-side triggers cover visibility flips and deletes. The delete
+	// trigger must run BEFORE so the memberships are still readable; the
+	// FK cascade then removes them with the parent row already gone, so
+	// the membership delete trigger's WHEN probe fails and the pair
+	// can't double-decrement.
+	b.exec("create trg_images_collection_count_hide", `CREATE TRIGGER IF NOT EXISTS trg_images_collection_count_hide
+		AFTER UPDATE OF is_missing ON images
+		WHEN OLD.is_missing = 0 AND NEW.is_missing != 0
+		BEGIN
+			UPDATE collection_counts SET visible_count = MAX(0, visible_count - 1)
+			WHERE name IN (SELECT name FROM image_collections WHERE image_id = NEW.id);
+		END`)
+	b.exec("create trg_images_collection_count_show", `CREATE TRIGGER IF NOT EXISTS trg_images_collection_count_show
+		AFTER UPDATE OF is_missing ON images
+		WHEN OLD.is_missing != 0 AND NEW.is_missing = 0
+		BEGIN
+			UPDATE collection_counts SET visible_count = visible_count + 1
+			WHERE name IN (SELECT name FROM image_collections WHERE image_id = NEW.id);
+		END`)
+	b.exec("create trg_images_collection_count_bd", `CREATE TRIGGER IF NOT EXISTS trg_images_collection_count_bd
+		BEFORE DELETE ON images
+		WHEN OLD.is_missing = 0
+		BEGIN
+			UPDATE collection_counts SET visible_count = MAX(0, visible_count - 1)
+			WHERE name IN (SELECT name FROM image_collections WHERE image_id = OLD.id);
+		END`)
+	// Reading-order index for per-collection member walks (preview
+	// samples, the reorder dialog). The `position IS NULL` expression
+	// key mirrors the ORDER BY exactly, so a LIMIT stops after the
+	// first visible members instead of sorting the whole label.
+	b.exec("create idx_image_collections_reading", `CREATE INDEX IF NOT EXISTS idx_image_collections_reading
+		ON image_collections(name, position IS NULL, position, image_id)`)
 	// Stored rating_rank column maintained by triggers on image_tags. The
 	// SFW cookie ceiling AND-chains three NOT EXISTS subqueries (one per
 	// excluded rating tag) onto every search expression, which the deep-
@@ -569,6 +649,31 @@ func backfillIfFreshColumn(db *DB, table, column, alterSQL, backfillSQL, backfil
 		return fmt.Errorf("%s: %w", backfillLabel, err)
 	}
 	return nil
+}
+
+// backfillIfFreshTable runs backfillSQL only when the CREATE actually
+// added the table - re-bootstraps of an in-use library must not
+// overwrite values the triggers have since maintained. A DB that never
+// had the table (older export, older binary) gets the one-time seed on
+// its first boot here.
+func (b *bootstrapper) backfillIfFreshTable(table, createSQL, backfillSQL, backfillLabel string) {
+	if b.err != nil {
+		return
+	}
+	var pre int
+	if err := b.db.Write.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table,
+	).Scan(&pre); err != nil {
+		b.err = fmt.Errorf("inspect table %s: %w", table, err)
+		return
+	}
+	b.exec("create "+table, createSQL)
+	if b.err != nil || pre > 0 {
+		return
+	}
+	if _, err := b.db.Write.Exec(backfillSQL); err != nil {
+		b.err = fmt.Errorf("%s: %w", backfillLabel, err)
+	}
 }
 
 // ensureColumn adds a column on the named table when it is absent. The

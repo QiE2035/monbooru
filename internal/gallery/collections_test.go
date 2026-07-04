@@ -2,6 +2,7 @@ package gallery
 
 import (
 	"database/sql"
+	"errors"
 	"sort"
 	"testing"
 
@@ -323,4 +324,190 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestSetCollectionFindRelations pins the presence-row semantics: the
+// default is disabled, enabling inserts the row ListCollections lifts,
+// and disabling deletes it again. NOCASE, so any casing of the label
+// flips the same flag.
+func TestSetCollectionFindRelations(t *testing.T) {
+	database := newCollectionsTestDB(t)
+	a := insertImage(t, database, false)
+	member(t, database, a, "alpha")
+
+	flagOf := func(name string) bool {
+		t.Helper()
+		list, err := ListCollections(database, "", "name", 60, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range list {
+			if c.Name == name {
+				return c.FindRelations
+			}
+		}
+		t.Fatalf("collection %q not listed", name)
+		return false
+	}
+
+	if flagOf("alpha") {
+		t.Fatal("find-relations should default to disabled")
+	}
+	if err := SetCollectionFindRelations(database, "Alpha", true); err != nil {
+		t.Fatal(err)
+	}
+	if !flagOf("alpha") {
+		t.Fatal("enable did not stick across casings")
+	}
+	if err := SetCollectionFindRelations(database, "ALPHA", false); err != nil {
+		t.Fatal(err)
+	}
+	if flagOf("alpha") {
+		t.Fatal("disable did not delete the opt-in row")
+	}
+}
+
+// TestReorderCollection pins the click-order rewrite: listed ids get
+// 1-based positions in slice order, unlisted members go unordered,
+// non-member ids are no-ops, and the series_order mirror follows for
+// rows homed on the collection.
+func TestReorderCollection(t *testing.T) {
+	database := newCollectionsTestDB(t)
+	a := insertImage(t, database, false)
+	b := insertImage(t, database, false)
+	c := insertImage(t, database, false)
+	other := insertImage(t, database, false)
+	for _, id := range []int64{a, b, c} {
+		three := 3
+		if err := AddCollectionMembership(database, id, "Ser", &three); err != nil {
+			t.Fatal(err)
+		}
+	}
+	member(t, database, other, "Elsewhere")
+
+	if err := ReorderCollection(database, "ser", []int64{c, a, other}); err != nil {
+		t.Fatal(err)
+	}
+
+	members, err := CollectionMembers(database, "Ser", nil, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int64]*int{}
+	for _, m := range members {
+		got[m.ID] = m.Order
+	}
+	if got[c] == nil || *got[c] != 1 {
+		t.Errorf("position of c = %v, want 1", got[c])
+	}
+	if got[a] == nil || *got[a] != 2 {
+		t.Errorf("position of a = %v, want 2", got[a])
+	}
+	if got[b] != nil {
+		t.Errorf("unclicked member kept position %d, want unordered", *got[b])
+	}
+	// Reading order: positioned first, then the unordered tail.
+	if members[0].ID != c || members[1].ID != a || members[2].ID != b {
+		t.Errorf("member order = %v, want [c a b]", members)
+	}
+	// The non-member id must not have gained a membership or position.
+	var n int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_collections WHERE image_id = ? AND name = 'Ser'`, other).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("non-member gained a Ser membership")
+	}
+	if o, ok := homeOrderOf(t, database, other); ok {
+		t.Errorf("non-member home order = %d, want NULL", o)
+	}
+	// Home mirror tracks the rewritten positions.
+	if o, ok := homeOrderOf(t, database, c); !ok || o != 1 {
+		t.Errorf("mirror of c = (%d, %v), want (1, true)", o, ok)
+	}
+	if o, ok := homeOrderOf(t, database, a); !ok || o != 2 {
+		t.Errorf("mirror of a = (%d, %v), want (2, true)", o, ok)
+	}
+	if _, ok := homeOrderOf(t, database, b); ok {
+		t.Errorf("mirror of b should be cleared")
+	}
+}
+
+// TestCollectionCountsTriggers pins the trigger-maintained per-label
+// visible counts across every write shape that must keep them exact:
+// membership insert on visible and missing images, is_missing flips,
+// image delete (the BEFORE DELETE decrement plus the FK cascade that
+// must not double-decrement), bulk relabel, and membership removal.
+func TestCollectionCountsTriggers(t *testing.T) {
+	database := newCollectionsTestDB(t)
+	count := func(name string) int {
+		t.Helper()
+		var n int
+		err := database.Read.QueryRow(
+			`SELECT visible_count FROM collection_counts WHERE name = ?`, name).Scan(&n)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	a := insertImage(t, database, false)
+	b := insertImage(t, database, false)
+	m := insertImage(t, database, true)
+	member(t, database, a, "Ser")
+	member(t, database, b, "Ser")
+	member(t, database, m, "Ser")
+	member(t, database, a, "Other")
+	if got := count("Ser"); got != 2 {
+		t.Errorf("Ser after inserts = %d, want 2 (missing member uncounted)", got)
+	}
+	if got := count("Other"); got != 1 {
+		t.Errorf("Other after inserts = %d, want 1", got)
+	}
+
+	if _, err := database.Write.Exec(`UPDATE images SET is_missing = 1 WHERE id = ?`, b); err != nil {
+		t.Fatal(err)
+	}
+	if got := count("Ser"); got != 1 {
+		t.Errorf("Ser after hiding b = %d, want 1", got)
+	}
+	if _, err := database.Write.Exec(`UPDATE images SET is_missing = 0 WHERE id = ?`, b); err != nil {
+		t.Fatal(err)
+	}
+	if got := count("Ser"); got != 2 {
+		t.Errorf("Ser after unhiding b = %d, want 2", got)
+	}
+
+	if _, err := database.Write.Exec(`DELETE FROM images WHERE id = ?`, a); err != nil {
+		t.Fatal(err)
+	}
+	if got := count("Ser"); got != 1 {
+		t.Errorf("Ser after deleting a = %d, want 1", got)
+	}
+	if got := count("Other"); got != 0 {
+		t.Errorf("Other after deleting a = %d, want 0", got)
+	}
+
+	if _, err := database.Write.Exec(
+		`UPDATE image_collections SET name = 'Renamed' WHERE name = 'Ser'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := count("Ser"); got != 0 {
+		t.Errorf("Ser after relabel = %d, want 0", got)
+	}
+	// b (visible) moves, m (missing) must not inflate the target.
+	if got := count("Renamed"); got != 1 {
+		t.Errorf("Renamed after relabel = %d, want 1", got)
+	}
+
+	if err := RemoveCollectionMembership(database, b, "Renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if got := count("Renamed"); got != 0 {
+		t.Errorf("Renamed after removal = %d, want 0", got)
+	}
 }

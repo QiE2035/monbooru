@@ -196,15 +196,12 @@ func (cx *galleryCtx) TagCount() (int, error) {
 }
 
 // CollectionsCount returns the cached count of distinct collection
-// labels across non-missing images, surfaced in the layout footer. The
-// distinct-label skip-scan with a short-circuiting per-label EXISTS keeps
-// the cost (re-paid on the first render after any cache drop) at the
-// label count, not the membership count.
+// labels across non-missing images, surfaced in the layout footer.
+// Reads the trigger-maintained per-label counts, so the re-pay on the
+// first render after any cache drop is one row per label.
 func (cx *galleryCtx) CollectionsCount() (int, error) {
 	return cx.cachedCount(&cx.collectionsCount,
-		`SELECT COUNT(*) FROM (SELECT DISTINCT name FROM image_collections) d
-		 WHERE EXISTS (SELECT 1 FROM image_collections c JOIN images i ON i.id = c.image_id
-		   WHERE c.name = d.name AND i.is_missing = 0)`)
+		`SELECT COUNT(*) FROM collection_counts WHERE visible_count > 0`)
 }
 
 // lookupByCeiling reads a per-ceiling cache slot; returns (zero, false)
@@ -497,20 +494,6 @@ func (s *Server) relationsSvc() *relations.Service {
 		return cx.RelationsSvc
 	}
 	return nil
-}
-
-// BKTree returns this gallery's lazily-built phash BK-tree. Subsequent
-// callers see the ready tree without re-paying the build cost; the
-// build runs serialised under the tree's own write lock so concurrent
-// first-time callers don't race-rebuild.
-func (cx *galleryCtx) BKTree() (*relations.BKTree, error) {
-	if cx == nil || cx.bkTree == nil {
-		return nil, nil
-	}
-	if err := cx.bkTree.EnsureBuilt(cx.DB); err != nil {
-		return nil, err
-	}
-	return cx.bkTree, nil
 }
 
 // onImageDeleteCallback wires the active gallery's relations service

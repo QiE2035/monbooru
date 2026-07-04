@@ -36,7 +36,9 @@
         <a href="/?q={{urlQ $q}}" title="Browse {{.Name}}"><strong>{{.Name}}</strong></a>
         <span class="field-hint">{{.Count}} image{{if ne .Count 1}}s{{end}}</span>
         <button type="button" class="btn-link-accent btn-rename-collection" data-name="{{.Name}}">[rename]</button>
+        <button type="button" class="btn-link-accent btn-reorder-collection" data-name="{{.Name}}">[reorder]</button>
         <button type="button" class="btn-link-accent btn-dissolve-collection" data-name="{{.Name}}">[dissolve]</button>
+        {{template "partials/collection_find_relations.html" (dict "Name" .Name "FindRelations" .FindRelations "CSRFToken" $.CSRFToken)}}
       </div>
       <div class="collection-preview">
         {{range .Samples}}
@@ -88,14 +90,25 @@
   </form>
 </dialog>
 
+<dialog id="collection-order-dialog">
+  <form id="collection-order-form">
+    <div id="collection-order-body"></div>
+    <div id="collection-order-error"></div>
+    <div class="dialog-actions">
+      <button type="submit">Save order</button>
+      <button type="button" id="collection-order-reset">Reset</button>
+      <button type="button" onclick="document.getElementById('collection-order-dialog').close()">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
 document.querySelectorAll('.btn-rename-collection').forEach(function(btn) {
   btn.addEventListener('click', function() {
     var name = this.dataset.name;
     document.getElementById('collection-rename-prev').value = name;
     document.getElementById('collection-rename-src').textContent = name;
-    document.getElementById('collection-rename-error').innerHTML = '';
-    document.getElementById('collection-rename-suggest').innerHTML = '';
+    clearSlots('collection-rename-error', 'collection-rename-suggest');
     var input = document.getElementById('collection-rename-input');
     input.value = name;
     document.getElementById('collection-rename-dialog').showModal();
@@ -111,42 +124,108 @@ document.getElementById('collection-rename-form').addEventListener('submit', fun
   var err = document.getElementById('collection-rename-error');
   err.innerHTML = '';
   if (!name) { err.innerHTML = '<div class="flash flash-err">New name required.</div>'; return; }
-  var csrf = getCSRFToken();
-  fetch('/collections/rename', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
-    body: 'prev=' + encodeURIComponent(prev) + '&name=' + encodeURIComponent(name) + '&_csrf=' + encodeURIComponent(csrf)
-  }).then(function(res) {
-    if (res.status === 202) {
-      document.getElementById('collection-rename-dialog').close();
+  postForm('/collections/rename', {prev: prev, name: name}, {
+    okStatus: 202,
+    dialogId: 'collection-rename-dialog',
+    flashId: 'collection-rename-error',
+    failMsg: 'Rename failed.',
+    catchMsg: 'Rename request failed.',
+    onOK: function() {
       _pendingGalleryReload = true;
       if (typeof refreshJobStatus === 'function') refreshJobStatus();
-    } else {
-      res.text().then(function(t) { err.innerHTML = t || '<div class="flash flash-err">Rename failed.</div>'; });
     }
-  }).catch(function() { err.innerHTML = '<div class="flash flash-err">Rename request failed.</div>'; });
+  });
+});
+
+var _orderClicks = [];
+
+function renumberOrderTiles() {
+  document.querySelectorAll('#collection-order-body .collection-order-tile').forEach(function(tile) {
+    var idx = _orderClicks.indexOf(tile.dataset.id);
+    tile.querySelector('.collection-order-num').textContent = idx >= 0 ? String(idx + 1) : '';
+    tile.classList.toggle('picked', idx >= 0);
+  });
+}
+
+document.querySelectorAll('.btn-reorder-collection').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var dlg = document.getElementById('collection-order-dialog');
+    dlg.dataset.name = this.dataset.name;
+    _orderClicks = [];
+    clearSlots('collection-order-error');
+    var body = document.getElementById('collection-order-body');
+    body.innerHTML = 'Loading…';
+    fetch('/collections/order?name=' + encodeURIComponent(this.dataset.name), {credentials: 'same-origin'})
+      .then(function(r) { return r.text(); })
+      .then(function(html) { body.innerHTML = html; })
+      .catch(function() { body.innerHTML = '<div class="flash flash-err">Could not load the collection.</div>'; });
+    dlg.showModal();
+  });
+});
+
+document.getElementById('collection-order-body').addEventListener('click', function(e) {
+  var more = e.target.closest('.collection-order-more');
+  if (more) {
+    // Re-fetch the window with a larger limit; picked ids live in
+    // _orderClicks, so renumbering restores them on the fresh tiles.
+    var dlg = document.getElementById('collection-order-dialog');
+    var body = document.getElementById('collection-order-body');
+    more.disabled = true;
+    fetch('/collections/order?name=' + encodeURIComponent(dlg.dataset.name) + '&limit=' + more.dataset.limit, {credentials: 'same-origin'})
+      .then(function(r) { return r.text(); })
+      .then(function(html) { body.innerHTML = html; renumberOrderTiles(); })
+      .catch(function() { more.disabled = false; });
+    return;
+  }
+  var tile = e.target.closest('.collection-order-tile');
+  if (!tile) return;
+  var idx = _orderClicks.indexOf(tile.dataset.id);
+  if (idx >= 0) _orderClicks.splice(idx, 1); else _orderClicks.push(tile.dataset.id);
+  renumberOrderTiles();
+});
+
+document.getElementById('collection-order-reset').addEventListener('click', function() {
+  _orderClicks = [];
+  renumberOrderTiles();
+});
+
+document.getElementById('collection-order-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var err = document.getElementById('collection-order-error');
+  err.innerHTML = '';
+  if (!_orderClicks.length) { err.innerHTML = '<div class="flash flash-err">Click at least one image first.</div>'; return; }
+  postForm('/collections/order', {
+    collection: document.getElementById('collection-order-dialog').dataset.name,
+    ids: _orderClicks.join(',')
+  }, {
+    dialogId: 'collection-order-dialog',
+    flashId: 'collection-order-error',
+    failMsg: 'Reorder failed.',
+    catchMsg: 'Reorder request failed.',
+    onOK: function(res) {
+      // Stash the server's "Ordered N image(s)." flash so it survives
+      // the reload that refreshes the sample strips.
+      res.text().then(function(t) {
+        stashActionFlash(t, 'ok');
+        window.location.reload();
+      });
+    }
+  });
 });
 
 document.querySelectorAll('.btn-dissolve-collection').forEach(function(btn) {
   btn.addEventListener('click', function() {
     var name = this.dataset.name;
     showConfirm('Dissolve "' + name + '"? The collection label is removed from every image in it.', function() {
-      var csrf = getCSRFToken();
-      fetch('/collections/dissolve', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
-        body: 'collection=' + encodeURIComponent(name) + '&_csrf=' + encodeURIComponent(csrf)
-      }).then(function(res) {
-        if (res.status === 202) {
+      postForm('/collections/dissolve', {collection: name}, {
+        okStatus: 202,
+        flashId: 'collection-flash',
+        failMsg: 'Dissolve failed.',
+        catchMsg: 'Dissolve request failed.',
+        onOK: function() {
           _pendingGalleryReload = true;
           if (typeof refreshJobStatus === 'function') refreshJobStatus();
-        } else {
-          res.text().then(function(t) {
-            document.getElementById('collection-flash').innerHTML = t || '<div class="flash flash-err">Dissolve failed.</div>';
-          });
         }
-      }).catch(function() {
-        document.getElementById('collection-flash').innerHTML = '<div class="flash flash-err">Dissolve request failed.</div>';
       });
     }, 'The images and the files on disk are not deleted.', 'Dissolve');
   });

@@ -77,8 +77,8 @@
         <tr><td><code>folder:path/to</code></td><td>Images in that folder or any subfolder beneath it.</td></tr>
         <tr><td><code>folderonly:path/to</code></td><td>Only images directly in that folder (no subfolders); use <code>folderonly:</code> for the gallery root alone.</td></tr>
         <tr><td><code>folder:"path with spaces"</code></td><td>Folder path with spaces (use quotes).</td></tr>
-        <tr><td><code>source:"source name"</code></td><td>Exact-match against the source label.</td></tr>
-        <tr><td><code>collection:"collection name"</code></td><td>Matches any image filed under that collection. An image can belong to several collections; this matches any of them. Bare <code>collection:</code> matches images with no collection.</td></tr>
+        <tr><td><code>source:"source name"</code></td><td>Matches any image carrying that source. An image can have several sources; this matches any of them. Bare <code>source:</code> matches images with no source.</td></tr>
+        <tr><td><code>collection:"collection name"</code></td><td>Matches any image filed under that collection. An image can belong to several collections; this matches any of them. Bare <code>collection:</code> matches images with no collection; <code>collection:any</code> matches images in at least one collection.</td></tr>
       </tbody>
     </table>
 
@@ -148,7 +148,7 @@
   <section id="upload">
     <h3>Uploading Images</h3>
     <p>Open the <a href="/?q=inbox:true">Inbox</a> from the top menu. The drop zone at the top of the grid accepts files (JPEG, PNG, WebP, GIF, MP4, WebM, or a supported archive format: cbz or zip) : drag them in or pick them through the <strong>Choose files</strong> button.</p>
-    <p>From the gallery, open the <strong>Actions</strong> chooser (button next to the search bar) to save the search, add/remove tags, auto-tag, move, or delete every image in the current search. To scope an action to a few images, check their thumbnails and use the corresponding button in the batch bar.</p>
+    <p>From the gallery, open the <strong>Actions</strong> chooser (button next to the search bar) to save the search, add/remove tags, auto-tag, toggle inbox or favorite, set a collection or source, fetch tags from source, move, or delete every image in the current search. To scope an action to a few images, check their thumbnails and use the corresponding button in the batch bar.</p>
   </section>
 
   <hr class="help-sep">
@@ -230,7 +230,9 @@
     </ul>
     <p>Open the <a href="/relations">Relations</a> page to start a session to walk candidate pairs, and cleanup duplicates.</p>
     <p>From any image's detail page, <strong>Add a relation</strong> opens a dialog for declaring an edge against another image directly without going through a session. If the chosen pair already carries a different relation, the dialog surfaces an <strong>Overwrite existing relation</strong> button that replaces the conflicting edge in one transaction.</p>
-    <p><strong>Collections</strong> are a lighter grouping that sits apart from the relation graph. An image can belong to several collections, each with its own optional order. Edit them from the <strong>Collections</strong> row on the detail page: <code>[+ add]</code> files the image under a collection (with an optional position), <code>[edit]</code> changes a membership, and <code>[&times;]</code> removes one. Images sharing a collection appear in the <strong>Same collection</strong> section below the related-images panel. The <a href="/collections">Collections</a> page lists every collection with a preview of its contents; from there you can <strong>rename</strong> a collection across all its members (renaming onto an existing name merges the two) or <strong>dissolve</strong> one, which drops the label from every image while leaving the images and files in place.</p>
+    <p><strong>Collections</strong> are a lighter grouping that sits apart from the relation graph. An image can belong to several collections, each with its own optional order. Edit them from the <strong>Collections</strong> row on the detail page: <code>[+ add]</code> files the image under a collection (with an optional position), <code>[edit]</code> changes a membership, and <code>[&times;]</code> removes one. Images sharing a collection appear in the <strong>Same collection</strong> section below the related-images panel. The <a href="/collections">Collections</a> page lists every collection with a preview of its contents; from there you can <strong>rename</strong> a collection across all its members, <strong>reorder</strong> it, or <strong>dissolve</strong> one, which drops the label from every image while leaving the images and files in place.</p>
+    <p><strong>Sources</strong> record where an image came from. An image can carry several; edit them from the <strong>Sources</strong> row on the detail page the same way as collections (<code>[+ add]</code>, <code>[edit]</code>, <code>[&times;]</code>). When monloader is paired, each source with a URL also shows a <code>[fetch]</code> action that re-pulls that post's tags, commentary and notes through monloader; the batch <strong>Fetch tags from source</strong> action does the same for every image in the scope, using each image's primary (first) source URL. Removing a source also removes the note boxes it pulled.</p>
+    <p><strong>Commentary &amp; notes</strong> sit under the image, above the tags. Each source can carry its own <strong>commentary</strong> (the artist's text, pulled from the booru); <code>[edit]</code> changes it and <code>[&times;]</code> clears it, but a later re-pull of that source overwrites it. The single <strong>Note</strong> is your own and is never touched by an import. Positional <strong>annotations</strong> pulled from a booru are drawn over the image; hover a box to read it and use <code>[hide notes]</code> to toggle the overlay.</p>
   </section>
 
   <hr class="help-sep">

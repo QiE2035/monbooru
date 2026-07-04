@@ -210,13 +210,13 @@ func loadRelationsCounts(s *Server, cx *galleryCtx, ceiling *Ceiling) relationsC
 	if n, err := cx.PhashMissingUnder(ceiling); err == nil {
 		c.PhashMissing = n
 	}
-	openQ := `SELECT COUNT(*) FROM potential_relation_pairs WHERE skipped_at IS NULL`
-	skipQ := `SELECT COUNT(*) FROM potential_relation_pairs WHERE skipped_at IS NOT NULL`
+	// Both queue counters share the session's collection opt-out filter so
+	// the hub's numbers match what a session will actually walk.
+	openQ := `SELECT COUNT(*) FROM potential_relation_pairs p WHERE p.skipped_at IS NULL AND ` + collectionPairExcl
+	skipQ := `SELECT COUNT(*) FROM potential_relation_pairs p WHERE p.skipped_at IS NOT NULL AND ` + collectionPairExcl
 	if where, args := ceiling.WhereTwo("p.a_image_id", "p.b_image_id"); where != "" {
-		openQ = `SELECT COUNT(*) FROM potential_relation_pairs p WHERE p.skipped_at IS NULL AND ` + where
-		skipQ = `SELECT COUNT(*) FROM potential_relation_pairs p WHERE p.skipped_at IS NOT NULL AND ` + where
-		get(openQ, &c.QueueOpen, args...)
-		get(skipQ, &c.QueueSkipped, args...)
+		get(openQ+` AND `+where, &c.QueueOpen, args...)
+		get(skipQ+` AND `+where, &c.QueueSkipped, args...)
 	} else {
 		get(openQ, &c.QueueOpen)
 		get(skipQ, &c.QueueSkipped)

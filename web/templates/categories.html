@@ -114,14 +114,11 @@ document.querySelectorAll('.btn-cat-rename-trigger').forEach(function(btn) {
   btn.addEventListener('click', function() {
     var id = this.dataset.id;
     var name = this.dataset.name;
-    var form = document.getElementById('cat-rename-form');
-    form.setAttribute('hx-post', '/tags/categories/' + id + '/rename');
-    if (window.htmx) window.htmx.process(form);
     document.getElementById('cat-rename-src').textContent = name;
-    document.getElementById('cat-rename-error').innerHTML = '';
+    clearSlots('cat-rename-error');
     var input = document.getElementById('cat-rename-input');
     input.value = name;
-    document.getElementById('cat-rename-dialog').showModal();
+    openHxRewriteDialog('cat-rename-form', 'hx-post', '/tags/categories/' + id + '/rename', 'cat-rename-dialog');
     input.focus();
     input.select();
   });
@@ -132,13 +129,10 @@ document.querySelectorAll('.btn-cat-recolor-trigger').forEach(function(btn) {
     var id = this.dataset.id;
     var name = this.dataset.name;
     var color = this.dataset.color;
-    var form = document.getElementById('cat-recolor-form');
-    form.setAttribute('hx-patch', '/settings/categories/' + id);
-    if (window.htmx) window.htmx.process(form);
     document.getElementById('cat-recolor-src').textContent = name;
-    document.getElementById('cat-recolor-error').innerHTML = '';
+    clearSlots('cat-recolor-error');
     document.getElementById('cat-recolor-input').value = color || '#888888';
-    document.getElementById('cat-recolor-dialog').showModal();
+    openHxRewriteDialog('cat-recolor-form', 'hx-patch', '/settings/categories/' + id, 'cat-recolor-dialog');
   });
 });
 
@@ -149,7 +143,7 @@ document.querySelectorAll('.btn-delete-category').forEach(function(btn) {
     var catName = this.dataset.name;
     var csrf = this.dataset.csrf;
     document.getElementById('del-cat-name').textContent = catName;
-    document.getElementById('del-cat-flash').innerHTML = '';
+    clearSlots('del-cat-flash');
 
     fetch('/tags/categories/' + catId + '/count')
       .then(function(r) { return r.json(); })
@@ -202,28 +196,24 @@ document.querySelectorAll('.btn-delete-category').forEach(function(btn) {
 function doDeleteCategory(catId, csrf, action, targetCatId) {
   var url = '/tags/categories/' + catId + '?action=' + encodeURIComponent(action);
   if (targetCatId) url += '&target_id=' + encodeURIComponent(targetCatId);
-  fetch(url, {
+  postForm(url, null, {
     method: 'DELETE',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
-    body: '_csrf=' + encodeURIComponent(csrf)
-  }).then(function(r) {
-    if (r.ok) {
+    catchMsg: null,
+    onOK: function() {
       // The handler also writes HX-Trigger for the htmx path, but raw
       // fetch doesn't process it; seed the shared stash directly so the
       // /categories reload picks up the flash.
-      sessionStorage.setItem('monbooru_action_flash',
-        JSON.stringify({h: 'Category deleted.', k: 'ok', t: Date.now()}));
+      stashActionFlash('Category deleted.', 'ok');
       document.getElementById('delete-cat-dialog').close();
       window.location.href = window.location.pathname + window.location.search;
-    } else {
-      r.text().then(function(t) {
-        var el = document.getElementById('del-cat-flash');
-        var div = document.createElement('div');
-        div.className = 'flash flash-err';
-        div.textContent = t;
-        el.innerHTML = '';
-        el.appendChild(div);
-      });
+    },
+    onErr: function(t) {
+      var el = document.getElementById('del-cat-flash');
+      var div = document.createElement('div');
+      div.className = 'flash flash-err';
+      div.textContent = t;
+      el.innerHTML = '';
+      el.appendChild(div);
     }
   });
 }

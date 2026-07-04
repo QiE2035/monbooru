@@ -64,8 +64,8 @@ type ServerConfig struct {
 	// load against the same trusted-roots check as CustomCSS.
 	BooruLogo string `toml:"logo"`
 	// MonloaderURL is the browser-facing base of the companion monloader
-	// instance; when set, a "Go to monloader" link shows in the top bar.
-	// Empty hides it.
+	// instance; the footer "connected to monloader" link points at its queue.
+	// Blank falls back to the api url.
 	MonloaderURL string `toml:"monloader_url"`
 }
 
@@ -283,31 +283,39 @@ func (cfg *Config) FindTokenByHash(hash string) *Token {
 	return nil
 }
 
-// RemoveToken drops the token with the given id, reporting whether it existed.
-func (cfg *Config) RemoveToken(id string) bool {
+// findTokenIndex returns the index of the token with the given id, or -1.
+func (cfg *Config) findTokenIndex(id string) int {
 	for i := range cfg.Auth.Tokens {
 		if cfg.Auth.Tokens[i].ID == id {
-			cfg.Auth.Tokens = append(cfg.Auth.Tokens[:i], cfg.Auth.Tokens[i+1:]...)
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
+}
+
+// RemoveToken drops the token with the given id, reporting whether it existed.
+func (cfg *Config) RemoveToken(id string) bool {
+	i := cfg.findTokenIndex(id)
+	if i < 0 {
+		return false
+	}
+	cfg.Auth.Tokens = append(cfg.Auth.Tokens[:i], cfg.Auth.Tokens[i+1:]...)
+	return true
 }
 
 // SetTokenScopes replaces a token's scopes, reporting whether it existed.
 func (cfg *Config) SetTokenScopes(id string, scopes []string) bool {
-	for i := range cfg.Auth.Tokens {
-		if cfg.Auth.Tokens[i].ID == id {
-			cfg.Auth.Tokens[i].Scopes = scopes
-			return true
-		}
+	i := cfg.findTokenIndex(id)
+	if i < 0 {
+		return false
 	}
-	return false
+	cfg.Auth.Tokens[i].Scopes = scopes
+	return true
 }
 
 type UIConfig struct {
 	PageSize     int    `toml:"page_size"`
-	ThumbnailFit string `toml:"thumbnail_fit"` // "square" (cropped) | "natural" (real aspect ratio)
+	ThumbnailFit string `toml:"thumbnail_fit"` // "natural" (real aspect ratio) | "square" (cropped)
 }
 
 // LogConfig controls log verbosity: "warn" (default), "info", "debug".
@@ -355,7 +363,7 @@ func Default() *Config {
 		},
 		UI: UIConfig{
 			PageSize:     40,
-			ThumbnailFit: "square",
+			ThumbnailFit: "natural",
 		},
 		Log: LogConfig{
 			Level: "warn",
@@ -607,8 +615,8 @@ func validate(cfg *Config) error {
 	}
 	// ThumbnailFit gates the gallery grid CSS; an unknown value would
 	// leave the template class blank. Snap to the default.
-	if cfg.UI.ThumbnailFit != "natural" {
-		cfg.UI.ThumbnailFit = "square"
+	if cfg.UI.ThumbnailFit != "square" {
+		cfg.UI.ThumbnailFit = "natural"
 	}
 	// MaxAge=0 in net/http means "session cookie", so a hand-edited TOML
 	// with session_lifetime_days = 0 would expire the user's session at

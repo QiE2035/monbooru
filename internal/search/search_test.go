@@ -17,6 +17,12 @@ import (
 	"github.com/leqwin/monbooru/internal/gallery"
 )
 
+// buildWhere is the no-DB shim the WHERE-shape tests drive; production
+// callers go through buildWhereDB and its driver variants.
+func buildWhere(expr Expr) (string, []any, bool) {
+	return buildWhereDB(expr, nil)
+}
+
 func TestParse_BasicTag(t *testing.T) {
 	e, err := Parse("cute")
 	if err != nil {
@@ -742,6 +748,26 @@ func TestExecute_CollectionExactMatch(t *testing.T) {
 	}
 	if res.Total != 1 {
 		t.Errorf("collection:Naruto total = %d, want 1", res.Total)
+	}
+}
+
+// collection:any matches every image with at least one membership,
+// leaving collection-less images out.
+func TestExecute_CollectionAny(t *testing.T) {
+	database, env := setupSearchDB(t)
+	ingestTestManga(t, database, env, "naruto.cbz", "Naruto")
+	ingestTestManga(t, database, env, "bleach.cbz", "Bleach")
+	ingestTestImage(t, database, env, "loose.png")
+
+	res, err := Execute(database, Query{
+		Expr: FilterExpr{Key: "collection", Val: "any"},
+		Page: 1, Limit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 2 {
+		t.Errorf("collection:any total = %d, want 2", res.Total)
 	}
 }
 
@@ -3645,15 +3671,26 @@ func TestBuildWhere_AINone(t *testing.T) {
 	}
 }
 
-func TestBuildWhere_SourceExact(t *testing.T) {
-	// `source:` is a separate exact-match filter against images.source.
+func TestBuildWhere_SourceAnyMembership(t *testing.T) {
+	// `source:` matches any of an image's sources via image_sources.
 	expr := FilterExpr{Key: "source", Val: "Pixiv"}
 	where, args, _ := buildWhere(expr)
 	if len(args) != 1 || args[0] != "Pixiv" {
 		t.Errorf("args = %v, want [\"Pixiv\"]", args)
 	}
-	if !strings.Contains(where, "i.source = ?") {
-		t.Errorf("where = %q, expected i.source = ?", where)
+	if !strings.Contains(where, "EXISTS (SELECT 1 FROM image_sources s WHERE s.image_id = i.id AND s.site = ? COLLATE NOCASE)") {
+		t.Errorf("where = %q, expected EXISTS over image_sources", where)
+	}
+}
+
+func TestBuildWhere_SourceEmpty(t *testing.T) {
+	// bare `source:` matches images with no origin at all.
+	where, args, _ := buildWhere(FilterExpr{Key: "source", Val: ""})
+	if len(args) != 0 {
+		t.Errorf("args = %v, want none", args)
+	}
+	if !strings.Contains(where, "NOT EXISTS (SELECT 1 FROM image_sources s WHERE s.image_id = i.id)") {
+		t.Errorf("where = %q, expected NOT EXISTS over image_sources", where)
 	}
 }
 

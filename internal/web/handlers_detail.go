@@ -18,6 +18,35 @@ import (
 	"github.com/leqwin/monbooru/internal/tagger"
 )
 
+// annotationView is one positional note ready for the overlay: the box
+// geometry as CSS percentages of the rendered image so it scales at any size.
+type annotationView struct {
+	Body  string
+	Style template.CSS
+}
+
+// buildAnnotationViews turns pixel-space note boxes into percentage-positioned
+// overlay entries, clamping each box to the image bounds so oversized stored
+// geometry can't drive the overlay outside the media frame. Empty when the
+// image has no known dimensions to scale by.
+func buildAnnotationViews(img *models.Image, anns []models.Annotation) []annotationView {
+	if img.Width == nil || img.Height == nil || *img.Width <= 0 || *img.Height <= 0 || len(anns) == 0 {
+		return nil
+	}
+	fw, fh := float64(*img.Width), float64(*img.Height)
+	out := make([]annotationView, 0, len(anns))
+	for _, a := range anns {
+		x := min(max(a.X, 0), *img.Width)
+		y := min(max(a.Y, 0), *img.Height)
+		w := min(max(a.W, 0), *img.Width-x)
+		h := min(max(a.H, 0), *img.Height-y)
+		style := fmt.Sprintf("left:%.4f%%;top:%.4f%%;width:%.4f%%;height:%.4f%%",
+			float64(x)/fw*100, float64(y)/fh*100, float64(w)/fw*100, float64(h)/fh*100)
+		out = append(out, annotationView{Body: a.Body, Style: template.CSS(style)})
+	}
+	return out
+}
+
 type detailData struct {
 	baseData
 	Image        models.Image
@@ -30,6 +59,8 @@ type detailData struct {
 	MangaMeta    *models.MangaMetadata // populated for cbz rows when ComicInfo.xml was parsed
 	IsManga      bool                  // shorthand for FileType == "cbz" so the template doesn't string-compare
 	Collections  []models.Collection   // every collection this image belongs to, ordered for display
+	Sources      []models.ImageSource  // every origin this image came from, primary first
+	Annotations  []annotationView      // positional note boxes overlaid on the media
 	ImagePaths   []models.ImagePath
 	ThumbnailURL string
 	PrevID       *int64
@@ -209,17 +240,21 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		mangaMeta   *models.MangaMetadata
 		imagePaths  []models.ImagePath
 		collections []models.Collection
+		sources     []models.ImageSource
+		annotations []models.Annotation
 		prevID      *int64
 		nextID      *int64
 	)
 	isManga := img.FileType == models.FileTypeCBZ
 	var wg sync.WaitGroup
-	wg.Add(6)
+	wg.Add(8)
 	go func() { defer wg.Done(); _, imageTags, _ = s.tagSvc().GetImageTags(id) }()
 	go func() { defer wg.Done(); sdMeta = loadSDMeta(ctx, s.db(), id) }()
 	go func() { defer wg.Done(); comfyMeta = loadComfyMeta(ctx, s.db(), id) }()
 	go func() { defer wg.Done(); imagePaths = loadImagePaths(ctx, s.db(), id) }()
 	go func() { defer wg.Done(); collections, _ = gallery.CollectionsForImage(s.db(), id) }()
+	go func() { defer wg.Done(); sources, _ = gallery.SourcesForImage(s.db(), id) }()
+	go func() { defer wg.Done(); annotations, _ = gallery.AnnotationsForImage(s.db(), id) }()
 	go func() {
 		defer wg.Done()
 		// Skip the generic-EXIF/text-chunk extraction for manga - the
@@ -281,6 +316,8 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		MangaMeta:      mangaMeta,
 		IsManga:        isManga,
 		Collections:    collections,
+		Sources:        sources,
+		Annotations:    buildAnnotationViews(img, annotations),
 		ImagePaths:     imagePaths,
 		ThumbnailURL:   fmt.Sprintf("/thumbnails/%s/%d.jpg", s.activeName, id),
 		PrevID:         prevID,

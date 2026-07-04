@@ -73,24 +73,18 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 				s.jobs.Update(done, total, fmt.Sprintf("pruning %d/%d…", done, total))
 			},
 		)
-		if err != nil {
-			s.jobs.Fail(err.Error())
-			return
-		}
-		if len(affectedTags) > 0 {
-			s.jobs.Update(processed, total, "reconciling tag counts…")
-			if err := tagSvc.RecalcIDs(affectedTags); err != nil {
-				logx.Warnf("prune-missing recalc IDs: %v", err)
+		if err == nil {
+			if len(affectedTags) > 0 {
+				s.jobs.Update(processed, total, "reconciling tag counts…")
+				if err := tagSvc.RecalcIDs(affectedTags); err != nil {
+					logx.Warnf("prune-missing recalc IDs: %v", err)
+				}
+			}
+			if removed > 0 && active != nil {
+				active.InvalidateCaches()
 			}
 		}
-		if removed > 0 && active != nil {
-			active.InvalidateCaches()
-		}
-		if cancelled {
-			s.jobs.Complete(fmt.Sprintf("prune cancelled (%d/%d removed)", removed, total))
-			return
-		}
-		s.jobs.Complete(fmt.Sprintf("Removed %d missing image(s).", removed))
+		s.finishJob(err, cancelled, fmt.Sprintf("prune cancelled (%d/%d removed)", removed, total), fmt.Sprintf("Removed %d missing image(s).", removed))
 	}()
 	writeInlineFlash(w, "ok", "Prune started.")
 }
@@ -306,15 +300,7 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		})
-		if err != nil {
-			s.jobs.Fail(err.Error())
-			return
-		}
-		if cancelled {
-			s.jobs.Complete(fmt.Sprintf("remove duplicates cancelled (%d/%d)", removed, total))
-			return
-		}
-		s.jobs.Complete(fmt.Sprintf("Removed %d duplicate path(s).", removed))
+		s.finishJob(err, cancelled, fmt.Sprintf("remove duplicates cancelled (%d/%d)", removed, total), fmt.Sprintf("Removed %d duplicate path(s).", removed))
 	}()
 	writeInlineFlash(w, "ok", "Duplicate-path removal started.")
 }

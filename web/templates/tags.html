@@ -195,8 +195,7 @@
 <dialog id="merge-dialog">
   <form hx-post="/tags/merge"
         hx-target="#merge-error"
-        hx-swap="innerHTML"
-        hx-on::after-request="handleMergeResult(event)">
+        hx-swap="innerHTML">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <p id="merge-prompt">Alias <strong id="merge-src-name"></strong> <span class="merge-arrow">→</span> to:</p>
     <input type="hidden" name="alias_id" id="merge-alias-id">
@@ -226,8 +225,7 @@
 <dialog id="tag-create-dialog">
   <form hx-post="/tags/new"
         hx-target="#tag-create-error"
-        hx-swap="innerHTML"
-        hx-on::after-request="handleTagCreateResult(event)">
+        hx-swap="innerHTML">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <p>Create a new tag.</p>
     <div class="field">
@@ -254,8 +252,7 @@
 <dialog id="alias-create-dialog">
   <form hx-post="/tags/aliases"
         hx-target="#alias-create-error"
-        hx-swap="innerHTML"
-        hx-on::after-request="handleAliasCreateResult(event)">
+        hx-swap="innerHTML">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <p>Create an alias resolving to another tag. The canonical tag is created if it doesn't exist yet.</p>
     <div class="field">
@@ -327,14 +324,11 @@ document.querySelectorAll('.btn-rename-trigger').forEach(function(btn) {
   btn.addEventListener('click', function() {
     var id = this.dataset.id;
     var name = this.dataset.name;
-    var form = document.getElementById('rename-form');
-    form.setAttribute('hx-post', '/tags/' + id + '/rename');
-    if (window.htmx) window.htmx.process(form);
     document.getElementById('rename-src-name').textContent = name;
-    document.getElementById('rename-error').innerHTML = '';
+    clearSlots('rename-error');
     var input = document.getElementById('rename-new-name');
     input.value = name;
-    document.getElementById('rename-dialog').showModal();
+    openHxRewriteDialog('rename-form', 'hx-post', '/tags/' + id + '/rename', 'rename-dialog');
     input.focus();
     input.select();
   });
@@ -365,8 +359,7 @@ document.querySelectorAll('.btn-delete-tag').forEach(function(btn) {
           var msgText = isRating
             ? 'Stripped "' + name + '" from every image.'
             : 'Tag "' + name + '" deleted.';
-          sessionStorage.setItem('monbooru_action_flash',
-            JSON.stringify({h: msgText, k: 'ok', t: Date.now()}));
+          stashActionFlash(msgText, 'ok');
           window.location.reload();
         } else {
           r.text().then(function(t) {
@@ -387,7 +380,7 @@ document.querySelectorAll('.btn-merge-trigger').forEach(function(btn) {
     document.getElementById('merge-src-name').textContent = name;
     document.getElementById('merge-alias-id').value = id;
     document.getElementById('merge-canon-input').value = '';
-    document.getElementById('merge-error').innerHTML = '';
+    clearSlots('merge-error', 'merge-suggest');
     var prompt = document.getElementById('merge-prompt');
     if (prompt) {
       prompt.firstChild.textContent = isAlias ? 'Repoint ' : 'Alias ';
@@ -395,20 +388,9 @@ document.querySelectorAll('.btn-merge-trigger').forEach(function(btn) {
     }
     var submit = document.getElementById('merge-submit');
     if (submit) submit.textContent = isAlias ? 'Repoint' : 'Alias';
-    var ms = document.getElementById('merge-suggest');
-    if (ms) ms.innerHTML = '';
     document.getElementById('merge-dialog').showModal();
   });
 });
-
-function handleMergeResult(event) {
-  // The success path returns 204 + HX-Redirect to the alias listing;
-  // htmx navigates and the dialog goes away with the page swap. A
-  // trailing window.location.reload() here would race the redirect
-  // and clobber the destination URL.
-  var elt = event.detail.elt;
-  if (elt && elt.querySelector && elt.querySelector('.flash-err')) return;
-}
 
 (function() {
   var trigger = document.getElementById('btn-create-alias');
@@ -416,45 +398,28 @@ function handleMergeResult(event) {
   trigger.addEventListener('click', function() {
     document.getElementById('alias-create-name').value = '';
     document.getElementById('alias-create-canon').value = '';
-    document.getElementById('alias-create-error').innerHTML = '';
-    var ms = document.getElementById('alias-create-suggest');
-    if (ms) ms.innerHTML = '';
+    clearSlots('alias-create-error', 'alias-create-suggest');
     document.getElementById('alias-create-dialog').showModal();
     document.getElementById('alias-create-name').focus();
   });
 })();
-
-function handleAliasCreateResult(event) {
-  // The success path returns 204 + HX-Redirect; htmx navigates and the
-  // shared monbooru:flash listener seeds the #tag-flash slot on the
-  // destination page. Errors stay in the dialog as flash-err so the
-  // user can correct input.
-  var elt = event.detail.elt;
-  if (elt && elt.querySelector && elt.querySelector('.flash-err')) return;
-}
 
 (function() {
   var trigger = document.getElementById('btn-create-tag');
   if (!trigger) return;
   trigger.addEventListener('click', function() {
     document.getElementById('tag-create-name').value = '';
-    document.getElementById('tag-create-error').innerHTML = '';
+    clearSlots('tag-create-error');
     document.getElementById('tag-create-dialog').showModal();
     document.getElementById('tag-create-name').focus();
   });
 })();
 
-function handleTagCreateResult(event) {
-  // The success path returns 204 + HX-Redirect to /tags?q=<name>; htmx
-  // navigates and the shared monbooru:flash listener seeds the
-  // destination's #tag-flash slot. A trailing window.location.reload()
-  // here would race and reload the current URL (without the q=),
-  // undoing the redirect. Errors stay in the dialog as flash-err so the
-  // user can correct input.
-  var elt = event.detail.elt;
-  if (elt && elt.querySelector && elt.querySelector('.flash-err')) return;
-}
-
+// The merge / tag-create / alias-create dialogs need no after-request
+// hook: the success path answers 204 + HX-Redirect (htmx navigates, the
+// shared monbooru:flash listener seeds the destination's flash slot; a
+// reload here would race and clobber the redirect), and errors land in
+// the dialog's flash-err target for correction.
 function reloadImplicationsBody() {
   var body = document.getElementById('implications-dialog-body');
   if (!body || !body.dataset.tagId) return;
@@ -484,8 +449,7 @@ function handleImplicationAdded(event) {
   if (added) {
     var input = document.getElementById('implication-add-input');
     if (input) input.value = '';
-    var sg = document.getElementById('implication-add-suggest');
-    if (sg) sg.innerHTML = '';
+    clearSlots('implication-add-suggest');
     reloadImplicationsBody();
     implicationsDialogDirty = true;
   }
@@ -512,41 +476,30 @@ document.querySelectorAll('.btn-implications-trigger').forEach(function(btn) {
   var trigger = document.getElementById('btn-delete-tags-search');
   if (!trigger) return;
   trigger.addEventListener('click', function() {
-    document.getElementById('delete-tags-search-flash').innerHTML = '';
+    clearSlots('delete-tags-search-flash');
     document.getElementById('delete-tags-search-dialog').showModal();
   });
 })();
 
 function confirmDeleteTagsSearch() {
-  var flash = document.getElementById('delete-tags-search-flash');
-  if (flash) flash.innerHTML = '';
+  clearSlots('delete-tags-search-flash');
   // Pull current filter values straight off the sidebar form's hidden
   // inputs (and the search box) so the server sees the same set the
   // table is showing.
   var form = document.querySelector('#sidebar-inner form[action="/tags"]');
-  var body = form ? new URLSearchParams(new FormData(form)).toString() : '';
-  var csrfEl = document.querySelector('input[name="_csrf"]');
-  var csrf = csrfEl ? csrfEl.value : '';
-  body += '&_csrf=' + encodeURIComponent(csrf);
-  fetch('/tags/delete-search', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
-    body: body
-  }).then(function(res) {
-    if (res.ok) {
-      document.getElementById('delete-tags-search-dialog').close();
+  var params = form ? new URLSearchParams(new FormData(form)) : null;
+  postForm('/tags/delete-search', params, {
+    dialogId: 'delete-tags-search-dialog',
+    flashId: 'delete-tags-search-flash',
+    failMsg: 'Delete failed.',
+    catchMsg: 'Delete request failed.',
+    onOK: function() {
       // Latch the global pending-reload flag and let the job-status
       // afterSettle hook reload once the background tag-delete job
       // actually reports done, instead of racing a fixed timer.
       _pendingGalleryReload = true;
       if (typeof refreshJobStatus === 'function') refreshJobStatus();
-    } else {
-      res.text().then(function(t) {
-        if (flash) flash.innerHTML = t || '<div class="flash flash-err">Delete failed.</div>';
-      });
     }
-  }).catch(function() {
-    if (flash) flash.innerHTML = '<div class="flash flash-err">Delete request failed.</div>';
   });
 }
 

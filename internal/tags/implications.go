@@ -113,44 +113,43 @@ func (s *Service) AddImplication(parentID, impliedID int64) (bool, error) {
 		return false, fmt.Errorf("cannot imply a tag from itself")
 	}
 
-	tx, err := s.db.Write.Begin()
+	var created bool
+	err := s.inWriteTx(func(tx *sql.Tx) error {
+		for _, id := range [2]int64{parentID, impliedID} {
+			var isAlias int
+			if err := tx.QueryRow(`SELECT is_alias FROM tags WHERE id = ?`, id).Scan(&isAlias); err == sql.ErrNoRows {
+				return ErrTagNotFound
+			} else if err != nil {
+				return err
+			}
+			if isAlias == 1 {
+				return fmt.Errorf("cannot involve an alias in an implication; use its canonical")
+			}
+		}
+
+		// Cycle check: walk the existing graph from impliedID; if we reach
+		// parentID, the new edge closes a loop.
+		if reaches, err := implicationReachesTx(tx, impliedID, parentID); err != nil {
+			return err
+		} else if reaches {
+			return ErrImplicationCycle
+		}
+
+		res, err := tx.Exec(
+			`INSERT OR IGNORE INTO tag_implications (parent_tag_id, implied_tag_id) VALUES (?, ?)`,
+			parentID, impliedID,
+		)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		created = n > 0
+		return nil
+	})
 	if err != nil {
 		return false, err
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	for _, id := range [2]int64{parentID, impliedID} {
-		var isAlias int
-		if err := tx.QueryRow(`SELECT is_alias FROM tags WHERE id = ?`, id).Scan(&isAlias); err == sql.ErrNoRows {
-			return false, ErrTagNotFound
-		} else if err != nil {
-			return false, err
-		}
-		if isAlias == 1 {
-			return false, fmt.Errorf("cannot involve an alias in an implication; use its canonical")
-		}
-	}
-
-	// Cycle check: walk the existing graph from impliedID; if we reach
-	// parentID, the new edge closes a loop.
-	if reaches, err := implicationReachesTx(tx, impliedID, parentID); err != nil {
-		return false, err
-	} else if reaches {
-		return false, ErrImplicationCycle
-	}
-
-	res, err := tx.Exec(
-		`INSERT OR IGNORE INTO tag_implications (parent_tag_id, implied_tag_id) VALUES (?, ?)`,
-		parentID, impliedID,
-	)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return n > 0, nil
+	return created, nil
 }
 
 // RemoveImplication deletes the parent -> implied edge. Image-side
@@ -172,12 +171,15 @@ func (s *Service) RemoveImplication(parentID, impliedID int64) error {
 	return nil
 }
 
-// implicationReachesTx returns whether a directed path from start
-// reaches target through tag_implications. Used for cycle detection
-// inside AddImplication's transaction.
-func implicationReachesTx(tx *sql.Tx, start, target int64) (bool, error) {
-	seen := map[int64]struct{}{start: {}}
-	frontier := []int64{start}
+// bfsImpliedTx walks the implied closure of start breadth-first, bounded
+// by MaxImplicationDepth, invoking visit once per newly-discovered tag id
+// (start ids never fire); visit returning false stops the walk early.
+func bfsImpliedTx(tx *sql.Tx, start []int64, visit func(int64) bool) error {
+	seen := make(map[int64]struct{}, len(start))
+	for _, p := range start {
+		seen[p] = struct{}{}
+	}
+	frontier := append([]int64(nil), start...)
 	for depth := 0; depth < MaxImplicationDepth && len(frontier) > 0; depth++ {
 		placeholders, args := db.InPlaceholders(frontier)
 		rows, err := tx.Query(
@@ -185,32 +187,53 @@ func implicationReachesTx(tx *sql.Tx, start, target int64) (bool, error) {
 			args...,
 		)
 		if err != nil {
-			return false, err
+			return err
 		}
 		var next []int64
+		stopped := false
 		for rows.Next() {
 			var id int64
 			if err := rows.Scan(&id); err != nil {
 				_ = rows.Close()
-				return false, err
+				return err
 			}
-			if id == target {
-				_ = rows.Close()
-				return true, nil
+			if _, ok := seen[id]; ok {
+				continue
 			}
-			if _, ok := seen[id]; !ok {
-				seen[id] = struct{}{}
-				next = append(next, id)
+			seen[id] = struct{}{}
+			if !visit(id) {
+				stopped = true
+				break
 			}
+			next = append(next, id)
 		}
 		if err := rows.Err(); err != nil {
 			_ = rows.Close()
-			return false, err
+			return err
 		}
 		_ = rows.Close()
+		if stopped {
+			return nil
+		}
 		frontier = next
 	}
-	return false, nil
+	return nil
+}
+
+// implicationReachesTx returns whether a directed path from start
+// reaches target through tag_implications. Used for cycle detection
+// inside AddImplication's transaction; callers never pass
+// start == target (AddImplication rejects self-implication first).
+func implicationReachesTx(tx *sql.Tx, start, target int64) (bool, error) {
+	reached := false
+	err := bfsImpliedTx(tx, []int64{start}, func(id int64) bool {
+		if id == target {
+			reached = true
+			return false
+		}
+		return true
+	})
+	return reached, err
 }
 
 // ApplyImpliedFanoutTx fans out implications on an open transaction so

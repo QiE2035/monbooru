@@ -8,6 +8,7 @@ import (
 
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/gallery"
+	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
 )
 
@@ -16,6 +17,9 @@ const collectionsPerPage = 60
 // Preview tiles fetched per collection. Generous so the strip fills a wide
 // row; the template clips the overflow to a single line.
 const collectionPreviewSamples = 16
+
+// Tiles per fetch of the click-to-order dialog body.
+const collectionOrderWindow = 200
 
 type collectionsPageData struct {
 	baseData
@@ -104,7 +108,118 @@ func (s *Server) renameCollectionPost(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	ids, err := gallery.CollectionMemberIDs(s.db(), oldName)
+	s.startCollectionJob(w, oldName, func(ids []int64) {
+		s.runRenameCollection(ids, oldName, newName)
+	})
+}
+
+// collectionFindRelationsPost flips a collection's find-relations opt-in
+// and answers with the refreshed switch so the htmx swap shows the new
+// state in place.
+func (s *Server) collectionFindRelationsPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("collection"))
+	if name == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeInlineFlash(w, "err", "Collection label required.")
+		return
+	}
+	enabled := r.FormValue("enabled") == "1"
+	if err := gallery.SetCollectionFindRelations(s.db(), name, enabled); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		writeInlineFlash(w, "err", "Could not update the collection.")
+		return
+	}
+	verb := "enabled"
+	if !enabled {
+		verb = "disabled"
+	}
+	setFlashHeader(w, "Find relations "+verb+" for "+name+".", "ok", nil)
+	s.renderTemplate(w, "partials/collection_find_relations.html", map[string]any{
+		"Name":          name,
+		"FindRelations": enabled,
+		"CSRFToken":     s.csrfToken(sessionFromContext(r.Context())),
+	})
+}
+
+// collectionOrderDialog renders the click-to-order dialog body: the
+// first visible members of the collection under the caller's ceiling,
+// in the current reading order. Windowed by limit so a huge label
+// doesn't render tens of thousands of tiles in one dialog body; the
+// [show more] button re-fetches with a larger limit.
+func (s *Server) collectionOrderDialog(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if name == "" {
+		http.Error(w, "collection required", http.StatusBadRequest)
+		return
+	}
+	limit := collectionOrderWindow
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
+		limit = n
+	}
+	excludeIDs := resolveCeiling(r, s.Active()).ExcludedTagIDs()
+	members, err := gallery.CollectionMembers(s.db(), name, excludeIDs, limit+1, 0)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	hasMore := len(members) > limit
+	if hasMore {
+		members = members[:limit]
+	}
+	s.renderTemplate(w, "partials/collection_order.html", map[string]any{
+		"Name":      name,
+		"Members":   members,
+		"Gallery":   s.activeName,
+		"HasMore":   hasMore,
+		"NextLimit": limit + collectionOrderWindow,
+	})
+}
+
+// reorderCollectionPost applies the dialog's click order: the listed ids
+// get positions 1..N, every other member goes unordered.
+func (s *Server) reorderCollectionPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("collection"))
+	if name == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeInlineFlash(w, "err", "Collection label required.")
+		return
+	}
+	raw := strings.TrimSpace(r.FormValue("ids"))
+	if raw == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeInlineFlash(w, "err", "Click at least one image first.")
+		return
+	}
+	var ids []int64
+	for _, part := range strings.Split(raw, ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeInlineFlash(w, "err", "Bad image id list.")
+			return
+		}
+		ids = append(ids, id)
+	}
+	if err := gallery.ReorderCollection(s.db(), name, ids); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		writeInlineFlash(w, "err", "Could not reorder the collection.")
+		return
+	}
+	s.Active().InvalidateCaches()
+	writeInlineFlash(w, "ok", fmt.Sprintf("Ordered %d image(s).", len(ids)))
+}
+
+// startCollectionJob materialises the collection's membership and spawns run
+// as the jobs-lane background job, answering 202; shared by rename and
+// dissolve.
+func (s *Server) startCollectionJob(w http.ResponseWriter, name string, run func([]int64)) {
+	ids, err := gallery.CollectionMemberIDs(s.db(), name)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		writeInlineFlash(w, "err", "Could not read the collection.")
@@ -118,7 +233,7 @@ func (s *Server) renameCollectionPost(w http.ResponseWriter, r *http.Request) {
 	if !s.startJob(w, models.JobTypeTag) {
 		return
 	}
-	go s.runRenameCollection(ids, oldName, newName)
+	go run(ids)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -135,22 +250,15 @@ func (s *Server) dissolveCollectionPost(w http.ResponseWriter, r *http.Request) 
 		writeInlineFlash(w, "err", "Collection label required.")
 		return
 	}
-	ids, err := gallery.CollectionMemberIDs(s.db(), name)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Could not read the collection.")
-		return
-	}
-	if len(ids) == 0 {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "That collection no longer exists.")
-		return
-	}
-	if !s.startJob(w, models.JobTypeTag) {
-		return
-	}
-	go s.runBatchCollection(ids, name, "remove")
-	w.WriteHeader(http.StatusAccepted)
+	s.startCollectionJob(w, name, func(ids []int64) {
+		s.runBatchCollection(ids, name, "remove")
+		// Drop the find-relations opt-in so a later collection reusing the
+		// label starts from the disabled default.
+		if _, err := s.db().Write.Exec(
+			`DELETE FROM collection_find_relations WHERE name = ?`, name); err != nil {
+			logx.Debugf("dissolve collection find-relations flag: %v", err)
+		}
+	})
 }
 
 // runRenameCollection relabels old to new across ids in chunks. An image
@@ -207,14 +315,20 @@ func (s *Server) runRenameCollection(ids []int64, oldName, newName string) {
 		}
 		return tx.Commit()
 	})
-	if err != nil {
-		s.jobs.Fail(err.Error())
-		return
+	if err == nil {
+		// Carry the find-relations opt-in to the new label; on a merge the
+		// target's own row wins. The DELETE only runs when merging - on a
+		// case-only rename it would match the row the UPDATE just recased.
+		if _, e := s.db().Write.Exec(
+			`UPDATE OR IGNORE collection_find_relations SET name = ? WHERE name = ?`, newName, oldName); e != nil {
+			logx.Debugf("rename collection find-relations flag: %v", e)
+		} else if merging {
+			if _, e := s.db().Write.Exec(
+				`DELETE FROM collection_find_relations WHERE name = ?`, oldName); e != nil {
+				logx.Debugf("rename collection find-relations flag: %v", e)
+			}
+		}
+		s.Active().InvalidateCaches()
 	}
-	s.Active().InvalidateCaches()
-	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("rename cancelled (%d/%d processed)", processed, total))
-		return
-	}
-	s.jobs.Complete(fmt.Sprintf("Renamed collection across %d image(s).", processed))
+	s.finishJob(err, cancelled, fmt.Sprintf("rename cancelled (%d/%d processed)", processed, total), fmt.Sprintf("Renamed collection across %d image(s).", processed))
 }

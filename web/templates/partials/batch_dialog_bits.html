@@ -1,0 +1,19 @@
+{{/* Shared batch-dialog scaffolding: the live count pair every dialog
+     header carries (ids <prefix>-count / <prefix>-noun, fed by
+     scopeCount), and the autocomplete input wrap the label dialogs
+     share (dict: Name, InputID, Endpoint, SuggestID). */}}
+{{define "batch_count"}}<strong id="{{.}}-count">0</strong> <span id="{{.}}-noun">images</span>{{end}}
+
+{{define "suggest_input"}}
+      <div class="series-input-wrap">
+        <input type="text" name="{{.Name}}" id="{{.InputID}}" maxlength="200"
+               autocomplete="off"
+               hx-get="{{.Endpoint}}"
+               hx-trigger="input changed delay:200ms"
+               hx-target="#{{.SuggestID}}"
+               hx-swap="innerHTML"
+               hx-vals='js:{prefix: document.getElementById("{{.InputID}}").value}'
+               onkeydown="handleSuggestKey(event, '{{.SuggestID}}', '{{.InputID}}')">
+        <div id="{{.SuggestID}}" class="suggest-dropdown series-suggest-dropdown"></div>
+      </div>
+{{end}}

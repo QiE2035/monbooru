@@ -326,6 +326,29 @@ type sidebarBundle struct {
 	Saved        []models.SavedSearch
 }
 
+// loadSavedSearches reads every saved search, name-ordered, for the
+// sidebar renders. logLabel names the calling surface in scan warnings.
+func (s *Server) loadSavedSearches(logLabel string) []models.SavedSearch {
+	rows, err := s.db().Read.Query(`SELECT id, name, query, sort, sort_order, seed FROM saved_searches ORDER BY name`)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	var out []models.SavedSearch
+	for rows.Next() {
+		var ss models.SavedSearch
+		if err := rows.Scan(&ss.ID, &ss.Name, &ss.Query, &ss.Sort, &ss.Order, &ss.Seed); err != nil {
+			logx.Warnf("%s saved searches scan: %v", logLabel, err)
+			continue
+		}
+		out = append(out, ss)
+	}
+	if err := rows.Err(); err != nil {
+		logx.Warnf("%s saved searches: %v", logLabel, err)
+	}
+	return out
+}
+
 // sidebarLoad runs the reads that populate the gallery sidebar.
 // Two background goroutines cover the work that always touches the
 // DB - the per-page tag aggregation against image_tags and the
@@ -352,22 +375,7 @@ func (s *Server) sidebarLoad(pageImageIDs []int64, ceiling *Ceiling) sidebarBund
 	}()
 	go func() {
 		defer wg.Done()
-		ssRows, ssErr := s.db().Read.Query(`SELECT id, name, query, sort, sort_order, seed FROM saved_searches ORDER BY name`)
-		if ssErr != nil {
-			return
-		}
-		defer func() { _ = ssRows.Close() }()
-		for ssRows.Next() {
-			var ss models.SavedSearch
-			if err := ssRows.Scan(&ss.ID, &ss.Name, &ss.Query, &ss.Sort, &ss.Order, &ss.Seed); err != nil {
-				logx.Warnf("sidebar saved searches scan: %v", err)
-				continue
-			}
-			sb.Saved = append(sb.Saved, ss)
-		}
-		if err := ssRows.Err(); err != nil {
-			logx.Warnf("sidebar saved searches: %v", err)
-		}
+		sb.Saved = s.loadSavedSearches("sidebar")
 	}()
 	if cx := s.Active(); cx != nil {
 		sb.Folders, _ = cx.FolderTreeUnder(ceiling)
@@ -484,22 +492,7 @@ func (s *Server) sidebarBrowse(w http.ResponseWriter, r *http.Request) {
 	}()
 	go func() {
 		defer wg.Done()
-		rows, err := s.db().Read.Query(`SELECT id, name, query, sort, sort_order, seed FROM saved_searches ORDER BY name`)
-		if err != nil {
-			return
-		}
-		defer func() { _ = rows.Close() }()
-		for rows.Next() {
-			var ss models.SavedSearch
-			if err := rows.Scan(&ss.ID, &ss.Name, &ss.Query, &ss.Sort, &ss.Order, &ss.Seed); err != nil {
-				logx.Warnf("sidebar-browse saved searches scan: %v", err)
-				continue
-			}
-			saved = append(saved, ss)
-		}
-		if err := rows.Err(); err != nil {
-			logx.Warnf("sidebar-browse saved searches: %v", err)
-		}
+		saved = s.loadSavedSearches("sidebar-browse")
 	}()
 	wg.Wait()
 

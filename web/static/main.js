@@ -11,10 +11,9 @@ var chordTimeoutMs = 500;
 // Chord tree. A leaf is a string URL (navigated to) or a function run with
 // no args; a nested map is a sub-chord whose own keys resolve the next
 // step. `g` leads navigation (`g c a` categories, `g c o` collections).
-// `e` leads detail-page field edits: `s` source / `u` url open the
-// .btn-edit-external dialog pre-filled, `c` opens the add-to-collection
-// dialog, and a digit edits that Nth collection. On pages without the
-// matching control the chord no-ops.
+// `e` leads detail-page field edits: `s` opens the add-source dialog, `c`
+// opens the add-to-collection dialog, and a digit edits that Nth
+// collection. On pages without the matching control the chord no-ops.
 var chordMap = {
   g: {
     g: '/',
@@ -28,16 +27,10 @@ var chordMap = {
     h: '/help',
   },
   e: {
-    s: function () { clickEditField('source'); },
+    s: function () { var b = document.querySelector('.btn-add-source'); if (b) b.click(); },
     c: function () { var b = document.querySelector('.btn-add-collection'); if (b) b.click(); },
-    u: function () { clickEditField('url'); },
   },
 };
-
-function clickEditField(field) {
-  var btn = document.querySelector('.btn-edit-external[data-field="' + field + '"]');
-  if (btn) btn.click();
-}
 
 // editCollection opens the edit dialog for the Nth collection listed on the
 // detail page (1-based, render order). Returns false when out of range.
@@ -110,6 +103,15 @@ function scrollToBottom(el) {
   scrollPageTo(el, s.scrollHeight);
 }
 
+// setFocused moves a keyboard cursor: strip .focused off every element in
+// `items`, mark items[idx], and keep it in view. `block` overrides the
+// scrollIntoView alignment (default 'nearest').
+function setFocused(items, idx, block) {
+  items.forEach(function(el) { el.classList.remove('focused'); });
+  items[idx].classList.add('focused');
+  items[idx].scrollIntoView({ block: block || 'nearest' });
+}
+
 // Move-cursor / open-card helpers reused by both arrow keys and h/j/k/l.
 // When dy != 0 and the would-be index walks off the top/bottom row, the
 // scroll container scrolls to the top / bottom (search bar above,
@@ -140,19 +142,14 @@ function moveGridCursor(dx, dy) {
     }
     idx = Math.max(0, Math.min(cards.length - 1, newIdx));
   }
-  cards.forEach(function(c) { c.classList.remove('focused'); });
-  cards[idx].classList.add('focused');
-  cards[idx].scrollIntoView({ block: 'nearest' });
+  setFocused(cards, idx);
   return true;
 }
 
 function jumpGridCursor(target) {
   var cards = Array.from(document.querySelectorAll('.thumb-card'));
   if (cards.length === 0) return false;
-  var idx = target === 'first' ? 0 : cards.length - 1;
-  cards.forEach(function(c) { c.classList.remove('focused'); });
-  cards[idx].classList.add('focused');
-  cards[idx].scrollIntoView({ block: 'nearest' });
+  setFocused(cards, target === 'first' ? 0 : cards.length - 1);
   return true;
 }
 
@@ -162,6 +159,41 @@ function clickPagination(needle) {
     if (links[i].textContent.indexOf(needle) >= 0) { links[i].click(); return true; }
   }
   return false;
+}
+
+// handlePaginationKey maps [ ] G p onto the shared pagination controls
+// (used verbatim by the tags page and the gallery). Returns true when the
+// key was consumed - the matching control exists and was clicked.
+function handlePaginationKey(e) {
+  if (e.key === '[') return clickPagination('Prev');
+  if (e.key === ']') return clickPagination('Next');
+  if (e.key === 'G') return clickPagination('Last');
+  if (e.key === 'p') {
+    var jp = document.querySelector('.page-jump');
+    if (jp) { jp.click(); return true; }
+  }
+  return false;
+}
+
+// detailRefBack is the history-back step of the back chain alone: true when
+// the detail page carries data-ref (similar-click chain) and history has a
+// predecessor. Shared with the .back-link click handler, which must leave
+// the link's default navigation alive on cold loads (direct URL, bookmark).
+function detailRefBack() {
+  var detailPage = document.getElementById('detail-page');
+  if (detailPage && detailPage.dataset.ref && history.length > 1) { history.back(); return true; }
+  return false;
+}
+
+// detailBack walks the full back chain shared by Escape, Backspace, and the
+// pages-grid Escape: unwind history one step on a data-ref page, else click
+// the .back-link (its href carries the return query), else '/'. The pages
+// grid has no #detail-page, so only the link walk runs there.
+function detailBack() {
+  if (detailRefBack()) return;
+  var backLink = document.querySelector('.back-link');
+  if (backLink) backLink.click();
+  else window.location.href = '/';
 }
 
 // Detail-page prev/next image. Falls through when no nav arrow is present.
@@ -264,9 +296,7 @@ function handlePagesGridKey(e) {
   var idx = focused ? cells.indexOf(focused) : -1;
   function moveTo(target) {
     target = Math.max(0, Math.min(cells.length - 1, target));
-    cells.forEach(function(c) { c.classList.remove('focused'); });
-    cells[target].classList.add('focused');
-    cells[target].scrollIntoView({ block: 'nearest' });
+    setFocused(cells, target);
   }
   function cols() {
     if (cells.length === 0) return 1;
@@ -488,6 +518,18 @@ var lightbox = (function () {
 // .btn-view button in .detail-actions.
 function openLightbox(e, src) { return lightbox.open(e, src); }
 
+// openReaderJumpDialog opens the reader's page-jump dialog with the input
+// focused and pre-selected. Shared by the p key and the counter click.
+// Returns false when the dialog isn't on the page.
+function openReaderJumpDialog() {
+  var dlg = document.getElementById('reader-jump-dialog');
+  if (!dlg) return false;
+  dlg.showModal();
+  var inp = document.getElementById('reader-jump-input');
+  if (inp) { inp.focus(); inp.select(); }
+  return true;
+}
+
 // Reader keymap. The reader is a separate <body class="reader-body"> that
 // hides every gallery / detail control via CSS, so its keys must run
 // before the global keymap and short-circuit it; otherwise the gallery's
@@ -528,13 +570,7 @@ function handleReaderKey(e) {
     case 'End':
       e.preventDefault(); go(total); return true;
     case 'p':
-      var dlg = document.getElementById('reader-jump-dialog');
-      if (dlg) {
-        e.preventDefault();
-        dlg.showModal();
-        var inp = document.getElementById('reader-jump-input');
-        if (inp) { inp.focus(); inp.select(); }
-      }
+      if (openReaderJumpDialog()) e.preventDefault();
       return true;
     case 'P':
       var pagesLink = document.querySelector('.reader-pages');
@@ -589,20 +625,9 @@ document.addEventListener('keydown', function(e) {
       exitTagFocusMode();
       return;
     }
-    var detailPage = document.getElementById('detail-page');
-    if (detailPage) {
+    if (isDetailPage() || document.getElementById('pages-grid-page')) {
       e.preventDefault();
-      if (detailPage.dataset.ref && history.length > 1) { history.back(); return; }
-      var backLink = document.querySelector('.back-link');
-      if (backLink) { backLink.click(); }
-      else { window.location.href = '/'; }
-      return;
-    }
-    if (document.getElementById('pages-grid-page')) {
-      e.preventDefault();
-      var pagesBack = document.querySelector('.back-link');
-      if (pagesBack) { pagesBack.click(); }
-      else { window.location.href = '/'; }
+      detailBack();
       return;
     }
     // Back-navigation fallback: respect any page handler that already
@@ -733,13 +758,7 @@ document.addEventListener('keydown', function(e) {
       var btnAlias = document.getElementById('btn-create-alias');
       if (btnAlias) { e.preventDefault(); btnAlias.click(); return; }
     }
-    if (e.key === '[') { if (clickPagination('Prev')) { e.preventDefault(); return; } }
-    if (e.key === ']') { if (clickPagination('Next')) { e.preventDefault(); return; } }
-    if (e.key === 'G') { if (clickPagination('Last')) { e.preventDefault(); return; } }
-    if (e.key === 'p') {
-      var jp = document.querySelector('.page-jump');
-      if (jp) { e.preventDefault(); jp.click(); return; }
-    }
+    if (handlePaginationKey(e)) { e.preventDefault(); return; }
   }
 
   // Categories page
@@ -864,30 +883,9 @@ document.addEventListener('keydown', function(e) {
     if (e.key === 'O') { if (cycleSort()) { e.preventDefault(); return; } }
     if (e.key === 'D') { if (flipSortDirection()) { e.preventDefault(); return; } }
     if (e.key === 'S' && !batchBarVisible()) {
-      var saveDlg = document.getElementById('save-search-dialog');
-      if (saveDlg) {
-        var si = document.getElementById('search-input');
-        var sq = document.getElementById('save-search-query');
-        var sp = document.getElementById('save-search-preview');
-        if (si && sq) sq.value = si.value;
-        if (si && sp) sp.textContent = si.value || '(empty)';
-        var u = new URL(window.location.href);
-        var ss = document.getElementById('save-search-sort');
-        var so = document.getElementById('save-search-order');
-        var se = document.getElementById('save-search-seed');
-        if (ss) ss.value = u.searchParams.get('sort') || '';
-        if (so) so.value = u.searchParams.get('order') || '';
-        if (se) se.value = u.searchParams.get('seed') || '';
-        e.preventDefault(); saveDlg.showModal(); return;
-      }
+      if (openSaveSearchDialog()) { e.preventDefault(); return; }
     }
-    if (e.key === '[') { if (clickPagination('Prev')) { e.preventDefault(); return; } }
-    if (e.key === ']') { if (clickPagination('Next')) { e.preventDefault(); return; } }
-    if (e.key === 'G') { if (clickPagination('Last')) { e.preventDefault(); return; } }
-    if (e.key === 'p') {
-      var jp2 = document.querySelector('.page-jump');
-      if (jp2) { e.preventDefault(); jp2.click(); return; }
-    }
+    if (handlePaginationKey(e)) { e.preventDefault(); return; }
     if (e.key === 'Home') { if (jumpGridCursor('first')) { e.preventDefault(); return; } }
     if (e.key === 'End')  { if (jumpGridCursor('last'))  { e.preventDefault(); return; } }
   }
@@ -926,12 +924,8 @@ document.addEventListener('keydown', function(e) {
 
   // Backspace: detail-page back. Mirrors Esc's back step.
   if (e.key === 'Backspace' && isDetailPage()) {
-    var detail2 = document.getElementById('detail-page');
     e.preventDefault();
-    if (detail2 && detail2.dataset.ref && history.length > 1) { history.back(); return; }
-    var bl = document.querySelector('.back-link');
-    if (bl) bl.click();
-    else window.location.href = '/';
+    detailBack();
     return;
   }
 
@@ -1019,11 +1013,7 @@ document.addEventListener('keydown', function(e) {
 document.addEventListener('click', function(e) {
   var link = e.target.closest('.back-link');
   if (!link) return;
-  var detailPage = document.getElementById('detail-page');
-  if (detailPage && detailPage.dataset.ref && history.length > 1) {
-    e.preventDefault();
-    history.back();
-  }
+  if (detailRefBack()) e.preventDefault();
 });
 
 // Delete-from-ref walks history instead of server-redirecting so the chain
@@ -1039,26 +1029,19 @@ document.body.addEventListener('delete-go-back', function(e) {
   if (fallback) window.location.href = fallback;
 });
 
-// Per-tagger config dialogs (thresholds, galleries) close themselves on a
-// successful save. The server fires `tagger-saved` via HX-Trigger and
-// names the dialog id to close; the parent flash and the row summary
-// arrive as OOB swaps so the page state is already updated by the time
-// this listener runs.
-document.body.addEventListener('tagger-saved', function(e) {
+// Per-tagger config dialogs (thresholds, galleries) and the per-token
+// privileges dialog close themselves on a successful save. The server fires
+// `tagger-saved` / `token-saved` via HX-Trigger and names the dialog id to
+// close; the parent flash and the row updates arrive as OOB swaps so the
+// page state is already updated by the time this listener runs.
+function closeDialogFromSaveEvent(e) {
   var id = e.detail && e.detail.dialog;
   if (!id) return;
   var dlg = document.getElementById(id);
   if (dlg && dlg.open) dlg.close();
-});
-
-// The per-token privileges dialog closes itself on a successful save; the row's
-// scopes cell and the parent flash arrive as OOB swaps.
-document.body.addEventListener('token-saved', function(e) {
-  var id = e.detail && e.detail.dialog;
-  if (!id) return;
-  var dlg = document.getElementById(id);
-  if (dlg && dlg.open) dlg.close();
-});
+}
+document.body.addEventListener('tagger-saved', closeDialogFromSaveEvent);
+document.body.addEventListener('token-saved', closeDialogFromSaveEvent);
 
 // Per-tagger Galleries dialog helpers. taggerGalAllToggle disables and
 // force-checks the per-gallery boxes when "All galleries" is on so the
@@ -1125,17 +1108,16 @@ function resetThreshRow(link) {
   syncThreshRow(row);
 }
 
-// Re-sync a row as the operator edits it, and run an initial pass when the
-// dialog body lazy-loads (or re-renders after "Reset to defaults"): htmx
-// swaps the table into #tagger-thresh-<name>-body.
-document.body.addEventListener('input', function(e) {
+// Re-sync a row as the operator edits it (one body bound to both input and
+// change so number typing and checkbox toggles are covered), and run an
+// initial pass when the dialog body lazy-loads (or re-renders after "Reset
+// to defaults"): htmx swaps the table into #tagger-thresh-<name>-body.
+function syncThreshRowFromEvent(e) {
   var row = e.target.closest && e.target.closest('.tagger-thresh-table tbody tr');
   if (row) syncThreshRow(row);
-});
-document.body.addEventListener('change', function(e) {
-  var row = e.target.closest && e.target.closest('.tagger-thresh-table tbody tr');
-  if (row) syncThreshRow(row);
-});
+}
+document.body.addEventListener('input', syncThreshRowFromEvent);
+document.body.addEventListener('change', syncThreshRowFromEvent);
 document.body.addEventListener('htmx:afterSwap', function(e) {
   var t = e.detail && e.detail.target;
   if (!t) return;
@@ -1150,11 +1132,8 @@ function restoreGalleryFocusFromHash() {
   if (!m) return;
   var card = document.querySelector('.thumb-card[data-id="' + m[1] + '"]');
   if (!card) return;
-  document.querySelectorAll('.thumb-card.focused').forEach(function(c) {
-    c.classList.remove('focused');
-  });
-  card.classList.add('focused');
-  card.scrollIntoView({ block: 'nearest' });
+  var cards = Array.from(document.querySelectorAll('.thumb-card'));
+  setFocused(cards, cards.indexOf(card));
 }
 document.addEventListener('DOMContentLoaded', restoreGalleryFocusFromHash);
 
@@ -1246,10 +1225,22 @@ document.addEventListener('change', function(e) {
   e.target.blur();
 });
 
-// Inbox cluster [Select] / [Unselect] buttons: walk forward through
-// the grid's children, ticking or unticking every thumbnail checkbox
-// until the next cluster header (or the end). Both share the same
-// sibling walk; the only difference is the target checked state.
+// forEachClusterCheckbox walks forward through the grid's children after a
+// cluster header, visiting every thumbnail checkbox until the next cluster
+// header (or the end). Shared by the [Select]/[Unselect] click below and
+// updateClusterButtons' visibility sync.
+function forEachClusterCheckbox(header, fn) {
+  var node = header.nextElementSibling;
+  while (node && !node.classList.contains('thumb-cluster-header')) {
+    var cb = node.querySelector ? node.querySelector('.thumb-checkbox') : null;
+    if (cb) fn(cb);
+    node = node.nextElementSibling;
+  }
+}
+
+// Inbox cluster [Select] / [Unselect] buttons: tick or untick every
+// thumbnail checkbox in the cluster; the only difference between the two
+// buttons is the target checked state.
 document.addEventListener('click', function(e) {
   var sel = e.target.closest('[data-cluster-select]');
   var uns = e.target.closest('[data-cluster-unselect]');
@@ -1258,12 +1249,7 @@ document.addEventListener('click', function(e) {
   var header = (sel || uns).closest('.thumb-cluster-header');
   if (!header) return;
   var target = !!sel;
-  var node = header.nextElementSibling;
-  while (node && !node.classList.contains('thumb-cluster-header')) {
-    var cb = node.querySelector ? node.querySelector('.thumb-checkbox') : null;
-    if (cb) cb.checked = target;
-    node = node.nextElementSibling;
-  }
+  forEachClusterCheckbox(header, function(cb) { cb.checked = target; });
   updateBatchBar();
 });
 
@@ -1292,12 +1278,10 @@ document.addEventListener('click', function(e) {
 function updateClusterButtons() {
   document.querySelectorAll('.thumb-cluster-header[data-cluster-start]').forEach(function(header) {
     var total = 0, checked = 0;
-    var node = header.nextElementSibling;
-    while (node && !node.classList.contains('thumb-cluster-header')) {
-      var cb = node.querySelector ? node.querySelector('.thumb-checkbox') : null;
-      if (cb) { total++; if (cb.checked) checked++; }
-      node = node.nextElementSibling;
-    }
+    forEachClusterCheckbox(header, function(cb) {
+      total++;
+      if (cb.checked) checked++;
+    });
     var sel = header.querySelector('[data-cluster-select]');
     var uns = header.querySelector('[data-cluster-unselect]');
     if (sel) sel.hidden = total > 0 && checked === total;
@@ -1359,9 +1343,7 @@ function cycleTagFocus(step) {
   var current = document.querySelector('#image-tags .tag-item.focused');
   var idx = current ? items.indexOf(current) : 0;
   idx = Math.max(0, Math.min(items.length - 1, idx + step));
-  items.forEach(function(li) { li.classList.remove('focused'); });
-  items[idx].classList.add('focused');
-  items[idx].scrollIntoView({block: 'nearest'});
+  setFocused(items, idx);
 }
 
 // Batch delete: opens the unified delete dialog scoped to the checked
@@ -1369,6 +1351,32 @@ function cycleTagFocus(step) {
 // confirmBatchDelete (gallery.html).
 function batchDeleteSelected() {
   if (typeof openBatchDeleteDialog === 'function') openBatchDeleteDialog('selection');
+}
+
+// openSaveSearchDialog prefills the save-search dialog from the current
+// search input, then opens it. Shared by the S-key shortcut and the
+// Actions chooser's Save entry. Returns false when the dialog isn't on
+// the page so the key handler can fall through.
+function openSaveSearchDialog() {
+  var dlg = document.getElementById('save-search-dialog');
+  if (!dlg) return false;
+  var si = document.getElementById('search-input');
+  var sq = document.getElementById('save-search-query');
+  var sp = document.getElementById('save-search-preview');
+  if (si && sq) sq.value = si.value;
+  if (si && sp) sp.textContent = si.value || '(empty)';
+  // Snapshot the current URL's sort/order/seed so the saved entry
+  // reopens at the same view. Defaults stay empty so the gallery
+  // handler's defaults take over on reopen if nothing was set here.
+  var url = new URL(window.location.href);
+  var ss = document.getElementById('save-search-sort');
+  var so = document.getElementById('save-search-order');
+  var se = document.getElementById('save-search-seed');
+  if (ss) ss.value = url.searchParams.get('sort') || '';
+  if (so) so.value = url.searchParams.get('order') || '';
+  if (se) se.value = url.searchParams.get('seed') || '';
+  dlg.showModal();
+  return true;
 }
 
 // refreshJobStatus forces the top-right job-status widget to re-fetch its
@@ -1513,10 +1521,18 @@ function onExternalEditResponse(event, dialogID) {
   if (dlg) dlg.close();
 }
 
+// toggleAnnotations shows/hides the note-box overlay on the detail image.
+function toggleAnnotations(btn) {
+  var media = btn.closest('.detail-media');
+  if (!media) return;
+  var hidden = media.classList.toggle('notes-hidden');
+  btn.textContent = hidden ? '[show notes]' : '[hide notes]';
+}
+
 // actionFlashSlots is the ordered list of per-page slot ids the shared
 // flash helpers fall through. Each page that wants action feedback ships
 // one of these slots in its template; the page only ever has one of them.
-var actionFlashSlots = ['gallery-flash', 'detail-flash', 'tag-flash', 'cat-flash', 'collection-flash'];
+var actionFlashSlots = ['gallery-flash', 'detail-flash', 'tag-flash', 'cat-flash', 'collection-flash', 'flash-tagger'];
 
 function findActionFlashSlot() {
   for (var i = 0; i < actionFlashSlots.length; i++) {
@@ -1840,11 +1856,13 @@ function applyTagSuggest(btn) {
   }
 }
 
-// Folder suggest (move-image and move-selected dialogs): keeps focus on the
-// input so the user can keep typing.
-function applyFolderSuggest(btn) {
-  var folder = btn.dataset.folderPath;
-  if (folder == null) return;
+// Label suggest (move-image/move-selected folder dialogs; detail and batch
+// collection/source dialogs): copies the picked value into the dropdown's
+// nearest text input and keeps focus so the user can keep typing. key names
+// the dataset field carrying the value ('folderPath' or 'series').
+function applyLabelSuggest(btn, key) {
+  var label = btn.dataset[key];
+  if (label == null) return;
   var dd = btn.closest('.suggest-dropdown');
   if (!dd) return;
   var container = dd.parentElement;
@@ -1852,24 +1870,7 @@ function applyFolderSuggest(btn) {
   var input = container.querySelector('input[type="text"]');
   if (!input) return;
   dd.innerHTML = '';
-  input.value = folder;
-  input.focus();
-}
-
-// Series suggest (detail-page series-edit and batch-series dialogs):
-// mirror of applyFolderSuggest, picking the series text input from the
-// dropdown's nearest container so a single helper covers both surfaces.
-function applySeriesSuggest(btn) {
-  var series = btn.dataset.series;
-  if (series == null) return;
-  var dd = btn.closest('.suggest-dropdown');
-  if (!dd) return;
-  var container = dd.parentElement;
-  if (!container) return;
-  var input = container.querySelector('input[type="text"]');
-  if (!input) return;
-  dd.innerHTML = '';
-  input.value = series;
+  input.value = label;
   input.focus();
 }
 
@@ -2159,18 +2160,218 @@ function getCSRFToken() {
   return input ? input.value : '';
 }
 
+// scopeCount populates the dialog's count + noun span pair from the
+// current search-result span (search scope) or the checked-thumb count
+// (selection scope). Returns the resolved count so callers can early-
+// return on an empty selection.
+function scopeCount(scope, countEl, nounEl) {
+  var n = 0;
+  if (scope === 'selection') {
+    n = document.querySelectorAll('.thumb-checkbox:checked').length;
+  } else {
+    var rcEl = document.querySelector('.result-count');
+    if (rcEl) {
+      var m = rcEl.textContent.match(/(\d+)/);
+      if (m) n = parseInt(m[1], 10);
+    }
+  }
+  if (countEl) countEl.textContent = n;
+  if (nounEl) {
+    var suffix = n === 1 ? 'image' : 'images';
+    nounEl.textContent = scope === 'selection' ? 'selected ' + suffix : suffix + ' in current search';
+  }
+  return n;
+}
+
+// searchScopeParts returns the query/sort/order body fragment used by
+// every search-scoped batch endpoint.
+function searchScopeParts() {
+  var si = document.getElementById('search-input');
+  var sortEl = document.getElementById('search-sort');
+  var orderEl = document.querySelector('#search-form select[name="order"]');
+  return ['q=' + encodeURIComponent(si ? si.value : ''),
+          'sort=' + encodeURIComponent(sortEl ? sortEl.value : 'newest'),
+          'order=' + encodeURIComponent(orderEl ? orderEl.value : 'desc')];
+}
+
+// selectionScopeIds returns the checked-thumb id parts. Returns null
+// when nothing is checked (caller writes the flash and aborts).
+function selectionScopeIds() {
+  var checked = document.querySelectorAll('.thumb-checkbox:checked');
+  if (checked.length === 0) return null;
+  return Array.prototype.map.call(checked, function(cb) {
+    return 'ids=' + encodeURIComponent(cb.value);
+  });
+}
+
+// runBatchOp fires the named endpoint, closing the dialog and refreshing
+// job-status on success. opts: endpoint, scope, params (array of
+// already-encoded "k=v" parts not including _csrf or scope), dialogId,
+// flashId, failMsg, clearOnOk (defaults to scope === 'selection').
+function runBatchOp(opts) {
+  var flash = document.getElementById(opts.flashId);
+  if (flash) flash.innerHTML = '';
+  var csrfEl = document.querySelector('input[name="_csrf"]');
+  var csrf = csrfEl ? csrfEl.value : '';
+  var parts = ['_csrf=' + encodeURIComponent(csrf),
+               'scope=' + encodeURIComponent(opts.scope)];
+  if (opts.params) parts = parts.concat(opts.params);
+  var clearOnOk = opts.clearOnOk;
+  if (clearOnOk === undefined) clearOnOk = opts.scope === 'selection';
+  fetch(opts.endpoint, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
+    body: parts.join('&')
+  }).then(function(res) {
+    if (res.ok) {
+      var dlg = document.getElementById(opts.dialogId);
+      if (dlg) dlg.close();
+      if (clearOnOk) clearSelection();
+      _pendingGalleryReload = true;
+      refreshJobStatus();
+    } else {
+      res.text().then(function(t) {
+        if (flash) flash.innerHTML = t || '<div class="flash flash-err">' + (opts.failMsg || 'Action failed.') + '</div>';
+      });
+    }
+  }).catch(function() {
+    if (flash) flash.innerHTML = '<div class="flash flash-err">Request failed.</div>';
+  });
+}
+
+// openBatchDialog runs the shared open skeleton for a batch dialog whose
+// elements share an id prefix (#<prefix>-dialog/-scope/-count/-noun/-flash):
+// guard an empty selection, fill the count + noun pair, stamp the scope,
+// reset the per-dialog extras, clear the flash, showModal. opts:
+//   countId       - count element id when it isn't <prefix>-count
+//   requireMatches - also abort a search-scope open that matches 0 images
+//   radio         - selector of the radio re-checked to its default
+//   clearIds      - element ids emptied on open (inputs get value='',
+//                   suggest dropdowns innerHTML='')
+//   clearReturnTo - drop any stale chooser back-link from a prior open;
+//                   pickBatchAction re-applies it on the chooser-open path
+//                   after this runs (shared batch-bar/chooser dialogs only)
+//   beforeShow    - hook run after the resets, before showModal
+//   focusId       - input focused after showModal
+function openBatchDialog(prefix, scope, opts) {
+  opts = opts || {};
+  if (scope === 'selection' && document.querySelectorAll('.thumb-checkbox:checked').length === 0) return;
+  var n = scopeCount(scope, document.getElementById(opts.countId || prefix + '-count'),
+                     document.getElementById(prefix + '-noun'));
+  if (opts.requireMatches && scope === 'search' && n === 0) return;
+  document.getElementById(prefix + '-scope').value = scope;
+  if (opts.radio) {
+    var dflt = document.querySelector(opts.radio);
+    if (dflt) dflt.checked = true;
+  }
+  (opts.clearIds || []).forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (el.tagName === 'INPUT') el.value = ''; else el.innerHTML = '';
+  });
+  var flash = document.getElementById(prefix + '-flash');
+  if (flash) flash.innerHTML = '';
+  var dlg = document.getElementById(prefix + '-dialog');
+  if (opts.clearReturnTo && dlg) delete dlg.dataset.returnTo;
+  if (opts.beforeShow) opts.beforeShow();
+  dlg.showModal();
+  var focusEl = opts.focusId ? document.getElementById(opts.focusId) : null;
+  if (focusEl) focusEl.focus();
+}
+
+// clearSlots empties each listed element by id, skipping ids absent from
+// the page: the shared "reset error/suggest/flash slots" step of dialog-open.
+function clearSlots() {
+  for (var i = 0; i < arguments.length; i++) {
+    var el = document.getElementById(arguments[i]);
+    if (el) el.innerHTML = '';
+  }
+}
+
+// openHxRewriteDialog repoints a form's htmx attribute (attr is 'hx-post'
+// or 'hx-patch') at url, re-processes the form so htmx picks up the new
+// target, and opens the dialog. Callers prefill before, focus after.
+function openHxRewriteDialog(formId, attr, url, dialogId) {
+  var form = document.getElementById(formId);
+  form.setAttribute(attr, url);
+  if (window.htmx) window.htmx.process(form);
+  document.getElementById(dialogId).showModal();
+}
+
+// confirmBatchSimple runs the shared confirm shape: resolve the scope the
+// open path stashed in #<prefix>-scope into query or id params (flashing
+// on an empty selection), then post through runBatchOp. extraParams are
+// already-encoded "k=v" parts placed before the scope params.
+function confirmBatchSimple(prefix, endpoint, extraParams, failMsg) {
+  var scope = document.getElementById(prefix + '-scope').value;
+  var params = extraParams || [];
+  if (scope === 'search') {
+    params = params.concat(searchScopeParts());
+  } else {
+    var ids = selectionScopeIds();
+    if (!ids) {
+      document.getElementById(prefix + '-flash').innerHTML = '<div class="flash flash-err">No images selected.</div>';
+      return;
+    }
+    params = params.concat(ids);
+  }
+  runBatchOp({endpoint: endpoint, scope: scope, params: params,
+              dialogId: prefix + '-dialog', flashId: prefix + '-flash', failMsg: failMsg});
+}
+
+// postForm sends a form-encoded request with the page CSRF token in both
+// the body and the X-CSRF-Token header, then applies runBatchOp's
+// ok-close / err-flash shape. params is a URLSearchParams or plain object
+// (or null); _csrf is appended here. opts:
+//   method   - HTTP verb, default 'POST'
+//   hx       - also send the HX-Request header (relations bulk endpoints)
+//   okStatus - success only on this exact status; default is res.ok
+//   dialogId - dialog closed on success
+//   onOK     - called with the response after the dialog close
+//   flashId  - element that receives the error body / failure flashes
+//   failMsg  - fallback error text when the error body is empty
+//   onErr    - called with the error body text instead of the flash write
+//   catchMsg - network-failure flash text (default 'Request failed.');
+//              pass null to keep a converted site's original no-catch shape
+function postForm(url, params, opts) {
+  opts = opts || {};
+  var csrf = getCSRFToken();
+  var body = params instanceof URLSearchParams ? params : new URLSearchParams(params || {});
+  body.append('_csrf', csrf);
+  var headers = {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf};
+  if (opts.hx) headers['HX-Request'] = 'true';
+  var flash = opts.flashId ? document.getElementById(opts.flashId) : null;
+  var p = fetch(url, {
+    method: opts.method || 'POST',
+    headers: headers,
+    body: body.toString()
+  }).then(function(res) {
+    var ok = opts.okStatus ? res.status === opts.okStatus : res.ok;
+    if (ok) {
+      var dlg = opts.dialogId ? document.getElementById(opts.dialogId) : null;
+      if (dlg) dlg.close();
+      if (opts.onOK) opts.onOK(res);
+    } else {
+      res.text().then(function(t) {
+        if (opts.onErr) { opts.onErr(t); return; }
+        if (flash) flash.innerHTML = t || (opts.failMsg ? '<div class="flash flash-err">' + opts.failMsg + '</div>' : '');
+      });
+    }
+  });
+  if (opts.catchMsg !== null) {
+    p.catch(function() {
+      if (flash) flash.innerHTML = '<div class="flash flash-err">' + (opts.catchMsg || 'Request failed.') + '</div>';
+    });
+  }
+}
+
 function dismissJobStatus() {
   _lastReloadedFinishedAt = '';
   _lastJobProcessed = -1;
   _lastWatcherNotices = -1;
   _jobAutoClearFinishedAt = '';
   if (_jobAutoClearTimer) { clearTimeout(_jobAutoClearTimer); _jobAutoClearTimer = null; }
-  var csrf = getCSRFToken();
-  fetch('/internal/job/dismiss', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
-    body: '_csrf=' + encodeURIComponent(csrf)
-  }).catch(function() {});
+  postForm('/internal/job/dismiss');
   var js = document.getElementById('job-status');
   if (js) {
     js.innerHTML = '';
@@ -2183,12 +2384,7 @@ function dismissJobStatus() {
 // ctx.Done() and wraps up via Complete; the 30s auto-dismiss takes over from
 // there so the user still sees a "cancelled" summary on the status bar.
 function cancelJobStatus() {
-  var csrf = getCSRFToken();
-  fetch('/internal/job/cancel', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
-    body: '_csrf=' + encodeURIComponent(csrf)
-  }).catch(function() {});
+  postForm('/internal/job/cancel');
 }
 
 // Shared suggest-dropdown keyboard navigation (search, tag input, merge)
@@ -2198,18 +2394,10 @@ function handleSuggestKey(e, dropdownId, inputId) {
   var items = Array.from(dd.querySelectorAll('.suggest-item'));
   var focused = dd.querySelector('.suggest-item.kbd-focused');
   var idx = focused ? items.indexOf(focused) : -1;
-  if (e.key === 'ArrowDown') {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault();
     items.forEach(function(i){ i.classList.remove('kbd-focused'); });
-    idx = Math.min(idx + 1, items.length - 1);
-    if (idx >= 0) {
-      items[idx].classList.add('kbd-focused');
-      items[idx].scrollIntoView({ block: 'nearest' });
-    }
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    items.forEach(function(i){ i.classList.remove('kbd-focused'); });
-    idx = Math.max(idx - 1, 0);
+    idx = e.key === 'ArrowDown' ? Math.min(idx + 1, items.length - 1) : Math.max(idx - 1, 0);
     if (idx >= 0) {
       items[idx].classList.add('kbd-focused');
       items[idx].scrollIntoView({ block: 'nearest' });
@@ -2275,7 +2463,7 @@ initSuggestDismiss('batch-move-suggest', 'batch-move-folder');
 initSuggestDismiss('move-image-suggest', 'move-image-folder');
 initSuggestDismiss('batch-tag-suggest', 'batch-tag-input');
 initSuggestDismiss('batch-strip-suggest', 'batch-strip-input');
-initSuggestDismiss('external-edit-suggest', 'external-edit-input');
+initSuggestDismiss('source-suggest', 'source-site-input');
 initSuggestDismiss('batch-series-search-suggest', 'batch-series-search-input');
 initSuggestDismiss('batch-series-selected-suggest', 'batch-series-selected-input');
 
@@ -2387,13 +2575,10 @@ document.addEventListener('DOMContentLoaded', function() {
 // Reader: clicking the page counter opens the page-jump dialog.
 document.addEventListener('DOMContentLoaded', function() {
   var counter = document.getElementById('reader-counter');
-  var dlg = document.getElementById('reader-jump-dialog');
-  if (counter && dlg) {
+  if (counter && document.getElementById('reader-jump-dialog')) {
     counter.addEventListener('click', function(e) {
       e.preventDefault();
-      dlg.showModal();
-      var inp = document.getElementById('reader-jump-input');
-      if (inp) { inp.focus(); inp.select(); }
+      openReaderJumpDialog();
     });
   }
 });
@@ -2408,11 +2593,10 @@ document.addEventListener('DOMContentLoaded', function() {
   if (!hash || hash.indexOf('#page-') !== 0) return;
   var target = document.querySelector(hash + '.manga-page-cell');
   if (!target) return;
-  document.querySelectorAll('.manga-page-cell.focused').forEach(function(c) {
-    c.classList.remove('focused');
-  });
-  target.classList.add('focused');
-  target.scrollIntoView({ block: 'center' });
+  var cells = Array.from(document.querySelectorAll('.manga-page-cell'));
+  // block: 'center' - the return-from-reader landing wants the cell
+  // anchored mid-viewport, not just nudged into view.
+  setFocused(cells, cells.indexOf(target), 'center');
 });
 
 // initInboxUpload wires the inline drop zone the gallery renders at the

@@ -219,7 +219,7 @@ func TestSourceSuggest_CaseInsensitivePrefix(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "src.png", 7, 7)
 	if _, err := srv.Active().DB.Write.Exec(
-		`UPDATE images SET source = 'Pixiv' WHERE id = ?`, id,
+		`INSERT INTO image_sources (image_id, site, post_id, url) VALUES (?, 'Pixiv', '', '')`, id,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1360,18 +1360,17 @@ func TestAddTagToImage_RealCategoryPrefixStillSplits(t *testing.T) {
 }
 
 // TestUpdateExternal_HTMXBadURLSurfacesFlash pins the dialog UX: a
-// non-http URL submitted from the detail-page #external-url-dialog
-// must come back as a 200 + flash-err fragment so htmx swaps the
-// message into the slot and the dialog stays open with the typed
-// value intact, instead of navigating the browser to a stripped
-// text/plain error page.
+// non-http URL submitted from the detail-page #source-dialog must come
+// back as a 200 + flash-err fragment so htmx swaps the message into the
+// slot and the dialog stays open with the typed value intact, instead of
+// navigating the browser to a stripped text/plain error page.
 func TestUpdateExternal_HTMXBadURLSurfacesFlash(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "ext.png", 10, 10)
 
 	csrf := srv.csrfToken("anon")
 	form := url.Values{"_csrf": {csrf}, "url": {"ftp://example.com"}}
-	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/sources/set", id), strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-CSRF-Token", csrf)
 	req.Header.Set("HX-Request", "true")
@@ -1401,7 +1400,7 @@ func TestUpdateExternal_HTMXSuccessRefreshes(t *testing.T) {
 
 	csrf := srv.csrfToken("anon")
 	form := url.Values{"_csrf": {csrf}, "url": {"https://example.com/art"}}
-	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/sources/set", id), strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-CSRF-Token", csrf)
 	req.Header.Set("HX-Request", "true")
@@ -1776,44 +1775,48 @@ func TestServeThumbnail_InvalidatesOnIDReuse(t *testing.T) {
 	}
 }
 
-// TestUpdateExternal_AbsentFieldsLeaveOthersAlone: each detail-page
-// dialog ships only its own field, so a caller that posts only
-// `source=foo` (no series, no url) must leave collection and url
-// unchanged. Absent != empty - empty clears the field, truly absent
-// leaves it alone.
-func TestUpdateExternal_AbsentFieldsLeaveOthersAlone(t *testing.T) {
+// TestSetSource_RenameLeavesCollectionAndKeepsURL: renaming an origin via
+// the source dialog (which re-submits the url) relabels the source, keeps its
+// url, and never touches the image's collections, which live on a separate
+// endpoint.
+func TestSetSource_RenameLeavesCollectionAndKeepsURL(t *testing.T) {
 	srv := newTestServer(t)
 	id := seedImage(t, srv, "ext_isolation.png", 10, 10)
 	csrf := srv.csrfToken("anon")
 
 	seedAll := url.Values{
-		"_csrf":  {csrf},
-		"source": {"danbooru"},
-		"url":    {"https://example.com/art"},
+		"_csrf": {csrf},
+		"site":  {"danbooru"},
+		"url":   {"https://example.com/art"},
 	}
-	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(seedAll.Encode()))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/sources/set", id), strings.NewReader(seedAll.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-CSRF-Token", csrf)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 	if w.Code/100 != 2 && w.Code != http.StatusSeeOther {
-		t.Fatalf("seed external fields: %d %s", w.Code, w.Body.String())
+		t.Fatalf("seed source: %d %s", w.Code, w.Body.String())
 	}
-	// Collection lives on its own endpoint; seed it so the source-only
-	// update below can be shown to leave it untouched.
+	// Collection lives on its own endpoint; seed it so the source rename
+	// below can be shown to leave it untouched.
 	seedOrder := 3
 	if err := gallery.SetHomeCollection(srv.Active().DB, id, "my set", &seedOrder); err != nil {
 		t.Fatal(err)
 	}
 
-	sourceOnly := url.Values{"_csrf": {csrf}, "source": {"updated"}}
-	req2 := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/external", id), strings.NewReader(sourceOnly.Encode()))
+	rename := url.Values{
+		"_csrf":     {csrf},
+		"site":      {"updated"},
+		"url":       {"https://example.com/art"},
+		"prev_site": {"danbooru"},
+	}
+	req2 := httptest.NewRequest("POST", fmt.Sprintf("/images/%d/sources/set", id), strings.NewReader(rename.Encode()))
 	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req2.Header.Set("X-CSRF-Token", csrf)
 	w2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w2, req2)
 	if w2.Code/100 != 2 && w2.Code != http.StatusSeeOther {
-		t.Fatalf("update source only: %d %s", w2.Code, w2.Body.String())
+		t.Fatalf("rename source: %d %s", w2.Code, w2.Body.String())
 	}
 
 	var src, urlVal, collection string

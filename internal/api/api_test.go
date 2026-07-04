@@ -171,6 +171,43 @@ func TestSearchImagesReturnsEnvelope(t *testing.T) {
 	}
 }
 
+// The search list must carry the image's note like the per-image GET does.
+func TestSearchImages_PopulatesNote(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "search_note.png", 12, 12)
+	if _, err := env.database.Write.Exec(`UPDATE images SET note = 'remember this' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/images/search", nil)
+	rec := httptest.NewRecorder()
+	env.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Results []struct {
+			ID   int64  `json:"id"`
+			Note string `json:"note"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range resp.Results {
+		if r.ID == id {
+			found = true
+			if r.Note != "remember this" {
+				t.Errorf("note in search result = %q, want %q", r.Note, "remember this")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("seeded image missing from search results")
+	}
+}
+
 // TestSearchImages_PopulatesTags: the search response shape matches
 // the per-image GET shape on the same Image.tags property.
 func TestSearchImages_PopulatesTags(t *testing.T) {
@@ -547,6 +584,321 @@ func TestCreateImage_JSONPath_Duplicate(t *testing.T) {
 	}
 	if resp["image"] == nil {
 		t.Errorf("expected image object in response, got %v", resp)
+	}
+}
+
+func TestCreateImage_DuplicateMergesTagsAndSource(t *testing.T) {
+	env := newTestEnv(t)
+	env.createTestImage(t, "merge_api.png", 20, 20)
+	var canonPath string
+	if err := env.database.Read.QueryRow(`SELECT canonical_path FROM images LIMIT 1`).Scan(&canonPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-push the same file (same sha) with tags + a source; the duplicate
+	// branch merges instead of discarding (issue #6).
+	body, _ := json.Marshal(map[string]any{
+		"path":   canonPath,
+		"source": "danbooru",
+		"url":    "https://danbooru.donmai.us/posts/1",
+		"tags":   []string{"1girl", "rating:explicit"},
+	})
+	req := httptest.NewRequest("POST", "/api/v1/images", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for duplicate, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	merge, _ := resp["merge"].(map[string]any)
+	if merge == nil || merge["tags_added"].(float64) < 2 {
+		t.Fatalf("expected merge summary with tags_added>=2, got %v", resp["merge"])
+	}
+
+	// The tags landed attributed to the source, and the origin was recorded.
+	var n int
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_tags it JOIN tags t ON t.id = it.tag_id
+		 WHERE t.name IN ('1girl', 'explicit') AND it.tagger_name = 'danbooru'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n < 2 {
+		t.Errorf("expected 1girl + explicit attributed to danbooru, got %d", n)
+	}
+	var site, srcURL string
+	if err := env.database.Read.QueryRow(`SELECT site, url FROM image_sources LIMIT 1`).Scan(&site, &srcURL); err != nil {
+		t.Fatal(err)
+	}
+	if site != "danbooru" || srcURL == "" {
+		t.Errorf("expected danbooru source recorded, got site=%q url=%q", site, srcURL)
+	}
+}
+
+func TestCreateImage_DuplicateMergesCommentary(t *testing.T) {
+	env := newTestEnv(t)
+	env.createTestImage(t, "comment_api.png", 20, 20)
+	var id int64
+	var canonPath string
+	if err := env.database.Read.QueryRow(`SELECT id, canonical_path FROM images LIMIT 1`).Scan(&id, &canonPath); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"path":       canonPath,
+		"source":     "danbooru",
+		"url":        "https://danbooru.donmai.us/posts/1",
+		"commentary": "artist said hi",
+	})
+	req := httptest.NewRequest("POST", "/api/v1/images", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var stored string
+	if err := env.database.Read.QueryRow(`SELECT commentary FROM image_sources WHERE site = 'danbooru'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "artist said hi" {
+		t.Errorf("stored commentary = %q, want the pushed body", stored)
+	}
+	req2 := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/images/%d", id), nil)
+	w2 := httptest.NewRecorder()
+	env.mux.ServeHTTP(w2, req2)
+	if !strings.Contains(w2.Body.String(), "artist said hi") {
+		t.Errorf("commentary missing from image JSON: %s", w2.Body.String())
+	}
+}
+
+func TestCreateImage_DuplicateMergesAnnotations(t *testing.T) {
+	env := newTestEnv(t)
+	env.createTestImage(t, "ann_api.png", 20, 20)
+	var id int64
+	var canonPath string
+	if err := env.database.Read.QueryRow(`SELECT id, canonical_path FROM images LIMIT 1`).Scan(&id, &canonPath); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"path":   canonPath,
+		"source": "danbooru",
+		"notes":  []map[string]any{{"x": 5, "y": 6, "w": 7, "h": 8, "body": "translated line"}},
+	})
+	req := httptest.NewRequest("POST", "/api/v1/images", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var n int
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_annotations WHERE site = 'danbooru' AND body = 'translated line'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 annotation stored, got %d", n)
+	}
+	req2 := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/images/%d", id), nil)
+	w2 := httptest.NewRecorder()
+	env.mux.ServeHTTP(w2, req2)
+	if !strings.Contains(w2.Body.String(), "translated line") {
+		t.Errorf("annotation missing from image JSON: %s", w2.Body.String())
+	}
+}
+
+func TestEnrichImage_AppliesTagsCommentaryNotes(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "enrich.png", 12, 12)
+
+	body, _ := json.Marshal(map[string]any{
+		"tags":       []string{"1girl", "artist:foo"},
+		"source":     "danbooru",
+		"url":        "https://danbooru.donmai.us/posts/5",
+		"commentary": "artist said hi",
+		"notes":      []map[string]any{{"x": 10, "y": 20, "w": 30, "h": 40, "body": "translated"}},
+	})
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("enrich: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var nTags int
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_tags it JOIN tags t ON t.id = it.tag_id
+		 WHERE t.name IN ('1girl', 'foo') AND it.tagger_name = 'danbooru'`).Scan(&nTags); err != nil {
+		t.Fatal(err)
+	}
+	if nTags < 2 {
+		t.Errorf("expected 1girl + foo attributed to danbooru, got %d", nTags)
+	}
+	var commentary string
+	if err := env.database.Read.QueryRow(
+		`SELECT commentary FROM image_sources WHERE image_id = ? AND site = 'danbooru'`, id).Scan(&commentary); err != nil {
+		t.Fatal(err)
+	}
+	if commentary != "artist said hi" {
+		t.Errorf("commentary = %q, want 'artist said hi'", commentary)
+	}
+	var nAnn int
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_annotations WHERE image_id = ? AND site = 'danbooru'`, id).Scan(&nAnn); err != nil {
+		t.Fatal(err)
+	}
+	if nAnn != 1 {
+		t.Errorf("annotations = %d, want 1", nAnn)
+	}
+}
+
+func TestEnrichImage_PersistsSourceMD5(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "enrich_md5.png", 12, 12)
+
+	body, _ := json.Marshal(map[string]any{
+		"source":     "danbooru",
+		"url":        "https://d/1",
+		"source_md5": "0123456789abcdef0123456789abcdef",
+	})
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("enrich: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var md5 string
+	if err := env.database.Read.QueryRow(
+		`SELECT md5 FROM image_sources WHERE image_id = ? AND site = 'danbooru'`, id).Scan(&md5); err != nil {
+		t.Fatal(err)
+	}
+	if md5 != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("stored md5 = %q, want the claimed one", md5)
+	}
+
+	// A later enrich without an md5 keeps the stored one.
+	body, _ = json.Marshal(map[string]any{"source": "danbooru"})
+	req = httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("second enrich: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := env.database.Read.QueryRow(
+		`SELECT md5 FROM image_sources WHERE image_id = ? AND site = 'danbooru'`, id).Scan(&md5); err != nil {
+		t.Fatal(err)
+	}
+	if md5 != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("md5 after md5-less enrich = %q, want kept", md5)
+	}
+}
+
+func TestEnrichImage_ReportsTagWarnings(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "enrich_warn.png", 12, 12)
+
+	body, _ := json.Marshal(map[string]any{
+		"tags":   []string{"fine_tag", "rating:bogus"},
+		"source": "danbooru",
+	})
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("enrich: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		TagWarnings []string `json:"tag_warnings"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.TagWarnings) != 1 || !strings.Contains(resp.TagWarnings[0], "rating:bogus") {
+		t.Errorf("tag_warnings = %v, want one entry for rating:bogus", resp.TagWarnings)
+	}
+}
+
+func TestEnrichImage_HashMismatchMakesNoChanges(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "enrich_verify.png", 12, 12)
+	body, _ := json.Marshal(map[string]any{
+		"tags":       []string{"nope"},
+		"source":     "danbooru",
+		"source_md5": "00000000000000000000000000000000",
+		"verify":     true,
+	})
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 on md5 mismatch, got %d: %s", w.Code, w.Body.String())
+	}
+	var n int
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_tags it JOIN tags t ON t.id = it.tag_id WHERE t.name = 'nope'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("a hash mismatch must not apply tags, got %d", n)
+	}
+}
+
+// The fetch-status endpoint lets monloader report a fetch that failed before it
+// could enrich, so the detail poll can surface it. The reported state + message
+// reach the RecordFetch hook the web layer wires.
+func TestFetchStatusReport_RecordsOutcome(t *testing.T) {
+	dir := t.TempDir()
+	database, err := db.Open(dir + "/test.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.Bootstrap(database); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	var gotID int64
+	var gotState, gotMsg string
+	cfg := config.Default()
+	cfg.Auth.Tokens = []config.Token{{ID: "t", Name: "t", TokenHash: config.HashToken(testAPIToken), Scopes: config.AllScopes}}
+	g := Gallery{
+		Name: cfg.DefaultGallery, DB: database, TagSvc: tags.New(database),
+		RecordFetch: func(id int64, state, msg string) { gotID, gotState, gotMsg = id, state, msg },
+	}
+	h := New(cfg, new(sync.RWMutex), jobs.NewManager(), fixedResolver(g), "v-test")
+	mux := http.NewServeMux()
+	h.Mount(mux)
+
+	body, _ := json.Marshal(map[string]any{"state": "unsupported_url", "message": "no extractor"})
+	req := httptest.NewRequest("POST", "/api/v1/images/42/fetch-status", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testAPIToken)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("fetch-status: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotID != 42 || gotState != "unsupported_url" || gotMsg != "no extractor" {
+		t.Errorf("recorded (%d,%q,%q), want (42,unsupported_url,no extractor)", gotID, gotState, gotMsg)
+	}
+
+	// A missing state is a bad request, not a silently recorded blank outcome.
+	body, _ = json.Marshal(map[string]any{"message": "x"})
+	req = httptest.NewRequest("POST", "/api/v1/images/42/fetch-status", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testAPIToken)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("empty state: expected 400, got %d", w.Code)
 	}
 }
 

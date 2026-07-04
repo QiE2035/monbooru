@@ -1,7 +1,6 @@
 package web
 
 import (
-	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
@@ -36,6 +35,21 @@ type taggerRow struct {
 	Supported           bool
 	HostCommand         string
 	DockerCommand       string
+}
+
+// installedTaggerRow fills the fields every installed tagger shares; the
+// caller layers the catalog-only fields on supported rows.
+func installedTaggerRow(t tagger.TaggerStatus, totalGalleries int) taggerRow {
+	return taggerRow{
+		Name:                t.Name,
+		Available:           t.Available,
+		Reason:              t.Reason,
+		Enabled:             t.Enabled,
+		ConfidenceThreshold: t.ConfidenceThreshold,
+		ThresholdSummary:    taggerThresholdSummary(t.ConfidenceThreshold, t.CategoryThresholds, t.DisabledCategories),
+		GallerySummary:      taggerGallerySummary(t.Galleries, totalGalleries),
+		Installed:           true,
+	}
 }
 
 // thresholdRow is the per-category render shape for the per-tagger
@@ -176,8 +190,10 @@ func (s *Server) applyTaggerEnabled(w http.ResponseWriter, name string, enabled 
 		verb = "disabled"
 	}
 	logx.Infof("settings: tagger %q %s", name, verb)
+	// The flash rides monbooru:flash so it survives the refresh; an
+	// inline body would be discarded before the swap ever painted.
+	setFlashHeader(w, "Tagger "+name+" "+verb+".", "ok", nil)
 	w.Header().Set("HX-Refresh", "true")
-	writeInlineFlash(w, "ok", "Tagger "+name+" "+verb+".")
 }
 
 // settingsTaggerThresholdsGet renders the dialog body for one tagger's
@@ -282,21 +298,8 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 	}
 	logx.Infof("settings: tagger %q thresholds updated (global=%.2f, %d threshold overrides, %d top-K overrides, %d disabled)", name, global, len(overrides), len(topK), len(disabled))
 	summary := taggerThresholdSummary(global, overrides, disabled)
-	setTaggerSavedTrigger(w, "tagger-thresh-"+name)
-	_, _ = fmt.Fprintf(w,
-		`<span id="tagger-thresh-summary-%s" hx-swap-oob="true">%s</span>`+
-			`<div id="flash-tagger" hx-swap-oob="true"><div class="flash flash-ok">Tagger %s thresholds saved.</div></div>`,
-		html.EscapeString(name), html.EscapeString(summary), html.EscapeString(name))
-}
-
-// setTaggerSavedTrigger fires a JS-side `tagger-saved` event with the
-// dialog id to close. The shared shape lets one body listener serve
-// every per-tagger config dialog (thresholds, galleries, future ones).
-func setTaggerSavedTrigger(w http.ResponseWriter, dialogID string) {
-	payload, _ := json.Marshal(map[string]any{
-		"tagger-saved": map[string]any{"dialog": dialogID},
-	})
-	w.Header().Set("HX-Trigger", string(payload))
+	setDialogSavedTrigger(w, "tagger-saved", "tagger-thresh-"+name)
+	writeOOBSummaryFlash(w, "tagger-thresh-summary-"+name, summary, "flash-tagger", "Tagger "+name+" thresholds saved.")
 }
 
 // settingsTaggerThresholdsResetPost wipes per-tagger threshold and
@@ -550,11 +553,8 @@ func (s *Server) settingsTaggerGalleriesPost(w http.ResponseWriter, r *http.Requ
 	}
 	logx.Infof("settings: tagger %q galleries updated (all=%t, %d named)", name, all, len(galleries))
 	summary := taggerGallerySummary(galleries, len(s.cfg.Galleries))
-	setTaggerSavedTrigger(w, "tagger-gal-"+name)
-	_, _ = fmt.Fprintf(w,
-		`<span id="tagger-gal-summary-%s" hx-swap-oob="true">%s</span>`+
-			`<div id="flash-tagger" hx-swap-oob="true"><div class="flash flash-ok">Tagger %s galleries saved.</div></div>`,
-		html.EscapeString(name), html.EscapeString(summary), html.EscapeString(name))
+	setDialogSavedTrigger(w, "tagger-saved", "tagger-gal-"+name)
+	writeOOBSummaryFlash(w, "tagger-gal-summary-"+name, summary, "flash-tagger", "Tagger "+name+" galleries saved.")
 }
 
 // galleryDialogData returns one row per configured gallery, with

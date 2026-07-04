@@ -28,7 +28,6 @@
       <a href="/relations" {{if eq .ActiveNav "relations"}} class="active"{{end}}>Relations</a>
       <a href="/settings"{{if eq .ActiveNav "settings"}}class="active"{{end}}>Settings</a>
       <a href="/help"    {{if eq .ActiveNav "help"}}    class="active"{{end}}>Help</a>
-      {{if .MonloaderURL}}<span class="nav-sep"></span><a href="{{.MonloaderURL}}/queue">Go to monloader</a>{{end}}
     </nav>
     <div id="topbar-right">
       <div id="job-status"

@@ -160,6 +160,47 @@ func (s *Service) AddAlternate(a, b int64) error {
 // depth budget so a pathological chain can't loop indefinitely.
 const MaxVersionChainDepth = 16
 
+// chainReachesTx walks the single-parent chain in table upward from start
+// (parentCol read via childCol) and reports whether target sits anywhere
+// above it. Depth-capped so a malformed cycle in the data can't spin.
+func chainReachesTx(tx *sql.Tx, table, parentCol, childCol string, start, target int64) (bool, error) {
+	cur := start
+	for i := 0; i < MaxVersionChainDepth; i++ {
+		var ancestor int64
+		err := tx.QueryRow(`SELECT `+parentCol+` FROM `+table+` WHERE `+childCol+` = ?`, cur).Scan(&ancestor)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if ancestor == target {
+			return true, nil
+		}
+		cur = ancestor
+	}
+	return false, nil
+}
+
+// walkToRootTx follows the single-parent chain in table upward from start
+// and returns the root - start itself when it has no parent. Depth-capped
+// like chainReachesTx.
+func walkToRootTx(tx *sql.Tx, table, parentCol, childCol string, start int64) (int64, error) {
+	cur := start
+	for i := 0; i < MaxVersionChainDepth; i++ {
+		var parent int64
+		err := tx.QueryRow(`SELECT `+parentCol+` FROM `+table+` WHERE `+childCol+` = ?`, cur).Scan(&parent)
+		if errors.Is(err, sql.ErrNoRows) {
+			return cur, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+		cur = parent
+	}
+	return cur, nil
+}
+
 // AddVersionEdge declares child as the newer version of parent. The
 // chain is strict: each image has at most one parent (PK on
 // child_image_id) and at most one child (UNIQUE on parent_image_id), so
@@ -202,20 +243,10 @@ func (s *Service) AddVersionEdge(parent, child int64) error {
 		}
 		// Walk parent's ancestors; if child is anywhere up that chain, the
 		// new edge would close a cycle.
-		cur := parent
-		for i := 0; i < MaxVersionChainDepth; i++ {
-			var ancestor int64
-			err := tx.QueryRow(`SELECT parent_image_id FROM version_edges WHERE child_image_id = ?`, cur).Scan(&ancestor)
-			if errors.Is(err, sql.ErrNoRows) {
-				break
-			}
-			if err != nil {
-				return err
-			}
-			if ancestor == child {
-				return ErrVersionExists
-			}
-			cur = ancestor
+		if reaches, err := chainReachesTx(tx, "version_edges", "parent_image_id", "child_image_id", parent, child); err != nil {
+			return err
+		} else if reaches {
+			return ErrVersionExists
 		}
 		_, err := tx.Exec(
 			`INSERT INTO version_edges (child_image_id, parent_image_id, created_at) VALUES (?, ?, ?)`,
@@ -263,20 +294,10 @@ func (s *Service) AddDerivativeEdge(source, derivative int64) error {
 		// Walk source's source-chain; if derivative is anywhere up that
 		// chain, the new edge would close a cycle. Same depth budget as
 		// the version chain so a pathological tree can't loop indefinitely.
-		cur := source
-		for i := 0; i < MaxVersionChainDepth; i++ {
-			var ancestor int64
-			err := tx.QueryRow(`SELECT source_image_id FROM derivative_edges WHERE derivative_image_id = ?`, cur).Scan(&ancestor)
-			if errors.Is(err, sql.ErrNoRows) {
-				break
-			}
-			if err != nil {
-				return err
-			}
-			if ancestor == derivative {
-				return ErrDerivativeExists
-			}
-			cur = ancestor
+		if reaches, err := chainReachesTx(tx, "derivative_edges", "source_image_id", "derivative_image_id", source, derivative); err != nil {
+			return err
+		} else if reaches {
+			return ErrDerivativeExists
 		}
 		_, err := tx.Exec(
 			`INSERT INTO derivative_edges (derivative_image_id, source_image_id, created_at) VALUES (?, ?, ?)`,
@@ -324,35 +345,52 @@ const nextDupOriginalQuery = `SELECT m.image_id FROM dup_group_members m
 	ORDER BY i.file_size DESC, m.image_id DESC
 	LIMIT 1`
 
-func removeDupMemberTx(tx *sql.Tx, imageID int64) error {
-	gid, err := lookupGroupIDTx(tx, "dup_group_members", imageID)
-	if err != nil {
-		return err
-	}
-	if !gid.Valid {
-		return nil
+// dissolveOrKeepGroupTx resolves imageID's group in memberTable and, when
+// the member leaving would shrink it past viability (<= 2 members), drops
+// the group row - the CASCADE or the caller's member DELETE clears the
+// rest. keep is true when the group survives and gid names it; gid == 0
+// with keep == false means no membership or a dissolved group.
+func dissolveOrKeepGroupTx(tx *sql.Tx, memberTable, groupTable string, imageID int64) (gid int64, keep bool, err error) {
+	g, err := lookupGroupIDTx(tx, memberTable, imageID)
+	if err != nil || !g.Valid {
+		return 0, false, err
 	}
 	var memberCount int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM dup_group_members WHERE group_id = ?`, gid.Int64).Scan(&memberCount); err != nil {
-		return err
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM `+memberTable+` WHERE group_id = ?`, g.Int64).Scan(&memberCount); err != nil {
+		return 0, false, err
 	}
 	if memberCount <= 2 {
-		_, err := tx.Exec(`DELETE FROM dup_groups WHERE id = ?`, gid.Int64)
-		return err
+		_, err := tx.Exec(`DELETE FROM `+groupTable+` WHERE id = ?`, g.Int64)
+		return 0, false, err
 	}
+	return g.Int64, true, nil
+}
+
+// promoteNextOriginalTx re-points a dup group's original at the next best
+// member when leaverID currently holds it.
+func promoteNextOriginalTx(tx *sql.Tx, gid, leaverID int64) error {
 	var current int64
-	if err := tx.QueryRow(`SELECT original_image_id FROM dup_groups WHERE id = ?`, gid.Int64).Scan(&current); err != nil {
+	if err := tx.QueryRow(`SELECT original_image_id FROM dup_groups WHERE id = ?`, gid).Scan(&current); err != nil {
 		return err
 	}
-	if current == imageID {
-		var newOriginal int64
-		err := tx.QueryRow(nextDupOriginalQuery, gid.Int64, imageID).Scan(&newOriginal)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`UPDATE dup_groups SET original_image_id = ? WHERE id = ?`, newOriginal, gid.Int64); err != nil {
-			return err
-		}
+	if current != leaverID {
+		return nil
+	}
+	var newOriginal int64
+	if err := tx.QueryRow(nextDupOriginalQuery, gid, leaverID).Scan(&newOriginal); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`UPDATE dup_groups SET original_image_id = ? WHERE id = ?`, newOriginal, gid)
+	return err
+}
+
+func removeDupMemberTx(tx *sql.Tx, imageID int64) error {
+	gid, keep, err := dissolveOrKeepGroupTx(tx, "dup_group_members", "dup_groups", imageID)
+	if err != nil || !keep {
+		return err
+	}
+	if err := promoteNextOriginalTx(tx, gid, imageID); err != nil {
+		return err
 	}
 	_, err = tx.Exec(`DELETE FROM dup_group_members WHERE image_id = ?`, imageID)
 	return err
@@ -414,19 +452,8 @@ func (s *Service) RemoveAltMember(imageID int64) error {
 }
 
 func removeAltMemberTx(tx *sql.Tx, imageID int64) error {
-	gid, err := lookupGroupIDTx(tx, "alt_group_members", imageID)
-	if err != nil {
-		return err
-	}
-	if !gid.Valid {
-		return nil
-	}
-	var memberCount int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM alt_group_members WHERE group_id = ?`, gid.Int64).Scan(&memberCount); err != nil {
-		return err
-	}
-	if memberCount <= 2 {
-		_, err := tx.Exec(`DELETE FROM alt_groups WHERE id = ?`, gid.Int64)
+	_, keep, err := dissolveOrKeepGroupTx(tx, "alt_group_members", "alt_groups", imageID)
+	if err != nil || !keep {
 		return err
 	}
 	_, err = tx.Exec(`DELETE FROM alt_group_members WHERE image_id = ?`, imageID)
@@ -668,17 +695,9 @@ func collectVersionChainMembersTx(tx *sql.Tx, anyMember int64) ([]int64, error) 
 	if has == 0 {
 		return nil, nil
 	}
-	root := anyMember
-	for i := 0; i < MaxVersionChainDepth; i++ {
-		var parent int64
-		err := tx.QueryRow(`SELECT parent_image_id FROM version_edges WHERE child_image_id = ?`, root).Scan(&parent)
-		if errors.Is(err, sql.ErrNoRows) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		root = parent
+	root, err := walkToRootTx(tx, "version_edges", "parent_image_id", "child_image_id", anyMember)
+	if err != nil {
+		return nil, err
 	}
 	members := []int64{root}
 	cur := root
@@ -712,17 +731,9 @@ func collectDerivativeTreeMembersTx(tx *sql.Tx, anyMember int64) ([]int64, error
 	if has == 0 {
 		return nil, nil
 	}
-	root := anyMember
-	for i := 0; i < MaxVersionChainDepth; i++ {
-		var src int64
-		err := tx.QueryRow(`SELECT source_image_id FROM derivative_edges WHERE derivative_image_id = ?`, root).Scan(&src)
-		if errors.Is(err, sql.ErrNoRows) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		root = src
+	root, err := walkToRootTx(tx, "derivative_edges", "source_image_id", "derivative_image_id", anyMember)
+	if err != nil {
+		return nil, err
 	}
 	// BFS by tree level so MaxVersionChainDepth bounds genuine depth.
 	// A previous DFS implementation incremented depth per stack pop, so
@@ -1186,63 +1197,17 @@ func mergeIntoAltGroupTx(tx *sql.Tx, a, b int64) error {
 // the FK CASCADE that fires on the caller's subsequent
 // `DELETE FROM images`.
 func handleDupGroupOnDeleteTx(tx *sql.Tx, imageID int64) error {
-	gid, err := lookupGroupIDTx(tx, "dup_group_members", imageID)
-	if err != nil {
+	gid, keep, err := dissolveOrKeepGroupTx(tx, "dup_group_members", "dup_groups", imageID)
+	if err != nil || !keep {
 		return err
 	}
-	if !gid.Valid {
-		return nil
-	}
-	var memberCount int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM dup_group_members WHERE group_id = ?`, gid.Int64).Scan(&memberCount); err != nil {
-		return err
-	}
-	if memberCount <= 2 {
-		// Removing this image leaves at most one member. Drop the group;
-		// CASCADE clears both member rows when the image and the group
-		// go away.
-		if _, err := tx.Exec(`DELETE FROM dup_groups WHERE id = ?`, gid.Int64); err != nil {
-			return err
-		}
-		return nil
-	}
-	var current int64
-	if err := tx.QueryRow(`SELECT original_image_id FROM dup_groups WHERE id = ?`, gid.Int64).Scan(&current); err != nil {
-		return err
-	}
-	if current != imageID {
-		return nil
-	}
-	var newOriginal int64
-	err = tx.QueryRow(nextDupOriginalQuery, gid.Int64, imageID).Scan(&newOriginal)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`UPDATE dup_groups SET original_image_id = ? WHERE id = ?`, newOriginal, gid.Int64); err != nil {
-		return err
-	}
-	return nil
+	return promoteNextOriginalTx(tx, gid, imageID)
 }
 
 // handleAltGroupOnDeleteTx dissolves the alt group when the image
 // leaves and the group would shrink to a singleton. Otherwise the
 // CASCADE handles the membership-row drop.
 func handleAltGroupOnDeleteTx(tx *sql.Tx, imageID int64) error {
-	gid, err := lookupGroupIDTx(tx, "alt_group_members", imageID)
-	if err != nil {
-		return err
-	}
-	if !gid.Valid {
-		return nil
-	}
-	var memberCount int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM alt_group_members WHERE group_id = ?`, gid.Int64).Scan(&memberCount); err != nil {
-		return err
-	}
-	if memberCount <= 2 {
-		if _, err := tx.Exec(`DELETE FROM alt_groups WHERE id = ?`, gid.Int64); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, _, err := dissolveOrKeepGroupTx(tx, "alt_group_members", "alt_groups", imageID)
+	return err
 }

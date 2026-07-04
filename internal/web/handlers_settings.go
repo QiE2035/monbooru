@@ -1,9 +1,7 @@
 package web
 
 import (
-	"encoding/json"
 	"fmt"
-	"html"
 	"net/http"
 	"slices"
 	"strconv"
@@ -43,20 +41,12 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	for _, e := range catalog {
 		catalogNames[e.Name] = true
 		if t, installed := taggerByName[e.Name]; installed {
-			supportedRows = append(supportedRows, taggerRow{
-				Name:                t.Name,
-				Available:           t.Available,
-				Reason:              t.Reason,
-				Enabled:             t.Enabled,
-				ConfidenceThreshold: t.ConfidenceThreshold,
-				ThresholdSummary:    taggerThresholdSummary(t.ConfidenceThreshold, t.CategoryThresholds, t.DisabledCategories),
-				GallerySummary:      taggerGallerySummary(t.Galleries, totalGalleries),
-				Installed:           true,
-				Supported:           true,
-				Description:         e.Description,
-				HostCommand:         e.HostCommand(),
-				DockerCommand:       e.DockerCommand("monbooru"),
-			})
+			row := installedTaggerRow(t, totalGalleries)
+			row.Supported = true
+			row.Description = e.Description
+			row.HostCommand = e.HostCommand()
+			row.DockerCommand = e.DockerCommand("monbooru")
+			supportedRows = append(supportedRows, row)
 		} else {
 			supportedRows = append(supportedRows, taggerRow{
 				Name:          e.Name,
@@ -73,16 +63,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		if catalogNames[t.Name] {
 			continue
 		}
-		unsupportedRows = append(unsupportedRows, taggerRow{
-			Name:                t.Name,
-			Available:           t.Available,
-			Reason:              t.Reason,
-			Enabled:             t.Enabled,
-			ConfidenceThreshold: t.ConfidenceThreshold,
-			ThresholdSummary:    taggerThresholdSummary(t.ConfidenceThreshold, t.CategoryThresholds, t.DisabledCategories),
-			GallerySummary:      taggerGallerySummary(t.Galleries, totalGalleries),
-			Installed:           true,
-		})
+		unsupportedRows = append(unsupportedRows, installedTaggerRow(t, totalGalleries))
 	}
 	taggerRows := append(supportedRows, unsupportedRows...)
 	data := base.AsMap()
@@ -356,11 +337,8 @@ func (s *Server) settingsTokenPrivilegesPost(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	logx.Infof("settings: API token %s privileges updated from %s", id, clientIP(r))
-	setTokenSavedTrigger(w, "token-cfg-"+id)
-	_, _ = fmt.Fprintf(w,
-		`<span id="token-scopes-%s" hx-swap-oob="true">%s</span>`+
-			`<div id="flash-auth" hx-swap-oob="true"><div class="flash flash-ok">Token privileges saved.</div></div>`,
-		html.EscapeString(id), html.EscapeString(strings.Join(scopes, " ")))
+	setDialogSavedTrigger(w, "token-saved", "token-cfg-"+id)
+	writeOOBSummaryFlash(w, "token-scopes-"+id, strings.Join(scopes, " "), "flash-auth", "Token privileges saved.")
 }
 
 // filterScopes keeps only recognized scopes, in canonical order, dropping
@@ -373,13 +351,6 @@ func filterScopes(in []string) []string {
 		}
 	}
 	return out
-}
-
-// setTokenSavedTrigger fires a JS-side `token-saved` event naming the dialog to
-// close, mirroring the tagger config dialogs.
-func setTokenSavedTrigger(w http.ResponseWriter, dialogID string) {
-	payload, _ := json.Marshal(map[string]any{"token-saved": map[string]any{"dialog": dialogID}})
-	w.Header().Set("HX-Trigger", string(payload))
 }
 
 func (s *Server) settingsRemovePasswordPost(w http.ResponseWriter, r *http.Request) {

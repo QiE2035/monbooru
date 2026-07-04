@@ -21,6 +21,20 @@ func (s *Server) startJob(w http.ResponseWriter, jobType string) bool {
 	return true
 }
 
+// finishJob writes a chunked job's terminal state: the failure, the
+// cancelled summary, or the success summary.
+func (s *Server) finishJob(err error, cancelled bool, cancelMsg, doneMsg string) {
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		return
+	}
+	if cancelled {
+		s.jobs.Complete(cancelMsg)
+		return
+	}
+	s.jobs.Complete(doneMsg)
+}
+
 // chunkedJob runs op on consecutive chunks of ids, honoring ctx
 // cancellation between chunks and emitting jobs.Update progress with
 // the noun template ("deleting", "applying implication", ...). The

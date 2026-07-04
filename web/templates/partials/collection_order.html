@@ -1,0 +1,19 @@
+{{define "partials/collection_order.html"}}
+<p>Click the images of <strong>{{.Name}}</strong> in reading order (1, 2, ...). Click a numbered image to unpick it; images left unclicked become unordered.</p>
+<div class="collection-order-grid">
+  {{range .Members}}
+  <button type="button" class="collection-order-tile" data-id="{{.ID}}" title="Image {{.ID}}">
+    <img src="/thumbnails/{{$.Gallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy">
+    <span class="collection-order-num"></span>
+    {{with .Order}}<span class="relations-card-id">#{{.}}</span>{{end}}
+  </button>
+  {{else}}
+  <span class="field-hint">No previewable images.</span>
+  {{end}}
+</div>
+{{if .HasMore}}
+<p class="field-hint">Showing the first {{len .Members}} images.
+  <button type="button" class="btn-sm collection-order-more" data-limit="{{.NextLimit}}">[Show more]</button>
+</p>
+{{end}}
+{{end}}

@@ -52,48 +52,35 @@ func PhashMissingUnder(database *db.DB, excludeIDs []int64) (int, error) {
 	return scalarCountUnder(database, "i.phash IS NULL AND i.is_missing = 0", excludeIDs)
 }
 
-// topLabelCountsUnder is the shared SELECT col, COUNT(*) shape behind
-// the four top-N sidebar queries. convert builds the per-caller
-// struct so the helper stays type-free. limit <= 0 defaults to 25.
-func topLabelCountsUnder[T any](
-	database *db.DB,
-	col string,
-	excludeIDs []int64,
-	limit int,
-	convert func(label string, count int) T,
-) ([]T, error) {
+// SourceLabelCountsUnderQuery returns the top site labels by image count
+// across image_sources - so a secondary origin surfaces too, matching the
+// any-membership source: filter - honoring the rating ceiling (excludeIDs).
+func SourceLabelCountsUnderQuery(database *db.DB, limit int, excludeIDs []int64) ([]SourceLabelCount, error) {
 	if limit <= 0 {
 		limit = 25
 	}
-	where, args := excludeNotExists("i.id", excludeIDs)
+	exclude, args := excludeNotExists("s.image_id", excludeIDs)
 	args = append(args, limit)
 	rows, err := database.Read.Query(
-		`SELECT i.`+col+`, COUNT(*) c FROM images i
-		 WHERE i.is_missing = 0 AND i.`+col+` != ''`+where+`
-		 GROUP BY i.`+col+` ORDER BY c DESC, i.`+col+` ASC LIMIT ?`,
+		`SELECT s.site, COUNT(DISTINCT s.image_id) c FROM image_sources s
+		 WHERE s.site != '' AND EXISTS (SELECT 1 FROM images i WHERE i.id = s.image_id AND i.is_missing = 0)`+exclude+`
+		 GROUP BY s.site ORDER BY c DESC, s.site ASC LIMIT ?`,
 		args...,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var out []T
+	var out []SourceLabelCount
 	for rows.Next() {
 		var label string
 		var count int
 		if err := rows.Scan(&label, &count); err != nil {
 			return out, err
 		}
-		out = append(out, convert(label, count))
+		out = append(out, SourceLabelCount{Source: label, Count: count})
 	}
 	return out, rows.Err()
-}
-
-// SourceLabelCountsUnderQuery mirrors SourceLabelCountsQuery with the
-// ceiling predicate.
-func SourceLabelCountsUnderQuery(database *db.DB, limit int, excludeIDs []int64) ([]SourceLabelCount, error) {
-	return topLabelCountsUnder(database, "source", excludeIDs, limit,
-		func(label string, count int) SourceLabelCount { return SourceLabelCount{Source: label, Count: count} })
 }
 
 // FolderTreeUnder mirrors FolderTree with the ceiling predicate folded

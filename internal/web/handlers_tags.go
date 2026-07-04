@@ -233,26 +233,20 @@ func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Active().InvalidateCaches()
 
-	if isHTMXRequest(r) {
-		canon, _ := s.tagSvc().GetTag(canonID)
-		canonName := canonInput
-		if canon != nil && canon.Name != "" {
-			canonName = canon.Name
-		}
-		setFlashHeader(w, "Aliased to "+canonName+".", "ok", nil)
-		// Land on the alias-only filtered listing so the freshly-created
-		// alias row is the only thing on screen, mirroring the create-
-		// alias dialog's post-submit redirect. Falls back to /tags if
-		// the source lookup couldn't recover a name.
-		dest := "/tags?origin=alias"
-		if srcTag != nil && srcTag.Name != "" {
-			dest = "/tags?origin=alias&q=" + url.QueryEscape(srcTag.Name)
-		}
-		w.Header().Set("HX-Redirect", dest)
-		w.WriteHeader(http.StatusNoContent)
-		return
+	canon, _ := s.tagSvc().GetTag(canonID)
+	canonName := canonInput
+	if canon != nil && canon.Name != "" {
+		canonName = canon.Name
 	}
-	http.Redirect(w, r, "/tags", http.StatusSeeOther)
+	// Land on the alias-only filtered listing so the freshly-created
+	// alias row is the only thing on screen, mirroring the create-
+	// alias dialog's post-submit redirect. Falls back to /tags if
+	// the source lookup couldn't recover a name.
+	dest := "/tags?origin=alias"
+	if srcTag != nil && srcTag.Name != "" {
+		dest = "/tags?origin=alias&q=" + url.QueryEscape(srcTag.Name)
+	}
+	hxDone(w, r, "Aliased to "+canonName+".", dest, "/tags")
 }
 
 // resolveOrCreateCanonicalTag is the alias-side variant of
@@ -337,13 +331,7 @@ func (s *Server) createTagPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Active().InvalidateCaches()
-	if isHTMXRequest(r) {
-		setFlashHeader(w, "Tag "+name+" created.", "ok", nil)
-		w.Header().Set("HX-Redirect", "/tags?q="+url.QueryEscape(name))
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, "/tags", http.StatusSeeOther)
+	hxDone(w, r, "Tag "+name+" created.", "/tags?q="+url.QueryEscape(name), "/tags")
 }
 
 func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
@@ -354,38 +342,24 @@ func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
 	catIDStr := r.FormValue("category_id")
 	canonInput := strings.TrimSpace(r.FormValue("canonical_id"))
 
-	flashErr := func(msg string) {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", msg)
-			return
-		}
-		http.Error(w, msg, http.StatusBadRequest)
-	}
-
 	catID, err := strconv.ParseInt(catIDStr, 10, 64)
 	if err != nil {
-		flashErr("Invalid category.")
+		externalErr(w, r, "Invalid category.", http.StatusBadRequest)
 		return
 	}
 	canonID, msg := s.resolveOrCreateCanonicalTag(canonInput)
 	if msg != "" {
-		flashErr(msg)
+		externalErr(w, r, msg, http.StatusBadRequest)
 		return
 	}
 
 	if _, err := s.tagSvc().CreateAlias(name, catID, canonID); err != nil {
-		flashErr(err.Error())
+		externalErr(w, r, err.Error(), http.StatusBadRequest)
 		return
 	}
 	s.Active().InvalidateCaches()
 
-	if isHTMXRequest(r) {
-		setFlashHeader(w, "Alias "+name+" created.", "ok", nil)
-		w.Header().Set("HX-Redirect", "/tags?origin=alias&q="+url.QueryEscape(name))
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, "/tags?origin=alias", http.StatusSeeOther)
+	hxDone(w, r, "Alias "+name+" created.", "/tags?origin=alias&q="+url.QueryEscape(name), "/tags?origin=alias")
 }
 
 func (s *Server) deleteTagHandler(w http.ResponseWriter, r *http.Request) {
@@ -461,11 +435,7 @@ func (s *Server) runDeleteTagsByIDs(ids []int64) {
 	}
 
 	s.Active().InvalidateCaches()
-	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("delete tags cancelled (%d/%d processed)", processed, total))
-		return
-	}
-	s.jobs.Complete(fmt.Sprintf("deleted %d tag(s)", deleted))
+	s.finishJob(nil, cancelled, fmt.Sprintf("delete tags cancelled (%d/%d processed)", processed, total), fmt.Sprintf("deleted %d tag(s)", deleted))
 }
 
 func (s *Server) renameTagPost(w http.ResponseWriter, r *http.Request) {
@@ -496,14 +466,8 @@ func (s *Server) renameTagPost(w http.ResponseWriter, r *http.Request) {
 	// A tag rename moves it to a new literal-name match in the search
 	// resolver, so a cached `?q=oldname` snapshot must drop too.
 	s.Active().InvalidateCaches()
-	if isHTMXRequest(r) {
-		// Refresh the current URL instead of redirecting to /tags so the
-		// user's active filter - q, sort, origin, page - survives the
-		// rename and the renamed row stays in scope.
-		setFlashHeader(w, "Renamed to "+newName+".", "ok", nil)
-		w.Header().Set("HX-Refresh", "true")
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, "/tags", http.StatusSeeOther)
+	// Refresh the current URL instead of redirecting to /tags so the
+	// user's active filter - q, sort, origin, page - survives the
+	// rename and the renamed row stays in scope.
+	hxDone(w, r, "Renamed to "+newName+".", "", "/tags")
 }

@@ -33,20 +33,16 @@ type FolderNode struct {
 	Children []FolderNode
 }
 
-// SourceLabelCount is one row of the sidebar's Sources section: a
-// per-image source label and the count of non-missing image rows
-// carrying it. The column is partial-indexed on
-// `source != ”` so the read hits it directly.
+// SourceLabelCount is one row of the sidebar's Sources section: a site
+// label from image_sources and the count of non-missing images carrying
+// it as any origin, matching the any-membership `source:` filter.
 type SourceLabelCount struct {
 	Source string
 	Count  int
 }
 
-// SourceLabelCountsQuery returns the top source labels (by row count
-// desc) across non-missing rows. Empty source strings are excluded;
-// idx_images_source is partial on `source != ”` so the seek skips
-// untouched rows. Sorted Count desc, then alphabetical for a
-// deterministic sidebar.
+// SourceLabelCountsQuery returns the top site labels (by image count
+// desc, then alphabetical) with no rating ceiling applied.
 func SourceLabelCountsQuery(database *db.DB, limit int) ([]SourceLabelCount, error) {
 	return SourceLabelCountsUnderQuery(database, limit, nil)
 }

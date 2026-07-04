@@ -44,6 +44,28 @@ func ffmpegAvailable() bool {
 	return ffmpegOK
 }
 
+// runFFmpegToFile runs one ffmpeg encode into a temp file next to dstPath
+// and renames it over on success. args receives the temp path and returns
+// the full argument list; every caller ends its list with `--` + the temp
+// path so a name beginning with `-` stays a positional output. label names
+// the step in the error.
+func runFFmpegToFile(dstPath, tmpPattern, label string, args func(tmp string) []string) error {
+	if !ffmpegAvailable() {
+		return fmt.Errorf("ffmpeg not available")
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dstPath), tmpPattern)
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	_ = tmp.Close()
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if out, err := runFFmpeg(true, "ffmpeg", args(tmpName)...); err != nil {
+		return fmt.Errorf("ffmpeg %s: %w\n%s", label, err, string(out))
+	}
+	return os.Rename(tmpName, dstPath)
+}
+
 // NormalizeImage re-encodes srcPath in place to a baseline JPEG via
 // ffmpeg. Some CDN image resizers emit JPEGs with a luma/chroma
 // subsampling ratio Go's image/jpeg refuses ("unsupported JPEG
@@ -53,149 +75,78 @@ func ffmpegAvailable() bool {
 // operator file on disk is rewritten. Returns an error when ffmpeg is
 // absent or the re-encode fails, leaving the original in place.
 func NormalizeImage(srcPath string) error {
-	if !ffmpegAvailable() {
-		return fmt.Errorf("ffmpeg not available")
-	}
-
-	dir := filepath.Dir(srcPath)
-	tmp, err := os.CreateTemp(dir, ".normalize.*.jpg")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	_ = tmp.Close()
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-
 	// `-update 1` writes a single still image rather than a numbered
-	// sequence; `--` keeps a tmpName beginning with `-` positional.
-	args := []string{
-		"-y",
-		"-i", srcPath,
-		"-update", "1",
-		"-frames:v", "1",
-		"-q:v", "2",
-		"--",
-		tmpName,
-	}
-	if out, err := runFFmpeg(true, "ffmpeg", args...); err != nil {
-		return fmt.Errorf("ffmpeg normalize: %w\n%s", err, string(out))
-	}
-
-	return os.Rename(tmpName, srcPath)
+	// sequence.
+	return runFFmpegToFile(srcPath, ".normalize.*.jpg", "normalize", func(tmp string) []string {
+		return []string{
+			"-y",
+			"-i", srcPath,
+			"-update", "1",
+			"-frames:v", "1",
+			"-q:v", "2",
+			"--",
+			tmp,
+		}
+	})
 }
 
 // generateVideoThumb extracts a frame at ~10% of the video's duration.
 func generateVideoThumb(srcPath, dstPath string) error {
-	if !ffmpegAvailable() {
-		return fmt.Errorf("ffmpeg not available")
-	}
-
 	duration, err := probeDuration(srcPath)
 	if err != nil || duration <= 0 {
 		duration = 0
 	}
-
-	offset := duration * 0.10
-	offsetStr := strconv.FormatFloat(offset, 'f', 3, 64)
-
-	dir := filepath.Dir(dstPath)
-	tmp, err := os.CreateTemp(dir, ".vthumb.*.jpg")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	_ = tmp.Close()
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-
-	// `--` terminates option parsing so a tmpName beginning with `-`
-	// stays a positional output path.
-	args := []string{
-		"-y",
-		"-ss", offsetStr,
-		"-i", srcPath,
-		"-frames:v", "1",
-		"-vf", fmt.Sprintf("scale=%d:-1", thumbMaxDim),
-		"-q:v", "2",
-		"--",
-		tmpName,
-	}
-	if out, err := runFFmpeg(true, "ffmpeg", args...); err != nil {
-		return fmt.Errorf("ffmpeg thumbnail: %w\n%s", err, string(out))
-	}
-
-	return os.Rename(tmpName, dstPath)
+	offsetStr := strconv.FormatFloat(duration*0.10, 'f', 3, 64)
+	return runFFmpegToFile(dstPath, ".vthumb.*.jpg", "thumbnail", func(tmp string) []string {
+		return []string{
+			"-y",
+			"-ss", offsetStr,
+			"-i", srcPath,
+			"-frames:v", "1",
+			"-vf", fmt.Sprintf("scale=%d:-1", thumbMaxDim),
+			"-q:v", "2",
+			"--",
+			tmp,
+		}
+	})
 }
 
 // generateVideoHover writes a ~4-second animated WebP hover preview.
 func generateVideoHover(srcPath, dstPath string) error {
-	if !ffmpegAvailable() {
-		return fmt.Errorf("ffmpeg not available")
-	}
-
 	duration, err := probeDuration(srcPath)
 	if err != nil || duration <= 0 {
 		duration = 0
 	}
-
-	offset := duration * 0.10
-
-	dir := filepath.Dir(dstPath)
-	tmp, err := os.CreateTemp(dir, ".vhover.*.webp")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	_ = tmp.Close()
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-
-	args := []string{
-		"-y",
-		"-ss", strconv.FormatFloat(offset, 'f', 3, 64),
-		"-t", "4",
-		"-i", srcPath,
-		"-vf", fmt.Sprintf("scale=%d:-1", thumbMaxDim),
-		"-an",        // no audio
-		"-loop", "0", // infinite loop
-		"--",
-		tmpName,
-	}
-	if out, err := runFFmpeg(true, "ffmpeg", args...); err != nil {
-		return fmt.Errorf("ffmpeg hover: %w\n%s", err, string(out))
-	}
-
-	return os.Rename(tmpName, dstPath)
+	offsetStr := strconv.FormatFloat(duration*0.10, 'f', 3, 64)
+	return runFFmpegToFile(dstPath, ".vhover.*.webp", "hover", func(tmp string) []string {
+		return []string{
+			"-y",
+			"-ss", offsetStr,
+			"-t", "4",
+			"-i", srcPath,
+			"-vf", fmt.Sprintf("scale=%d:-1", thumbMaxDim),
+			"-an",        // no audio
+			"-loop", "0", // infinite loop
+			"--",
+			tmp,
+		}
+	})
 }
 
 // generateGIFHover converts an animated GIF into a scaled WebP preview.
 // Silently skipped without ffmpeg; the static first-frame thumbnail
 // stays in place.
 func generateGIFHover(srcPath, dstPath string) error {
-	if !ffmpegAvailable() {
-		return fmt.Errorf("ffmpeg not available")
-	}
-
-	dir := filepath.Dir(dstPath)
-	tmp, err := os.CreateTemp(dir, ".ghover.*.webp")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	_ = tmp.Close()
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-
-	args := []string{
-		"-y",
-		"-i", srcPath,
-		"-vf", fmt.Sprintf("scale=%d:-1", thumbMaxDim),
-		"-loop", "0",
-		"--",
-		tmpName,
-	}
-	if out, err := runFFmpeg(true, "ffmpeg", args...); err != nil {
-		return fmt.Errorf("ffmpeg gif hover: %w\n%s", err, string(out))
-	}
-
-	return os.Rename(tmpName, dstPath)
+	return runFFmpegToFile(dstPath, ".ghover.*.webp", "gif hover", func(tmp string) []string {
+		return []string{
+			"-y",
+			"-i", srcPath,
+			"-vf", fmt.Sprintf("scale=%d:-1", thumbMaxDim),
+			"-loop", "0",
+			"--",
+			tmp,
+		}
+	})
 }
 
 // ExtractVideoFrames writes one JPEG per relative offset (0.0..1.0) from

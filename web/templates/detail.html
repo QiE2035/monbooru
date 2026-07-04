@@ -109,24 +109,37 @@
     </div>
   </div>
 
-  <dialog id="external-edit-dialog">
-    <form id="external-edit-form" hx-post="/images/{{.Image.ID}}/external"
-          hx-target="#external-edit-error"
+  <dialog id="source-dialog">
+    <form id="source-form" hx-post="/images/{{.Image.ID}}/sources/set"
+          hx-target="#source-error"
           hx-swap="innerHTML"
-          hx-on::after-request="onExternalEditResponse(event, 'external-edit-dialog')">
+          hx-on::after-request="onExternalEditResponse(event, 'source-dialog')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <p>Edit <strong id="external-edit-title">Source</strong></p>
+      <input type="hidden" id="source-prev-site" name="prev_site" value="">
+      <input type="hidden" id="source-prev-post" name="prev_post" value="">
+      <input type="hidden" id="source-post" name="post_id" value="">
+      <p>Source: <strong id="source-dialog-title">add</strong></p>
       <div class="field">
-        <label id="external-edit-label">Source label (max 200 chars)</label>
-        <div id="external-edit-input-wrap" class="series-input-wrap">
-          <input id="external-edit-input" type="text" name="source" maxlength="200" autocomplete="off">
-          <div id="external-edit-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
+        <label>Source label (max 200 chars)</label>
+        <div class="series-input-wrap">
+          <input id="source-site-input" type="text" name="site" maxlength="200" autocomplete="off"
+                 hx-get="/internal/source/suggest"
+                 hx-trigger="input changed delay:200ms"
+                 hx-target="#source-suggest"
+                 hx-swap="innerHTML"
+                 hx-vals='js:{prefix: document.getElementById("source-site-input").value}'
+                 onkeydown="handleSuggestKey(event, 'source-suggest', 'source-site-input')">
+          <div id="source-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
         </div>
       </div>
-      <div id="external-edit-error"></div>
+      <div class="field">
+        <label>URL (must start with http:// or https://; max 2048 chars)</label>
+        <input id="source-url-input" type="url" name="url" maxlength="2048" placeholder="https://...">
+      </div>
+      <div id="source-error"></div>
       <div class="dialog-actions">
         <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('external-edit-dialog').close()">Cancel</button>
+        <button type="button" onclick="document.getElementById('source-dialog').close()">Cancel</button>
       </div>
     </form>
   </dialog>
@@ -163,6 +176,70 @@
       </div>
     </form>
   </dialog>
+
+  <dialog id="commentary-dialog">
+    <form id="commentary-form" hx-post="/images/{{.Image.ID}}/commentary/set"
+          hx-target="#commentary-error"
+          hx-swap="innerHTML"
+          hx-on::after-request="onExternalEditResponse(event, 'commentary-dialog')">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <input type="hidden" id="commentary-post" name="post_id" value="">
+      <p>Commentary</p>
+      <div class="field">
+        <label>Source label (max 200 chars)</label>
+        <input id="commentary-site" type="text" name="site" maxlength="200" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>Commentary text</label>
+        <textarea id="commentary-body" name="commentary" rows="6" maxlength="10000"></textarea>
+      </div>
+      <div id="commentary-error"></div>
+      <div class="dialog-actions">
+        <button type="submit">Save</button>
+        <button type="button" onclick="document.getElementById('commentary-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="note-dialog">
+    <form id="note-form" hx-post="/images/{{.Image.ID}}/note"
+          hx-target="#note-error"
+          hx-swap="innerHTML"
+          hx-on::after-request="onExternalEditResponse(event, 'note-dialog')">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <p>Note</p>
+      <div class="field">
+        <label>Your note (max 10000 chars)</label>
+        <textarea id="note-body" name="note" rows="6" maxlength="10000"></textarea>
+      </div>
+      <div id="note-error"></div>
+      <div class="dialog-actions">
+        <button type="submit">Save</button>
+        <button type="button" onclick="document.getElementById('note-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+  <script>
+  document.addEventListener('click', function(e) {
+    if (!e.target.closest) return;
+    var ec = e.target.closest('.btn-edit-commentary');
+    if (ec) {
+      document.getElementById('commentary-site').value = ec.dataset.site || '';
+      document.getElementById('commentary-site').readOnly = true;
+      document.getElementById('commentary-post').value = ec.dataset.post || '';
+      document.getElementById('commentary-body').value = ec.dataset.commentary || '';
+      clearSlots('commentary-error');
+      document.getElementById('commentary-dialog').showModal();
+      return;
+    }
+    var en = e.target.closest('.btn-edit-note');
+    if (en) {
+      document.getElementById('note-body').value = en.dataset.note || '';
+      clearSlots('note-error');
+      document.getElementById('note-dialog').showModal();
+    }
+  });
+  </script>
 
   {{if .EnabledTaggers}}
   <dialog id="autotag-dialog">
@@ -359,10 +436,22 @@
                onerror="if(!this.dataset.fallback){this.dataset.fallback='1';this.src='/thumbnails/{{.ActiveGallery}}/{{.Image.ID}}.jpg';}else{this.onerror=null;}">
         </a>
         {{else}}
-        <a href="/images/{{.Image.ID}}/file" target="_blank"{{if not .Image.IsMissing}} class="detail-img-link" onclick="return openLightbox(event, this.href)"{{end}}>
-          <img src="/images/{{.Image.ID}}/file" alt="image {{.Image.ID}}" class="detail-img"
-               onerror="if(!this.dataset.fallback){this.dataset.fallback='1';this.src='/thumbnails/{{.ActiveGallery}}/{{.Image.ID}}.jpg';}else{this.onerror=null;}">
-        </a>
+        <div class="detail-media-frame">
+          <a href="/images/{{.Image.ID}}/file" target="_blank"{{if not .Image.IsMissing}} class="detail-img-link" onclick="return openLightbox(event, this.href)"{{end}}>
+            <img src="/images/{{.Image.ID}}/file" alt="image {{.Image.ID}}" class="detail-img"
+                 onerror="if(!this.dataset.fallback){this.dataset.fallback='1';this.src='/thumbnails/{{.ActiveGallery}}/{{.Image.ID}}.jpg';}else{this.onerror=null;}">
+          </a>
+          {{if .Annotations}}
+          <div class="annotation-overlay">
+            {{range .Annotations}}
+            <div class="annotation-box" style="{{.Style}}"><span class="annotation-body">{{.Body}}</span></div>
+            {{end}}
+          </div>
+          {{end}}
+        </div>
+        {{if .Annotations}}
+        <div class="annotation-controls"><button type="button" class="btn-link-accent annotation-toggle" onclick="toggleAnnotations(this)">[hide notes]</button></div>
+        {{end}}
         {{end}}
       </div>
 
@@ -374,6 +463,38 @@
         {{end}}{{end}}
       </div>
       {{end}}
+
+      {{/* Artist commentary (per source) and the operator's own note. Under
+           the image, above the tags, like a booru post page. */}}
+      <section class="detail-commentary">
+        {{range .Sources}}{{if .Commentary}}
+        <div class="commentary-block">
+          <div class="commentary-head">
+            {{if .Site}}<a href="/?q={{urlQ (printf "source:\"%s\"" (qval .Site))}}" class="commentary-label" title="Search this source">{{.Site}}</a>{{else}}<span class="commentary-label">source</span>{{end}}
+            <button type="button" class="btn-link-accent btn-edit-commentary" data-site="{{.Site}}" data-post="{{.PostID}}" data-commentary="{{.Commentary}}" title="Edit commentary">[edit]</button>
+            <form method="POST" action="/images/{{$.Image.ID}}/commentary/remove"
+                  hx-post="/images/{{$.Image.ID}}/commentary/remove" hx-swap="none"
+                  hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+                  hx-confirm="Remove this commentary?" data-confirm-ok="Remove"
+                  style="display:inline">
+              <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+              <input type="hidden" name="site" value="{{.Site}}">
+              <input type="hidden" name="post_id" value="{{.PostID}}">
+              <button type="submit" class="btn-link-accent" title="Remove commentary">[×]</button>
+            </form>
+          </div>
+          <div class="commentary-body">{{.Commentary}}</div>
+        </div>
+        {{end}}{{end}}
+        <div class="commentary-block detail-note">
+          <div class="commentary-head">
+            <span class="commentary-label">Note</span>
+            {{if not .Image.Note}}<span class="field-hint">(none)</span>{{end}}
+            <button type="button" class="btn-link-accent btn-edit-note" data-note="{{.Image.Note}}" title="Edit note">[edit]</button>
+          </div>
+          {{if .Image.Note}}<div class="commentary-body">{{.Image.Note}}</div>{{end}}
+        </div>
+      </section>
 
       {{/* Tag editor */}}
       <div class="tag-editor-section">
@@ -411,46 +532,31 @@
         var input = document.getElementById('move-image-folder');
         if (!dlg || !input) return;
         input.value = dlg.dataset.currentFolder || '';
-        var sg = document.getElementById('move-image-suggest');
-        if (sg) sg.innerHTML = '';
+        clearSlots('move-image-suggest');
         dlg.showModal();
         input.focus();
         input.select();
       }
-      document.addEventListener('click', function(e) {
-        var btn = e.target.closest && e.target.closest('.btn-edit-external');
-        if (!btn) return;
-        var dlg = document.getElementById('external-edit-dialog');
-        var input = document.getElementById('external-edit-input');
-        if (!dlg || !input) return;
-        var shape = externalEditShape(btn.dataset.field);
-        document.getElementById('external-edit-title').textContent = shape.title;
-        document.getElementById('external-edit-label').textContent = shape.label;
-        input.type = shape.type;
-        input.name = shape.name;
-        input.value = btn.dataset.value || '';
-        input.placeholder = shape.placeholder || '';
-        if (shape.maxlength) input.setAttribute('maxlength', shape.maxlength); else input.removeAttribute('maxlength');
-        if (shape.min) input.setAttribute('min', shape.min); else input.removeAttribute('min');
-        var suggest = document.getElementById('external-edit-suggest');
-        suggest.innerHTML = '';
-        if (shape.suggestURL) {
-          input.setAttribute('hx-get', shape.suggestURL);
-          input.setAttribute('hx-trigger', 'input changed delay:200ms');
-          input.setAttribute('hx-target', '#external-edit-suggest');
-          input.setAttribute('hx-swap', 'innerHTML');
-          input.setAttribute('hx-vals', 'js:{prefix: document.getElementById("external-edit-input").value}');
-          input.setAttribute('onkeydown', "handleSuggestKey(event, 'external-edit-suggest', 'external-edit-input')");
-          if (window.htmx) window.htmx.process(input);
-          suggest.hidden = false;
-        } else {
-          ['hx-get','hx-trigger','hx-target','hx-swap','hx-vals','onkeydown'].forEach(function(a){ input.removeAttribute(a); });
-          suggest.hidden = true;
-        }
-        document.getElementById('external-edit-error').innerHTML = '';
+      function openSourceDialog(site, post, url) {
+        var dlg = document.getElementById('source-dialog');
+        if (!dlg) return;
+        document.getElementById('source-prev-site').value = site || '';
+        document.getElementById('source-prev-post').value = post || '';
+        document.getElementById('source-post').value = post || '';
+        document.getElementById('source-site-input').value = site || '';
+        document.getElementById('source-url-input').value = url || '';
+        document.getElementById('source-dialog-title').textContent = (site || url) ? 'edit' : 'add';
+        clearSlots('source-suggest', 'source-error');
         dlg.showModal();
+        var input = document.getElementById('source-site-input');
         input.focus();
         input.select();
+      }
+      document.addEventListener('click', function(e) {
+        if (!e.target.closest) return;
+        if (e.target.closest('.btn-add-source')) { openSourceDialog('', '', ''); return; }
+        var ed = e.target.closest('.btn-edit-source');
+        if (ed) openSourceDialog(ed.dataset.site, ed.dataset.post, ed.dataset.url);
       });
       function openCollectionDialog(name, order) {
         var dlg = document.getElementById('collection-dialog');
@@ -459,8 +565,7 @@
         document.getElementById('collection-name-input').value = name || '';
         document.getElementById('collection-order-input').value = order || '';
         document.getElementById('collection-dialog-title').textContent = name ? 'edit ' + name : 'add';
-        document.getElementById('collection-suggest').innerHTML = '';
-        document.getElementById('collection-error').innerHTML = '';
+        clearSlots('collection-suggest', 'collection-error');
         dlg.showModal();
         var input = document.getElementById('collection-name-input');
         input.focus();
@@ -472,17 +577,6 @@
         var ed = e.target.closest('.btn-edit-collection');
         if (ed) openCollectionDialog(ed.dataset.name, ed.dataset.order);
       });
-      function externalEditShape(field) {
-        switch (field) {
-          case 'url':
-            return {title: 'URL', label: 'Original URL (must start with http:// or https://; max 2048 chars)',
-                    type: 'url', name: 'url', maxlength: '2048', placeholder: 'https://...'};
-          default:
-            return {title: 'Source', label: 'Source label (max 200 chars)',
-                    type: 'text', name: 'source', maxlength: '200',
-                    suggestURL: '/internal/source/suggest'};
-        }
-      }
       function submitRemoveAutoTags(imageId) {
         var form = document.getElementById('remove-auto-form');
         var names = Array.from(form.querySelectorAll('input[name="taggers"]:checked')).map(function(cb){ return cb.value; });
@@ -567,13 +661,36 @@
         <hr class="meta-editable-separator">
         <table class="meta-table meta-editable">
           <tbody>
-            <tr><th>Source</th><td>
-              {{if .Image.Source}}<a href="/?q={{urlQ (printf "source:\"%s\"" (qval .Image.Source))}}" class="meta-source-value" title="Search this source">{{.Image.Source}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
-              <button type="button" class="btn-sm btn-edit-external" data-field="source" data-value="{{.Image.Source}}" title="Edit source">[edit]</button>
-            </td></tr>
-            <tr><th>URL</th><td>
-              {{if .Image.URL}}<a href="{{.Image.URL}}" target="_blank" rel="noopener noreferrer" class="meta-url-value">{{.Image.URL}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
-              <button type="button" class="btn-sm btn-edit-external" data-field="url" data-value="{{.Image.URL}}" title="Edit URL">[edit]</button>
+            <tr><th>Sources</th><td>
+              {{if .Sources}}
+              <ul class="collection-list">
+                {{range .Sources}}
+                <li class="collection-item">
+                  {{if .Site}}<a href="/?q={{urlQ (printf "source:\"%s\"" (qval .Site))}}" class="meta-source-value" title="Search this source">{{.Site}}</a>{{if .URL}} <a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="btn-link-accent" title="{{.URL}}">[open]</a>{{end}}{{else}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="meta-url-value">{{.URL}}</a>{{end}}
+                  <button type="button" class="btn-link-accent btn-edit-source" data-site="{{.Site}}" data-post="{{.PostID}}" data-url="{{.URL}}" title="Edit">[edit]</button>
+                  {{if and .URL $.MonloaderPaired}}<form hx-post="/images/{{$.Image.ID}}/sources/fetch"
+                        hx-target="#fetch-status" hx-swap="innerHTML"
+                        hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}' style="display:inline">
+                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="url" value="{{.URL}}">
+                    <button type="submit" class="btn-link-accent monloader-accent" title="Fetch tags from this source via monloader">[fetch]</button>
+                  </form>{{end}}
+                  <form method="POST" action="/images/{{$.Image.ID}}/sources/remove"
+                        hx-post="/images/{{$.Image.ID}}/sources/remove" hx-swap="none"
+                        hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+                        hx-confirm="Remove this source?" data-confirm-ok="Remove"
+                        style="display:inline">
+                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="site" value="{{.Site}}">
+                    <input type="hidden" name="post_id" value="{{.PostID}}">
+                    <button type="submit" class="btn-link-accent" title="Remove this source">[×]</button>
+                  </form>
+                </li>
+                {{end}}
+              </ul>
+              {{else}}<span class="field-hint">(none)</span>{{end}}
+              <button type="button" class="btn-link-accent btn-add-source" title="Add a source">[+ add]</button>
+              {{if .MonloaderPaired}}<div id="fetch-status" class="fetch-status"></div>{{end}}
             </td></tr>
             <tr><th>Collections</th><td>
               {{if .Collections}}

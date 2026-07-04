@@ -20,6 +20,17 @@ var validOrderModes = map[string]bool{
 	"random":                  true,
 }
 
+// collectionPairExcl hides queue pairs whose two images share a
+// collection absent from collection_find_relations (the per-collection
+// opt-in toggled on /collections): membership already relates the
+// images, so the session skips those pairs unless the operator enables
+// the switch. Splices anywhere the queue is aliased `p`.
+const collectionPairExcl = `NOT EXISTS (
+		SELECT 1 FROM image_collections ca
+		JOIN image_collections cb ON cb.name = ca.name AND cb.image_id = p.b_image_id
+		WHERE ca.image_id = p.a_image_id
+		  AND NOT EXISTS (SELECT 1 FROM collection_find_relations f WHERE f.name = ca.name))`
+
 // orderClauseForMode returns the ORDER BY tail the queue SELECT uses.
 // `skipped_at IS NULL DESC` keeps unskipped pairs ahead of skipped
 // ones; the mode-specific second key drives the order inside each
@@ -180,7 +191,9 @@ func saveSessionOrder(cx *galleryCtx, mode string) {
 // by your ceiling" the empty-queue branch surfaces.
 func loadNextPair(cx *galleryCtx, order string, ceiling *Ceiling, pinA, pinB int64) (*sessionPairView, int, int, error) {
 	var rawRemaining int
-	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM potential_relation_pairs`).Scan(&rawRemaining); err != nil {
+	if err := cx.DB.Read.QueryRow(
+		`SELECT COUNT(*) FROM potential_relation_pairs p WHERE ` + collectionPairExcl,
+	).Scan(&rawRemaining); err != nil {
 		return nil, 0, 0, err
 	}
 	if rawRemaining == 0 {
@@ -194,7 +207,7 @@ func loadNextPair(cx *galleryCtx, order string, ceiling *Ceiling, pinA, pinB int
 			FROM potential_relation_pairs p
 			JOIN images ia ON ia.id = p.a_image_id
 			JOIN images ib ON ib.id = p.b_image_id
-			WHERE ` + where
+			WHERE ` + collectionPairExcl + ` AND ` + where
 		if err := cx.DB.Read.QueryRow(countQ, args...).Scan(&visible); err != nil {
 			return nil, 0, rawRemaining, err
 		}
@@ -209,9 +222,9 @@ func loadNextPair(cx *galleryCtx, order string, ceiling *Ceiling, pinA, pinB int
 		FROM potential_relation_pairs p
 		JOIN images ia ON ia.id = p.a_image_id
 		JOIN images ib ON ib.id = p.b_image_id`
-	orderedQ := selectBase
+	orderedQ := selectBase + "\n\t\tWHERE " + collectionPairExcl
 	if where != "" {
-		orderedQ += "\n\t\tWHERE " + where
+		orderedQ += " AND " + where
 	}
 	orderedQ += "\n\t\t" + orderClauseForMode(order) + "\n\t\tLIMIT 1"
 	query, qargs := orderedQ, args
@@ -220,13 +233,11 @@ func loadNextPair(cx *galleryCtx, order string, ceiling *Ceiling, pinA, pinB int
 		if lo > hi {
 			lo, hi = hi, lo
 		}
-		pinnedQ := selectBase
+		pinnedQ := selectBase + "\n\t\tWHERE " + collectionPairExcl
 		if where != "" {
-			pinnedQ += "\n\t\tWHERE " + where + " AND p.a_image_id = ? AND p.b_image_id = ?"
-		} else {
-			pinnedQ += "\n\t\tWHERE p.a_image_id = ? AND p.b_image_id = ?"
+			pinnedQ += " AND " + where
 		}
-		pinnedQ += "\n\t\tLIMIT 1"
+		pinnedQ += " AND p.a_image_id = ? AND p.b_image_id = ?\n\t\tLIMIT 1"
 		query, qargs = pinnedQ, append(append([]any{}, args...), lo, hi)
 	}
 	var aPath, bPath string

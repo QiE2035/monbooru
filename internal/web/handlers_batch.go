@@ -228,11 +228,7 @@ func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 	if processed > 0 {
 		s.Active().InvalidateCaches()
 	}
-	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("delete cancelled (%d/%d deleted)", processed, total))
-		return
-	}
-	s.jobs.Complete(fmt.Sprintf("Deleted %d image(s).", processed))
+	s.finishJob(nil, cancelled, fmt.Sprintf("delete cancelled (%d/%d deleted)", processed, total), fmt.Sprintf("Deleted %d image(s).", processed))
 }
 
 // batchMove kicks off a background `move` job that relocates the selected
@@ -257,44 +253,9 @@ func (s *Server) batchMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scope := strings.TrimSpace(r.FormValue("scope"))
-	var ids []int64
-	if scope == "search" {
-		expr, parseErr := search.Parse(r.FormValue("q"))
-		if parseErr != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			writeInlineFlash(w, "err", "Could not parse search: "+parseErr.Error())
-			return
-		}
-		expr = resolveCeiling(r, s.Active()).Apply(expr)
-		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
-			ids = append(ids, t.ID)
-			return nil
-		})
-		if err != nil {
-			logx.Errorf("batch-move search: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			writeInlineFlash(w, "err", "Search error.")
-			return
-		}
-	} else {
-		for _, idStr := range r.Form["ids"] {
-			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-				ids = append(ids, id)
-			}
-		}
-	}
-
-	if len(ids) == 0 {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-
-	if !s.startJob(w, models.JobTypeMove) {
-		return
-	}
-	go s.runBatchMove(ids, targetFolder)
-	w.WriteHeader(http.StatusAccepted)
+	s.startScopedJob(w, r, "batch-move", models.JobTypeMove, func(ids []int64) {
+		s.runBatchMove(ids, targetFolder)
+	})
 }
 
 // runBatchMove processes move targets one image at a time. Each MoveImage has
@@ -373,20 +334,9 @@ func (s *Server) batchTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ids, ok := s.resolveBatchScope(w, r, "batch-tag")
-	if !ok {
-		return
-	}
-
-	if len(ids) == 0 {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	if !s.startJob(w, models.JobTypeTag) {
-		return
-	}
-	go s.runBatchTag(ids, op, catTags)
-	w.WriteHeader(http.StatusAccepted)
+	s.startScopedJob(w, r, "batch-tag", models.JobTypeTag, func(ids []int64) {
+		s.runBatchTag(ids, op, catTags)
+	})
 }
 
 // anyTagHasImplications reports whether any of the supplied tag ids
@@ -498,11 +448,7 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 	}
 	s.Active().InvalidateCaches()
 
-	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("%s cancelled (%d/%d processed)", label, processed, total))
-		return
-	}
-	s.jobs.Complete(fmt.Sprintf("%s %d image(s) (%d row change(s)).", summary, processed, applied))
+	s.finishJob(nil, cancelled, fmt.Sprintf("%s cancelled (%d/%d processed)", label, processed, total), fmt.Sprintf("%s %d image(s) (%d row change(s)).", summary, processed, applied))
 }
 
 // batchStrip kicks off a background `tag` job that strips tags by category
@@ -530,20 +476,9 @@ func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
 		taggerName = ""
 	}
 
-	ids, ok := s.resolveBatchScope(w, r, "batch-strip")
-	if !ok {
-		return
-	}
-
-	if len(ids) == 0 {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	if !s.startJob(w, models.JobTypeTag) {
-		return
-	}
-	go s.runBatchStrip(ids, mode, taggerName)
-	w.WriteHeader(http.StatusAccepted)
+	s.startScopedJob(w, r, "batch-strip", models.JobTypeTag, func(ids []int64) {
+		s.runBatchStrip(ids, mode, taggerName)
+	})
 }
 
 // runBatchStrip processes targets in chunks of 500 with one transaction per
@@ -605,11 +540,7 @@ func (s *Server) runBatchStrip(ids []int64, mode, taggerName string) {
 	}
 	s.Active().InvalidateCaches()
 
-	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("%s cancelled (%d/%d processed)", label, processed, total))
-		return
-	}
-	s.jobs.Complete(fmt.Sprintf("%s %d image(s).", summary, processed))
+	s.finishJob(nil, cancelled, fmt.Sprintf("%s cancelled (%d/%d processed)", label, processed, total), fmt.Sprintf("%s %d image(s).", summary, processed))
 }
 
 // batchInbox kicks off a background `tag` job that flips is_inbox across
@@ -618,7 +549,7 @@ func (s *Server) runBatchStrip(ids []int64, mode, taggerName string) {
 // become archived, archived become inbox. Mirrors batchTag's scope
 // dispatch and runBulkDelete's chunked-tx shape.
 func (s *Server) batchInbox(w http.ResponseWriter, r *http.Request) {
-	s.startBatchToggleJob(w, r, "batch-inbox", s.runBatchInbox)
+	s.startScopedJob(w, r, "batch-inbox", models.JobTypeTag, s.runBatchInbox)
 }
 
 // runBatchInbox processes ids in chunks of 500 with one transaction per
@@ -633,17 +564,17 @@ func (s *Server) runBatchInbox(ids []int64) {
 // per-row toggle that flips favorited rows to unfavorited and vice
 // versa across the resolved scope.
 func (s *Server) batchFavorite(w http.ResponseWriter, r *http.Request) {
-	s.startBatchToggleJob(w, r, "batch-favorite", s.runBatchFavorite)
+	s.startScopedJob(w, r, "batch-favorite", models.JobTypeTag, s.runBatchFavorite)
 }
 
 func (s *Server) runBatchFavorite(ids []int64) {
 	s.runBulkToggle(ids, "is_favorited", "favorite state", "favorite toggle", "Toggled favorite state")
 }
 
-// startBatchToggleJob is the HTTP shell behind the per-row toggle
-// handlers: parse form, resolve scope, claim the jobs lane, spawn,
-// 202.
-func (s *Server) startBatchToggleJob(w http.ResponseWriter, r *http.Request, scopeLabel string, run func([]int64)) {
+// startScopedJob is the HTTP shell shared by every batch handler: parse
+// form, resolve scope, claim the jobs lane, spawn, 202. Callers validate
+// their own fields first (ParseForm is idempotent).
+func (s *Server) startScopedJob(w http.ResponseWriter, r *http.Request, scopeLabel, jobType string, run func([]int64)) {
 	if !parseFormOK(w, r) {
 		return
 	}
@@ -655,7 +586,7 @@ func (s *Server) startBatchToggleJob(w http.ResponseWriter, r *http.Request, sco
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	if !s.startJob(w, models.JobTypeTag) {
+	if !s.startJob(w, jobType) {
 		return
 	}
 	go run(ids)
@@ -692,11 +623,7 @@ func (s *Server) runBulkToggle(ids []int64, column, progressNoun, cancelNoun, su
 
 	s.Active().InvalidateCaches()
 
-	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("%s cancelled (%d/%d toggled)", cancelNoun, processed, total))
-		return
-	}
-	s.jobs.Complete(fmt.Sprintf("%s for %d image(s).", successNoun, processed))
+	s.finishJob(nil, cancelled, fmt.Sprintf("%s cancelled (%d/%d toggled)", cancelNoun, processed, total), fmt.Sprintf("%s for %d image(s).", successNoun, processed))
 }
 
 // batchCollection adds or removes a collection label across every image
@@ -724,20 +651,9 @@ func (s *Server) batchCollection(w http.ResponseWriter, r *http.Request) {
 		mode = "add"
 	}
 
-	ids, ok := s.resolveBatchScope(w, r, "batch-collection")
-	if !ok {
-		return
-	}
-
-	if len(ids) == 0 {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	if !s.startJob(w, models.JobTypeTag) {
-		return
-	}
-	go s.runBatchCollection(ids, collectionVal, mode)
-	w.WriteHeader(http.StatusAccepted)
+	s.startScopedJob(w, r, "batch-collection", models.JobTypeTag, func(ids []int64) {
+		s.runBatchCollection(ids, collectionVal, mode)
+	})
 }
 
 // runBatchCollection adds or removes the label across the supplied id
@@ -816,6 +732,161 @@ func (s *Server) runBatchCollection(ids []int64, label, mode string) {
 		return
 	}
 	s.jobs.Complete(fmt.Sprintf("Added %d image(s) to collection.", processed))
+}
+
+// batchSource adds or removes a source label across every image in
+// `scope=search` (q + sort + order) or every checked id in
+// `scope=selection`. `mode=add` (default) files each image under the label as
+// an extra origin (its url left blank, editable per-image); `mode=remove`
+// drops it. One indexed write per 500-row chunk, mirroring batchCollection.
+func (s *Server) batchSource(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	siteVal := strings.TrimSpace(r.FormValue("site"))
+	if siteVal == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeInlineFlash(w, "err", "Source label required.")
+		return
+	}
+	if len(siteVal) > maxExternalSourceLen {
+		w.WriteHeader(http.StatusBadRequest)
+		writeInlineFlash(w, "err", "Source label too long.")
+		return
+	}
+	mode := r.FormValue("mode")
+	if mode != "remove" {
+		mode = "add"
+	}
+
+	s.startScopedJob(w, r, "batch-source", models.JobTypeTag, func(ids []int64) {
+		s.runBatchSource(ids, siteVal, mode)
+	})
+}
+
+// runBatchSource adds or removes the site label across the id list in chunks,
+// keeping images.source / url pointed at each row's primary (oldest) origin.
+func (s *Server) runBatchSource(ids []int64, label, mode string) {
+	ctx := s.jobs.Context()
+	const chunkSize = 500
+	total := len(ids)
+	remove := mode == "remove"
+	verb := "adding source"
+	if remove {
+		verb = "removing source"
+	}
+
+	processed, cancelled, err := chunkedJob(ctx, s.jobs, ids, chunkSize, verb, func(chunk []int64) error {
+		placeholders, chunkArgs := db.InPlaceholders(chunk)
+		labelArgs := append([]any{label}, chunkArgs...)
+		tx, err := s.db().Write.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if remove {
+			if _, err := tx.Exec(
+				`DELETE FROM image_sources WHERE site = ? AND image_id IN (`+placeholders+`)`,
+				labelArgs...,
+			); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(
+				`DELETE FROM image_annotations WHERE site = ? AND image_id IN (`+placeholders+`)`,
+				labelArgs...,
+			); err != nil {
+				return err
+			}
+			// Rebind the mirror for rows whose primary was the removed label.
+			if _, err := tx.Exec(
+				`UPDATE images SET
+				   source = COALESCE((SELECT site FROM image_sources s WHERE s.image_id = images.id ORDER BY s.rowid LIMIT 1), ''),
+				   url    = COALESCE((SELECT url FROM image_sources s WHERE s.image_id = images.id ORDER BY s.rowid LIMIT 1), '')
+				 WHERE source = ? COLLATE NOCASE AND id IN (`+placeholders+`)`,
+				labelArgs...,
+			); err != nil {
+				return err
+			}
+			return tx.Commit()
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO image_sources (image_id, site, post_id, url)
+			 SELECT id, ?, '', '' FROM images WHERE id IN (`+placeholders+`)
+			 ON CONFLICT(image_id, site, post_id) DO NOTHING`,
+			labelArgs...,
+		); err != nil {
+			return err
+		}
+		// Rebind the mirror to each row's oldest origin, exactly like the
+		// remove branch: a blanket source-column fill could pair the new
+		// label with an older unlabeled row's url.
+		if _, err := tx.Exec(
+			`UPDATE images SET
+			   source = COALESCE((SELECT site FROM image_sources s WHERE s.image_id = images.id ORDER BY s.rowid LIMIT 1), ''),
+			   url    = COALESCE((SELECT url FROM image_sources s WHERE s.image_id = images.id ORDER BY s.rowid LIMIT 1), '')
+			 WHERE id IN (`+placeholders+`)`,
+			chunkArgs...,
+		); err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		return
+	}
+
+	s.Active().InvalidateCaches()
+
+	if cancelled {
+		s.jobs.Complete(fmt.Sprintf("source cancelled (%d/%d processed)", processed, total))
+		return
+	}
+	if remove {
+		s.jobs.Complete(fmt.Sprintf("Removed source from %d image(s).", processed))
+		return
+	}
+	s.jobs.Complete(fmt.Sprintf("Added source to %d image(s).", processed))
+}
+
+// batchSourceFetch enqueues a monloader metadata refetch for every image in
+// `scope=search` or `scope=selection` that carries a primary source url;
+// url-less images are skipped and counted. The action is hidden unless
+// monloader is paired.
+func (s *Server) batchSourceFetch(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	s.startScopedJob(w, r, "batch-source-fetch", models.JobTypeTag, s.runBatchSourceFetch)
+}
+
+// runBatchSourceFetch enqueues one metadata refetch per image with a url,
+// stopping early if monloader becomes unreachable (each fetch is a bounded
+// LAN call, so this stays a foreground-light background job).
+func (s *Server) runBatchSourceFetch(ids []int64) {
+	ctx := s.jobs.Context()
+	galleryName := s.activeName
+	enqueued, skipped := 0, 0
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			s.jobs.Complete(fmt.Sprintf("Fetch cancelled after queueing %d.", enqueued))
+			return
+		}
+		var url string
+		if err := s.db().Read.QueryRow(`SELECT url FROM images WHERE id = ?`, id).Scan(&url); err != nil {
+			continue
+		}
+		if strings.TrimSpace(url) == "" {
+			skipped++
+			continue
+		}
+		if err := s.EnqueueMetadataFetch(ctx, id, galleryName, url); err != nil {
+			s.jobs.Fail("monloader unreachable: " + err.Error())
+			return
+		}
+		enqueued++
+	}
+	s.jobs.Complete(fmt.Sprintf("Queued %d source refetch(es) on monloader; skipped %d with no url.", enqueued, skipped))
 }
 
 func (s *Server) deleteFolderPost(w http.ResponseWriter, r *http.Request) {

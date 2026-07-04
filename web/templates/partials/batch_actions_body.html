@@ -11,6 +11,8 @@
   <li class="actions-menu-item" data-action="inbox-toggle"><button type="button" data-action="inbox-toggle">Toggle inbox</button></li>
   <li class="actions-menu-item" data-action="fav-toggle"><button type="button" data-action="fav-toggle">Toggle favorite</button></li>
   <li class="actions-menu-item" data-action="collection"><button type="button" data-action="collection">Set collection</button></li>
+  <li class="actions-menu-item" data-action="source"><button type="button" data-action="source">Set source</button></li>
+  {{if .MonloaderPaired}}<li class="actions-menu-item" data-action="source-fetch"><button type="button" class="monloader-accent" data-action="source-fetch">Fetch tags from source</button></li>{{end}}
   <li class="actions-menu-sep" aria-hidden="true"></li>
   <li class="actions-menu-item" data-action="move"><button type="button" data-action="move">Move</button></li>
   <li class="actions-menu-item" data-action="delete"><button type="button" class="btn-danger" data-action="delete">Delete</button></li>

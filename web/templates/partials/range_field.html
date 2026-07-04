@@ -1,0 +1,20 @@
+{{/* One settings range-slider field: label, live output, bounded slider
+     with tick marks, optional hint. Invoked with a dict carrying Name,
+     Label, Min, Max, Value, Ticks (list) and optional Hint. */}}
+{{define "partials/range_field.html"}}
+<div class="field range-row">
+  <label for="{{.Name}}">{{.Label}}</label>
+  <output id="{{.Name}}_out">{{.Value}}</output>
+  <div class="range-slider-row">
+    <span class="range-bound range-bound-min">{{.Min}}</span>
+    <input type="range" name="{{.Name}}" id="{{.Name}}"
+           min="{{.Min}}" max="{{.Max}}" step="1" value="{{.Value}}" list="{{.Name}}_ticks"
+           oninput="document.getElementById('{{.Name}}_out').value=this.value">
+    <span class="range-bound range-bound-max">{{.Max}}</span>
+  </div>
+  <datalist id="{{.Name}}_ticks">
+    {{range .Ticks}}<option value="{{.}}"></option>{{end}}
+  </datalist>
+  {{if .Hint}}<span class="field-hint">{{.Hint}}</span>{{end}}
+</div>
+{{end}}

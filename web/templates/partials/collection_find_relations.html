@@ -1,0 +1,12 @@
+{{define "partials/collection_find_relations.html"}}
+<form class="collection-find-relations" hx-post="/collections/find-relations"
+      hx-target="this" hx-swap="outerHTML"
+      hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'>
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+  <input type="hidden" name="collection" value="{{.Name}}">
+  <input type="hidden" name="enabled" value="{{if .FindRelations}}0{{else}}1{{end}}">
+  <span class="field-hint">find relations:</span>
+  <button type="submit" class="btn-link-accent"
+          title="{{if .FindRelations}}The relations session may pair images of this collection together; click to exclude them{{else}}Pairs made of two images of this collection are kept out of the relations session; click to allow them{{end}}">[{{if .FindRelations}}enabled{{else}}disabled{{end}}]</button>
+</form>
+{{end}}

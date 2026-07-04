@@ -54,6 +54,8 @@
     <button type="button" onclick="openBatchInboxDialog('selection')">Toggle inbox</button>
     <button type="button" onclick="openBatchFavoriteDialog('selection')">Toggle favorite</button>
     <button type="button" onclick="openBatchCollectionDialog('selection')">Set collection</button>
+    <button type="button" onclick="openBatchSourceDialog('selection')">Set source</button>
+    {{if .MonloaderPaired}}<button type="button" class="monloader-accent" onclick="openBatchSourceFetchDialog('selection')">Fetch tags</button>{{end}}
     <span class="batch-bar-sep" aria-hidden="true"></span>
     <button type="button" onclick="openBatchMoveDialog('selection')">Move</button>
     <button type="button" class="btn-danger" onclick="batchDeleteSelected()">Delete</button>
@@ -93,7 +95,7 @@
      chooser, the batch-bar path leaves it cleared). -->
 <dialog id="batch-delete-dialog">
   <input type="hidden" id="batch-delete-scope">
-  <p>Delete <strong id="batch-delete-count">0</strong> <span id="batch-delete-noun">images</span>?</p>
+  <p>Delete {{template "batch_count" "batch-delete"}}?</p>
   <p style="color:var(--error);font-size:12px">Files are permanently deleted from disk. This cannot be undone.</p>
   <div id="batch-delete-flash"></div>
   <div class="dialog-actions">
@@ -159,8 +161,7 @@
      selection scope. -->
 <dialog id="batch-autotag-dialog">
   <p>
-    Auto-tag <strong id="batch-autotag-count">0</strong>
-    <span id="batch-autotag-noun">images</span>. Pick which tagger to run.
+    Auto-tag {{template "batch_count" "batch-autotag"}}. Pick which tagger to run.
   </p>
   <form id="batch-autotag-form" onsubmit="event.preventDefault(); confirmBatchAutotag();">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
@@ -229,7 +230,7 @@
 
 <!-- Move dialog (scope flip via hidden #batch-move-scope). -->
 <dialog id="batch-move-dialog">
-  <p>Move <strong id="batch-move-count">0</strong> <span id="batch-move-noun">images</span> to folder:</p>
+  <p>Move {{template "batch_count" "batch-move"}} to folder:</p>
   <p class="field-hint">Path (leave blank for gallery root)</p>
   <form id="batch-move-form" onsubmit="event.preventDefault(); confirmBatchMove();">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
@@ -259,8 +260,7 @@
   <input type="hidden" id="batch-inbox-scope">
   <p>
     Toggle inbox state for
-    <strong id="batch-inbox-count">0</strong>
-    <span id="batch-inbox-noun">images</span>?
+    {{template "batch_count" "batch-inbox"}}?
   </p>
   <p style="color:var(--fg-dim);font-size:12px">Inbox images become archived; archived become inbox.</p>
   <div id="batch-inbox-flash"></div>
@@ -274,8 +274,7 @@
   <input type="hidden" id="batch-fav-scope">
   <p>
     Toggle favorite state for
-    <strong id="batch-fav-count">0</strong>
-    <span id="batch-fav-noun">images</span>?
+    {{template "batch_count" "batch-fav"}}?
   </p>
   <p style="color:var(--fg-dim);font-size:12px">Favorited images become unfavorited; unfavorited become favorited.</p>
   <div id="batch-fav-flash"></div>
@@ -288,7 +287,7 @@
 <!-- Set-collection dialog (scope flip via hidden #batch-collection-scope).
      The input drives /internal/collection/suggest autocomplete. -->
 <dialog id="batch-collection-dialog">
-  <p>Set collection for <strong id="batch-collection-count">0</strong> <span id="batch-collection-noun">images</span>:</p>
+  <p>Set collection for {{template "batch_count" "batch-collection"}}:</p>
   <form id="batch-collection-form" onsubmit="event.preventDefault(); confirmBatchCollection();">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <input type="hidden" id="batch-collection-scope">
@@ -300,17 +299,7 @@
     </div>
     <div class="field">
       <label>Collection label</label>
-      <div class="series-input-wrap">
-        <input type="text" name="collection" id="batch-collection-input" maxlength="200"
-               autocomplete="off"
-               hx-get="/internal/collection/suggest"
-               hx-trigger="input changed delay:200ms"
-               hx-target="#batch-collection-suggest"
-               hx-swap="innerHTML"
-               hx-vals='js:{prefix: document.getElementById("batch-collection-input").value}'
-               onkeydown="handleSuggestKey(event, 'batch-collection-suggest', 'batch-collection-input')">
-        <div id="batch-collection-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
-      </div>
+{{template "suggest_input" dict "Name" "collection" "InputID" "batch-collection-input" "Endpoint" "/internal/collection/suggest" "SuggestID" "batch-collection-suggest"}}
     </div>
     <div id="batch-collection-flash"></div>
     <div class="dialog-actions">
@@ -320,95 +309,67 @@
   </form>
 </dialog>
 
+<!-- Set-source dialog (scope flip via hidden #batch-source-scope).
+     The input drives /internal/source/suggest autocomplete. -->
+<dialog id="batch-source-dialog">
+  <p>Set source for {{template "batch_count" "batch-source"}}:</p>
+  <form id="batch-source-form" onsubmit="event.preventDefault(); confirmBatchSource();">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <input type="hidden" id="batch-source-scope">
+    <div class="field">
+      <div class="radio-row">
+        <label><input type="radio" name="mode" value="add" checked> Add source</label>
+        <label><input type="radio" name="mode" value="remove"> Remove source</label>
+      </div>
+    </div>
+    <div class="field">
+      <label>Source label</label>
+{{template "suggest_input" dict "Name" "site" "InputID" "batch-source-input" "Endpoint" "/internal/source/suggest" "SuggestID" "batch-source-suggest"}}
+    </div>
+    <div id="batch-source-flash"></div>
+    <div class="dialog-actions">
+      <button type="submit">Apply</button>
+      <button type="button" onclick="closeDialogAndRestoreParent('batch-source-dialog')">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Batch source-fetch dialog. One monloader metadata job per image, so a
+     large scope means a long politeness-paced crawl that can't be drained
+     from monbooru once queued - hence the count confirm. -->
+<dialog id="batch-source-fetch-dialog">
+  <input type="hidden" id="batch-source-fetch-scope">
+  <p>
+    Fetch tags from the source for
+    {{template "batch_count" "batch-source-fetch"}}?
+  </p>
+  <p style="color:var(--fg-dim);font-size:12px">Each image is fetched from its primary source URL; images without one are skipped. Queued fetches run on monloader and cannot be cancelled from here.</p>
+  <div id="batch-source-fetch-flash"></div>
+  <div class="dialog-actions">
+    <button type="button" onclick="confirmBatchSourceFetch()">Fetch</button>
+    <button type="button" onclick="closeDialogAndRestoreParent('batch-source-fetch-dialog')">Cancel</button>
+  </div>
+</dialog>
+
 
 <script>
-// scopeCount populates the dialog's count + noun span pair from the
-// current search-result span (search scope) or the checked-thumb count
-// (selection scope). Returns the resolved count so callers can early-
-// return on an empty selection.
-function scopeCount(scope, countEl, nounEl) {
-  var n = 0;
-  if (scope === 'selection') {
-    n = document.querySelectorAll('.thumb-checkbox:checked').length;
-  } else {
-    var rcEl = document.querySelector('.result-count');
-    if (rcEl) {
-      var m = rcEl.textContent.match(/(\d+)/);
-      if (m) n = parseInt(m[1], 10);
-    }
-  }
-  if (countEl) countEl.textContent = n;
-  if (nounEl) {
-    var suffix = n === 1 ? 'image' : 'images';
-    nounEl.textContent = scope === 'selection' ? 'selected ' + suffix : suffix + ' in current search';
-  }
-  return n;
+// The batch plumbing this page leans on - scopeCount, searchScopeParts,
+// selectionScopeIds, runBatchOp, plus the shared openBatchDialog /
+// confirmBatchSimple skeletons - lives in main.js so other pages can
+// share it. Each dialog below only names its id prefix, endpoint, and
+// per-dialog extras.
+function openBatchSourceFetchDialog(scope) {
+  openBatchDialog('batch-source-fetch', scope);
 }
 
-// searchScopeParts returns the query/sort/order body fragment used by
-// every search-scoped batch endpoint.
-function searchScopeParts() {
-  var si = document.getElementById('search-input');
-  var sortEl = document.getElementById('search-sort');
-  var orderEl = document.querySelector('#search-form select[name="order"]');
-  return ['q=' + encodeURIComponent(si ? si.value : ''),
-          'sort=' + encodeURIComponent(sortEl ? sortEl.value : 'newest'),
-          'order=' + encodeURIComponent(orderEl ? orderEl.value : 'desc')];
-}
-
-// selectionScopeIds returns the checked-thumb id parts. Returns null
-// when nothing is checked (caller writes the flash and aborts).
-function selectionScopeIds() {
-  var checked = document.querySelectorAll('.thumb-checkbox:checked');
-  if (checked.length === 0) return null;
-  return Array.prototype.map.call(checked, function(cb) {
-    return 'ids=' + encodeURIComponent(cb.value);
-  });
-}
-
-// runBatchOp fires the named endpoint, closing the dialog and refreshing
-// job-status on success. opts: endpoint, scope, params (array of
-// already-encoded "k=v" parts not including _csrf or scope), dialogId,
-// flashId, failMsg, clearOnOk (defaults to scope === 'selection').
-function runBatchOp(opts) {
-  var flash = document.getElementById(opts.flashId);
-  if (flash) flash.innerHTML = '';
-  var csrfEl = document.querySelector('input[name="_csrf"]');
-  var csrf = csrfEl ? csrfEl.value : '';
-  var parts = ['_csrf=' + encodeURIComponent(csrf),
-               'scope=' + encodeURIComponent(opts.scope)];
-  if (opts.params) parts = parts.concat(opts.params);
-  var clearOnOk = opts.clearOnOk;
-  if (clearOnOk === undefined) clearOnOk = opts.scope === 'selection';
-  fetch(opts.endpoint, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
-    body: parts.join('&')
-  }).then(function(res) {
-    if (res.ok) {
-      var dlg = document.getElementById(opts.dialogId);
-      if (dlg) dlg.close();
-      if (clearOnOk) clearSelection();
-      _pendingGalleryReload = true;
-      refreshJobStatus();
-    } else {
-      res.text().then(function(t) {
-        if (flash) flash.innerHTML = t || '<div class="flash flash-err">' + (opts.failMsg || 'Action failed.') + '</div>';
-      });
-    }
-  }).catch(function() {
-    if (flash) flash.innerHTML = '<div class="flash flash-err">Request failed.</div>';
-  });
+// confirmBatchSourceFetch queues a monloader metadata refetch across the scope.
+function confirmBatchSourceFetch() {
+  confirmBatchSimple('batch-source-fetch', '/internal/batch-source-fetch', null, 'Fetch failed.');
 }
 
 function openBatchDeleteDialog(scope) {
-  if (scope === 'selection' && document.querySelectorAll('.thumb-checkbox:checked').length === 0) return;
-  var n = scopeCount(scope, document.getElementById('batch-delete-count'), document.getElementById('batch-delete-noun'));
-  if (scope === 'search' && n === 0) return;
-  document.getElementById('batch-delete-scope').value = scope;
-  var flash = document.getElementById('batch-delete-flash');
-  if (flash) flash.innerHTML = '';
-  document.getElementById('batch-delete-dialog').showModal();
+  // requireMatches: don't open the delete confirm over an empty search.
+  openBatchDialog('batch-delete', scope, {requireMatches: true});
 }
 
 function confirmBatchDelete() {
@@ -428,35 +389,16 @@ function confirmBatchDelete() {
 }
 
 function openBatchMoveDialog(scope) {
-  if (scope === 'selection' && document.querySelectorAll('.thumb-checkbox:checked').length === 0) return;
-  scopeCount(scope, document.getElementById('batch-move-count'), document.getElementById('batch-move-noun'));
-  document.getElementById('batch-move-scope').value = scope;
-  var flash = document.getElementById('batch-move-flash');
-  if (flash) flash.innerHTML = '';
-  var input = document.getElementById('batch-move-folder');
-  if (input) input.value = '';
-  var sg = document.getElementById('batch-move-suggest');
-  if (sg) sg.innerHTML = '';
-  document.getElementById('batch-move-dialog').showModal();
-  if (input) input.focus();
+  openBatchDialog('batch-move', scope, {
+    clearIds: ['batch-move-folder', 'batch-move-suggest'],
+    focusId: 'batch-move-folder'
+  });
 }
 
 function confirmBatchMove() {
-  var scope = document.getElementById('batch-move-scope').value;
   var folder = document.getElementById('batch-move-folder').value;
-  var params = ['folder=' + encodeURIComponent(folder)];
-  if (scope === 'search') {
-    params = params.concat(searchScopeParts());
-  } else {
-    var ids = selectionScopeIds();
-    if (!ids) {
-      document.getElementById('batch-move-flash').innerHTML = '<div class="flash flash-err">No images selected.</div>';
-      return;
-    }
-    params = params.concat(ids);
-  }
-  runBatchOp({endpoint: '/internal/batch-move', scope: scope, params: params,
-              dialogId: 'batch-move-dialog', flashId: 'batch-move-flash', failMsg: 'Move failed.'});
+  confirmBatchSimple('batch-move', '/internal/batch-move',
+    ['folder=' + encodeURIComponent(folder)], 'Move failed.');
 }
 
 // Open the Actions chooser. The header announces the scope once (count +
@@ -527,22 +469,7 @@ function pickBatchAction(action) {
   var subId = '';
   switch (action) {
     case 'save':
-      var si = document.getElementById('search-input');
-      var sq = document.getElementById('save-search-query');
-      var sp = document.getElementById('save-search-preview');
-      if (si && sq) sq.value = si.value;
-      if (si && sp) sp.textContent = si.value || '(empty)';
-      // Snapshot the current URL's sort/order/seed so the saved entry
-      // reopens at the same view. Defaults stay empty so the gallery
-      // handler's defaults take over on reopen if nothing was set here.
-      var url = new URL(window.location.href);
-      var ss = document.getElementById('save-search-sort');
-      var so = document.getElementById('save-search-order');
-      var se = document.getElementById('save-search-seed');
-      if (ss) ss.value = url.searchParams.get('sort') || '';
-      if (so) so.value = url.searchParams.get('order') || '';
-      if (se) se.value = url.searchParams.get('seed') || '';
-      document.getElementById('save-search-dialog').showModal();
+      openSaveSearchDialog();
       subId = 'save-search-dialog';
       break;
     case 'add':
@@ -573,6 +500,14 @@ function pickBatchAction(action) {
       openBatchCollectionDialog('search');
       subId = 'batch-collection-dialog';
       break;
+    case 'source':
+      openBatchSourceDialog('search');
+      subId = 'batch-source-dialog';
+      break;
+    case 'source-fetch':
+      openBatchSourceFetchDialog('search');
+      subId = 'batch-source-fetch-dialog';
+      break;
     case 'delete':
       openBatchDeleteDialog('search');
       subId = 'batch-delete-dialog';
@@ -588,48 +523,21 @@ function pickBatchAction(action) {
   }
 }
 
-// Open the Remove-tags dialog scoped to the current search. Three radio
-// modes (user / auto / all) drive the runBatchStrip predicate; on submit
-// the body carries scope=search plus q/sort/order so the handler streams
-// matching ids through search.ExecuteForDeleteStream.
-function openStripSearchDialog() {
-  var rcEl = document.querySelector('.result-count');
-  var n = 0;
-  if (rcEl) {
-    var m = rcEl.textContent.match(/(\d+)/);
-    if (m) n = parseInt(m[1], 10);
-  }
-  resetBatchStripDialog();
-  document.getElementById('batch-strip-scope').value = 'search';
-  document.getElementById('batch-strip-count-display').textContent = n;
-  document.getElementById('batch-strip-noun').textContent = (n === 1 ? 'image' : 'images') + ' in current search';
-  document.getElementById('batch-strip-dialog').showModal();
-}
-
-function openStripSelectedDialog() {
-  var checked = document.querySelectorAll('.thumb-checkbox:checked');
-  if (checked.length === 0) return;
-  resetBatchStripDialog();
-  document.getElementById('batch-strip-scope').value = 'selection';
-  document.getElementById('batch-strip-count-display').textContent = checked.length;
-  document.getElementById('batch-strip-noun').textContent = 'selected ' + (checked.length === 1 ? 'image' : 'images');
-  document.getElementById('batch-strip-dialog').showModal();
-}
-
-function resetBatchStripDialog() {
-  var dflt = document.querySelector('#batch-strip-form input[name="mode"][value="specific"]');
-  if (dflt) dflt.checked = true;
-  var input = document.getElementById('batch-strip-input');
-  if (input) input.value = '';
-  var sg = document.getElementById('batch-strip-suggest');
-  if (sg) sg.innerHTML = '';
-  var flash = document.getElementById('batch-strip-flash');
-  if (flash) flash.innerHTML = '';
-  // Drop any stale chooser back-link from a prior open; pickBatchAction
-  // re-applies it on the chooser-open path after this reset runs.
-  var dlg = document.getElementById('batch-strip-dialog');
-  if (dlg) delete dlg.dataset.returnTo;
-  updateBatchStripRow();
+// Open the Remove-tags dialog. On a search-scope submit the body carries
+// scope=search plus q/sort/order so the handler streams matching ids
+// through search.ExecuteForDeleteStream. beforeShow re-syncs the mode
+// rows before the dialog opens so showModal's initial focus doesn't land
+// on a field left disabled by the previous open's mode.
+function openStripSearchDialog() { openStripDialog('search'); }
+function openStripSelectedDialog() { openStripDialog('selection'); }
+function openStripDialog(scope) {
+  openBatchDialog('batch-strip', scope, {
+    countId: 'batch-strip-count-display',
+    radio: '#batch-strip-form input[name="mode"][value="specific"]',
+    clearIds: ['batch-strip-input', 'batch-strip-suggest'],
+    clearReturnTo: true,
+    beforeShow: updateBatchStripRow
+  });
 }
 
 // Show only the input row that matches the currently-selected mode. The
@@ -666,8 +574,6 @@ function toggleStripModeRow(id, inactive) {
 function confirmBatchStrip() {
   var form = document.getElementById('batch-strip-form');
   if (!form) return;
-  var csrfEl = form.querySelector('[name="_csrf"]');
-  var csrf = csrfEl ? csrfEl.value : '';
   var scope = document.getElementById('batch-strip-scope').value;
   var mode = (form.querySelector('input[name="mode"]:checked') || {}).value || 'specific';
   var flash = document.getElementById('batch-strip-flash');
@@ -678,7 +584,7 @@ function confirmBatchStrip() {
   // predicate. mode=auto-specific is a UI shorthand for mode=auto plus a
   // tagger_name filter; the server only knows mode=auto, so unwrap before
   // sending.
-  var url, parts;
+  var url, params;
   if (mode === 'specific') {
     var tags = (document.getElementById('batch-strip-input').value || '').trim();
     if (!tags) {
@@ -686,16 +592,11 @@ function confirmBatchStrip() {
       return;
     }
     url = '/internal/batch-tag';
-    parts = ['_csrf=' + encodeURIComponent(csrf),
-             'scope=' + encodeURIComponent(scope),
-             'op=remove',
-             'tags=' + encodeURIComponent(tags)];
+    params = ['op=remove', 'tags=' + encodeURIComponent(tags)];
   } else {
     url = '/internal/batch-strip';
     var serverMode = mode === 'auto-specific' ? 'auto' : mode;
-    parts = ['_csrf=' + encodeURIComponent(csrf),
-             'scope=' + encodeURIComponent(scope),
-             'mode=' + encodeURIComponent(serverMode)];
+    params = ['mode=' + encodeURIComponent(serverMode)];
     if (mode === 'auto-specific') {
       var taggerEl = document.getElementById('batch-strip-tagger');
       var taggerName = taggerEl ? taggerEl.value : '';
@@ -703,121 +604,52 @@ function confirmBatchStrip() {
         if (flash) flash.innerHTML = '<div class="flash flash-err">Pick an auto-tagger.</div>';
         return;
       }
-      parts.push('tagger_name=' + encodeURIComponent(taggerName));
+      params.push('tagger_name=' + encodeURIComponent(taggerName));
     }
   }
-  if (scope === 'search') {
-    var si = document.getElementById('search-input');
-    var sortEl = document.getElementById('search-sort');
-    var orderEl = document.querySelector('#search-form select[name="order"]');
-    parts.push('q=' + encodeURIComponent(si ? si.value : ''));
-    parts.push('sort=' + encodeURIComponent(sortEl ? sortEl.value : 'newest'));
-    parts.push('order=' + encodeURIComponent(orderEl ? orderEl.value : 'desc'));
-  } else {
-    var checked = document.querySelectorAll('.thumb-checkbox:checked');
-    if (checked.length === 0) {
-      if (flash) flash.innerHTML = '<div class="flash flash-err">No images selected.</div>';
-      return;
-    }
-    Array.prototype.forEach.call(checked, function(cb) {
-      parts.push('ids=' + encodeURIComponent(cb.value));
-    });
-  }
-  fetch(url, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
-    body: parts.join('&')
-  }).then(function(res) {
-    if (res.ok) {
-      document.getElementById('batch-strip-dialog').close();
-      if (scope === 'selection') clearSelection();
-      _pendingGalleryReload = true;
-      refreshJobStatus();
-    } else {
-      res.text().then(function(t) {
-        if (flash) flash.innerHTML = t || '<div class="flash flash-err">Remove failed.</div>';
-      });
-    }
-  }).catch(function() {
-    if (flash) flash.innerHTML = '<div class="flash flash-err">Request failed.</div>';
-  });
-}
-
-function openBatchAutotagDialog(scope) {
-  if (scope === 'selection' && document.querySelectorAll('.thumb-checkbox:checked').length === 0) return;
-  scopeCount(scope, document.getElementById('batch-autotag-count'), document.getElementById('batch-autotag-noun'));
-  document.getElementById('batch-autotag-scope').value = scope;
-  var dflt = document.querySelector('#batch-autotag-form input[name="tagger_name"][value=""]');
-  if (dflt) dflt.checked = true;
-  var flash = document.getElementById('batch-autotag-flash');
-  if (flash) flash.innerHTML = '';
-  document.getElementById('batch-autotag-dialog').showModal();
-}
-
-function confirmBatchAutotag() {
-  var form = document.getElementById('batch-autotag-form');
-  if (!form) return;
-  var scope = document.getElementById('batch-autotag-scope').value;
-  var tagger = (form.querySelector('input[name="tagger_name"]:checked') || {}).value || '';
-  var params = ['tagger_name=' + encodeURIComponent(tagger)];
   if (scope === 'search') {
     params = params.concat(searchScopeParts());
   } else {
     var ids = selectionScopeIds();
     if (!ids) {
-      document.getElementById('batch-autotag-flash').innerHTML = '<div class="flash flash-err">No images selected.</div>';
+      if (flash) flash.innerHTML = '<div class="flash flash-err">No images selected.</div>';
       return;
     }
     params = params.concat(ids);
   }
+  runBatchOp({endpoint: url, scope: scope, params: params,
+              dialogId: 'batch-strip-dialog', flashId: 'batch-strip-flash', failMsg: 'Remove failed.'});
+}
+
+function openBatchAutotagDialog(scope) {
+  openBatchDialog('batch-autotag', scope, {
+    radio: '#batch-autotag-form input[name="tagger_name"][value=""]'
+  });
+}
+
+function confirmBatchAutotag() {
+  var form = document.getElementById('batch-autotag-form');
+  if (!form) return;
+  var tagger = (form.querySelector('input[name="tagger_name"]:checked') || {}).value || '';
   // Auto-tag does not need _pendingGalleryReload (the job updates tags
   // out-of-band and the user often wants to keep watching the grid).
   // runBatchOp clears selection on selection scope by default.
-  runBatchOp({endpoint: '/internal/autotag', scope: scope, params: params,
-              dialogId: 'batch-autotag-dialog', flashId: 'batch-autotag-flash', failMsg: 'Auto-tag failed.'});
+  confirmBatchSimple('batch-autotag', '/internal/autotag',
+    ['tagger_name=' + encodeURIComponent(tagger)], 'Auto-tag failed.');
 }
 
-// Open the Add-tags dialog scoped to the current search. The match count
-// is read from the same #result-count span the Delete-all dialog uses.
-function openTagSearchDialog() {
-  var rcEl = document.querySelector('.result-count');
-  var n = 0;
-  if (rcEl) {
-    var m = rcEl.textContent.match(/(\d+)/);
-    if (m) n = parseInt(m[1], 10);
-  }
-  resetBatchTagDialog();
-  document.getElementById('batch-tag-scope').value = 'search';
-  document.getElementById('batch-tag-count-display').textContent = n;
-  document.getElementById('batch-tag-noun').textContent = (n === 1 ? 'image' : 'images') + ' in current search';
-  document.getElementById('batch-tag-dialog').showModal();
-  document.getElementById('batch-tag-input').focus();
-}
-
-// Open the Add-tags dialog scoped to the checked thumbnails. Mirrors
-// openTagSearchDialog but reads ids from .thumb-checkbox:checked at submit.
-function openTagSelectedDialog() {
-  var checked = document.querySelectorAll('.thumb-checkbox:checked');
-  if (checked.length === 0) return;
-  resetBatchTagDialog();
-  document.getElementById('batch-tag-scope').value = 'selection';
-  document.getElementById('batch-tag-count-display').textContent = checked.length;
-  document.getElementById('batch-tag-noun').textContent = 'selected ' + (checked.length === 1 ? 'image' : 'images');
-  document.getElementById('batch-tag-dialog').showModal();
-  document.getElementById('batch-tag-input').focus();
-}
-
-function resetBatchTagDialog() {
-  var input = document.getElementById('batch-tag-input');
-  if (input) input.value = '';
-  var sg = document.getElementById('batch-tag-suggest');
-  if (sg) sg.innerHTML = '';
-  var flash = document.getElementById('batch-tag-flash');
-  if (flash) flash.innerHTML = '';
-  // Drop any stale chooser back-link from a prior open; pickBatchAction
-  // re-applies it on the chooser-open path after this reset runs.
-  var dlg = document.getElementById('batch-tag-dialog');
-  if (dlg) delete dlg.dataset.returnTo;
+// Open the Add-tags dialog scoped to the current search or the checked
+// thumbnails; the selection variant reads ids from .thumb-checkbox:checked
+// at submit.
+function openTagSearchDialog() { openTagDialog('search'); }
+function openTagSelectedDialog() { openTagDialog('selection'); }
+function openTagDialog(scope) {
+  openBatchDialog('batch-tag', scope, {
+    countId: 'batch-tag-count-display',
+    clearIds: ['batch-tag-input', 'batch-tag-suggest'],
+    clearReturnTo: true,
+    focusId: 'batch-tag-input'
+  });
 }
 
 function confirmBatchTag() {
@@ -831,48 +663,19 @@ function confirmBatchTag() {
     if (flash) flash.innerHTML = '<div class="flash flash-err">No tags provided.</div>';
     return;
   }
-  var csrfEl = form.querySelector('[name="_csrf"]');
-  var csrf = csrfEl ? csrfEl.value : '';
-  var parts = ['_csrf=' + encodeURIComponent(csrf),
-               'scope=' + encodeURIComponent(scope),
-               'op=add',
-               'tags=' + encodeURIComponent(tags)];
+  var params = ['op=add', 'tags=' + encodeURIComponent(tags)];
   if (scope === 'search') {
-    var si = document.getElementById('search-input');
-    var q = si ? si.value : '';
-    var sortEl = document.getElementById('search-sort');
-    var orderEl = document.querySelector('#search-form select[name="order"]');
-    parts.push('q=' + encodeURIComponent(q));
-    parts.push('sort=' + encodeURIComponent(sortEl ? sortEl.value : 'newest'));
-    parts.push('order=' + encodeURIComponent(orderEl ? orderEl.value : 'desc'));
+    params = params.concat(searchScopeParts());
   } else {
-    var checked = document.querySelectorAll('.thumb-checkbox:checked');
-    if (checked.length === 0) {
+    var ids = selectionScopeIds();
+    if (!ids) {
       if (flash) flash.innerHTML = '<div class="flash flash-err">No images selected.</div>';
       return;
     }
-    Array.prototype.forEach.call(checked, function(cb) {
-      parts.push('ids=' + encodeURIComponent(cb.value));
-    });
+    params = params.concat(ids);
   }
-  fetch('/internal/batch-tag', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf},
-    body: parts.join('&')
-  }).then(function(res) {
-    if (res.ok) {
-      document.getElementById('batch-tag-dialog').close();
-      if (scope === 'selection') clearSelection();
-      _pendingGalleryReload = true;
-      refreshJobStatus();
-    } else {
-      res.text().then(function(t) {
-        if (flash) flash.innerHTML = t || '<div class="flash flash-err">Tag operation failed.</div>';
-      });
-    }
-  }).catch(function() {
-    if (flash) flash.innerHTML = '<div class="flash flash-err">Request failed.</div>';
-  });
+  runBatchOp({endpoint: '/internal/batch-tag', scope: scope, params: params,
+              dialogId: 'batch-tag-dialog', flashId: 'batch-tag-flash', failMsg: 'Tag operation failed.'});
 }
 
 function toggleFavFilter() {
@@ -893,89 +696,53 @@ function toggleFavFilter() {
 }
 
 function openBatchInboxDialog(scope) {
-  if (scope === 'selection' && document.querySelectorAll('.thumb-checkbox:checked').length === 0) return;
-  scopeCount(scope, document.getElementById('batch-inbox-count'), document.getElementById('batch-inbox-noun'));
-  document.getElementById('batch-inbox-scope').value = scope;
-  var flash = document.getElementById('batch-inbox-flash');
-  if (flash) flash.innerHTML = '';
-  document.getElementById('batch-inbox-dialog').showModal();
+  openBatchDialog('batch-inbox', scope);
 }
 
 function confirmBatchInbox() {
-  var scope = document.getElementById('batch-inbox-scope').value;
-  var params;
-  if (scope === 'search') {
-    params = searchScopeParts();
-  } else {
-    params = selectionScopeIds();
-    if (!params) {
-      document.getElementById('batch-inbox-flash').innerHTML = '<div class="flash flash-err">No images selected.</div>';
-      return;
-    }
-  }
-  runBatchOp({endpoint: '/internal/batch-inbox', scope: scope, params: params,
-              dialogId: 'batch-inbox-dialog', flashId: 'batch-inbox-flash', failMsg: 'Inbox update failed.'});
+  confirmBatchSimple('batch-inbox', '/internal/batch-inbox', null, 'Inbox update failed.');
 }
 
 function openBatchFavoriteDialog(scope) {
-  if (scope === 'selection' && document.querySelectorAll('.thumb-checkbox:checked').length === 0) return;
-  scopeCount(scope, document.getElementById('batch-fav-count'), document.getElementById('batch-fav-noun'));
-  document.getElementById('batch-fav-scope').value = scope;
-  var flash = document.getElementById('batch-fav-flash');
-  if (flash) flash.innerHTML = '';
-  document.getElementById('batch-fav-dialog').showModal();
+  openBatchDialog('batch-fav', scope);
 }
 
 function confirmBatchFavorite() {
-  var scope = document.getElementById('batch-fav-scope').value;
-  var params;
-  if (scope === 'search') {
-    params = searchScopeParts();
-  } else {
-    params = selectionScopeIds();
-    if (!params) {
-      document.getElementById('batch-fav-flash').innerHTML = '<div class="flash flash-err">No images selected.</div>';
-      return;
-    }
-  }
-  runBatchOp({endpoint: '/internal/batch-favorite', scope: scope, params: params,
-              dialogId: 'batch-fav-dialog', flashId: 'batch-fav-flash', failMsg: 'Favorite update failed.'});
+  confirmBatchSimple('batch-fav', '/internal/batch-favorite', null, 'Favorite update failed.');
 }
 
 function openBatchCollectionDialog(scope) {
-  if (scope === 'selection' && document.querySelectorAll('.thumb-checkbox:checked').length === 0) return;
-  scopeCount(scope, document.getElementById('batch-collection-count'), document.getElementById('batch-collection-noun'));
-  document.getElementById('batch-collection-scope').value = scope;
-  var addRadio = document.querySelector('#batch-collection-dialog input[name="mode"][value="add"]');
-  if (addRadio) addRadio.checked = true;
-  var input = document.getElementById('batch-collection-input');
-  if (input) input.value = '';
-  var sg = document.getElementById('batch-collection-suggest');
-  if (sg) sg.innerHTML = '';
-  var flash = document.getElementById('batch-collection-flash');
-  if (flash) flash.innerHTML = '';
-  document.getElementById('batch-collection-dialog').showModal();
-  if (input) input.focus();
+  openBatchDialog('batch-collection', scope, {
+    radio: '#batch-collection-dialog input[name="mode"][value="add"]',
+    clearIds: ['batch-collection-input', 'batch-collection-suggest'],
+    focusId: 'batch-collection-input'
+  });
 }
 
 function confirmBatchCollection() {
-  var scope = document.getElementById('batch-collection-scope').value;
   var collectionEl = document.getElementById('batch-collection-input');
   var modeEl = document.querySelector('#batch-collection-dialog input[name="mode"]:checked');
-  var mode = modeEl ? modeEl.value : 'add';
-  var params = ['collection=' + encodeURIComponent(collectionEl ? collectionEl.value : ''), 'mode=' + mode];
-  if (scope === 'search') {
-    params = params.concat(searchScopeParts());
-  } else {
-    var ids = selectionScopeIds();
-    if (!ids) {
-      document.getElementById('batch-collection-flash').innerHTML = '<div class="flash flash-err">No images selected.</div>';
-      return;
-    }
-    params = params.concat(ids);
-  }
-  runBatchOp({endpoint: '/internal/batch-collection', scope: scope, params: params,
-              dialogId: 'batch-collection-dialog', flashId: 'batch-collection-flash', failMsg: 'Apply failed.'});
+  confirmBatchSimple('batch-collection', '/internal/batch-collection',
+    ['collection=' + encodeURIComponent(collectionEl ? collectionEl.value : ''),
+     'mode=' + (modeEl ? modeEl.value : 'add')],
+    'Apply failed.');
+}
+
+function openBatchSourceDialog(scope) {
+  openBatchDialog('batch-source', scope, {
+    radio: '#batch-source-dialog input[name="mode"][value="add"]',
+    clearIds: ['batch-source-input', 'batch-source-suggest'],
+    focusId: 'batch-source-input'
+  });
+}
+
+function confirmBatchSource() {
+  var siteEl = document.getElementById('batch-source-input');
+  var modeEl = document.querySelector('#batch-source-dialog input[name="mode"]:checked');
+  confirmBatchSimple('batch-source', '/internal/batch-source',
+    ['site=' + encodeURIComponent(siteEl ? siteEl.value : ''),
+     'mode=' + (modeEl ? modeEl.value : 'add')],
+    'Apply failed.');
 }
 
 function applyRandomSort() {

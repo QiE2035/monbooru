@@ -28,20 +28,18 @@ func toCategoryResponse(c models.TagCategory) categoryResponse {
 // category id is a 404 here, whereas referencing an unknown category
 // for a tag op is a 400.
 func writeCategoryError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, tags.ErrCategoryNotFound):
-		apiError(w, http.StatusNotFound, "not_found", err.Error())
-	case errors.Is(err, tags.ErrCategoryExists):
-		apiError(w, http.StatusConflict, "conflict", err.Error())
-	case errors.Is(err, tags.ErrBuiltinCategory),
-		errors.Is(err, tags.ErrBuiltinCategoryName),
-		errors.Is(err, tags.ErrInvalidCategoryName),
-		errors.Is(err, tags.ErrInvalidCategoryColor),
-		errors.Is(err, tags.ErrReservedCategoryName):
-		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
-	default:
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	if writeSentinelError(w, err, []sentinelStatus{
+		{tags.ErrCategoryNotFound, http.StatusNotFound, "not_found"},
+		{tags.ErrCategoryExists, http.StatusConflict, "conflict"},
+		{tags.ErrBuiltinCategory, http.StatusBadRequest, "invalid_request"},
+		{tags.ErrBuiltinCategoryName, http.StatusBadRequest, "invalid_request"},
+		{tags.ErrInvalidCategoryName, http.StatusBadRequest, "invalid_request"},
+		{tags.ErrInvalidCategoryColor, http.StatusBadRequest, "invalid_request"},
+		{tags.ErrReservedCategoryName, http.StatusBadRequest, "invalid_request"},
+	}) {
+		return
 	}
+	apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 }
 
 // getCategory reads one category row for the post-mutation response.
@@ -87,8 +85,7 @@ func (h *Handler) createCategory(w http.ResponseWriter, r *http.Request) {
 		Name  string `json:"name"`
 		Color string `json:"color"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	color := strings.TrimSpace(body.Color)
@@ -108,11 +105,7 @@ func (h *Handler) createCategory(w http.ResponseWriter, r *http.Request) {
 // colour can't leave a half-applied rename behind. Built-in categories
 // accept a recolor but refuse a rename.
 func (h *Handler) patchCategory(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -120,8 +113,7 @@ func (h *Handler) patchCategory(w http.ResponseWriter, r *http.Request) {
 		Name  *string `json:"name"`
 		Color *string `json:"color"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if body.Name == nil && body.Color == nil {
@@ -157,11 +149,7 @@ func (h *Handler) patchCategory(w http.ResponseWriter, r *http.Request) {
 // general when target_id is omitted) or "delete_all" (drop the tags
 // too). Built-in categories cannot be deleted.
 func (h *Handler) deleteCategory(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}

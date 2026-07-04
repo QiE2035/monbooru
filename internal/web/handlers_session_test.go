@@ -329,3 +329,73 @@ func TestSessionPage_HiddenByCeilingPromptsRaise(t *testing.T) {
 		t.Errorf("expected the raise-ceiling form action, body: %s", body)
 	}
 }
+
+// A pair whose two images share a collection stays out of the session
+// by default (the collection is the relation); opting the collection in
+// through collection_find_relations resurfaces it, and any disabled
+// shared collection keeps the pair hidden even if another is enabled.
+func TestSessionLoadNextPair_SameCollectionHiddenUntilOptIn(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	if cx == nil {
+		t.Fatal("active gallery missing")
+	}
+	a := insertTestImage(t, srv.db())
+	res, err := srv.db().Write.Exec(
+		`INSERT INTO images (canonical_path, file_type, file_size, sha256, ingested_at)
+		 VALUES ('/tmp/album-b.jpg', 'jpg', 2048, 'sha_album_b', datetime('now'))`)
+	if err != nil {
+		t.Fatalf("insert second image: %v", err)
+	}
+	bID, _ := res.LastInsertId()
+	for _, id := range []int64{a, bID} {
+		if _, err := srv.db().Write.Exec(
+			`INSERT INTO image_collections (image_id, name) VALUES (?, 'Album')`, id); err != nil {
+			t.Fatalf("add membership: %v", err)
+		}
+	}
+	queueRow(t, srv.db(), a, bID, 2)
+
+	none := &Ceiling{level: "", cx: cx}
+	pair, visible, raw, err := loadNextPair(cx, "smallest_distance_first", none, 0, 0)
+	if err != nil {
+		t.Fatalf("loadNextPair: %v", err)
+	}
+	if pair != nil || visible != 0 || raw != 0 {
+		t.Fatalf("same-collection pair surfaced by default: pair=%v visible=%d raw=%d", pair, visible, raw)
+	}
+	if c := loadRelationsCounts(srv, cx, none); c.QueueOpen != 0 {
+		t.Fatalf("hub QueueOpen = %d, want 0 while the collection is opted out", c.QueueOpen)
+	}
+
+	// Opt the collection in (lower-cased: the flag is NOCASE like the label).
+	if _, err := srv.db().Write.Exec(
+		`INSERT INTO collection_find_relations (name) VALUES ('album')`); err != nil {
+		t.Fatalf("opt in: %v", err)
+	}
+	pair, visible, raw, err = loadNextPair(cx, "smallest_distance_first", none, 0, 0)
+	if err != nil {
+		t.Fatalf("loadNextPair after opt-in: %v", err)
+	}
+	if !pairHas(pair, a, bID) || visible != 1 || raw != 1 {
+		t.Fatalf("opted-in pair missing: pair=%v visible=%d raw=%d", pair, visible, raw)
+	}
+	if c := loadRelationsCounts(srv, cx, none); c.QueueOpen != 1 {
+		t.Fatalf("hub QueueOpen = %d, want 1 after opt-in", c.QueueOpen)
+	}
+
+	// A second, still-disabled shared collection hides the pair again.
+	for _, id := range []int64{a, bID} {
+		if _, err := srv.db().Write.Exec(
+			`INSERT INTO image_collections (image_id, name) VALUES (?, 'Other')`, id); err != nil {
+			t.Fatalf("add second membership: %v", err)
+		}
+	}
+	pair, visible, raw, err = loadNextPair(cx, "smallest_distance_first", none, 0, 0)
+	if err != nil {
+		t.Fatalf("loadNextPair with mixed collections: %v", err)
+	}
+	if pair != nil || visible != 0 || raw != 0 {
+		t.Fatalf("pair sharing a disabled collection surfaced: pair=%v visible=%d raw=%d", pair, visible, raw)
+	}
+}

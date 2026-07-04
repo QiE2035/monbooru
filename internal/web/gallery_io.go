@@ -43,9 +43,11 @@ func safeArchiveDest(root, rel string) (string, error) {
 
 // galleryExportVersion is the full-export JSON document's `"version"`
 // field. v2 carries manga_metadata + images.page_count + images.series;
-// older imports down to galleryExportMinSupported still round-trip
-// (the new columns default, manga_metadata stays empty).
-const galleryExportVersion = 2
+// v3 adds image_collections, image_sources, image_annotations and
+// images.note; older imports down to galleryExportMinSupported still
+// round-trip (the new columns default, the new tables stay empty or, for
+// image_collections, derive from images.series).
+const galleryExportVersion = 3
 
 // galleryExportMinSupported is the oldest full-export version this
 // server reads; anything below is rejected.
@@ -73,19 +75,22 @@ func decodeGalleryExport(r io.Reader) (galleryExport, error) {
 // galleryExport is the root JSON document. Field order mirrors schema.sql so a
 // human opening the file reads the schema top-down.
 type galleryExport struct {
-	Version         int                 `json:"version"`
-	GalleryName     string              `json:"gallery_name"`
-	GalleryPath     string              `json:"gallery_path"`
-	TagCategories   []tagCategoryRow    `json:"tag_categories"`
-	Tags            []tagRow            `json:"tags"`
-	TagImplications []tagImplicationRow `json:"tag_implications"`
-	Images          []imageRow          `json:"images"`
-	ImagePaths      []imagePathRow      `json:"image_paths"`
-	ImageTags       []imageTagRow       `json:"image_tags"`
-	SDMetadata      []sdMetadataRow     `json:"sd_metadata"`
-	ComfyUIMetadata []comfyMetadataRow  `json:"comfyui_metadata"`
-	MangaMetadata   []mangaMetadataRow  `json:"manga_metadata,omitempty"`
-	SavedSearches   []savedSearchRow    `json:"saved_searches"`
+	Version          int                  `json:"version"`
+	GalleryName      string               `json:"gallery_name"`
+	GalleryPath      string               `json:"gallery_path"`
+	TagCategories    []tagCategoryRow     `json:"tag_categories"`
+	Tags             []tagRow             `json:"tags"`
+	TagImplications  []tagImplicationRow  `json:"tag_implications"`
+	Images           []imageRow           `json:"images"`
+	ImageCollections []imageCollectionRow `json:"image_collections,omitempty"`
+	ImageSources     []imageSourceRow     `json:"image_sources,omitempty"`
+	ImageAnnotations []imageAnnotationRow `json:"image_annotations,omitempty"`
+	ImagePaths       []imagePathRow       `json:"image_paths"`
+	ImageTags        []imageTagRow        `json:"image_tags"`
+	SDMetadata       []sdMetadataRow      `json:"sd_metadata"`
+	ComfyUIMetadata  []comfyMetadataRow   `json:"comfyui_metadata"`
+	MangaMetadata    []mangaMetadataRow   `json:"manga_metadata,omitempty"`
+	SavedSearches    []savedSearchRow     `json:"saved_searches"`
 }
 
 type tagCategoryRow struct {
@@ -126,7 +131,36 @@ type imageRow struct {
 	DurationSeconds sql.NullFloat64 `json:"duration_seconds,omitempty"`
 	Series          string          `json:"collection,omitempty"`
 	SeriesOrder     sql.NullInt64   `json:"collection_order,omitempty"`
+	Note            string          `json:"note,omitempty"`
 	IngestedAt      string          `json:"ingested_at"`
+}
+
+type imageCollectionRow struct {
+	ImageID  int64         `json:"image_id"`
+	Name     string        `json:"name"`
+	Position sql.NullInt64 `json:"position"`
+}
+
+type imageSourceRow struct {
+	ImageID    int64  `json:"image_id"`
+	Site       string `json:"site"`
+	PostID     string `json:"post_id"`
+	URL        string `json:"url"`
+	MD5        string `json:"md5"`
+	Commentary string `json:"commentary"`
+	FetchedAt  string `json:"fetched_at"`
+}
+
+type imageAnnotationRow struct {
+	ImageID   int64  `json:"image_id"`
+	Site      string `json:"site"`
+	PostID    string `json:"post_id"`
+	X         int    `json:"x"`
+	Y         int    `json:"y"`
+	W         int    `json:"w"`
+	H         int    `json:"h"`
+	Body      string `json:"body"`
+	FetchedAt string `json:"fetched_at"`
 }
 
 type imagePathRow struct {
@@ -285,13 +319,34 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 		})
 	streamRows(bw, "images", cx.DB,
 		`SELECT id, sha256, canonical_path, folder_path, file_type, width, height,
-		        file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, ingested_at
+		        file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, note, ingested_at
 		 FROM images ORDER BY id`,
 		func(rows *sql.Rows) (any, error) {
 			var r imageRow
 			err := rows.Scan(&r.ID, &r.SHA256, &r.CanonicalPath, &r.FolderPath, &r.FileType,
 				&r.Width, &r.Height, &r.FileSize, &r.IsMissing, &r.IsFavorited, &r.IsInbox,
-				&r.AutoTaggedAt, &r.SourceType, &r.Origin, &r.Source, &r.URL, &r.PageCount, &r.DurationSeconds, &r.Series, &r.SeriesOrder, &r.IngestedAt)
+				&r.AutoTaggedAt, &r.SourceType, &r.Origin, &r.Source, &r.URL, &r.PageCount, &r.DurationSeconds, &r.Series, &r.SeriesOrder, &r.Note, &r.IngestedAt)
+			return r, err
+		})
+	streamRows(bw, "image_collections", cx.DB,
+		`SELECT image_id, name, position FROM image_collections ORDER BY image_id, name`,
+		func(rows *sql.Rows) (any, error) {
+			var r imageCollectionRow
+			err := rows.Scan(&r.ImageID, &r.Name, &r.Position)
+			return r, err
+		})
+	streamRows(bw, "image_sources", cx.DB,
+		`SELECT image_id, site, post_id, url, md5, commentary, fetched_at FROM image_sources ORDER BY rowid`,
+		func(rows *sql.Rows) (any, error) {
+			var r imageSourceRow
+			err := rows.Scan(&r.ImageID, &r.Site, &r.PostID, &r.URL, &r.MD5, &r.Commentary, &r.FetchedAt)
+			return r, err
+		})
+	streamRows(bw, "image_annotations", cx.DB,
+		`SELECT image_id, site, post_id, x, y, w, h, body, fetched_at FROM image_annotations ORDER BY id`,
+		func(rows *sql.Rows) (any, error) {
+			var r imageAnnotationRow
+			err := rows.Scan(&r.ImageID, &r.Site, &r.PostID, &r.X, &r.Y, &r.W, &r.H, &r.Body, &r.FetchedAt)
 			return r, err
 		})
 	streamRows(bw, "image_paths", cx.DB,
@@ -653,10 +708,11 @@ func sanitizeImportedCategoryColors(database *db.DB) error {
 	return nil
 }
 
-// replaceDBFromJSON decodes the uploaded JSON document, removes the current
-// DB, creates a fresh one, and loads every table's rows in a single write
-// transaction. Keeps primary keys from the export so image_tags still line up.
-// Also rebases every canonical_path / image_paths.path onto the target
+// replaceDBFromJSON decodes the uploaded JSON document, builds a fresh DB
+// from it at a temp path, and only once the load fully succeeded swaps it
+// over the target - so a failed import leaves the target gallery untouched.
+// Keeps primary keys from the export so image_tags still line up. Also
+// rebases every canonical_path / image_paths.path onto the target
 // gallery_path so a cross-root import doesn't dangle every link.
 func replaceDBFromJSON(srcPath, dbPath, thumbsPath, galleryPath string) error {
 	f, err := os.Open(srcPath)
@@ -669,24 +725,51 @@ func replaceDBFromJSON(srcPath, dbPath, thumbsPath, galleryPath string) error {
 		return err
 	}
 
+	tmp, err := os.CreateTemp(filepath.Dir(dbPath), "import-*.db")
+	if err != nil {
+		return fmt.Errorf("create temp db: %w", err)
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer func() {
+		for _, p := range []string{tmpPath, tmpPath + "-wal", tmpPath + "-shm"} {
+			_ = os.Remove(p)
+		}
+	}()
+	database, err := db.Open(tmpPath)
+	if err != nil {
+		return fmt.Errorf("open new db: %w", err)
+	}
+	loadErr := func() error {
+		if err := db.Bootstrap(database); err != nil {
+			return fmt.Errorf("bootstrap: %w", err)
+		}
+		if err := loadExportIntoDB(database, exp); err != nil {
+			return err
+		}
+		return rebaseImagePaths(database, galleryPath)
+	}()
+	if loadErr == nil {
+		// Fold the WAL into the main file so the rename below moves every
+		// committed page.
+		if _, err := database.Write.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+			loadErr = fmt.Errorf("checkpoint: %w", err)
+		}
+	}
+	if err := database.Close(); err != nil && loadErr == nil {
+		loadErr = fmt.Errorf("close new db: %w", err)
+	}
+	if loadErr != nil {
+		return loadErr
+	}
+
 	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", p, err)
 		}
 	}
-	database, err := db.Open(dbPath)
-	if err != nil {
-		return fmt.Errorf("open new db: %w", err)
-	}
-	defer func() { _ = database.Close() }()
-	if err := db.Bootstrap(database); err != nil {
-		return fmt.Errorf("bootstrap: %w", err)
-	}
-	if err := loadExportIntoDB(database, exp); err != nil {
-		return err
-	}
-	if err := rebaseImagePaths(database, galleryPath); err != nil {
-		return err
+	if err := os.Rename(tmpPath, dbPath); err != nil {
+		return fmt.Errorf("install db: %w", err)
 	}
 
 	if err := os.RemoveAll(thumbsPath); err != nil {
@@ -1076,6 +1159,9 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		`DELETE FROM image_tags`,
 		`DELETE FROM tag_implications`,
 		`DELETE FROM image_paths`,
+		`DELETE FROM image_collections`,
+		`DELETE FROM image_sources`,
+		`DELETE FROM image_annotations`,
 		`DELETE FROM sd_metadata`,
 		`DELETE FROM comfyui_metadata`,
 		`DELETE FROM manga_metadata`,
@@ -1124,21 +1210,49 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 	for _, r := range exp.Images {
 		if _, err := tx.Exec(
 			`INSERT INTO images (id, sha256, canonical_path, folder_path, file_type, width, height,
-			                    file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, ingested_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                    file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, note, ingested_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.SHA256, r.CanonicalPath, r.FolderPath, r.FileType, nullInt64Arg(r.Width), nullInt64Arg(r.Height),
-			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, nullStringArg(r.AutoTaggedAt), r.SourceType, r.Origin, r.Source, r.URL, nullInt64Arg(r.PageCount), nullFloat64Arg(r.DurationSeconds), r.Series, nullInt64Arg(r.SeriesOrder), r.IngestedAt,
+			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, nullStringArg(r.AutoTaggedAt), r.SourceType, r.Origin, r.Source, r.URL, nullInt64Arg(r.PageCount), nullFloat64Arg(r.DurationSeconds), r.Series, nullInt64Arg(r.SeriesOrder), r.Note, r.IngestedAt,
 		); err != nil {
 			return fmt.Errorf("insert image %d: %w", r.ID, err)
 		}
 	}
-	// Seed image_collections from the imported home labels; exports predate
-	// the join table so the membership rows derive from images.series.
-	if _, err := tx.Exec(
-		`INSERT OR IGNORE INTO image_collections (image_id, name, position)
-		 SELECT id, series, series_order FROM images WHERE series != ''`,
-	); err != nil {
-		return fmt.Errorf("seed image_collections: %w", err)
+	if exp.Version < 3 {
+		// Pre-v3 exports carry no image_collections table; the memberships
+		// derive from each image's home label mirror.
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO image_collections (image_id, name, position)
+			 SELECT id, series, series_order FROM images WHERE series != ''`,
+		); err != nil {
+			return fmt.Errorf("seed image_collections: %w", err)
+		}
+	}
+	for _, r := range exp.ImageCollections {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO image_collections (image_id, name, position) VALUES (?, ?, ?)`,
+			r.ImageID, r.Name, nullInt64Arg(r.Position),
+		); err != nil {
+			return fmt.Errorf("insert image_collection (%d,%q): %w", r.ImageID, r.Name, err)
+		}
+	}
+	for _, r := range exp.ImageSources {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO image_sources (image_id, site, post_id, url, md5, commentary, fetched_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.ImageID, r.Site, r.PostID, r.URL, r.MD5, r.Commentary, r.FetchedAt,
+		); err != nil {
+			return fmt.Errorf("insert image_source (%d,%q): %w", r.ImageID, r.Site, err)
+		}
+	}
+	for _, r := range exp.ImageAnnotations {
+		if _, err := tx.Exec(
+			`INSERT INTO image_annotations (image_id, site, post_id, x, y, w, h, body, fetched_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ImageID, r.Site, r.PostID, r.X, r.Y, r.W, r.H, r.Body, r.FetchedAt,
+		); err != nil {
+			return fmt.Errorf("insert image_annotation (image %d): %w", r.ImageID, err)
+		}
 	}
 	for _, r := range exp.ImagePaths {
 		if _, err := tx.Exec(

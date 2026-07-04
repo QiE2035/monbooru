@@ -8,12 +8,10 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +27,30 @@ import (
 	"github.com/leqwin/monbooru/internal/tagger"
 	webFS "github.com/leqwin/monbooru/web"
 )
+
+// groupOrdered buckets items by key in first-appearance order. skip drops
+// an item entirely (nil keeps all); newGroup builds a bucket from its first
+// item; add appends the item to its bucket.
+func groupOrdered[T, G any](items []T, skip func(T) bool, key func(T) string, newGroup func(T) *G, add func(*G, T)) []G {
+	order := []string{}
+	groups := map[string]*G{}
+	for _, t := range items {
+		if skip != nil && skip(t) {
+			continue
+		}
+		k := key(t)
+		if _, ok := groups[k]; !ok {
+			order = append(order, k)
+			groups[k] = newGroup(t)
+		}
+		add(groups[k], t)
+	}
+	out := make([]G, 0, len(order))
+	for _, k := range order {
+		out = append(out, *groups[k])
+	}
+	return out
+}
 
 // tagGroup is used by the groupByCategory template function.
 type tagGroup struct {
@@ -85,6 +107,23 @@ type Server struct {
 	schedLastRun  time.Time
 	schedLastDur  time.Duration
 	schedLastInfo string // "OK" or a short failure summary; empty when never run
+
+	// monloaderStatusMu guards the cached footer-light probe result. base()
+	// seeds every page's initial render from it so the light shows its last
+	// known state at once instead of flickering back to "checking" (and
+	// re-probing monloader) on every navigation; the poll refreshes it at
+	// most once per monloaderStatusTTL.
+	monloaderStatusMu  sync.Mutex
+	monloaderConn      string
+	monloaderVersion   string
+	monloaderCheckedAt time.Time
+
+	// fetchStatusMu guards fetchStatus, the last-known outcome of each image's
+	// source metadata fetch. monloader runs the fetch asynchronously and calls
+	// the enrich endpoint back; the detail page polls for the outcome so the
+	// tags show up (or the failure surfaces) without a manual reload.
+	fetchStatusMu sync.Mutex
+	fetchStatus   map[string]fetchStatusEntry
 }
 
 // NewServer creates the HTTP server with all routes wired. One *db.DB is
@@ -93,315 +132,7 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 	sessions := NewSessionStore()
 
 	// Parse all templates
-	tmpl, err := template.New("").Funcs(template.FuncMap{
-		"seq": func(start, end int) []int {
-			r := make([]int, 0, end-start+1)
-			for i := start; i <= end; i++ {
-				r = append(r, i)
-			}
-			return r
-		},
-		"add": func(a, b int) int { return a + b },
-		// urlQ percent-encodes a query value with uppercase hex pairs so
-		// the links the sidebar emits match the case the browser writes
-		// back into the address bar (browsers normalize to uppercase per
-		// RFC 3986). Without this the user's autocomplete history grows
-		// two entries per logical query (one with lowercase hex, one
-		// uppercase). url.QueryEscape emits lowercase; we re-case the
-		// %XX sequences without touching the surrounding letters.
-		//
-		// Returns template.URL so html/template's href-context URL
-		// autoescaper leaves the value alone. As a plain string it would
-		// re-percent-encode every `%`, double-encoding the link and
-		// turning `folder:"path"` into a literal query with no matches.
-		"urlQ": func(s string) template.URL {
-			return template.URL(uppercasePercentEscapes(url.QueryEscape(s)))
-		},
-		// qval backslash-escapes a label so it survives interpolation
-		// into a quoted `key:"<value>"` search term (collection / source
-		// links). The parser's unescapeQuoted reverses it, so a label
-		// containing a double-quote round-trips instead of truncating the
-		// query at the inner quote.
-		"qval": search.QuoteValue,
-		"sub":  func(a, b int) int { return a - b },
-		"dict": func(pairs ...any) map[string]any {
-			m := make(map[string]any, len(pairs)/2)
-			for i := 0; i+1 < len(pairs); i += 2 {
-				k, _ := pairs[i].(string)
-				m[k] = pairs[i+1]
-			}
-			return m
-		},
-		"groupByCategory": func(tagList []models.Tag) []tagGroup {
-			order := []string{}
-			groups := map[string]*tagGroup{}
-			for _, t := range tagList {
-				key := t.CategoryName
-				if _, ok := groups[key]; !ok {
-					order = append(order, key)
-					groups[key] = &tagGroup{Name: t.CategoryName, Color: t.CategoryColor}
-				}
-				groups[key].Tags = append(groups[key].Tags, t)
-			}
-			out := make([]tagGroup, 0, len(order))
-			for _, k := range order {
-				out = append(out, *groups[k])
-			}
-			return out
-		},
-		"deref": func(p *int) int {
-			if p == nil {
-				return 0
-			}
-			return *p
-		},
-		"deref64": func(p *int64) int64 {
-			if p == nil {
-				return 0
-			}
-			return *p
-		},
-		"deref64f": func(p *float64) float64 {
-			if p == nil {
-				return 0
-			}
-			return *p
-		},
-		"phashHex": func(p *int64) string {
-			if p == nil {
-				return ""
-			}
-			return fmt.Sprintf("%016x", uint64(*p))
-		},
-		"groupByImageSource": func(tagList []models.ImageTag) []imageTagSourceGroup {
-			// Manual tags split by source: plain UI adds (empty tagger_name)
-			// land in the "user" bucket; API-supplied sources each get their
-			// own "Tags added by <source>" subsection. Auto rows keep the
-			// existing per-tagger grouping with the "auto-tagger" suffix.
-			// is_implied rows skip every source bucket - they render
-			// together with aliases inside the collapsed wrapper at the
-			// bottom of the under-image list.
-			var userTags []models.ImageTag
-			byUserSource := map[string]*imageTagSourceGroup{}
-			var userSourceOrder []string
-			byTagger := map[string]*imageTagSourceGroup{}
-			var order []string
-			for _, t := range tagList {
-				if t.IsImplied {
-					continue
-				}
-				if !t.IsAuto {
-					if t.TaggerName == "" {
-						userTags = append(userTags, t)
-						continue
-					}
-					key := t.TaggerName
-					if _, ok := byUserSource[key]; !ok {
-						userSourceOrder = append(userSourceOrder, key)
-						byUserSource[key] = &imageTagSourceGroup{
-							Source: key,
-							Title:  "Tags added by " + key,
-						}
-					}
-					byUserSource[key].Tags = append(byUserSource[key].Tags, t)
-					continue
-				}
-				key := t.TaggerName
-				if key == "" {
-					key = "auto-tagger"
-				}
-				if _, ok := byTagger[key]; !ok {
-					order = append(order, key)
-					byTagger[key] = &imageTagSourceGroup{
-						Source: key,
-						Title:  "Tags added by the " + key + " auto-tagger",
-					}
-				}
-				byTagger[key].Tags = append(byTagger[key].Tags, t)
-			}
-			out := []imageTagSourceGroup{}
-			if len(userTags) > 0 {
-				out = append(out, imageTagSourceGroup{
-					Source: "user",
-					Title:  "Tags added by the user",
-					Tags:   userTags,
-				})
-			}
-			for _, k := range userSourceOrder {
-				out = append(out, *byUserSource[k])
-			}
-			for _, k := range order {
-				g := byTagger[k]
-				// Auto-tagger subgroups read more naturally ordered by the
-				// tagger's own confidence: the tags the model was most sure
-				// of sit at the top. User tags above keep the existing
-				// alphabetical-by-category-then-usage order.
-				sort.SliceStable(g.Tags, func(i, j int) bool {
-					ci, cj := 0.0, 0.0
-					if g.Tags[i].Confidence != nil {
-						ci = *g.Tags[i].Confidence
-					}
-					if g.Tags[j].Confidence != nil {
-						cj = *g.Tags[j].Confidence
-					}
-					return ci > cj
-				})
-				out = append(out, *g)
-			}
-			return out
-		},
-		"impliedFromImageTags": func(tagList []models.ImageTag) []models.ImageTag {
-			var out []models.ImageTag
-			for _, t := range tagList {
-				if t.IsImplied {
-					out = append(out, t)
-				}
-			}
-			return out
-		},
-		"autoConfPct": func(c *float64) string {
-			if c == nil {
-				return ""
-			}
-			return strconv.Itoa(int(*c * 100))
-		},
-		"groupByImageTags": func(tagList []models.ImageTag) []imageTagGroup {
-			// Sidebar consumer: skip implied rows. The user asked for them
-			// to render only in the under-image list (less visible there),
-			// not in the per-image sidebar where every tag would compete
-			// for the same column.
-			order := []string{}
-			groups := map[string]*imageTagGroup{}
-			for _, t := range tagList {
-				if t.IsImplied {
-					continue
-				}
-				key := t.Category
-				if _, ok := groups[key]; !ok {
-					order = append(order, key)
-					groups[key] = &imageTagGroup{Name: t.Category, Color: t.Color}
-				}
-				groups[key].Tags = append(groups[key].Tags, t)
-			}
-			// Lift rating to the top so the effective rating sits where
-			// the eye lands first.
-			for i, k := range order {
-				if k == "rating" && i > 0 {
-					order = append([]string{"rating"}, append(order[:i], order[i+1:]...)...)
-					break
-				}
-			}
-			out := make([]imageTagGroup, 0, len(order))
-			for _, k := range order {
-				out = append(out, *groups[k])
-			}
-			return out
-		},
-		"cancelTitle": func(jobType string) string {
-			// Tooltip for the job-status × button. Only the job types that
-			// observe ctx.Done() in their worker loop appear here.
-			switch jobType {
-			case "autotag":
-				return "Stop auto-tagging"
-			case "sync":
-				return "Stop syncing"
-			case "delete":
-				return "Stop deleting"
-			case "re-extract":
-				return "Stop re-extraction"
-			case "rebuild-thumbs":
-				return "Stop thumbnail rebuild"
-			case "prune-thumbs":
-				return "Stop thumbnail prune"
-			case "phash":
-				return "Stop phash backfill"
-			case "relations":
-				return "Stop find-pairs"
-			case "move":
-				return "Stop moving"
-			case "tag":
-				return "Stop tagging"
-			}
-			return "Stop"
-		},
-		"humanBytes": humanBytesFmt,
-		"browseSortLabel": func(s string) string {
-			switch s {
-			case "recent":
-				return "Recent"
-			case "size":
-				return "Size"
-			case "original_added":
-				return "Original added"
-			case "length":
-				return "Length"
-			case "newest_member":
-				return "Newest member"
-			}
-			return s
-		},
-		"isLongValue": func(s string) bool {
-			return len(s) > 200 || strings.ContainsAny(s, "\n\r")
-		},
-		"schedDuration": func(d time.Duration) string {
-			// Round to the nearest second for anything over 1s; keep
-			// millisecond precision below so sub-second scheduler passes
-			// (the typical case on an idle gallery) still render usefully.
-			if d >= time.Second {
-				return d.Round(time.Second).String()
-			}
-			return d.Round(time.Millisecond).String()
-		},
-		"minusDuration": func(a, b time.Duration) time.Duration {
-			return a - b
-		},
-		"int64Duration": func(d time.Duration) int64 {
-			return int64(d)
-		},
-		"plural": func(n int, one, many string) string {
-			if n == 1 {
-				return one
-			}
-			return many
-		},
-		"comfyRefTarget": func(s string) string {
-			// Displayed ComfyUI references start with "→ " followed by the
-			// referenced node's key. Strip the arrow+space so the template
-			// can build `href="#comfy-node-<key>"` for in-page navigation.
-			return strings.TrimPrefix(s, "→ ")
-		},
-		"hasPrefix": func(s, prefix string) bool {
-			return strings.HasPrefix(s, prefix)
-		},
-		"truncate": func(s string, n int) string {
-			if len(s) <= n {
-				return s
-			}
-			r := []rune(s)
-			if len(r) <= n {
-				return s
-			}
-			return string(r[:n])
-		},
-		// hasFavFilter reports whether the search query contains a `fav:true`
-		// token, regardless of position or surrounding tags. Drives the gallery
-		// header's ♥ toggle's active class so the button doesn't go inactive
-		// the moment the user combines `fav:true` with any other tag.
-		"hasFavFilter": func(query string) bool {
-			for _, tok := range strings.Fields(query) {
-				if strings.EqualFold(tok, "fav:true") {
-					return true
-				}
-			}
-			return false
-		},
-		"pageLoadMs": func(t time.Time) int64 {
-			if t.IsZero() {
-				return 0
-			}
-			return time.Since(t).Milliseconds()
-		},
-	}).ParseFS(webFS.FS, "templates/*.html", "templates/partials/*.html")
+	tmpl, err := template.New("").Funcs(templateFuncs()).ParseFS(webFS.FS, "templates/*.html", "templates/partials/*.html")
 	if err != nil {
 		return nil, err
 	}
@@ -425,6 +156,7 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 		schedReload: make(chan struct{}, 1),
 		contexts:    map[string]*galleryCtx{},
 		activeName:  cfg.DefaultGallery,
+		fetchStatus: map[string]fetchStatusEntry{},
 	}
 
 	applyRelationsConfig(cfg.Relations)
@@ -576,6 +308,11 @@ func contextMiddlewareBypass(path string) bool {
 		// holding the read lock across the outbound call would stall a switch.
 		return true
 	}
+	if strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/sources/fetch") {
+		// Same reason: the enqueue is an outbound monloader call. The handler
+		// snapshots the active gallery name under its own short lock.
+		return true
+	}
 	return strings.HasPrefix(path, "/static/") ||
 		strings.HasPrefix(path, "/thumbnails/") ||
 		strings.HasPrefix(path, "/settings/galleries")
@@ -650,7 +387,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /images/{id}/inbox", s.toggleInbox)
 	mux.HandleFunc("DELETE /images/{id}", s.deleteImage)
 	mux.HandleFunc("POST /images/{id}/canonical-path", s.promoteCanonical)
-	mux.HandleFunc("POST /images/{id}/external", s.updateExternal)
+	mux.HandleFunc("POST /images/{id}/sources/set", s.setSource)
+	mux.HandleFunc("POST /images/{id}/sources/remove", s.removeSource)
+	mux.HandleFunc("POST /images/{id}/sources/fetch", s.fetchSource)
+	mux.HandleFunc("POST /images/{id}/note", s.setNote)
+	mux.HandleFunc("POST /images/{id}/commentary/set", s.setSourceCommentary)
+	mux.HandleFunc("POST /images/{id}/commentary/remove", s.removeSourceCommentary)
 	mux.HandleFunc("POST /images/{id}/collections/set", s.setCollection)
 	mux.HandleFunc("POST /images/{id}/collections/remove", s.removeCollection)
 	mux.HandleFunc("POST /images/{id}/move", s.moveImage)
@@ -674,6 +416,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /collections", s.collectionsHandler)
 	mux.HandleFunc("POST /collections/rename", s.renameCollectionPost)
 	mux.HandleFunc("POST /collections/dissolve", s.dissolveCollectionPost)
+	mux.HandleFunc("POST /collections/find-relations", s.collectionFindRelationsPost)
+	mux.HandleFunc("GET /collections/order", s.collectionOrderDialog)
+	mux.HandleFunc("POST /collections/order", s.reorderCollectionPost)
 
 	mux.HandleFunc("GET /categories", s.categoriesHandler)
 
@@ -728,6 +473,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /relations/browse-groups/merge", s.mergeGroupsPost)
 	mux.HandleFunc("POST /relations/browse-groups/dissolve", s.dissolveGroupsPost)
 	mux.HandleFunc("GET /internal/images/{id}/related-entries", s.relatedEntriesGet)
+	mux.HandleFunc("GET /internal/images/{id}/fetch-status", s.fetchStatusHandler)
 	mux.HandleFunc("GET /images/{id}/relations", s.imageRelationsPage)
 	mux.HandleFunc("POST /settings/maintenance/vacuum-db", s.vacuumDBPost)
 	mux.HandleFunc("POST /settings/maintenance/free-memory", s.freeMemoryPost)
@@ -759,6 +505,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /internal/batch-inbox", s.batchInbox)
 	mux.HandleFunc("POST /internal/batch-favorite", s.batchFavorite)
 	mux.HandleFunc("POST /internal/batch-collection", s.batchCollection)
+	mux.HandleFunc("POST /internal/batch-source", s.batchSource)
+	mux.HandleFunc("POST /internal/batch-source-fetch", s.batchSourceFetch)
 	mux.HandleFunc("POST /internal/delete-search", s.deleteSearchPost)
 	mux.HandleFunc("POST /tags/delete-search", s.deleteTagsSearchPost)
 	mux.HandleFunc("POST /internal/delete-folder", s.deleteFolderPost)
@@ -821,6 +569,7 @@ func (s *Server) apiResolver(name string) (api.Gallery, bool) {
 		TagSvc:           cx.TagSvc,
 		RelationsSvc:     cx.RelationsSvc,
 		InvalidateCaches: cx.InvalidateCaches,
+		RecordFetch:      func(id int64, state, msg string) { s.recordFetchStatus(cx.Name, id, state, msg) },
 		VisibleCount:     cx.VisibleCount,
 		TagCount:         cx.TagCount,
 	}, true
@@ -915,9 +664,9 @@ type baseData struct {
 	// they only diverge on their unset defaults.
 	BooruLogo    string
 	BooruFavicon string
-	// MonloaderURL is the browser-facing monloader base for the top-bar
-	// "Go to monloader" link, trailing slash trimmed; falls back to the
-	// api url when unset, so only both being unset hides the link.
+	// MonloaderURL is the browser-facing monloader base for the footer
+	// "connected to monloader" link, trailing slash trimmed; falls back to
+	// the api url when unset, so only both being unset drops the link.
 	MonloaderURL  string
 	ActiveGallery string
 	Galleries     []config.Gallery
@@ -1020,6 +769,7 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 	if active == "" {
 		active = "explicit"
 	}
+	conn, connVer := s.monloaderStatusSeed()
 	return baseData{
 		Title:            title,
 		ActiveNav:        nav,
@@ -1035,6 +785,8 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 		BooruFavicon:     s.booruFaviconURL(),
 		MonloaderURL:     s.monloaderWebBase(),
 		MonloaderPaired:  s.pairedWith("monloader"),
+		MonloaderConn:    conn,
+		MonloaderVersion: connVer,
 		ActiveGallery:    s.activeName,
 		Galleries:        galleries,
 		VisibleCount:     visible,
@@ -1168,8 +920,8 @@ func (s *Server) booruFaviconURL() string {
 	return "/static/favicon.png"
 }
 
-// monloaderWebBase is the browser-facing monloader base for the top-bar
-// "Go to monloader" link: the configured web url when set, else the api url.
+// monloaderWebBase is the browser-facing monloader base for the footer
+// "connected to monloader" link: the configured web url when set, else the api url.
 func (s *Server) monloaderWebBase() string {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()

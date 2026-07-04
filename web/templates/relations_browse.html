@@ -1,3 +1,16 @@
+{{/* relation_remove_form is one /relations/remove POST: confirm text, ok
+     label, button label, the type-specific hidden fields (dict), and an
+     optional reload-on-success for the destructive variants. */}}
+{{define "relation_remove_form"}}
+        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
+              hx-confirm="{{.Confirm}}"
+              data-confirm-ok="{{.OK}}"
+              {{if .Reload}}hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" {{end}}style="display:inline">
+          <input type="hidden" name="_csrf" value="{{.CSRF}}">
+          {{range $k, $v := .Fields}}<input type="hidden" name="{{$k}}" value="{{$v}}">
+          {{end}}<button type="submit" class="btn-link-accent">[{{.Label}}]</button>
+        </form>
+{{end}}
 {{define "relations_browse.html"}}
 {{template "layout_head" .}}
 <div id="sidebar-inner"></div>
@@ -64,26 +77,9 @@
           <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
           <button type="submit" class="btn-link-accent">[copy tags]</button>
         </form>
-        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
-              hx-confirm="Dissolve this same-image group?"
-              data-confirm-ok="Dissolve"
-              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" style="display:inline">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="dissolve-dup">
-          <input type="hidden" name="group_id" value="{{.GroupID}}">
-          <button type="submit" class="btn-link-accent">[dissolve]</button>
-        </form>
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Dissolve this same-image group?" "OK" "Dissolve" "Label" "dissolve" "Reload" true "Fields" (dict "type" "dissolve-dup" "group_id" .GroupID)}}
         {{if eq (len .Members) 2}}
-        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
-              hx-confirm="Dissolve this group and queue the pair for the session?"
-              data-confirm-ok="Review again"
-              style="display:inline">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="review-again">
-          <input type="hidden" name="kind" value="duplicate">
-          <input type="hidden" name="group_id" value="{{.GroupID}}">
-          <button type="submit" class="btn-link-accent">[review again]</button>
-        </form>
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Dissolve this group and queue the pair for the session?" "OK" "Review again" "Label" "review again" "Fields" (dict "type" "review-again" "kind" "duplicate" "group_id" .GroupID)}}
         {{end}}
       {{else if eq .Kind "alternate"}}
         <label class="merge-select" title="Select this group for merging">
@@ -91,26 +87,9 @@
         </label>
         <strong>Alternate group #{{.GroupID}}</strong>
         ({{len .Members}} member(s))
-        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
-              hx-confirm="Dissolve this variant group?"
-              data-confirm-ok="Dissolve"
-              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" style="display:inline">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="dissolve-alt">
-          <input type="hidden" name="group_id" value="{{.GroupID}}">
-          <button type="submit" class="btn-link-accent">[dissolve]</button>
-        </form>
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Dissolve this variant group?" "OK" "Dissolve" "Label" "dissolve" "Reload" true "Fields" (dict "type" "dissolve-alt" "group_id" .GroupID)}}
         {{if eq (len .Members) 2}}
-        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
-              hx-confirm="Dissolve this group and queue the pair for the session?"
-              data-confirm-ok="Review again"
-              style="display:inline">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="review-again">
-          <input type="hidden" name="kind" value="alternate">
-          <input type="hidden" name="group_id" value="{{.GroupID}}">
-          <button type="submit" class="btn-link-accent">[review again]</button>
-        </form>
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Dissolve this group and queue the pair for the session?" "OK" "Review again" "Label" "review again" "Fields" (dict "type" "review-again" "kind" "alternate" "group_id" .GroupID)}}
         {{end}}
       {{else if eq .Kind "version"}}
         <label class="merge-select" title="Select this chain for removal">
@@ -118,27 +97,9 @@
         </label>
         <strong>Version chain #{{index .Members 0}}</strong>
         ({{len .Members}} image(s), oldest #{{index .Members 0}} → newest #{{index .Members (sub (len .Members) 1)}})
-        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
-              hx-confirm="Dissolve this version chain? Every edge between the {{len .Members}} images is dropped."
-              data-confirm-ok="Dissolve"
-              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" style="display:inline">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="dissolve-version">
-          <input type="hidden" name="root_id" value="{{index .Members 0}}">
-          <button type="submit" class="btn-link-accent">[dissolve]</button>
-        </form>
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (printf "Dissolve this version chain? Every edge between the %d images is dropped." (len .Members)) "OK" "Dissolve" "Label" "dissolve" "Reload" true "Fields" (dict "type" "dissolve-version" "root_id" (index .Members 0))}}
         {{if eq (len .Members) 2}}
-        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
-              hx-confirm="Unlink this revision edge and queue the pair for the session?"
-              data-confirm-ok="Review again"
-              style="display:inline">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="review-again">
-          <input type="hidden" name="kind" value="version">
-          <input type="hidden" name="a" value="{{index .Members 0}}">
-          <input type="hidden" name="b" value="{{index .Members 1}}">
-          <button type="submit" class="btn-link-accent">[review again]</button>
-        </form>
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Unlink this revision edge and queue the pair for the session?" "OK" "Review again" "Label" "review again" "Fields" (dict "type" "review-again" "kind" "version" "a" (index .Members 0) "b" (index .Members 1))}}
         {{end}}
       {{else if eq .Kind "derivative"}}
         <label class="merge-select" title="Select this tree for removal">
@@ -146,27 +107,9 @@
         </label>
         <strong>Derivative tree</strong>
         ({{len .Members}} image(s), source #{{index .Members 0}})
-        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
-              hx-confirm="Dissolve this derivative tree? Every edge between the {{len .Members}} images is dropped."
-              data-confirm-ok="Dissolve"
-              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" style="display:inline">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="dissolve-derivative">
-          <input type="hidden" name="root_id" value="{{index .Members 0}}">
-          <button type="submit" class="btn-link-accent">[dissolve]</button>
-        </form>
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (printf "Dissolve this derivative tree? Every edge between the %d images is dropped." (len .Members)) "OK" "Dissolve" "Label" "dissolve" "Reload" true "Fields" (dict "type" "dissolve-derivative" "root_id" (index .Members 0))}}
         {{if eq (len .Members) 2}}
-        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
-              hx-confirm="Unlink this derivative edge and queue the pair for the session?"
-              data-confirm-ok="Review again"
-              style="display:inline">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="review-again">
-          <input type="hidden" name="kind" value="derivative">
-          <input type="hidden" name="a" value="{{index .Members 0}}">
-          <input type="hidden" name="b" value="{{index .Members 1}}">
-          <button type="submit" class="btn-link-accent">[review again]</button>
-        </form>
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Unlink this derivative edge and queue the pair for the session?" "OK" "Review again" "Label" "review again" "Fields" (dict "type" "review-again" "kind" "derivative" "a" (index .Members 0) "b" (index .Members 1))}}
         {{end}}
       {{else if eq .Kind "not_related"}}
         <label class="merge-select" title="Select this pair for removal">
@@ -174,27 +117,8 @@
         </label>
         <strong>Not related</strong>
         (#{{index .Members 0}} ↔ #{{index .Members 1}})
-        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
-              hx-confirm="Unlink this not-related pair? It can resurface in find-pairs."
-              data-confirm-ok="Unlink"
-              hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" style="display:inline">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="not_related">
-          <input type="hidden" name="a" value="{{index .Members 0}}">
-          <input type="hidden" name="b" value="{{index .Members 1}}">
-          <button type="submit" class="btn-link-accent">[unlink]</button>
-        </form>
-        <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
-              hx-confirm="Unlink this pair and queue it back into the session?"
-              data-confirm-ok="Review again"
-              style="display:inline">
-          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <input type="hidden" name="type" value="review-again">
-          <input type="hidden" name="kind" value="not_related">
-          <input type="hidden" name="a" value="{{index .Members 0}}">
-          <input type="hidden" name="b" value="{{index .Members 1}}">
-          <button type="submit" class="btn-link-accent">[review again]</button>
-        </form>
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Unlink this not-related pair? It can resurface in find-pairs." "OK" "Unlink" "Label" "unlink" "Reload" true "Fields" (dict "type" "not_related" "a" (index .Members 0) "b" (index .Members 1))}}
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Unlink this pair and queue it back into the session?" "OK" "Review again" "Label" "review again" "Fields" (dict "type" "review-again" "kind" "not_related" "a" (index .Members 0) "b" (index .Members 1))}}
       {{end}}
       {{if .CreatedAt}}
       <div class="relations-card-meta field-hint">declared <time>{{.CreatedAt}}</time></div>
@@ -330,26 +254,15 @@
     if (kind === 'version' || kind === 'derivative') field = 'root_id';
     else if (kind === 'not_related') field = 'pair';
     var params = new URLSearchParams();
-    params.append('_csrf', {{.CSRFToken}});
     values.forEach(function(v) { params.append(field, v); });
-    fetch('/relations/browse-groups/dissolve?kind=' + encodeURIComponent(kind), {
-      method: 'POST',
-      headers: {
-        'HX-Request': 'true',
-        'X-CSRF-Token': {{.CSRFToken}},
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: params.toString(),
-    }).then(function(resp) {
-      if (resp.ok) {
+    postForm('/relations/browse-groups/dissolve?kind=' + encodeURIComponent(kind), params, {
+      hx: true,
+      flashId: 'flash-relations',
+      catchMsg: null,
+      onOK: function(resp) {
         var redirect = resp.headers.get('HX-Redirect');
         window.location.href = redirect || ('/relations/browse?kind=' + kind);
-      } else {
-        return resp.text().then(function(txt) {
-          var flash = document.getElementById('flash-relations');
-          if (flash) flash.innerHTML = txt;
-        });
-      }
+      },
     });
   }
   // Merge-selected: only present on dup/alt tabs. Dup needs the
@@ -414,29 +327,18 @@
     // the group_id fields; a FormData body lands as multipart and
     // Go's ParseForm leaves r.Form empty for non-urlencoded posts.
     var params = new URLSearchParams();
-    params.append('_csrf', {{.CSRFToken}});
     ids.forEach(function(id) { params.append('group_id', id); });
     if (keepOriginalFrom !== null && keepOriginalFrom !== '') {
       params.append('keep_original_from', keepOriginalFrom);
     }
-    fetch(url, {
-      method: 'POST',
-      headers: {
-        'HX-Request': 'true',
-        'X-CSRF-Token': {{.CSRFToken}},
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: params.toString(),
-    }).then(function(resp) {
-      if (resp.ok) {
+    postForm(url, params, {
+      hx: true,
+      flashId: 'flash-relations',
+      catchMsg: null,
+      onOK: function(resp) {
         var redirect = resp.headers.get('HX-Redirect');
         window.location.href = redirect || ('/relations/browse?kind=' + (url.indexOf('kind=dup') > -1 ? 'duplicate' : 'alternate'));
-      } else {
-        return resp.text().then(function(txt) {
-          var flash = document.getElementById('flash-relations');
-          if (flash) flash.innerHTML = txt;
-        });
-      }
+      },
     });
   }
 })();

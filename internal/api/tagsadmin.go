@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -37,6 +36,25 @@ func resolveCategoryID(g Gallery, name string) (int64, bool) {
 	return id, err == nil
 }
 
+// sentinelStatus maps one service sentinel to its API status/code pair.
+type sentinelStatus struct {
+	err    error
+	status int
+	code   string
+}
+
+// writeSentinelError walks the table and writes the first errors.Is match,
+// reporting whether one hit; the caller keeps its bespoke fallback.
+func writeSentinelError(w http.ResponseWriter, err error, table []sentinelStatus) bool {
+	for _, e := range table {
+		if errors.Is(err, e.err) {
+			apiError(w, e.status, e.code, err.Error())
+			return true
+		}
+	}
+	return false
+}
+
 // writeTagError maps tags-service errors to API status codes. Typed
 // sentinels resolve precisely; the remaining plain-text errors the
 // rename / alias / merge paths return are matched by phrase (the
@@ -44,31 +62,27 @@ func resolveCategoryID(g Gallery, name string) (int64, bool) {
 // missing target as 404, and a self-reference as 400 instead of a bare
 // 500.
 func writeTagError(w http.ResponseWriter, err error) {
+	if writeSentinelError(w, err, []sentinelStatus{
+		{tags.ErrTagNotFound, http.StatusNotFound, "not_found"},
+		{tags.ErrCategoryNotFound, http.StatusBadRequest, "invalid_request"},
+		{tags.ErrAliasNameInUse, http.StatusConflict, "conflict"},
+		{tags.ErrImplicationCycle, http.StatusConflict, "conflict"},
+		{tags.ErrInvalidTagName, http.StatusBadRequest, "invalid_request"},
+		{tags.ErrNonCanonicalRating, http.StatusBadRequest, "invalid_request"},
+		{tags.ErrRatingTagImmutable, http.StatusBadRequest, "invalid_request"},
+	}) {
+		return
+	}
+	msg := err.Error()
 	switch {
-	case errors.Is(err, tags.ErrTagNotFound):
-		apiError(w, http.StatusNotFound, "not_found", err.Error())
-	case errors.Is(err, tags.ErrCategoryNotFound):
-		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
-	case errors.Is(err, tags.ErrAliasNameInUse):
-		apiError(w, http.StatusConflict, "conflict", err.Error())
-	case errors.Is(err, tags.ErrImplicationCycle):
-		apiError(w, http.StatusConflict, "conflict", err.Error())
-	case errors.Is(err, tags.ErrInvalidTagName),
-		errors.Is(err, tags.ErrNonCanonicalRating),
-		errors.Is(err, tags.ErrRatingTagImmutable):
-		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	case strings.Contains(msg, "already exists"):
+		apiError(w, http.StatusConflict, "conflict", msg)
+	case strings.Contains(msg, "not found"):
+		apiError(w, http.StatusNotFound, "not_found", msg)
+	case strings.Contains(msg, "itself"), strings.Contains(msg, "alias"):
+		apiError(w, http.StatusBadRequest, "invalid_request", msg)
 	default:
-		msg := err.Error()
-		switch {
-		case strings.Contains(msg, "already exists"):
-			apiError(w, http.StatusConflict, "conflict", msg)
-		case strings.Contains(msg, "not found"):
-			apiError(w, http.StatusNotFound, "not_found", msg)
-		case strings.Contains(msg, "itself"), strings.Contains(msg, "alias"):
-			apiError(w, http.StatusBadRequest, "invalid_request", msg)
-		default:
-			apiError(w, http.StatusInternalServerError, "internal_error", msg)
-		}
+		apiError(w, http.StatusInternalServerError, "internal_error", msg)
 	}
 }
 
@@ -84,8 +98,7 @@ func (h *Handler) createTag(w http.ResponseWriter, r *http.Request) {
 		Name     string `json:"name"`
 		Category string `json:"category"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if strings.TrimSpace(body.Name) == "" {
@@ -115,11 +128,7 @@ func (h *Handler) createTag(w http.ResponseWriter, r *http.Request) {
 // another category. Both edits target the same row; rename is applied
 // first. At least one of name / category is required.
 func (h *Handler) patchTag(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -127,8 +136,7 @@ func (h *Handler) patchTag(w http.ResponseWriter, r *http.Request) {
 		Name     *string `json:"name"`
 		Category *string `json:"category"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if body.Name == nil && body.Category == nil {
@@ -165,11 +173,7 @@ func (h *Handler) patchTag(w http.ResponseWriter, r *http.Request) {
 // usage-stripped rather than removed (the catalog row stays), matching
 // the web behaviour; the response is 204 either way.
 func (h *Handler) deleteTag(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -194,8 +198,7 @@ func (h *Handler) createAlias(w http.ResponseWriter, r *http.Request) {
 		Category    string `json:"category"`
 		CanonicalID int64  `json:"canonical_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if strings.TrimSpace(body.Name) == "" {
@@ -232,8 +235,7 @@ func (h *Handler) mergeTags(w http.ResponseWriter, r *http.Request) {
 		AliasID     int64 `json:"alias_id"`
 		CanonicalID int64 `json:"canonical_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if body.AliasID == 0 || body.CanonicalID == 0 {
@@ -263,11 +265,7 @@ type implicationJSON struct {
 // listImplications handles GET /api/v1/tags/{id}/implications: the
 // direct edges declared from this parent.
 func (h *Handler) listImplications(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -311,8 +309,7 @@ func (h *Handler) addImplication(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ImpliedID int64 `json:"implied_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if body.ImpliedID == 0 {

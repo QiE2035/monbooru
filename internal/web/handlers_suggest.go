@@ -2,6 +2,7 @@ package web
 
 import (
 	"database/sql"
+	"html/template"
 	"net/http"
 	"strings"
 
@@ -12,6 +13,38 @@ import (
 	"github.com/leqwin/monbooru/internal/searchkw"
 	"github.com/leqwin/monbooru/internal/tags"
 )
+
+// suggestItem is the uniform row shape of the shared suggest dropdown
+// (partials/suggest_list.html). Name is both the visible label and the
+// dataset value the click handler reads. Tag rows carry their category
+// color and a usage count; `system:` cheat-sheet rows set Description
+// instead and suppress the count; folder / label rows are name-only.
+type suggestItem struct {
+	Name        string
+	Color       string
+	Description string
+	UsageCount  int
+	ShowCount   bool
+}
+
+// renderSuggestList renders the shared suggest_list.html partial. attr
+// names the data attribute carrying each row's value; onclick is the
+// full click-handler attribute. Both are compile-time constants chosen
+// per suggest surface (never user input), which is what makes the
+// HTMLAttr trust markers safe; per-row Name stays with the autoescaper.
+func (s *Server) renderSuggestList(w http.ResponseWriter, attr, onclick string, items []suggestItem) {
+	s.renderTemplate(w, "partials/suggest_list.html", map[string]any{
+		"Attr":    template.HTMLAttr(attr),
+		"OnClick": template.HTMLAttr(onclick),
+		"Items":   items,
+	})
+}
+
+// renderSearchSuggest renders search-bar dropdown rows; shared by the
+// tag, filter-keyword, and system: cheat-sheet paths of searchSuggest.
+func (s *Server) renderSearchSuggest(w http.ResponseWriter, rows []suggestItem) {
+	s.renderSuggestList(w, `data-tag-name`, `onclick="applySearchSuggest(this.dataset.tagName)"`, rows)
+}
 
 // foldersSuggest returns up to 10 existing folder paths whose name or leading
 // segments match the typed prefix. Drives the autocomplete dropdown on the
@@ -73,9 +106,11 @@ func (s *Server) foldersSuggest(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	s.renderTemplate(w, "partials/folder_suggest.html", map[string]any{
-		"Folders": folders,
-	})
+	items := make([]suggestItem, len(folders))
+	for i, fp := range folders {
+		items[i] = suggestItem{Name: fp}
+	}
+	s.renderSuggestList(w, `data-folder-path`, `onclick="applyLabelSuggest(this, 'folderPath')"`, items)
 }
 
 // collectionSuggest returns up to 10 distinct existing collection
@@ -90,120 +125,77 @@ func (s *Server) collectionSuggest(w http.ResponseWriter, r *http.Request) {
 }
 
 // sourceSuggest mirrors collectionSuggest for the detail-page source
-// edit dialog. Reuses the series_suggest.html partial because the
-// rendered shape (one flat list of free-text labels) is identical;
-// applySeriesSuggest in main.js is generic on the dropdown's nearest
-// text input, so the same client handler covers both dialogs.
+// edit dialog. Shares renderLabelSuggest because the rendered shape
+// (one flat list of free-text labels) is identical; applyLabelSuggest
+// in main.js is generic on the dropdown's nearest text input, so the
+// same client handler covers both dialogs.
 func (s *Server) sourceSuggest(w http.ResponseWriter, r *http.Request) {
 	s.renderLabelSuggest(w, r, s.querySourceLabels)
 }
 
 // renderLabelSuggest reads the typed prefix, runs query for up to 10
-// rows, and renders the shared series_suggest.html partial (204 on
-// no matches).
+// rows, and renders the shared suggest_list.html partial (204 on no
+// matches). The data-series attribute name predates the collection
+// rename and is kept for client-side stability.
 func (s *Server) renderLabelSuggest(w http.ResponseWriter, r *http.Request, query func(string, int) []string) {
 	labels := query(strings.TrimSpace(r.URL.Query().Get("prefix")), 10)
 	if len(labels) == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	s.renderTemplate(w, "partials/series_suggest.html", map[string]any{
-		"Series": labels,
-	})
+	items := make([]suggestItem, len(labels))
+	for i, lbl := range labels {
+		items[i] = suggestItem{Name: lbl}
+	}
+	s.renderSuggestList(w, `data-series`, `onclick="applyLabelSuggest(this, 'series')"`, items)
 }
 
-// querySourceLabels returns distinct existing images.source values whose
-// prefix matches the typed value. Drives the `source:` autocomplete in
-// the search-bar `system:` level-2 dropdown, mirroring the same shape as
-// queryCollectionLabels (indexed range, top-N). NOCASE on the bounds +
-// idx_images_source_nocase_visible keeps the suggest case-insensitive
-// to match the `source:` search filter.
+// queryDistinctLabels returns distinct non-empty values of a NOCASE label
+// column, optionally bounded to a case-insensitive prefix, so the suggest
+// stays in step with the matching case-insensitive filter. Reading the
+// membership table (not the scalar mirror) surfaces secondary entries too.
+func (s *Server) queryDistinctLabels(table, col, prefix string, limit int, logLabel string) []string {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if prefix == "" {
+		rows, err = s.db().Read.Query(
+			`SELECT DISTINCT `+col+` FROM `+table+` WHERE `+col+` != ''
+			 ORDER BY `+col+` LIMIT ?`, limit)
+	} else {
+		lo, hi := nocasePrefixRange(prefix)
+		rows, err = s.db().Read.Query(
+			`SELECT DISTINCT `+col+` FROM `+table+`
+			 WHERE `+col+` >= ? AND `+col+` < ?
+			 ORDER BY `+col+` LIMIT ?`, lo, hi, limit)
+	}
+	if err != nil {
+		logx.Warnf("%s suggest: %v", logLabel, err)
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var sv string
+		if err := rows.Scan(&sv); err != nil {
+			continue
+		}
+		out = append(out, sv)
+	}
+	return out
+}
+
+// querySourceLabels drives the `source:` autocomplete in the search-bar
+// `system:` level-2 dropdown and the detail / batch source dialogs.
 func (s *Server) querySourceLabels(prefix string, limit int) []string {
-	return s.pagedDistinctIndexedLabels(
-		"source", "idx_images_source_nocase_visible",
-		"source != '' AND is_missing = 0",
-		prefix, limit, "source suggest")
+	return s.queryDistinctLabels("image_sources", "site", prefix, limit, "source")
 }
 
-// queryCollectionLabels returns distinct collection names whose prefix
-// matches the typed value, read off image_collections so additional
-// memberships (not just the home mirror) surface. Drives both the
-// detail / batch dialogs and the search-bar `collection:` autocomplete.
-// NOCASE bounds + idx_image_collections_name keep it in step with the
-// case-insensitive `collection:` filter.
+// queryCollectionLabels drives the detail / batch dialogs and the
+// search-bar `collection:` autocomplete.
 func (s *Server) queryCollectionLabels(prefix string, limit int) []string {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if prefix == "" {
-		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT name FROM image_collections
-			 ORDER BY name LIMIT ?`, limit)
-	} else {
-		lo, hi := nocasePrefixRange(prefix)
-		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT name FROM image_collections
-			 WHERE name >= ? AND name < ?
-			 ORDER BY name LIMIT ?`, lo, hi, limit)
-	}
-	if err != nil {
-		logx.Warnf("collection suggest: %v", err)
-		return nil
-	}
-	defer func() { _ = rows.Close() }()
-	var out []string
-	for rows.Next() {
-		var sv string
-		if err := rows.Scan(&sv); err != nil {
-			continue
-		}
-		out = append(out, sv)
-	}
-	return out
-}
-
-// pagedDistinctIndexedLabels emits the shared SELECT DISTINCT col
-// shape for the source / collection autocompletes. Empty prefix
-// returns the alphabetically first values; non-empty narrows to a
-// half-open NOCASE range.
-func (s *Server) pagedDistinctIndexedLabels(col, index, where, prefix string, limit int, logLabel string) []string {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if prefix == "" {
-		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT `+col+` FROM images INDEXED BY `+index+`
-			 WHERE `+where+`
-			 ORDER BY `+col+` COLLATE NOCASE LIMIT ?`,
-			limit,
-		)
-	} else {
-		lo, hi := nocasePrefixRange(prefix)
-		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT `+col+` FROM images INDEXED BY `+index+`
-			 WHERE `+where+`
-			   AND `+col+` >= ? COLLATE NOCASE
-			   AND `+col+` < ? COLLATE NOCASE
-			 ORDER BY `+col+` COLLATE NOCASE LIMIT ?`,
-			lo, hi, limit,
-		)
-	}
-	if err != nil {
-		logx.Warnf("%s: %v", logLabel, err)
-		return nil
-	}
-	defer func() { _ = rows.Close() }()
-	var out []string
-	for rows.Next() {
-		var sv string
-		if err := rows.Scan(&sv); err != nil {
-			continue
-		}
-		out = append(out, sv)
-	}
-	return out
+	return s.queryDistinctLabels("image_collections", "name", prefix, limit, "collection")
 }
 
 // queryNameBasenames returns up to limit distinct lowercased file
@@ -360,23 +352,16 @@ func (s *Server) tagSuggest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.renderTemplate(w, "partials/tag_suggest.html", map[string]any{
-		"Suggestions": suggestions,
-	})
-}
-
-// searchSuggestRow is the render shape of the search-bar autocomplete
-// dropdown. Tag rows leave Category empty and the template falls through
-// to the count column; `system:` cheat-sheet rows set Category to
-// "system" and the template suppresses the count. Description, when
-// non-empty, renders just left of the category column as a short
-// English label of what the row does.
-type searchSuggestRow struct {
-	Name          string
-	CategoryColor string
-	Category      string
-	Description   string
-	UsageCount    int
+	items := make([]suggestItem, len(suggestions))
+	for i, t := range suggestions {
+		items[i] = suggestItem{
+			Name:       t.Name,
+			Color:      t.CategoryColor,
+			UsageCount: t.UsageCount,
+			ShowCount:  true,
+		}
+	}
+	s.renderSuggestList(w, `data-tag-name`, `onclick="applyTagSuggest(this)"`, items)
 }
 
 func (s *Server) searchSuggest(w http.ResponseWriter, r *http.Request) {
@@ -439,9 +424,7 @@ func (s *Server) searchSuggest(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusNoContent)
 					return
 				}
-				s.renderTemplate(w, "partials/search_suggest.html", map[string]any{
-					"Suggestions": rows,
-				})
+				s.renderSearchSuggest(w, rows)
 				return
 			}
 			// Category-qualified only when the prefix actually names a
@@ -492,17 +475,16 @@ func (s *Server) searchSuggest(w http.ResponseWriter, r *http.Request) {
 		suggestions = out
 	}
 
-	rows := make([]searchSuggestRow, len(suggestions))
+	rows := make([]suggestItem, len(suggestions))
 	for i, t := range suggestions {
-		rows[i] = searchSuggestRow{
-			Name:          t.Name,
-			CategoryColor: t.CategoryColor,
-			UsageCount:    t.UsageCount,
+		rows[i] = suggestItem{
+			Name:       t.Name,
+			Color:      t.CategoryColor,
+			UsageCount: t.UsageCount,
+			ShowCount:  true,
 		}
 	}
-	s.renderTemplate(w, "partials/search_suggest.html", map[string]any{
-		"Suggestions": rows,
-	})
+	s.renderSearchSuggest(w, rows)
 }
 
 // renderSystemSuggest emits cheat-sheet rows for the search-bar's
@@ -512,7 +494,7 @@ func (s *Server) searchSuggest(w http.ResponseWriter, r *http.Request) {
 // inner colon the per-keyword level-2 list takes over (static operators
 // or values for filter keywords, live tags for category prefixes).
 func (s *Server) renderSystemSuggest(w http.ResponseWriter, rest string) {
-	var rows []searchSuggestRow
+	var rows []suggestItem
 	if colonIdx := strings.IndexByte(rest, ':'); colonIdx >= 0 {
 		key := strings.ToLower(rest[:colonIdx])
 		valPrefix := strings.ToLower(rest[colonIdx+1:])
@@ -524,9 +506,7 @@ func (s *Server) renderSystemSuggest(w http.ResponseWriter, rest string) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	s.renderTemplate(w, "partials/search_suggest.html", map[string]any{
-		"Suggestions": rows,
-	})
+	s.renderSearchSuggest(w, rows)
 }
 
 // systemSuggestLevel1 lists every prefix the user can type to start a
@@ -535,15 +515,14 @@ func (s *Server) renderSystemSuggest(w http.ResponseWriter, rest string) {
 // keyword (rating: is both) is folded into the keyword row to avoid
 // duplicate dropdown entries. Category rows carry their own colour so
 // the dropdown reads at a glance like the rest of the tag UI.
-func (s *Server) systemSuggestLevel1(prefix string) []searchSuggestRow {
-	var rows []searchSuggestRow
+func (s *Server) systemSuggestLevel1(prefix string) []suggestItem {
+	var rows []suggestItem
 	for _, kw := range searchkw.Keywords {
 		if !strings.HasPrefix(kw, prefix) {
 			continue
 		}
-		rows = append(rows, searchSuggestRow{
+		rows = append(rows, suggestItem{
 			Name:        kw + ":",
-			Category:    "system",
 			Description: searchkw.Descriptions[kw],
 		})
 	}
@@ -554,11 +533,10 @@ func (s *Server) systemSuggestLevel1(prefix string) []searchSuggestRow {
 		if !strings.HasPrefix(cat.Name, prefix) {
 			continue
 		}
-		rows = append(rows, searchSuggestRow{
-			Name:          cat.Name + ":",
-			Category:      "system",
-			CategoryColor: cat.Color,
-			Description:   "tag category",
+		rows = append(rows, suggestItem{
+			Name:        cat.Name + ":",
+			Color:       cat.Color,
+			Description: "tag category",
 		})
 	}
 	return rows
@@ -566,28 +544,26 @@ func (s *Server) systemSuggestLevel1(prefix string) []searchSuggestRow {
 
 // quotedSDLabelRows wraps each label as `<key>:"<label>"` so multi-
 // word model / sampler / prompt values stay one parser token.
-func quotedSDLabelRows(key string, labels []string) []searchSuggestRow {
-	rows := make([]searchSuggestRow, 0, len(labels))
+func quotedSDLabelRows(key string, labels []string) []suggestItem {
+	rows := make([]suggestItem, 0, len(labels))
 	for _, lbl := range labels {
-		rows = append(rows, searchSuggestRow{
-			Name:     key + `:"` + search.QuoteValue(lbl) + `"`,
-			Category: "system",
+		rows = append(rows, suggestItem{
+			Name: key + `:"` + search.QuoteValue(lbl) + `"`,
 		})
 	}
 	return rows
 }
 
-func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
+func (s *Server) systemSuggestLevel2(key, valPrefix string) []suggestItem {
 	if key == "cat" {
-		var rows []searchSuggestRow
+		var rows []suggestItem
 		for _, cat := range s.systemCategoryRows() {
 			if !strings.HasPrefix(cat.Name, valPrefix) {
 				continue
 			}
-			rows = append(rows, searchSuggestRow{
-				Name:          "cat:" + cat.Name,
-				Category:      "system",
-				CategoryColor: cat.Color,
+			rows = append(rows, suggestItem{
+				Name:  "cat:" + cat.Name,
+				Color: cat.Color,
 			})
 			if len(rows) >= 10 {
 				break
@@ -643,14 +619,13 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
 	}
 	if expansions, ok := searchkw.Expansions[key]; ok {
 		descs := searchkw.ExpansionDescriptions[key]
-		var rows []searchSuggestRow
+		var rows []suggestItem
 		for _, exp := range expansions {
 			if !strings.HasPrefix(exp, valPrefix) {
 				continue
 			}
-			rows = append(rows, searchSuggestRow{
+			rows = append(rows, suggestItem{
 				Name:        key + ":" + exp,
-				Category:    "system",
 				Description: descs[exp],
 			})
 		}
@@ -667,12 +642,13 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []searchSuggestRow {
 	// label, since they're real data, not a static hint.
 	if s.categoryExists(key) {
 		suggestions, _ := search.SuggestTagsWithFilter(s.db(), nil, valPrefix, key, 10)
-		rows := make([]searchSuggestRow, 0, len(suggestions))
+		rows := make([]suggestItem, 0, len(suggestions))
 		for _, t := range suggestions {
-			rows = append(rows, searchSuggestRow{
-				Name:          key + ":" + t.Name,
-				CategoryColor: t.CategoryColor,
-				UsageCount:    t.UsageCount,
+			rows = append(rows, suggestItem{
+				Name:       key + ":" + t.Name,
+				Color:      t.CategoryColor,
+				UsageCount: t.UsageCount,
+				ShowCount:  true,
 			})
 		}
 		return rows

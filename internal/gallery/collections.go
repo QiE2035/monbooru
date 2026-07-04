@@ -109,7 +109,7 @@ func RemoveCollectionMembership(database *db.DB, imageID int64, name string) err
 // renaming or clearing the previous home and keeping image_collections in
 // sync. Used by the API and ingest, which carry a single collection field.
 // An empty name clears the home, promoting another membership if one is
-// left so the series != ” invariant holds. Pointing the home at a label
+// left so the series != "" invariant holds. Pointing the home at a label
 // the image already belongs to promotes that membership in place and
 // leaves the former home as an extra; only relabelling onto a new name
 // (or clearing) drops the old home.
@@ -208,10 +208,13 @@ func rebindHomeTx(tx *sql.Tx, imageID int64, changedName string) error {
 
 // CollectionSummary is one row of the collections management page: a
 // label, its visible member count, and a few members for the preview.
+// FindRelations reports the collection's opt-in to the relations
+// session surfacing pairs among its own members.
 type CollectionSummary struct {
-	Name    string
-	Count   int
-	Samples []CollectionSample
+	Name          string
+	Count         int
+	FindRelations bool
+	Samples       []CollectionSample
 }
 
 // CollectionSample is one preview tile: the image id and its position
@@ -237,21 +240,41 @@ func collectionFilterWhere(col, nameFilter string) (string, []any) {
 // Members carrying a tag in excludeIDs (the rating ceiling) drop from the
 // count, so a collection with no visible member left falls off the page.
 func ListCollections(database *db.DB, nameFilter, sort string, limit, offset int, excludeIDs []int64) ([]CollectionSummary, error) {
-	exclude, args := excludeNotExists("c.image_id", excludeIDs)
 	where, filterArgs := collectionFilterWhere("c.name", nameFilter)
-	args = append(args, filterArgs...)
-	orderBy := "cnt DESC, c.name ASC"
-	if sort == "name" {
-		orderBy = "c.name ASC"
+	var query string
+	var args []any
+	if len(excludeIDs) == 0 {
+		// No ceiling: the trigger-maintained per-label counts make the
+		// listing one row per label instead of a walk over every
+		// membership with a per-row visibility probe.
+		orderBy := "c.visible_count DESC, c.name ASC"
+		if sort == "name" {
+			orderBy = "c.name ASC"
+		}
+		query = `SELECT c.name, c.visible_count,
+		        EXISTS (SELECT 1 FROM collection_find_relations f WHERE f.name = c.name)
+		 FROM collection_counts c
+		 WHERE c.visible_count > 0` + where + `
+		 ORDER BY ` + orderBy + ` LIMIT ? OFFSET ?`
+		args = append(filterArgs, limit, offset)
+	} else {
+		// Ceiling active: the stored counts are ceiling-blind, so fall
+		// back to the aggregation. EXISTS visibility (vs a join to
+		// images) lets the GROUP BY stream off idx_image_collections_name
+		// instead of a temp B-tree over every member.
+		exclude, excludeArgs := excludeNotExists("c.image_id", excludeIDs)
+		orderBy := "cnt DESC, c.name ASC"
+		if sort == "name" {
+			orderBy = "c.name ASC"
+		}
+		query = `SELECT c.name, COUNT(*) cnt,
+		        EXISTS (SELECT 1 FROM collection_find_relations f WHERE f.name = c.name)
+		 FROM image_collections c
+		 WHERE EXISTS (SELECT 1 FROM images i WHERE i.id = c.image_id AND i.is_missing = 0)` + exclude + where + `
+		 GROUP BY c.name ORDER BY ` + orderBy + ` LIMIT ? OFFSET ?`
+		args = append(append(excludeArgs, filterArgs...), limit, offset)
 	}
-	args = append(args, limit, offset)
-	// EXISTS visibility (vs a join to images) lets the GROUP BY stream off
-	// idx_image_collections_name instead of a temp B-tree over every member.
-	rows, err := database.Read.Query(
-		`SELECT c.name, COUNT(*) cnt FROM image_collections c
-		 WHERE EXISTS (SELECT 1 FROM images i WHERE i.id = c.image_id AND i.is_missing = 0)`+exclude+where+`
-		 GROUP BY c.name ORDER BY `+orderBy+` LIMIT ? OFFSET ?`,
-		args...)
+	rows, err := database.Read.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +282,7 @@ func ListCollections(database *db.DB, nameFilter, sort string, limit, offset int
 	var out []CollectionSummary
 	for rows.Next() {
 		var c CollectionSummary
-		if err := rows.Scan(&c.Name, &c.Count); err != nil {
+		if err := rows.Scan(&c.Name, &c.Count, &c.FindRelations); err != nil {
 			return out, err
 		}
 		out = append(out, c)
@@ -267,17 +290,37 @@ func ListCollections(database *db.DB, nameFilter, sort string, limit, offset int
 	return out, rows.Err()
 }
 
+// SetCollectionFindRelations flips a collection's find-relations opt-in.
+// The flag is a bare presence row; disabling just deletes it.
+func SetCollectionFindRelations(database *db.DB, name string, enabled bool) error {
+	if enabled {
+		_, err := database.Write.Exec(
+			`INSERT OR IGNORE INTO collection_find_relations (name) VALUES (?)`, name)
+		return err
+	}
+	_, err := database.Write.Exec(
+		`DELETE FROM collection_find_relations WHERE name = ?`, name)
+	return err
+}
+
 // CountCollections returns the number of distinct collection labels with
 // at least one visible member, honoring the same substring filter and the
 // rating ceiling (excludeIDs).
 func CountCollections(database *db.DB, nameFilter string, excludeIDs []int64) (int, error) {
+	var n int
+	if len(excludeIDs) == 0 {
+		where, args := collectionFilterWhere("name", nameFilter)
+		err := database.Read.QueryRow(
+			`SELECT COUNT(*) FROM collection_counts WHERE visible_count > 0`+where, args...).Scan(&n)
+		return n, err
+	}
+	// Ceiling active: enumerate distinct labels off the name index and
+	// keep those with a visible, ceiling-clear member; the per-label
+	// EXISTS short-circuits, so cost tracks the label count, not the
+	// membership count.
 	exclude, args := excludeNotExists("c.image_id", excludeIDs)
 	where, filterArgs := collectionFilterWhere("d.name", nameFilter)
 	args = append(args, filterArgs...)
-	// Enumerate distinct labels off the name index and keep those with a
-	// visible, ceiling-clear member; the per-label EXISTS short-circuits, so
-	// cost tracks the label count, not the membership count.
-	var n int
 	err := database.Read.QueryRow(
 		`SELECT COUNT(*) FROM (SELECT DISTINCT name FROM image_collections) d
 		 WHERE EXISTS (SELECT 1 FROM image_collections c JOIN images i ON i.id = c.image_id
@@ -290,42 +333,96 @@ func CountCollections(database *db.DB, nameFilter string, excludeIDs []int64) (i
 // Members above the rating ceiling (excludeIDs) are skipped so the preview
 // matches the listing. The map is keyed by lower-cased label so a single
 // key survives images that stored the same NOCASE label in different cases.
+// One LIMITed query per name: the reading index stops each walk after the
+// first per visible members, where a single ROW_NUMBER window would rank
+// every member of every listed label first.
 func CollectionSamples(database *db.DB, names []string, per int, excludeIDs []int64) (map[string][]CollectionSample, error) {
+	out := make(map[string][]CollectionSample, len(names))
 	if len(names) == 0 || per <= 0 {
-		return map[string][]CollectionSample{}, nil
+		return out, nil
 	}
+	for _, name := range names {
+		samples, err := collectionWalk(database, name, excludeIDs, per, 0)
+		if err != nil {
+			return out, err
+		}
+		key := strings.ToLower(name)
+		if len(out[key]) == 0 {
+			out[key] = samples
+		}
+	}
+	return out, nil
+}
+
+// collectionWalk reads one window of name's visible members in reading
+// order, riding idx_image_collections_reading so the LIMIT stops the
+// scan early instead of sorting the whole label.
+func collectionWalk(database *db.DB, name string, excludeIDs []int64, limit, offset int) ([]CollectionSample, error) {
 	exclude, args := excludeNotExists("i.id", excludeIDs)
-	placeholders, nameArgs := db.InPlaceholders(names)
-	args = append(args, nameArgs...)
-	args = append(args, per)
+	args = append([]any{name}, args...)
+	args = append(args, limit, offset)
 	rows, err := database.Read.Query(
-		`SELECT name, image_id, position FROM (
-		   SELECT c.name AS name, c.image_id AS image_id, c.position AS position,
-		          ROW_NUMBER() OVER (PARTITION BY c.name
-		             ORDER BY c.position IS NULL, c.position, c.image_id) AS rn
-		   FROM image_collections c JOIN images i ON i.id = c.image_id
-		   WHERE i.is_missing = 0`+exclude+` AND c.name IN (`+placeholders+`)
-		 ) WHERE rn <= ?`, args...)
+		`SELECT c.image_id, c.position
+		 FROM image_collections c JOIN images i ON i.id = c.image_id
+		 WHERE c.name = ? AND i.is_missing = 0`+exclude+`
+		 ORDER BY c.position IS NULL, c.position, c.image_id LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	out := make(map[string][]CollectionSample, len(names))
+	var out []CollectionSample
 	for rows.Next() {
-		var name string
 		var s CollectionSample
 		var pos sql.NullInt64
-		if err := rows.Scan(&name, &s.ID, &pos); err != nil {
+		if err := rows.Scan(&s.ID, &pos); err != nil {
 			return out, err
 		}
 		if pos.Valid {
 			v := int(pos.Int64)
 			s.Order = &v
 		}
-		key := strings.ToLower(name)
-		out[key] = append(out[key], s)
+		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// CollectionMembers returns one window of name's visible members
+// (NOCASE) in reading order (position first with NULLs last, then id),
+// skipping members above the rating ceiling (excludeIDs) like the page
+// listing. Windowed so a huge label can't force a full render in one
+// dialog body.
+func CollectionMembers(database *db.DB, name string, excludeIDs []int64, limit, offset int) ([]CollectionSample, error) {
+	return collectionWalk(database, name, excludeIDs, limit, offset)
+}
+
+// ReorderCollection rewrites name's ordering from ids: 1-based positions
+// in slice order, every other membership cleared to unordered. Ids not
+// filed under name are no-ops. The home mirror follows for rows homed on
+// the collection, the same resync shape the rename job uses.
+func ReorderCollection(database *db.DB, name string, ids []int64) error {
+	tx, err := database.Write.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(
+		`UPDATE image_collections SET position = NULL WHERE name = ?`, name); err != nil {
+		return err
+	}
+	for i, id := range ids {
+		if _, err := tx.Exec(
+			`UPDATE image_collections SET position = ? WHERE image_id = ? AND name = ?`,
+			i+1, id, name); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(
+		`UPDATE images SET series_order =
+		   (SELECT position FROM image_collections WHERE image_id = images.id AND name = ?)
+		 WHERE series = ? COLLATE NOCASE`, name, name); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // CollectionMemberIDs returns every image id filed under name (case-

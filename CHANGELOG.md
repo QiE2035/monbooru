@@ -1,6 +1,25 @@
 # Changelog
 
+## [v1.13.0] - 2026-07-04
+### Added
+- Click-to-order dialog for arranging the images in a collection. ([#37](https://github.com/leqwin/monbooru/issues/37))
+- Per-collection find-relations switch to queue its images for the session. ([#39](https://github.com/leqwin/monbooru/issues/39))
+- Button to re-fetch a source's tags, commentary and notes from monloader. ([#42](https://github.com/leqwin/monbooru/issues/42))
+- Add support for commentaries and note boxes + a per-image own user's note. ([#43](https://github.com/leqwin/monbooru/issues/43))
+- Images can carry multiple sources, each with its own tags/commentary/notes.
+- `collection:any` search matches images in at least one collection.
+
+### Changed
+- Gallery grid defaults to natural aspect-ratio thumbnails instead of square-cropped.
+- A duplicate image push merges its tags and source instead of discarding them.
+- The monloader link moved from the top bar to the footer.
+
+### Fixed
+- A failed JSON gallery import leaves the target gallery intact.
+
 ## [v1.12.0] - 2026-07-01
+This update include a breaking change with the monbooru and monsender pairing mechanism. Update monloader to >v1.2.0 and use the pairing mechanism.
+
 ### Added
 - Named, scoped API tokens managed in Settings, each with its own privileges.
 - Pairing with monloader from Settings: approval flow, connectivity light.

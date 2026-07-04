@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"  // register gif decoder for canDecodeImage
@@ -26,114 +27,22 @@ import (
 	"github.com/leqwin/monbooru/internal/tagger"
 )
 
-// validateVia rejects caller-supplied `via` strings that carry
-// characters the downstream CSS attribute selectors and HTML attribute
-// renderers don't survive cleanly. The detail page's tag-source group
-// is JS-selected with `[data-source="<name>"]`; whitespace or a literal
-// quote / bracket in the stored value produces a malformed selector
-// and the tag-focus cursor loses its place. Empty `via` is fine and
-// means "no attribution".
-func validateVia(via string) error {
-	if via == "" {
-		return nil
-	}
-	if len(via) > 200 {
-		return fmt.Errorf("via must be 200 characters or less")
-	}
-	for _, r := range via {
-		switch r {
-		case ' ', '\t', '\n', '\r', '"', '\'', '<', '>', '[', ']', '\\':
-			return fmt.Errorf("via must not contain whitespace or any of: \" ' < > [ ] \\")
-		}
-	}
-	return nil
-}
-
-const (
-	maxImageSourceLen = 200
-	maxImageURLLen    = 2048
-)
-
-// validateImageSource / validateImageURL / validateImageCollection
-// mirror the web detail-page editor's rules (internal/web
-// updateExternal) so the operator-editable provenance fields land
-// under the same caps and the URL stays a renderable target=_blank
-// link. Callers pass the already-trimmed value. Shared by the create
-// (POST /images) and edit (PATCH /images/{id}) paths.
-func validateMaxLen(field, s string, max int) error {
-	if len(s) > max {
-		return fmt.Errorf("%s must be %d characters or less", field, max)
-	}
-	return nil
-}
-
-func validateImageSource(s string) error {
-	return validateMaxLen("source", s, maxImageSourceLen)
-}
-
-func validateImageURL(s string) error {
-	if s == "" {
-		return nil
-	}
-	if len(s) > maxImageURLLen {
-		return fmt.Errorf("url must be %d characters or less", maxImageURLLen)
-	}
-	lower := strings.ToLower(s)
-	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
-		return fmt.Errorf("url must start with http:// or https://")
-	}
-	return nil
-}
-
-func validateImageCollection(s string) error {
-	return validateMaxLen("collection", s, maxImageSourceLen)
-}
-
-// validateCreateProvenance checks the optional provenance fields a
-// caller may set when adding an image. A collection_order is only
-// meaningful next to a non-empty collection label (the detail page
-// renders "(none) #5" otherwise and collection: search never surfaces
-// the row), so it is refused without one. Values arrive trimmed.
-func validateCreateProvenance(source, url, collection string, order *int) error {
-	if err := validateImageSource(source); err != nil {
-		return err
-	}
-	if err := validateImageURL(url); err != nil {
-		return err
-	}
-	if err := validateImageCollection(collection); err != nil {
-		return err
-	}
-	if order != nil {
-		if *order < 1 {
-			return fmt.Errorf("collection_order must be 1 or higher")
-		}
-		if collection == "" {
-			return fmt.Errorf("collection_order requires a non-empty collection")
-		}
-	}
-	return nil
-}
-
 // applyCreateProvenance writes the supplied provenance fields onto a
 // freshly-ingested row. Only non-empty values are written; the row's
 // empty-string / NULL defaults already cover the unset case, so a bare
 // create touches nothing. Validation has already run, so a failure here
 // is a DB-level error.
-func applyCreateProvenance(g Gallery, imageID int64, source, url, collection string, order *int) error {
-	updates := []string{}
-	args := []any{}
-	if source != "" {
-		updates = append(updates, "source = ?")
-		args = append(args, source)
+func applyCreateProvenance(g Gallery, imageID int64, source, url, md5, collection, commentary string, order *int) error {
+	if source != "" || url != "" {
+		if err := gallery.AddSourceMembership(g.DB, imageID, source, "", url); err != nil {
+			return err
+		}
+		if err := gallery.SetSourceMD5(g.DB, imageID, source, "", md5); err != nil {
+			return err
+		}
 	}
-	if url != "" {
-		updates = append(updates, "url = ?")
-		args = append(args, url)
-	}
-	if len(updates) > 0 {
-		args = append(args, imageID)
-		if _, err := g.DB.Write.Exec(`UPDATE images SET `+strings.Join(updates, ", ")+` WHERE id = ?`, args...); err != nil {
+	if source != "" && commentary != "" {
+		if err := gallery.SetSourceCommentary(g.DB, imageID, source, "", commentary); err != nil {
 			return err
 		}
 	}
@@ -141,6 +50,178 @@ func applyCreateProvenance(g Gallery, imageID int64, source, url, collection str
 		return gallery.SetHomeCollection(g.DB, imageID, collection, order)
 	}
 	return nil
+}
+
+// mergeSummary reports what a duplicate-merge folded into an existing image.
+type mergeSummary struct {
+	TagsAdded    int  `json:"tags_added"`
+	TagsRemoved  int  `json:"tags_removed"`
+	RatingFilled bool `json:"rating_filled"`
+	SourceAdded  bool `json:"source_added"`
+}
+
+// mergeSource folds a re-pushed file's provenance and tags into an existing
+// image instead of discarding them (issue #6): the origin is recorded and the
+// tags imported from that source are reconciled to the incoming set, with the
+// rating protected. Attribution is the source label so each source owns a
+// prunable slice. A push with no source label leaves tags untouched. The
+// second return carries unresolvable-tag warnings for the response envelope.
+func (h *Handler) mergeSource(g Gallery, imageID int64, source, url, md5 string, rawTags []string) (mergeSummary, []string, error) {
+	var sum mergeSummary
+	if source != "" || url != "" {
+		if err := gallery.AddSourceMembership(g.DB, imageID, source, "", url); err != nil {
+			return sum, nil, err
+		}
+		if err := gallery.SetSourceMD5(g.DB, imageID, source, "", md5); err != nil {
+			return sum, nil, err
+		}
+		sum.SourceAdded = true
+	}
+	var warnings []string
+	if source != "" && len(rawTags) > 0 {
+		tagIDs, warns := h.resolveTagNames(g, rawTags)
+		warnings = warns
+		r, err := g.TagSvc.SyncSourceTags(imageID, tagIDs, source)
+		if err != nil {
+			return sum, warnings, err
+		}
+		sum.TagsAdded, sum.TagsRemoved, sum.RatingFilled = r.Added, r.Removed, r.RatingFilled
+	}
+	return sum, warnings, nil
+}
+
+// enrichImage handles POST /api/v1/images/{id}/enrich: applies fetched
+// metadata (tags, provenance, artist commentary, positional notes) to an
+// existing image with no file upload - the metadata-only counterpart of a
+// push, used by monloader's source refetch. It shares mergeSource with the
+// duplicate branch for tags + provenance. When verify is set and a
+// source_md5 is supplied, the image's stored bytes are md5'd on demand and
+// compared first; a mismatch means the post no longer serves the same file,
+// so nothing changes (409 hash_mismatch).
+func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
+	g, id, ok := h.galleryAndID(w, r)
+	if !ok {
+		return
+	}
+	var canonPath string
+	switch err := g.DB.Read.QueryRow(`SELECT canonical_path FROM images WHERE id = ?`, id).Scan(&canonPath); {
+	case errors.Is(err, sql.ErrNoRows):
+		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return
+	case err != nil:
+		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	var body struct {
+		Tags       []string         `json:"tags"`
+		Source     string           `json:"source"`
+		URL        string           `json:"url"`
+		SourceMD5  string           `json:"source_md5"`
+		Verify     bool             `json:"verify"`
+		Commentary string           `json:"commentary"`
+		Notes      []annotationJSON `json:"notes"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if err := validateMaxLen("commentary", strings.TrimSpace(body.Commentary), maxImageCommentaryLen); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := validateMaxLen("source_md5", strings.TrimSpace(body.SourceMD5), maxSourceMD5Len); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	verified := true
+	if body.Verify {
+		if body.SourceMD5 == "" {
+			verified = false // asked to verify, but the source reported no md5
+		} else {
+			got, err := gallery.Md5File(canonPath)
+			if err != nil {
+				g.recordFetch(id, "error", "could not verify the file; fetch not applied")
+				apiError(w, http.StatusInternalServerError, "internal_error", "cannot hash image: "+err.Error())
+				return
+			}
+			if !strings.EqualFold(got, body.SourceMD5) {
+				g.recordFetch(id, "mismatch", "the source no longer serves this file (hash mismatch); no tags applied")
+				apiError(w, http.StatusConflict, "hash_mismatch", "the source no longer serves this file")
+				return
+			}
+		}
+	}
+	source := strings.TrimSpace(body.Source)
+	sum, tagWarnings, err := h.mergeSource(g, id, source, strings.TrimSpace(body.URL), strings.TrimSpace(body.SourceMD5), body.Tags)
+	if err != nil {
+		g.recordFetch(id, "error", "fetch failed while applying tags")
+		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	// Artist commentary and positional notes are attributed to the same
+	// source, so a refetch pulls them in alongside the tags. Both replace what
+	// the source last carried; an empty payload leaves the stored value be.
+	if source != "" {
+		if commentary := strings.TrimSpace(body.Commentary); commentary != "" {
+			if err := gallery.SetSourceCommentary(g.DB, id, source, "", commentary); err != nil {
+				g.recordFetch(id, "error", "fetch failed while applying commentary")
+				apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+				return
+			}
+		}
+		if notes := annotationsFromInput(body.Notes); len(notes) > 0 {
+			if err := gallery.ReplaceSourceAnnotations(g.DB, id, source, "", notes); err != nil {
+				g.recordFetch(id, "error", "fetch failed while applying notes")
+				apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+				return
+			}
+		}
+	}
+	g.invalidate()
+	g.recordFetch(id, "ok", fetchSummary(sum))
+	resp := map[string]any{"merge": sum, "verified": verified}
+	if len(tagWarnings) > 0 {
+		resp["tag_warnings"] = tagWarnings
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// fetchSummary is the operator-facing confirmation a source refetch surfaces
+// once the enrich lands; it names the tag delta when the fetch changed anything.
+func fetchSummary(sum mergeSummary) string {
+	switch {
+	case sum.TagsAdded > 0 && sum.TagsRemoved > 0:
+		return fmt.Sprintf("Fetched tags from the source (+%d, -%d).", sum.TagsAdded, sum.TagsRemoved)
+	case sum.TagsAdded > 0:
+		return fmt.Sprintf("Fetched tags from the source (+%d).", sum.TagsAdded)
+	case sum.TagsRemoved > 0:
+		return fmt.Sprintf("Fetched tags from the source (-%d).", sum.TagsRemoved)
+	default:
+		return "Fetched tags from the source."
+	}
+}
+
+// fetchStatusReport handles POST /api/v1/images/{id}/fetch-status: monloader
+// reports a source-fetch outcome that never reached enrich (a fetch that hit an
+// unsupported URL, timed out, or was blocked) so the detail page's poll can
+// surface it instead of spinning to the poll cap. Body: {state, message}.
+func (h *Handler) fetchStatusReport(w http.ResponseWriter, r *http.Request) {
+	g, id, ok := h.galleryAndID(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		State   string `json:"state"`
+		Message string `json:"message"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.State) == "" {
+		apiError(w, http.StatusBadRequest, "invalid_request", "state is required")
+		return
+	}
+	g.recordFetch(id, body.State, body.Message)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // canDecodeImage opens path and runs image.DecodeConfig on the first
@@ -160,50 +241,6 @@ func canDecodeImage(path string) bool {
 	return err == nil
 }
 
-// imageResponse is the JSON representation of an image.
-type imageResponse struct {
-	ID            int64            `json:"id"`
-	SHA256        string           `json:"sha256"`
-	CanonicalPath string           `json:"canonical_path"`
-	Aliases       []string         `json:"aliases"`
-	FileType      string           `json:"file_type"`
-	Width         *int             `json:"width"`
-	Height        *int             `json:"height"`
-	FileSize      int64            `json:"file_size"`
-	IsFavorited   bool             `json:"is_favorited"`
-	IsInbox       bool             `json:"is_inbox"`
-	IsMissing     bool             `json:"is_missing"`
-	AutoTaggedAt  *time.Time       `json:"auto_tagged_at"`
-	SourceType    string           `json:"source_type"`
-	Origin        string           `json:"origin"`
-	Source        string           `json:"source"`
-	URL           string           `json:"url"`
-	PageCount     *int             `json:"page_count"`
-	Series        string           `json:"collection"`
-	SeriesOrder   *int             `json:"collection_order"`
-	Collections   []collectionJSON `json:"collections,omitempty"`
-	Phash         *string          `json:"phash"`
-	IngestedAt    time.Time        `json:"ingested_at"`
-	ThumbnailURL  string           `json:"thumbnail_url"`
-	Tags          []imageTagJSON   `json:"tags"`
-}
-
-// collectionJSON is one membership in imageResponse.Collections. The
-// scalar collection / collection_order fields above mirror the home
-// membership for backwards compatibility; this array carries them all.
-type collectionJSON struct {
-	Name  string `json:"name"`
-	Order *int   `json:"order"`
-}
-
-type imageTagJSON struct {
-	Name       string   `json:"name"`
-	Category   string   `json:"category"`
-	IsAuto     bool     `json:"is_auto"`
-	Confidence *float64 `json:"confidence"`
-	TaggerName *string  `json:"tagger_name"`
-}
-
 // buildImageResponse fetches an image plus its tags and assembles the
 // JSON response struct.
 func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, error) {
@@ -217,10 +254,10 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 	var phash *int64
 	err := g.DB.Read.QueryRow(`
 		SELECT id, sha256, canonical_path, file_type, width, height, file_size,
-		       is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, phash, ingested_at
+		       is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, note, page_count, duration_seconds, series, series_order, phash, ingested_at
 		FROM images WHERE id = ?`, imageID,
 	).Scan(&img.ID, &img.SHA256, &img.CanonicalPath, &img.FileType, &img.Width, &img.Height,
-		&img.FileSize, &isMissing, &isFavorited, &isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt)
+		&img.FileSize, &isMissing, &isFavorited, &isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &img.Note, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -237,42 +274,17 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 		img.AutoTaggedAt = &t
 	}
 
-	// Close the alias rows immediately rather than deferring, so the
-	// read connection is freed before the tag query.
-	aliases := []string{}
-	aliasRows, err := g.DB.Read.Query(`SELECT path FROM image_paths WHERE image_id = ? AND is_canonical = 0`, imageID)
-	if err != nil {
+	var aliases []string
+	if byID, err := loadAliasesForImages(g, []int64{imageID}); err != nil {
 		logx.Warnf("buildImageResponse aliases: %v", err)
 	} else {
-		for aliasRows.Next() {
-			var p string
-			if err := aliasRows.Scan(&p); err == nil {
-				aliases = append(aliases, p)
-			}
-		}
-		_ = aliasRows.Close()
+		aliases = byID[imageID]
 	}
-
-	tags := []imageTagJSON{}
-	tagRows, err := g.DB.Read.Query(`
-		SELECT t.name, tc.name, it.is_auto, it.confidence, it.tagger_name
-		FROM image_tags it
-		JOIN tags t ON t.id = it.tag_id
-		JOIN tag_categories tc ON tc.id = t.category_id
-		WHERE it.image_id = ?
-		ORDER BY tc.name, t.name`, imageID)
-	if err != nil {
+	var tags []imageTagJSON
+	if byID, err := loadTagsForImages(g, []int64{imageID}); err != nil {
 		logx.Warnf("buildImageResponse tags: %v", err)
 	} else {
-		defer func() { _ = tagRows.Close() }()
-		for tagRows.Next() {
-			var tj imageTagJSON
-			var tn *string
-			if err := tagRows.Scan(&tj.Name, &tj.Category, &tj.IsAuto, &tj.Confidence, &tn); err == nil {
-				tj.TaggerName = tn
-				tags = append(tags, tj)
-			}
-		}
+		tags = byID[imageID]
 	}
 
 	resp := makeImageResponse(g, img, tags, aliases)
@@ -283,62 +295,25 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 			resp.Collections = append(resp.Collections, collectionJSON{Name: c.Name, Order: c.Order})
 		}
 	}
+	if srcs, err := gallery.SourcesForImage(g.DB, imageID); err != nil {
+		logx.Warnf("buildImageResponse sources: %v", err)
+	} else {
+		for _, s := range srcs {
+			resp.Sources = append(resp.Sources, sourceJSON{Site: s.Site, PostID: s.PostID, URL: s.URL, Commentary: s.Commentary})
+		}
+	}
+	if anns, err := gallery.AnnotationsForImage(g.DB, imageID); err != nil {
+		logx.Warnf("buildImageResponse annotations: %v", err)
+	} else {
+		for _, a := range anns {
+			resp.Annotations = append(resp.Annotations, annotationJSON{Site: a.Site, PostID: a.PostID, X: a.X, Y: a.Y, W: a.W, H: a.H, Body: a.Body})
+		}
+	}
 	return &resp, nil
 }
 
-// makeImageResponse builds the API JSON shape for one image from its
-// already-loaded models.Image, per-image tag list, and alias paths.
-// Shared by buildImageResponse (single GET) and searchImages (list).
-func makeImageResponse(g Gallery, img models.Image, tags []imageTagJSON, aliases []string) imageResponse {
-	if tags == nil {
-		tags = []imageTagJSON{}
-	}
-	if aliases == nil {
-		aliases = []string{}
-	}
-	return imageResponse{
-		ID:            img.ID,
-		SHA256:        img.SHA256,
-		CanonicalPath: img.CanonicalPath,
-		Aliases:       aliases,
-		FileType:      img.FileType,
-		Width:         img.Width,
-		Height:        img.Height,
-		FileSize:      img.FileSize,
-		IsFavorited:   img.IsFavorited,
-		IsInbox:       img.IsInbox,
-		IsMissing:     img.IsMissing,
-		AutoTaggedAt:  img.AutoTaggedAt,
-		SourceType:    img.SourceType,
-		Origin:        img.Origin,
-		Source:        img.Source,
-		URL:           img.URL,
-		PageCount:     img.PageCount,
-		Series:        img.Series,
-		SeriesOrder:   img.SeriesOrder,
-		Phash:         phashHexPtr(img.Phash),
-		IngestedAt:    img.IngestedAt,
-		ThumbnailURL:  "/thumbnails/" + g.Name + "/" + strconv.FormatInt(img.ID, 10) + ".jpg",
-		Tags:          tags,
-	}
-}
-
-// phashHexPtr renders the optional perceptual hash as a 16-char
-// lowercase hex string, or nil when the column is NULL.
-func phashHexPtr(p *int64) *string {
-	if p == nil {
-		return nil
-	}
-	s := fmt.Sprintf("%016x", uint64(*p))
-	return &s
-}
-
 func (h *Handler) getImage(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -360,11 +335,7 @@ func (h *Handler) getImage(w http.ResponseWriter, r *http.Request) {
 // unless an order is supplied alongside. To clear collection_order on
 // its own, clear the collection. Returns the updated image object.
 func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -381,8 +352,7 @@ func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
 		IsFavorited     *bool   `json:"is_favorited"`
 		IsInbox         *bool   `json:"is_inbox"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 
@@ -390,23 +360,34 @@ func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
 	args := []any{}
 	cacheAffecting := false
 
-	if body.Source != nil {
-		s := strings.TrimSpace(*body.Source)
-		if err := validateImageSource(s); err != nil {
-			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	// source / url edit the primary origin. Fill the unpatched half from the
+	// current primary (the scalar mirror) so a one-field PATCH keeps the
+	// other, then apply through SetPrimarySource after the main UPDATE.
+	setSrc := false
+	var srcSite, srcURL string
+	if body.Source != nil || body.URL != nil {
+		if err := g.DB.Read.QueryRow(`SELECT source, url FROM images WHERE id = ?`, id).Scan(&srcSite, &srcURL); err != nil {
+			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
-		updates = append(updates, "source = ?")
-		args = append(args, s)
-	}
-	if body.URL != nil {
-		u := strings.TrimSpace(*body.URL)
-		if err := validateImageURL(u); err != nil {
-			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
+		if body.Source != nil {
+			s := strings.TrimSpace(*body.Source)
+			if err := validateImageSource(s); err != nil {
+				apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+				return
+			}
+			srcSite = s
 		}
-		updates = append(updates, "url = ?")
-		args = append(args, u)
+		if body.URL != nil {
+			u := strings.TrimSpace(*body.URL)
+			if err := validateImageURL(u); err != nil {
+				apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+				return
+			}
+			srcURL = u
+		}
+		setSrc = true
+		cacheAffecting = true
 	}
 	// Collection / collection_order map onto the home membership; the
 	// resolved label and order are applied through SetHomeCollection after
@@ -459,7 +440,7 @@ func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
 		args = append(args, boolToInt(*body.IsInbox))
 		cacheAffecting = true
 	}
-	if len(updates) == 0 && !setHome {
+	if len(updates) == 0 && !setHome && !setSrc {
 		apiError(w, http.StatusBadRequest, "invalid_request", "no editable fields supplied")
 		return
 	}
@@ -477,9 +458,19 @@ func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// source / url don't feed the cached aggregates, but collection,
-	// favorite, and inbox do (sidebar collection list, fav/inbox counts,
-	// and the match-id cache keyed on fav:/inbox:).
+	if setSrc {
+		if err := gallery.SetPrimarySource(g.DB, id, srcSite, srcURL); err != nil {
+			if errors.Is(err, gallery.ErrSourceIdentityExists) {
+				apiError(w, http.StatusConflict, "conflict", err.Error())
+				return
+			}
+			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+	}
+	// source, collection, favorite, and inbox all feed cached aggregates
+	// (the sidebar source / collection lists, fav/inbox counts, and the
+	// match-id cache keyed on fav:/inbox:), so invalidate on any of them.
 	if cacheAffecting {
 		g.invalidate()
 	}
@@ -492,6 +483,199 @@ func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// createInput carries one create request's parsed and validated fields,
+// whichever mode supplied them.
+type createInput struct {
+	imgPath         string
+	initialTags     []string
+	folder          string
+	autotag         bool
+	taggerName      string
+	via             string              // caller-supplied label; stored on images.origin and inherited by initial tags
+	source          string              // operator-edited provenance label; set on the new row when non-empty
+	url             string              // canonical web URL; set on the new row when non-empty
+	md5             string              // md5 the source claimed; recorded on the origin row as the audit trail
+	commentary      string              // artist commentary for the pushed source; folded in on create/merge
+	notes           []models.Annotation // positional note boxes for the pushed source
+	collection      string              // collection label (images.series); set on the new row when non-empty
+	collectionOrder *int                // 1-based position within collection; nil = unset
+	uploadedToDisk  bool                // true when we wrote the file ourselves (multipart)
+}
+
+// parseCreateMultipart reads mode A (multipart upload): validates the
+// fields, then writes the file straight to its final destination so the
+// watcher sees the real filename. ok=false means the error response was
+// already written.
+func (h *Handler) parseCreateMultipart(w http.ResponseWriter, r *http.Request, g Gallery) (createInput, bool) {
+	var in createInput
+	maxBytes := int64(h.cfg.Gallery.MaxFileSizeMB) * 1024 * 1024
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+4096)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		apiError(w, http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds max size")
+		return in, false
+	}
+	file, fh, err := r.FormFile("file")
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "missing file field")
+		return in, false
+	}
+	defer func() { _ = file.Close() }()
+
+	in.folder = strings.TrimSpace(r.FormValue("folder"))
+	in.autotag = isTrue(r.FormValue("autotag"))
+	in.taggerName = strings.TrimSpace(r.FormValue("tagger_name"))
+	in.via = strings.TrimSpace(r.FormValue("via"))
+	if err := validateVia(in.via); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return in, false
+	}
+	in.source = strings.TrimSpace(r.FormValue("source"))
+	in.url = strings.TrimSpace(r.FormValue("url"))
+	in.md5 = strings.TrimSpace(r.FormValue("md5"))
+	in.commentary = strings.TrimSpace(r.FormValue("commentary"))
+	in.notes = parseNotesField(r.FormValue("notes"))
+	in.collection = strings.TrimSpace(r.FormValue("collection"))
+	if raw := strings.TrimSpace(r.FormValue("collection_order")); raw != "" {
+		n, convErr := strconv.Atoi(raw)
+		if convErr != nil {
+			apiError(w, http.StatusBadRequest, "invalid_request", "collection_order must be an integer")
+			return in, false
+		}
+		in.collectionOrder = &n
+	}
+	if err := validateCreateProvenance(in.source, in.url, in.md5, in.collection, in.commentary, in.collectionOrder); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return in, false
+	}
+
+	destDir, destErr := gallery.ResolveSubdir(g.GalleryPath, in.folder)
+	if destErr != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", destErr.Error())
+		return in, false
+	}
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		apiError(w, http.StatusInternalServerError, "internal_error", "failed to create folder: "+err.Error())
+		return in, false
+	}
+
+	// Write directly to the final destination so the watcher sees
+	// the real filename rather than a temp one (which would get
+	// marked missing as soon as we renamed it).
+	dstPath := gallery.UniqueDestPath(destDir, fh.Filename)
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "internal_error", "failed to create destination file")
+		return in, false
+	}
+	if _, err := io.Copy(dst, file); err != nil {
+		_ = dst.Close()
+		_ = os.Remove(dstPath)
+		apiError(w, http.StatusInternalServerError, "internal_error", "failed to save upload")
+		return in, false
+	}
+	_ = dst.Close()
+
+	if tagsJSON := r.FormValue("tags"); tagsJSON != "" {
+		_ = json.Unmarshal([]byte(tagsJSON), &in.initialTags)
+	}
+	in.imgPath = dstPath
+	in.uploadedToDisk = true
+	return in, true
+}
+
+// parseCreateJSON reads mode B (path reference): validates the fields and
+// constrains the caller-supplied path to the gallery root. ok=false means
+// the error response was already written.
+func (h *Handler) parseCreateJSON(w http.ResponseWriter, r *http.Request, g Gallery) (createInput, bool) {
+	var in createInput
+	var body struct {
+		Path            string           `json:"path"`
+		Tags            []string         `json:"tags"`
+		Folder          string           `json:"folder"`
+		Autotag         bool             `json:"autotag"`
+		TaggerName      string           `json:"tagger_name"`
+		Via             string           `json:"via"`
+		Source          string           `json:"source"`
+		URL             string           `json:"url"`
+		MD5             string           `json:"md5"`
+		Commentary      string           `json:"commentary"`
+		Notes           []annotationJSON `json:"notes"`
+		Collection      string           `json:"collection"`
+		CollectionOrder *int             `json:"collection_order"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return in, false
+	}
+	if body.Path == "" {
+		apiError(w, http.StatusBadRequest, "invalid_request", "path is required")
+		return in, false
+	}
+	in.imgPath = body.Path
+	in.initialTags = body.Tags
+	in.folder = strings.TrimSpace(body.Folder)
+	in.autotag = body.Autotag
+	in.taggerName = strings.TrimSpace(body.TaggerName)
+	in.via = strings.TrimSpace(body.Via)
+	if err := validateVia(in.via); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return in, false
+	}
+	in.source = strings.TrimSpace(body.Source)
+	in.url = strings.TrimSpace(body.URL)
+	in.md5 = strings.TrimSpace(body.MD5)
+	in.commentary = strings.TrimSpace(body.Commentary)
+	in.notes = annotationsFromInput(body.Notes)
+	in.collection = strings.TrimSpace(body.Collection)
+	in.collectionOrder = body.CollectionOrder
+	if err := validateCreateProvenance(in.source, in.url, in.md5, in.collection, in.commentary, in.collectionOrder); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return in, false
+	}
+
+	// Relative path + folder: resolve under <gallery>/<folder>/<path>.
+	// Absolute paths go through the gate just below.
+	if in.folder != "" && !filepath.IsAbs(in.imgPath) {
+		destDir, destErr := gallery.ResolveSubdir(g.GalleryPath, in.folder)
+		if destErr != nil {
+			apiError(w, http.StatusBadRequest, "invalid_request", destErr.Error())
+			return in, false
+		}
+		in.imgPath = filepath.Join(destDir, in.imgPath)
+	}
+
+	// Constrain the caller-supplied path to the gallery root. The
+	// operator owns the gallery folder and the API is the operator-
+	// facing surface, so an ingest-by-path that quietly registers a
+	// row pointing outside the gallery would have a later
+	// DELETE /api/v1/images/{id} unlink files the operator never
+	// meant to manage. Mirror the upload form's containment.
+	absPath, absErr := filepath.Abs(in.imgPath)
+	if absErr != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "invalid path")
+		return in, false
+	}
+	galleryAbs, gErr := filepath.Abs(g.GalleryPath)
+	if gErr != nil {
+		apiError(w, http.StatusInternalServerError, "internal_error", "gallery path unresolvable")
+		return in, false
+	}
+	if !gallery.PathInside(galleryAbs, absPath) {
+		apiError(w, http.StatusBadRequest, "invalid_request", "path must be inside the gallery root")
+		return in, false
+	}
+	in.imgPath = absPath
+
+	// Translate the common client-side mistake (path doesn't exist)
+	// to a 400 with a sanitised message so the response body doesn't
+	// echo the operator's filesystem layout and the status class
+	// reflects the caller error rather than a server failure.
+	if _, statErr := os.Stat(in.imgPath); os.IsNotExist(statErr) {
+		apiError(w, http.StatusBadRequest, "not_found", "file not found")
+		return in, false
+	}
+	return in, true
+}
+
 // createImage handles POST /api/v1/images. Accepts either multipart
 // (with `file`, `tags`, `folder`, `autotag`, `tagger_name`, `via`) or
 // JSON (with `path`, `tags`, `folder`, `autotag`, `tagger_name`,
@@ -499,191 +683,32 @@ func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
 // absolute paths are used verbatim. `via` lands on `images.origin` and
 // is attached to each initial tag's `image_tags.tagger_name`. The
 // optional provenance fields `source`, `url`, `collection`, and
-// `collection_order` are written onto the new row; they are ignored on
-// a duplicate-SHA insert so re-pushing a known file never overwrites
-// the existing row's operator-edited values.
+// `collection_order` are written onto the new row; a duplicate-SHA
+// insert instead merges the pushed source, tags, commentary and notes
+// into the existing row (collection fields are ignored there).
 func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 	g, ok := h.resolveGallery(w, r)
 	if !ok {
 		return
 	}
-	ct := r.Header.Get("Content-Type")
-
-	var (
-		imgPath         string
-		initialTags     []string
-		folder          string
-		autotag         bool
-		taggerName      string
-		via             string // caller-supplied label; stored on images.origin and inherited by initial tags
-		source          string // operator-edited provenance label; set on the new row when non-empty
-		url             string // canonical web URL; set on the new row when non-empty
-		collection      string // collection label (images.series); set on the new row when non-empty
-		collectionOrder *int   // 1-based position within collection; nil = unset
-		uploadedToDisk  bool   // true when we wrote the file ourselves (multipart)
-	)
-
-	if isMultipart(ct) {
-		maxBytes := int64(h.cfg.Gallery.MaxFileSizeMB) * 1024 * 1024
-		r.Body = http.MaxBytesReader(w, r.Body, maxBytes+4096)
-		if err := r.ParseMultipartForm(32 << 20); err != nil {
-			apiError(w, http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds max size")
-			return
-		}
-		file, fh, err := r.FormFile("file")
-		if err != nil {
-			apiError(w, http.StatusBadRequest, "invalid_request", "missing file field")
-			return
-		}
-		defer func() { _ = file.Close() }()
-
-		folder = strings.TrimSpace(r.FormValue("folder"))
-		autotag = isTrue(r.FormValue("autotag"))
-		taggerName = strings.TrimSpace(r.FormValue("tagger_name"))
-		via = strings.TrimSpace(r.FormValue("via"))
-		if err := validateVia(via); err != nil {
-			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
-		}
-		source = strings.TrimSpace(r.FormValue("source"))
-		url = strings.TrimSpace(r.FormValue("url"))
-		collection = strings.TrimSpace(r.FormValue("collection"))
-		if raw := strings.TrimSpace(r.FormValue("collection_order")); raw != "" {
-			n, convErr := strconv.Atoi(raw)
-			if convErr != nil {
-				apiError(w, http.StatusBadRequest, "invalid_request", "collection_order must be an integer")
-				return
-			}
-			collectionOrder = &n
-		}
-		if err := validateCreateProvenance(source, url, collection, collectionOrder); err != nil {
-			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
-		}
-
-		destDir, destErr := gallery.ResolveSubdir(g.GalleryPath, folder)
-		if destErr != nil {
-			apiError(w, http.StatusBadRequest, "invalid_request", destErr.Error())
-			return
-		}
-		if err := os.MkdirAll(destDir, 0755); err != nil {
-			apiError(w, http.StatusInternalServerError, "internal_error", "failed to create folder: "+err.Error())
-			return
-		}
-
-		// Write directly to the final destination so the watcher sees
-		// the real filename rather than a temp one (which would get
-		// marked missing as soon as we renamed it).
-		dstPath := gallery.UniqueDestPath(destDir, fh.Filename)
-		dst, err := os.Create(dstPath)
-		if err != nil {
-			apiError(w, http.StatusInternalServerError, "internal_error", "failed to create destination file")
-			return
-		}
-		if _, err := io.Copy(dst, file); err != nil {
-			_ = dst.Close()
-			_ = os.Remove(dstPath)
-			apiError(w, http.StatusInternalServerError, "internal_error", "failed to save upload")
-			return
-		}
-		_ = dst.Close()
-
-		if tagsJSON := r.FormValue("tags"); tagsJSON != "" {
-			_ = json.Unmarshal([]byte(tagsJSON), &initialTags)
-		}
-		imgPath = dstPath
-		uploadedToDisk = true
+	var in createInput
+	if isMultipart(r.Header.Get("Content-Type")) {
+		in, ok = h.parseCreateMultipart(w, r, g)
 	} else {
-		var body struct {
-			Path            string   `json:"path"`
-			Tags            []string `json:"tags"`
-			Folder          string   `json:"folder"`
-			Autotag         bool     `json:"autotag"`
-			TaggerName      string   `json:"tagger_name"`
-			Via             string   `json:"via"`
-			Source          string   `json:"source"`
-			URL             string   `json:"url"`
-			Collection      string   `json:"collection"`
-			CollectionOrder *int     `json:"collection_order"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
-			return
-		}
-		if body.Path == "" {
-			apiError(w, http.StatusBadRequest, "invalid_request", "path is required")
-			return
-		}
-		imgPath = body.Path
-		initialTags = body.Tags
-		folder = strings.TrimSpace(body.Folder)
-		autotag = body.Autotag
-		taggerName = strings.TrimSpace(body.TaggerName)
-		via = strings.TrimSpace(body.Via)
-		if err := validateVia(via); err != nil {
-			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
-		}
-		source = strings.TrimSpace(body.Source)
-		url = strings.TrimSpace(body.URL)
-		collection = strings.TrimSpace(body.Collection)
-		collectionOrder = body.CollectionOrder
-		if err := validateCreateProvenance(source, url, collection, collectionOrder); err != nil {
-			apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
-		}
-
-		// Relative path + folder: resolve under <gallery>/<folder>/<path>.
-		// Absolute paths go through the gate just below.
-		if folder != "" && !filepath.IsAbs(imgPath) {
-			destDir, destErr := gallery.ResolveSubdir(g.GalleryPath, folder)
-			if destErr != nil {
-				apiError(w, http.StatusBadRequest, "invalid_request", destErr.Error())
-				return
-			}
-			imgPath = filepath.Join(destDir, imgPath)
-		}
-
-		// Constrain the caller-supplied path to the gallery root. The
-		// operator owns the gallery folder and the API is the operator-
-		// facing surface, so an ingest-by-path that quietly registers a
-		// row pointing outside the gallery would have a later
-		// DELETE /api/v1/images/{id} unlink files the operator never
-		// meant to manage. Mirror the upload form's containment.
-		absPath, absErr := filepath.Abs(imgPath)
-		if absErr != nil {
-			apiError(w, http.StatusBadRequest, "invalid_request", "invalid path")
-			return
-		}
-		galleryAbs, gErr := filepath.Abs(g.GalleryPath)
-		if gErr != nil {
-			apiError(w, http.StatusInternalServerError, "internal_error", "gallery path unresolvable")
-			return
-		}
-		if !gallery.PathInside(galleryAbs, absPath) {
-			apiError(w, http.StatusBadRequest, "invalid_request", "path must be inside the gallery root")
-			return
-		}
-		imgPath = absPath
-
-		// Translate the common client-side mistake (path doesn't exist)
-		// to a 400 with a sanitised message so the response body doesn't
-		// echo the operator's filesystem layout and the status class
-		// reflects the caller error rather than a server failure.
-		if _, statErr := os.Stat(imgPath); os.IsNotExist(statErr) {
-			apiError(w, http.StatusBadRequest, "not_found", "file not found")
-			return
-		}
+		in, ok = h.parseCreateJSON(w, r, g)
+	}
+	if !ok {
+		return
 	}
 
 	// Enforce gallery.max_file_size_mb for both modes. Multipart also
 	// has MaxBytesReader; this mainly guards the JSON path-reference
 	// mode where the caller supplies an absolute path.
 	if maxMB := h.cfg.Gallery.MaxFileSizeMB; maxMB > 0 {
-		if info, err := os.Stat(imgPath); err == nil {
+		if info, err := os.Stat(in.imgPath); err == nil {
 			if info.Size() > int64(maxMB)*1024*1024 {
-				if uploadedToDisk {
-					_ = os.Remove(imgPath)
+				if in.uploadedToDisk {
+					_ = os.Remove(in.imgPath)
 				}
 				apiError(w, http.StatusRequestEntityTooLarge, "file_too_large",
 					fmt.Sprintf("file exceeds max size (%d MB)", maxMB))
@@ -692,10 +717,10 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	fileType, ftErr := gallery.DetectFileType(imgPath)
+	fileType, ftErr := gallery.DetectFileType(in.imgPath)
 	if ftErr != nil {
-		if uploadedToDisk {
-			_ = os.Remove(imgPath)
+		if in.uploadedToDisk {
+			_ = os.Remove(in.imgPath)
 		}
 		apiError(w, http.StatusBadRequest, "unsupported_type", "unsupported or unrecognised file type")
 		return
@@ -705,17 +730,17 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 	// lands in the DB. cbz integrity is verified inside Ingest and
 	// video frames decode later via ffmpeg, so both buckets skip this.
 	if !gallery.IsVideoType(fileType) && fileType != models.FileTypeCBZ {
-		if !canDecodeImage(imgPath) {
+		if !canDecodeImage(in.imgPath) {
 			// ffmpeg decodes JPEGs with a chroma subsampling ratio Go's
 			// image/jpeg refuses (some CDN resizers emit these); re-encode the
 			// uploaded file in place so the dimension probe, thumbnail, and
 			// phash that follow can read it. Only a file we just wrote is
 			// rewritten, never an operator's path-referenced original.
-			rescued := uploadedToDisk && fileType == models.FileTypeJPEG &&
-				gallery.NormalizeImage(imgPath) == nil && canDecodeImage(imgPath)
+			rescued := in.uploadedToDisk && fileType == models.FileTypeJPEG &&
+				gallery.NormalizeImage(in.imgPath) == nil && canDecodeImage(in.imgPath)
 			if !rescued {
-				if uploadedToDisk {
-					_ = os.Remove(imgPath)
+				if in.uploadedToDisk {
+					_ = os.Remove(in.imgPath)
 				}
 				apiError(w, http.StatusUnsupportedMediaType, "unsupported_type", "file does not decode as an image")
 				return
@@ -725,19 +750,19 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 
 	// Caller-supplied `via` wins; otherwise multipart defaults to
 	// "upload" and JSON path-reference defaults to "ingest".
-	origin := via
+	origin := in.via
 	if origin == "" {
-		if uploadedToDisk {
+		if in.uploadedToDisk {
 			origin = models.OriginUpload
 		} else {
 			origin = models.OriginIngest
 		}
 	}
 
-	img, isDuplicate, err := gallery.Ingest(g.DB, g.GalleryPath, g.ThumbnailsPath, imgPath, fileType, origin)
+	img, isDuplicate, err := gallery.Ingest(g.DB, g.GalleryPath, g.ThumbnailsPath, in.imgPath, fileType, origin)
 	if err != nil {
-		if uploadedToDisk {
-			_ = os.Remove(imgPath)
+		if in.uploadedToDisk {
+			_ = os.Remove(in.imgPath)
 		}
 		logx.Warnf("api createImage ingest: %v", err)
 		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -745,39 +770,90 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 	}
 	g.invalidate()
 	if isDuplicate {
-		// gallery.Ingest already recorded the new file as an alias path
-		// on the existing canonical row; leaving the file on disk keeps
-		// the alias valid. Surface the existing image with alias_added=
-		// true so a retry-on-409 client can recognise the partial-success.
+		// A multipart upload just wrote a second copy of bytes the gallery
+		// already holds; keeping it leaves a redundant file (and alias) on
+		// disk. Drop both so a re-push is metadata-only. A JSON path-reference
+		// duplicate is the operator's own second path, so it stays recorded as
+		// an alias. Either way the pushed tags and provenance fold into the
+		// existing row instead of being discarded (issue #6).
+		aliasAdded := true
+		if in.uploadedToDisk {
+			aliasAdded = false
+			if _, delErr := g.DB.Write.Exec(
+				`DELETE FROM image_paths WHERE image_id = ? AND path = ? AND is_canonical = 0`,
+				img.ID, in.imgPath,
+			); delErr != nil {
+				logx.Warnf("api createImage drop duplicate alias: %v", delErr)
+			}
+			if rmErr := os.Remove(in.imgPath); rmErr != nil && !os.IsNotExist(rmErr) {
+				logx.Warnf("api createImage remove duplicate upload %q: %v", in.imgPath, rmErr)
+			}
+		}
+		sum, tagWarnings, mergeErr := h.mergeSource(g, img.ID, in.source, in.url, in.md5, in.initialTags)
+		if mergeErr != nil {
+			logx.Warnf("api createImage merge: %v", mergeErr)
+			apiError(w, http.StatusInternalServerError, "internal_error", "duplicate detected but the merge failed: "+mergeErr.Error())
+			return
+		}
+		if in.source != "" && in.commentary != "" {
+			if err := gallery.SetSourceCommentary(g.DB, img.ID, in.source, "", in.commentary); err != nil {
+				logx.Warnf("api createImage commentary: %v", err)
+				apiError(w, http.StatusInternalServerError, "internal_error", "duplicate detected but the merge failed: "+err.Error())
+				return
+			}
+		}
+		if in.source != "" && len(in.notes) > 0 {
+			if err := gallery.ReplaceSourceAnnotations(g.DB, img.ID, in.source, "", in.notes); err != nil {
+				logx.Warnf("api createImage annotations: %v", err)
+				apiError(w, http.StatusInternalServerError, "internal_error", "duplicate detected but the merge failed: "+err.Error())
+				return
+			}
+		}
+		g.invalidate()
 		resp, respErr := h.buildImageResponse(g, img.ID)
 		if respErr != nil {
 			apiError(w, http.StatusInternalServerError, "internal_error", "failed to build response")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		envelope := map[string]any{
 			"image":       resp,
-			"alias_added": true,
-		})
+			"alias_added": aliasAdded,
+			"merge":       sum,
+		}
+		if len(tagWarnings) > 0 {
+			envelope["tag_warnings"] = tagWarnings
+		}
+		writeJSON(w, http.StatusOK, envelope)
 		return
 	}
 
-	// Provenance lands only on a freshly-created row; the duplicate path
-	// above returns first so re-pushing a known file never overwrites the
-	// existing row's operator-edited source / url / collection.
-	if err := applyCreateProvenance(g, img.ID, source, url, collection, collectionOrder); err != nil {
+	// A freshly-created row records its provenance directly; the duplicate
+	// path above merges instead.
+	if err := applyCreateProvenance(g, img.ID, in.source, in.url, in.md5, in.collection, in.commentary, in.collectionOrder); err != nil {
 		logx.Warnf("api createImage provenance: %v", err)
 		apiError(w, http.StatusInternalServerError, "internal_error", "failed to set provenance fields")
 		return
 	}
+	if in.source != "" && len(in.notes) > 0 {
+		if err := gallery.ReplaceSourceAnnotations(g.DB, img.ID, in.source, "", in.notes); err != nil {
+			logx.Warnf("api createImage annotations: %v", err)
+		}
+	}
 
-	tagWarnings := h.applyInitialTags(g, img.ID, initialTags, via)
+	// Imported tags are attributed to their source so each source owns a
+	// prunable slice; a sourceless push keeps the caller's via label.
+	tagVia := in.via
+	if in.source != "" {
+		tagVia = in.source
+	}
+	tagWarnings := h.applyInitialTags(g, img.ID, in.initialTags, tagVia)
 
 	var autotagNote string
-	if autotag {
+	if in.autotag {
 		if !tagger.IsAvailable(h.cfg) {
 			autotagNote = "autotag skipped: tagger not available"
 		} else {
-			selected, selErr := h.selectedTaggers(g.Name, taggerName)
+			selected, selErr := h.selectedTaggers(g.Name, in.taggerName)
 			if selErr != nil {
 				autotagNote = "autotag skipped: " + selErr.Error()
 			} else if err := h.jobs.Start("autotag"); err != nil {
@@ -860,11 +936,7 @@ func boolToInt(b bool) int {
 }
 
 func (h *Handler) deleteImage(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -1051,11 +1123,7 @@ func loadTagsForImages(g Gallery, ids []int64) (map[int64][]imageTagJSON, error)
 // object remains reachable via GET /api/v1/images/:id for callers who
 // need adjacent metadata.
 func (h *Handler) listImageTags(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -1075,11 +1143,7 @@ func (h *Handler) listImageTags(w http.ResponseWriter, r *http.Request) {
 // be a plain name (general category) or "category:name", matching the
 // web UI's tag input.
 func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -1092,8 +1156,7 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 		Tags []string `json:"tags"`
 		Via  string   `json:"via"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if len(body.Tags) == 0 {
@@ -1114,6 +1177,13 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 	tagWarnings := h.applyInitialTags(g, id, body.Tags, via)
 	g.invalidate()
 
+	h.writeImageTagsResponse(w, g, id, tagWarnings)
+}
+
+// writeImageTagsResponse is the shared post-mutation tail of the tag add /
+// remove handlers: the image's tag list, wrapped with warnings when any
+// token failed to resolve.
+func (h *Handler) writeImageTagsResponse(w http.ResponseWriter, g Gallery, id int64, tagWarnings []string) {
 	resp, err := h.buildImageResponse(g, id)
 	if err != nil {
 		apiError(w, http.StatusNotFound, "not_found", "image not found")
@@ -1153,6 +1223,19 @@ func (h *Handler) applyInitialTags(g Gallery, imgID int64, rawTags []string, via
 	if via == "" {
 		via = "api"
 	}
+	tagIDs, warnings := h.resolveTagNames(g, rawTags)
+	if len(tagIDs) > 0 {
+		if _, err := g.TagSvc.AddTagsToOneImage(imgID, tagIDs, via); err != nil {
+			warnings = append(warnings, "apply tags: "+err.Error())
+		}
+	}
+	return warnings
+}
+
+// resolveTagNames turns raw `bare` / `category:bare` tokens into tag ids,
+// creating missing rows. Per-token failures land in warnings without
+// aborting the batch.
+func (h *Handler) resolveTagNames(g Gallery, rawTags []string) ([]int64, []string) {
 	var warnings []string
 	tagIDs := make([]int64, 0, len(rawTags))
 	for _, tagName := range rawTags {
@@ -1168,12 +1251,7 @@ func (h *Handler) applyInitialTags(g Gallery, imgID int64, rawTags []string, via
 		}
 		tagIDs = append(tagIDs, tag.ID)
 	}
-	if len(tagIDs) > 0 {
-		if _, err := g.TagSvc.AddTagsToOneImage(imgID, tagIDs, via); err != nil {
-			warnings = append(warnings, "apply tags: "+err.Error())
-		}
-	}
-	return warnings
+	return tagIDs, warnings
 }
 
 // resolveCategoryTag splits "artist:foo" into (artist_id, "foo") when
@@ -1206,11 +1284,7 @@ func (h *Handler) resolveCategoryTag(g Gallery, input string) (int64, string, er
 // plain name matching more than one category on the image returns 409
 // so the caller can disambiguate.
 func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -1222,8 +1296,7 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Tags []string `json:"tags"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if len(body.Tags) == 0 {
@@ -1255,19 +1328,7 @@ func (h *Handler) removeImageTags(w http.ResponseWriter, r *http.Request) {
 	}
 	g.invalidate()
 
-	resp, err := h.buildImageResponse(g, id)
-	if err != nil {
-		apiError(w, http.StatusNotFound, "not_found", "image not found")
-		return
-	}
-	if len(tagWarnings) > 0 {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"tags":         resp.Tags,
-			"tag_warnings": tagWarnings,
-		})
-		return
-	}
-	writeJSON(w, http.StatusOK, resp.Tags)
+	h.writeImageTagsResponse(w, g, id, tagWarnings)
 }
 
 // resolveImageTagID returns the tag_id attached to imageID that matches

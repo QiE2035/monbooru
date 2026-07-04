@@ -1,3 +1,24 @@
+{{/* maintenance_row is one maintenance-table action: title, hint, the
+     POST target with optional confirm dialog / job-status kick / extra
+     hidden fields, and the button verb. The missing-images row stays
+     bespoke for the inline view link in its hint. */}}
+{{define "maintenance_row"}}
+        <tr>
+          <td><strong>{{.Title}}</strong> <span class="field-hint">- {{.Desc}}</span></td>
+          <td>
+            <form hx-post="{{.URL}}" hx-target="#flash-maintenance" hx-swap="innerHTML"
+                  {{if .JobKick}}hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}"
+                  {{end}}{{if .Confirm}}hx-confirm="{{.Confirm}}"
+                  {{if .ConfirmDanger}}data-confirm-danger="{{.ConfirmDanger}}"
+                  {{end}}data-confirm-ok="{{.ConfirmOK}}"
+                  {{end}}style="display:inline">
+              <input type="hidden" name="_csrf" value="{{.CSRF}}">
+              {{range $k, $v := .Fields}}<input type="hidden" name="{{$k}}" value="{{$v}}">
+              {{end}}<button type="submit" class="{{if .Danger}}btn-danger {{end}}btn-sm">{{.Verb}}</button>
+            </form>
+          </td>
+        </tr>
+{{end}}
 {{define "settings.html"}}
 {{template "layout_head" .}}
 <div id="sidebar-inner">
@@ -34,22 +55,7 @@
       <div class="settings-cols">
         <div class="settings-sub">
           <h4>Files</h4>
-          <div class="field range-row">
-            <label for="max_file_size_mb">Max file size (MB)</label>
-            <output id="max_file_size_mb_out">{{$cfg.Gallery.MaxFileSizeMB}}</output>
-            <div class="range-slider-row">
-              <span class="range-bound range-bound-min">1</span>
-              <input type="range" name="max_file_size_mb" id="max_file_size_mb"
-                     min="1" max="1024" step="1" value="{{$cfg.Gallery.MaxFileSizeMB}}" list="max_file_size_mb_ticks"
-                     oninput="document.getElementById('max_file_size_mb_out').value=this.value">
-              <span class="range-bound range-bound-max">1024</span>
-            </div>
-            <datalist id="max_file_size_mb_ticks">
-              <option value="1"></option><option value="128"></option><option value="256"></option>
-              <option value="512"></option><option value="768"></option><option value="1024"></option>
-            </datalist>
-            <span class="field-hint">Files larger than this are skipped during sync.</span>
-          </div>
+          {{template "partials/range_field.html" dict "Name" "max_file_size_mb" "Label" "Max file size (MB)" "Min" 1 "Max" 1024 "Value" $cfg.Gallery.MaxFileSizeMB "Ticks" (list 1 128 256 512 768 1024) "Hint" "Files larger than this are skipped during sync."}}
           <div class="field">
             <label for="default_upload_folder">Default upload folder</label>
             <input type="text" name="default_upload_folder" id="default_upload_folder" value="{{$cfg.Gallery.DefaultUploadFolder}}" placeholder="(gallery root)">
@@ -64,21 +70,7 @@
         </div>
         <div class="settings-sub">
           <h4>UI</h4>
-          <div class="field range-row">
-            <label for="page_size">Page size</label>
-            <output id="page_size_out">{{$cfg.UI.PageSize}}</output>
-            <div class="range-slider-row">
-              <span class="range-bound range-bound-min">1</span>
-              <input type="range" name="page_size" id="page_size"
-                     min="1" max="100" step="1" value="{{$cfg.UI.PageSize}}" list="page_size_ticks"
-                     oninput="document.getElementById('page_size_out').value=this.value">
-              <span class="range-bound range-bound-max">100</span>
-            </div>
-            <datalist id="page_size_ticks">
-              <option value="20"></option><option value="40"></option><option value="60"></option>
-              <option value="80"></option><option value="100"></option>
-            </datalist>
-          </div>
+          {{template "partials/range_field.html" dict "Name" "page_size" "Label" "Page size" "Min" 1 "Max" 100 "Value" $cfg.UI.PageSize "Ticks" (list 20 40 60 80 100)}}
           <div class="field">
             <label>Thumbnails</label>
             <div class="radio-row">
@@ -201,7 +193,7 @@
       var form = dlg.querySelector('form');
       form.reset();
       setAddGalleryBusy(form, false);
-      document.getElementById('flash-gallery-add').innerHTML = '';
+      clearSlots('flash-gallery-add');
       syncImportToggle();
       dlg.showModal();
     }
@@ -350,7 +342,7 @@
       form.setAttribute('hx-post', '/settings/galleries/' + name + '/rename');
       if (window.htmx) window.htmx.process(form);
       document.getElementById('gallery-rename-src').textContent = name;
-      document.getElementById('flash-gallery-rename').innerHTML = '';
+      clearSlots('flash-gallery-rename');
       var input = document.getElementById('gallery-rename-input');
       input.value = name;
       document.getElementById('gallery-rename-dialog').showModal();
@@ -365,7 +357,7 @@
       form.setAttribute('hx-post', '/settings/galleries/' + name + '/delete');
       if (window.htmx) window.htmx.process(form);
       document.getElementById('gallery-delete-src').textContent = name;
-      document.getElementById('flash-gallery-delete').innerHTML = '';
+      clearSlots('flash-gallery-delete');
       form.querySelector('input[name="remove_folder"]').checked = false;
       form.querySelector('input[name="confirm_name"]').value = '';
       document.getElementById('gallery-delete-dialog').showModal();
@@ -392,7 +384,7 @@
       form.setAttribute('hx-post', '/settings/galleries/' + name + '/import');
       if (window.htmx) window.htmx.process(form);
       document.getElementById('gallery-import-src').textContent = name;
-      document.getElementById('flash-gallery-import').innerHTML = '';
+      clearSlots('flash-gallery-import');
       form.reset();
       setImportBusy(form, false);
       // Active and default galleries reject Replace server-side; disable the
@@ -490,7 +482,7 @@
           <div class="field">
             <label for="monloader_url">web url</label>
             <input type="text" name="monloader_url" id="monloader_url" value="{{$cfg.Server.MonloaderURL}}" placeholder="http://localhost:8081">
-            <p class="field-hint">Browser URL for the "Go to monloader" top-bar link; blank = same as api url.</p>
+            <p class="field-hint">Browser URL for the footer "connected to monloader" link; blank = same as api url.</p>
           </div>
         </div>
       </div>
@@ -521,38 +513,8 @@
             <label><input type="checkbox" name="use_cuda"{{if $cfg.Tagger.UseCUDA}} checked{{end}}> Use GPU (CUDA)</label>
             <p class="field-hint">Requires a CUDA-capable image and a GPU passed into the container.</p>
           </div>
-          <div class="field range-row">
-            <label for="parallel">Parallel workers</label>
-            <output id="parallel_out">{{$cfg.Tagger.Parallel}}</output>
-            <div class="range-slider-row">
-              <span class="range-bound range-bound-min">1</span>
-              <input type="range" name="parallel" id="parallel"
-                     min="1" max="16" step="1" value="{{$cfg.Tagger.Parallel}}" list="parallel_ticks"
-                     oninput="document.getElementById('parallel_out').value=this.value">
-              <span class="range-bound range-bound-max">16</span>
-            </div>
-            <datalist id="parallel_ticks">
-              <option value="1"></option><option value="2"></option><option value="4"></option>
-              <option value="8"></option><option value="12"></option><option value="16"></option>
-            </datalist>
-            <p class="field-hint">Images tagged in parallel.</p>
-          </div>
-          <div class="field range-row">
-            <label for="idle_release_after_minutes">Tagger RAM/VRAM idle release (minutes)</label>
-            <output id="idle_release_after_minutes_out">{{$cfg.Tagger.IdleReleaseAfterMinutes}}</output>
-            <div class="range-slider-row">
-              <span class="range-bound range-bound-min">0</span>
-              <input type="range" name="idle_release_after_minutes" id="idle_release_after_minutes"
-                     min="0" max="60" step="1" value="{{$cfg.Tagger.IdleReleaseAfterMinutes}}" list="idle_release_ticks"
-                     oninput="document.getElementById('idle_release_after_minutes_out').value=this.value">
-              <span class="range-bound range-bound-max">60</span>
-            </div>
-            <datalist id="idle_release_ticks">
-              <option value="0"></option><option value="15"></option><option value="30"></option>
-              <option value="45"></option><option value="60"></option>
-            </datalist>
-            <p class="field-hint">Use 0 to free it just after inference.</p>
-          </div>
+          {{template "partials/range_field.html" dict "Name" "parallel" "Label" "Parallel workers" "Min" 1 "Max" 16 "Value" $cfg.Tagger.Parallel "Ticks" (list 1 2 4 8 12 16) "Hint" "Images tagged in parallel."}}
+          {{template "partials/range_field.html" dict "Name" "idle_release_after_minutes" "Label" "Tagger RAM/VRAM idle release (minutes)" "Min" 0 "Max" 60 "Value" $cfg.Tagger.IdleReleaseAfterMinutes "Ticks" (list 0 15 30 45 60) "Hint" "Use 0 to free it just after inference."}}
         </div>
         <div class="settings-actions"><button type="submit">Save</button></div>
       </div>
@@ -683,22 +645,7 @@
       <div class="settings-cols">
         <div class="settings-sub">
           <h4>Find-pairs default distance</h4>
-          <div class="field range-row">
-            <label for="default_distance">Hamming distance</label>
-            <output id="default_distance_out">{{$cfg.Relations.DefaultDistance}}</output>
-            <div class="range-slider-row">
-              <span class="range-bound range-bound-min">0</span>
-              <input type="range" name="default_distance" id="default_distance"
-                     min="0" max="12" step="1" value="{{$cfg.Relations.DefaultDistance}}" list="default_distance_ticks"
-                     oninput="document.getElementById('default_distance_out').value=this.value">
-              <span class="range-bound range-bound-max">12</span>
-            </div>
-            <datalist id="default_distance_ticks">
-              <option value="0"></option><option value="2"></option><option value="4"></option>
-              <option value="6"></option><option value="8"></option><option value="10"></option>
-              <option value="12"></option>
-            </datalist>
-          </div>
+          {{template "partials/range_field.html" dict "Name" "default_distance" "Label" "Hamming distance" "Min" 0 "Max" 12 "Value" $cfg.Relations.DefaultDistance "Ticks" (list 0 2 4 6 8 10 12)}}
         </div>
         <div class="settings-sub">
           <h4>Default session order</h4>
@@ -750,102 +697,14 @@
             </form>
           </td>
         </tr>
-        <tr>
-          <td><strong>Orphaned thumbnails</strong> <span class="field-hint">- remove thumbnail files with no matching image</span></td>
-          <td>
-            <form hx-post="/settings/maintenance/prune-orphaned-thumbnails" hx-target="#flash-maintenance" hx-swap="innerHTML" style="display:inline">
-              <input type="hidden" name="_csrf" value="{{$csrf}}">
-              <button type="submit" class="btn-sm">Remove</button>
-            </form>
-          </td>
-        </tr>
-        <tr>
-          <td><strong>Rebuild thumbnails</strong> <span class="field-hint">- regenerate thumbnail files for every image</span></td>
-          <td>
-            <form hx-post="/settings/maintenance/rebuild-thumbnails" hx-target="#flash-maintenance" hx-swap="innerHTML"
-                  hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}"
-                  hx-confirm="Rebuild thumbnails for every image in this gallery?"
-                  data-confirm-danger="Long-running job; blocks other jobs until it finishes."
-                  data-confirm-ok="Rebuild"
-                  style="display:inline">
-              <input type="hidden" name="_csrf" value="{{$csrf}}">
-              <button type="submit" class="btn-sm">Rebuild</button>
-            </form>
-          </td>
-        </tr>
-        <tr>
-          <td><strong>Compute perceptual hashes</strong> <span class="field-hint">- backfill phash for every image that doesn't have one yet</span></td>
-          <td>
-            <form hx-post="/settings/maintenance/compute-phashes" hx-target="#flash-maintenance" hx-swap="innerHTML"
-                  hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}"
-                  hx-confirm="Compute perceptual hashes for every image still missing one?"
-                  data-confirm-ok="Compute"
-                  style="display:inline">
-              <input type="hidden" name="_csrf" value="{{$csrf}}">
-              <button type="submit" class="btn-sm">Compute</button>
-            </form>
-          </td>
-        </tr>
-        <tr>
-          <td><strong>Rebuild pair queue</strong> <span class="field-hint">- wipe potential relation pairs and rescan from scratch</span></td>
-          <td>
-            <form hx-post="/relations/find-pairs" hx-target="#flash-maintenance" hx-swap="innerHTML"
-                  hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}"
-                  hx-confirm="Wipe the existing pair queue and rescan from scratch?"
-                  data-confirm-danger="Skipped pairs and any queue work in progress are dropped."
-                  data-confirm-ok="Rebuild"
-                  style="display:inline">
-              <input type="hidden" name="_csrf" value="{{$csrf}}">
-              <input type="hidden" name="replace" value="true">
-              <input type="hidden" name="confirm" value="REBUILD">
-              <button type="submit" class="btn-sm btn-danger">Rebuild</button>
-            </form>
-          </td>
-        </tr>
-        <tr>
-          <td><strong>Tag counts</strong> <span class="field-hint">- recompute usage counts</span></td>
-          <td>
-            <form hx-post="/settings/maintenance/recalc-tags" hx-target="#flash-maintenance" hx-swap="innerHTML" style="display:inline">
-              <input type="hidden" name="_csrf" value="{{$csrf}}">
-              <button type="submit" class="btn-sm">Recalculate</button>
-            </form>
-          </td>
-        </tr>
-        <tr>
-          <td><strong>Re-extract metadata</strong> <span class="field-hint">- re-parse metadata for every image</span></td>
-          <td>
-            <form hx-post="/settings/maintenance/re-extract-metadata" hx-target="#flash-maintenance" hx-swap="innerHTML"
-                  hx-confirm="Re-parse metadata for every image in this gallery?"
-                  data-confirm-danger="Long-running job; blocks other jobs until it finishes."
-                  data-confirm-ok="Re-extract"
-                  style="display:inline">
-              <input type="hidden" name="_csrf" value="{{$csrf}}">
-              <button type="submit" class="btn-sm">Re-extract</button>
-            </form>
-          </td>
-        </tr>
-        <tr>
-          <td><strong>Vacuum database</strong> <span class="field-hint">- compact the SQLite file after mass deletions</span></td>
-          <td>
-            <form hx-post="/settings/maintenance/vacuum-db" hx-target="#flash-maintenance" hx-swap="innerHTML"
-                  hx-confirm="Compact the SQLite database now?"
-                  data-confirm-danger="Holds a database lock for the duration of the VACUUM; other jobs and queries will wait."
-                  data-confirm-ok="Vacuum"
-                  style="display:inline">
-              <input type="hidden" name="_csrf" value="{{$csrf}}">
-              <button type="submit" class="btn-sm">Vacuum</button>
-            </form>
-          </td>
-        </tr>
-        <tr>
-          <td><strong>Free memory</strong> <span class="field-hint">- shrink SQLite caches, return the Go heap, and release the auto-tagger from RAM/VRAM.</span></td>
-          <td>
-            <form hx-post="/settings/maintenance/free-memory" hx-target="#flash-maintenance" hx-swap="innerHTML" style="display:inline">
-              <input type="hidden" name="_csrf" value="{{$csrf}}">
-              <button type="submit" class="btn-sm">Free</button>
-            </form>
-          </td>
-        </tr>
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Orphaned thumbnails" "Desc" "remove thumbnail files with no matching image" "URL" "/settings/maintenance/prune-orphaned-thumbnails" "Verb" "Remove"}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Rebuild thumbnails" "Desc" "regenerate thumbnail files for every image" "URL" "/settings/maintenance/rebuild-thumbnails" "Verb" "Rebuild" "JobKick" true "Confirm" "Rebuild thumbnails for every image in this gallery?" "ConfirmDanger" "Long-running job; blocks other jobs until it finishes." "ConfirmOK" "Rebuild"}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Compute perceptual hashes" "Desc" "backfill phash for every image that doesn't have one yet" "URL" "/settings/maintenance/compute-phashes" "Verb" "Compute" "JobKick" true "Confirm" "Compute perceptual hashes for every image still missing one?" "ConfirmOK" "Compute"}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Rebuild pair queue" "Desc" "wipe potential relation pairs and rescan from scratch" "URL" "/relations/find-pairs" "Verb" "Rebuild" "Danger" true "JobKick" true "Confirm" "Wipe the existing pair queue and rescan from scratch?" "ConfirmDanger" "Skipped pairs and any queue work in progress are dropped." "ConfirmOK" "Rebuild" "Fields" (dict "replace" "true" "confirm" "REBUILD")}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Tag counts" "Desc" "recompute usage counts" "URL" "/settings/maintenance/recalc-tags" "Verb" "Recalculate"}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Re-extract metadata" "Desc" "re-parse metadata for every image" "URL" "/settings/maintenance/re-extract-metadata" "Verb" "Re-extract" "Confirm" "Re-parse metadata for every image in this gallery?" "ConfirmDanger" "Long-running job; blocks other jobs until it finishes." "ConfirmOK" "Re-extract"}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Vacuum database" "Desc" "compact the SQLite file after mass deletions" "URL" "/settings/maintenance/vacuum-db" "Verb" "Vacuum" "Confirm" "Compact the SQLite database now?" "ConfirmDanger" "Holds a database lock for the duration of the VACUUM; other jobs and queries will wait." "ConfirmOK" "Vacuum"}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Free memory" "Desc" "shrink SQLite caches, return the Go heap, and release the auto-tagger from RAM/VRAM." "URL" "/settings/maintenance/free-memory" "Verb" "Free"}}
       </tbody>
     </table>
     </div>

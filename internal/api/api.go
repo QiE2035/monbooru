@@ -25,6 +25,13 @@ type Gallery struct {
 	TagSvc           *tags.Service
 	RelationsSvc     *relations.Service
 	InvalidateCaches func()
+	// RecordFetch reports a source metadata-fetch outcome for an image so the
+	// detail page's poll can reflect it. state is "ok" on a successful enrich,
+	// "pending" while in flight, or a terminal failure code (a hash "mismatch",
+	// an enrich "error", or a monloader queue code like "unsupported_url" for a
+	// fetch that failed before it could enrich). May be nil (the test harness
+	// wires no web layer).
+	RecordFetch func(imageID int64, state, message string)
 	// VisibleCount / TagCount return the cached non-missing-image and
 	// non-alias-tag counts (the same values the Settings page shows). May
 	// be nil; listGalleries falls back to a direct query then.
@@ -37,6 +44,14 @@ type Gallery struct {
 func (g Gallery) invalidate() {
 	if g.InvalidateCaches != nil {
 		g.InvalidateCaches()
+	}
+}
+
+// recordFetch reports a source-fetch outcome to the web layer when one is
+// wired (nil in the test harness).
+func (g Gallery) recordFetch(imageID int64, state, message string) {
+	if g.RecordFetch != nil {
+		g.RecordFetch(imageID, state, message)
 	}
 }
 
@@ -88,6 +103,30 @@ func (h *Handler) resolveGallery(w http.ResponseWriter, r *http.Request) (Galler
 	return g, true
 }
 
+// decodeJSON decodes the request body into dst, answering the shared
+// invalid-JSON 400 on failure.
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return false
+	}
+	return true
+}
+
+// galleryAndID runs the shared gallery-then-{id} preamble of the id-bearing
+// handlers, keeping the gallery-selector error first.
+func (h *Handler) galleryAndID(w http.ResponseWriter, r *http.Request) (Gallery, int64, bool) {
+	g, ok := h.resolveGallery(w, r)
+	if !ok {
+		return Gallery{}, 0, false
+	}
+	id, ok := apiPathInt64(w, r, "id")
+	if !ok {
+		return Gallery{}, 0, false
+	}
+	return g, id, true
+}
+
 // Mount registers every API route on mux under /api/v1/.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/images", h.auth(h.createImage))
@@ -98,6 +137,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/images/{id}/tags", h.auth(h.listImageTags))
 	mux.HandleFunc("POST /api/v1/images/{id}/tags", h.auth(h.addImageTags))
 	mux.HandleFunc("DELETE /api/v1/images/{id}/tags", h.auth(h.removeImageTags))
+	mux.HandleFunc("POST /api/v1/images/{id}/enrich", h.auth(h.enrichImage))
+	mux.HandleFunc("POST /api/v1/images/{id}/fetch-status", h.auth(h.fetchStatusReport))
 
 	mux.HandleFunc("GET /api/v1/images/{id}/file", h.auth(h.serveImageFile))
 	mux.HandleFunc("GET /api/v1/images/{id}/thumbnail", h.auth(h.serveThumbnail))

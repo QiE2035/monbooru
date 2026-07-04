@@ -165,6 +165,148 @@ func TestImportGalleryJSON_RestoresRows(t *testing.T) {
 	}
 }
 
+func TestImportGalleryJSON_RoundTripsProvenance(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+	seedImportExportFixture(t, srv)
+
+	cx := srv.Get("stock")
+	var imgID int64
+	if err := cx.DB.Read.QueryRow(`SELECT id FROM images WHERE sha256 = ?`, "seed-sha").Scan(&imgID); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO image_sources (image_id, site, post_id, url, md5, commentary) VALUES (?, 'danbooru', '42', 'https://x/1', 'abc123', 'artist says hi')`, []any{imgID}},
+		{`INSERT INTO image_sources (image_id, site, post_id, url) VALUES (?, 'pixiv', '', 'https://x/2')`, []any{imgID}},
+		{`INSERT INTO image_annotations (image_id, site, post_id, x, y, w, h, body) VALUES (?, 'danbooru', '42', 1, 2, 3, 4, 'a note box')`, []any{imgID}},
+		{`INSERT INTO image_collections (image_id, name, position) VALUES (?, 'extras', 7)`, []any{imgID}},
+		{`UPDATE images SET source = 'danbooru', url = 'https://x/1', note = 'operator note' WHERE id = ?`, []any{imgID}},
+	} {
+		if _, err := cx.DB.Write.Exec(stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed provenance: %v", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := srv.ExportGalleryJSON("stock", &buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ImportGallery("stock", "json", bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	cx = srv.Get("stock")
+	var site, postID, commentary, md5, note, primary string
+	if err := cx.DB.Read.QueryRow(
+		`SELECT site, post_id, commentary, md5 FROM image_sources WHERE image_id = ? ORDER BY rowid LIMIT 1`, imgID,
+	).Scan(&site, &postID, &commentary, &md5); err != nil {
+		t.Fatalf("source row: %v", err)
+	}
+	if site != "danbooru" || postID != "42" || commentary != "artist says hi" || md5 != "abc123" {
+		t.Errorf("primary source = %q/%q/%q/%q, want seeded values", site, postID, commentary, md5)
+	}
+	var srcCount, annCount, collCount int
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM image_sources WHERE image_id = ?`, imgID).Scan(&srcCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM image_annotations WHERE image_id = ?`, imgID).Scan(&annCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM image_collections WHERE image_id = ? AND name = 'extras'`, imgID).Scan(&collCount); err != nil {
+		t.Fatal(err)
+	}
+	if srcCount != 2 || annCount != 1 || collCount != 1 {
+		t.Errorf("after import: sources=%d annotations=%d extra-collections=%d, want 2/1/1", srcCount, annCount, collCount)
+	}
+	if err := cx.DB.Read.QueryRow(`SELECT note, source FROM images WHERE id = ?`, imgID).Scan(&note, &primary); err != nil {
+		t.Fatal(err)
+	}
+	if note != "operator note" {
+		t.Errorf("note = %q, want %q", note, "operator note")
+	}
+	if primary != "danbooru" {
+		t.Errorf("scalar source mirror = %q, want danbooru (oldest row)", primary)
+	}
+}
+
+func TestImportGalleryJSON_SeedsCollectionsFromSeriesOnOldExports(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+	seedImportExportFixture(t, srv)
+
+	cx := srv.Get("stock")
+	if _, err := cx.DB.Write.Exec(`UPDATE images SET series = 'oldbook', series_order = 3 WHERE sha256 = 'seed-sha'`); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := srv.ExportGalleryJSON("stock", &buf); err != nil {
+		t.Fatal(err)
+	}
+	var exp galleryExport
+	if err := json.Unmarshal(buf.Bytes(), &exp); err != nil {
+		t.Fatal(err)
+	}
+	exp.Version = 2
+	exp.ImageCollections = nil
+	old, err := json.Marshal(exp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ImportGallery("stock", "json", bytes.NewReader(old)); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	cx = srv.Get("stock")
+	var name string
+	var pos int
+	if err := cx.DB.Read.QueryRow(
+		`SELECT name, position FROM image_collections WHERE name = 'oldbook'`,
+	).Scan(&name, &pos); err != nil {
+		t.Fatalf("derived membership: %v", err)
+	}
+	if pos != 3 {
+		t.Errorf("derived position = %d, want 3", pos)
+	}
+}
+
+func TestImportGalleryJSON_FailedLoadLeavesTargetIntact(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+	seedImportExportFixture(t, srv)
+
+	var buf bytes.Buffer
+	if err := srv.ExportGalleryJSON("stock", &buf); err != nil {
+		t.Fatal(err)
+	}
+	// A document that decodes fine but fails during load: one image_tags row
+	// referencing a tag no tags row defines trips the deferred FK check at
+	// commit.
+	var exp galleryExport
+	if err := json.Unmarshal(buf.Bytes(), &exp); err != nil {
+		t.Fatal(err)
+	}
+	exp.ImageTags = append(exp.ImageTags, imageTagRow{ImageID: exp.Images[0].ID, TagID: 999999})
+	bad, err := json.Marshal(exp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := srv.ImportGallery("stock", "json", bytes.NewReader(bad)); err == nil {
+		t.Fatal("import of a bad export succeeded, want error")
+	}
+
+	cx := srv.Get("stock")
+	var imgCount, tagCount int
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&imgCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM image_tags`).Scan(&tagCount); err != nil {
+		t.Fatal(err)
+	}
+	if imgCount != 1 || tagCount != 1 {
+		t.Errorf("after failed import: images=%d image_tags=%d, want the original 1/1", imgCount, tagCount)
+	}
+}
+
 func TestImportGalleryArchive_RestoresImagesAndDB(t *testing.T) {
 	srv := newMultiGalleryServer(t)
 	seedImportExportFixture(t, srv)

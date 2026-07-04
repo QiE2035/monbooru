@@ -959,6 +959,62 @@ func TestDetailPageContainsMetadata(t *testing.T) {
 	}
 }
 
+func TestDetailPageEscapesCommentaryAndNote(t *testing.T) {
+	srv := newTestServer(t)
+	id := insertTestImage(t, srv.db())
+	if _, err := srv.db().Write.Exec(
+		`INSERT INTO image_sources (image_id, site, post_id, url, commentary) VALUES (?, 'danbooru', '1', 'https://d/1', ?)`,
+		id, "<script>alert('x')</script>"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.db().Write.Exec(`UPDATE images SET note = ? WHERE id = ?`, "<b>my note</b>", id); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", fmt.Sprintf("/images/%d", id), nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	body := w.Body.String()
+	if strings.Contains(body, "<script>alert('x')</script>") {
+		t.Error("raw <script> commentary leaked into the page (stored XSS)")
+	}
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Error("commentary was not HTML-escaped")
+	}
+	if !strings.Contains(body, "detail-commentary") {
+		t.Error("commentary block missing from detail page")
+	}
+	if strings.Contains(body, "<b>my note</b>") {
+		t.Error("raw <b> note leaked into the page")
+	}
+}
+
+func TestDetailPageRendersAnnotationOverlay(t *testing.T) {
+	srv := newTestServer(t)
+	id := insertTestImage(t, srv.db())
+	if _, err := srv.db().Write.Exec(`UPDATE images SET width = 200, height = 100 WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.db().Write.Exec(
+		`INSERT INTO image_annotations (image_id, site, post_id, x, y, w, h, body) VALUES (?, 'danbooru', '', 50, 25, 40, 20, ?)`,
+		id, "<script>alert('n')</script>"); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", fmt.Sprintf("/images/%d", id), nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	body := w.Body.String()
+	if !strings.Contains(body, "annotation-overlay") || !strings.Contains(body, "annotation-box") {
+		t.Error("annotation overlay/box not rendered")
+	}
+	// x=50 of a 200px-wide image is the 25% mark; geometry scales, not fixed px.
+	if !strings.Contains(body, "left:25.0000%") {
+		t.Errorf("annotation box not scaled by image size:\n%s", body)
+	}
+	if strings.Contains(body, "<script>alert('n')</script>") {
+		t.Error("raw <script> annotation body leaked (stored XSS)")
+	}
+}
+
 func TestSidebarBrowseReturnsBrowseSections(t *testing.T) {
 	srv := newTestServer(t)
 	h := srv.Handler()
@@ -1242,9 +1298,9 @@ func TestDeleteImage_FallsBackToGalleryOnLastImage(t *testing.T) {
 // TestDeleteImage_NotFound exercises the 404 leg of deleteImage's
 // 404-vs-500 split: gallery.DeleteImage's canonical-path lookup returns
 // a wrapped sql.ErrNoRows for a non-existent id, the handler unwraps it
-// with errors.Is and serves http.NotFound. (The sibling 500 leg —
+// with errors.Is and serves http.NotFound. (The sibling 500 leg -
 // "Delete failed; check server log." on an operational failure such as a
-// busy write pool or FK violation — can't be triggered from here without
+// busy write pool or FK violation - can't be triggered from here without
 // injecting a DB error, so only this main branch is covered.)
 func TestDeleteImage_NotFound(t *testing.T) {
 	srv := newTestServer(t)
@@ -1309,35 +1365,6 @@ func TestSettingsMonloaderPost(t *testing.T) {
 	}
 	if srv.cfg.Server.MonloaderURL != "http://localhost:8081" {
 		t.Errorf("MonloaderURL = %q, want http://localhost:8081", srv.cfg.Server.MonloaderURL)
-	}
-}
-
-// The top-bar "Go to monloader" link uses the configured web url, falls back
-// to the api url when the web url is blank, and is hidden only when both are
-// unset (trailing slash trimmed).
-func TestMonloaderTopbarLink(t *testing.T) {
-	srv := newTestServer(t)
-	get := func() string {
-		req := httptest.NewRequest("GET", "/", nil)
-		w := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(w, req)
-		return w.Body.String()
-	}
-
-	srv.cfg.Server.MonloaderURL = "http://localhost:8081/"
-	if !strings.Contains(get(), `href="http://localhost:8081/queue">Go to monloader`) {
-		t.Error("topbar should link the configured web url")
-	}
-
-	srv.cfg.Server.MonloaderURL = ""
-	srv.cfg.Monloader.APIURL = "http://monloader:8081"
-	if !strings.Contains(get(), `href="http://monloader:8081/queue">Go to monloader`) {
-		t.Error("topbar should fall back to the api url when the web url is blank")
-	}
-
-	srv.cfg.Monloader.APIURL = ""
-	if strings.Contains(get(), "Go to monloader") {
-		t.Error("topbar link should be hidden when both web and api url are unset")
 	}
 }
 

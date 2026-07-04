@@ -1,10 +1,12 @@
 package gallery
 
 import (
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -89,21 +91,30 @@ func UniqueDestPath(destDir, filename string) string {
 	}
 }
 
-// HashFile computes the SHA-256 of the file at path using streaming 32 KB chunks.
-func HashFile(path string) (string, error) {
+// hashFileWith streams the file at path through h in 32 KB chunks.
+func hashFileWith(path string, h hash.Hash) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("opening file for hashing: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-
-	h := sha256.New()
 	buf := make([]byte, 32*1024)
 	if _, err := io.CopyBuffer(h, f, buf); err != nil {
 		return "", fmt.Errorf("hashing file: %w", err)
 	}
-
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// HashFile computes the SHA-256 of the file at path.
+func HashFile(path string) (string, error) {
+	return hashFileWith(path, sha256.New())
+}
+
+// Md5File computes the MD5 of the file at path. Used only to verify a source
+// refetch still points at the same bytes (boorus key posts on md5), never for
+// dedup - sha256 remains the content address.
+func Md5File(path string) (string, error) {
+	return hashFileWith(path, md5.New())
 }
 
 // DetectFileType returns the file type constant for the given path,

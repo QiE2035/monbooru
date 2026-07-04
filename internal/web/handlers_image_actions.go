@@ -278,108 +278,127 @@ func (s *Server) promoteCanonical(w http.ResponseWriter, r *http.Request) {
 	// have to drop.
 	s.Active().InvalidateCaches()
 
-	if isHTMXRequest(r) {
-		setFlashHeader(w, "Canonical path updated.", "ok", nil)
-		w.Header().Set("HX-Refresh", "true")
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, fmt.Sprintf("/images/%d", id), http.StatusSeeOther)
+	hxDone(w, r, "Canonical path updated.", "", fmt.Sprintf("/images/%d", id))
 }
 
 const (
-	maxExternalSourceLen = 200
-	maxExternalURLLen    = 2048
+	maxExternalSourceLen  = 200
+	maxExternalURLLen     = 2048
+	maxImageNoteLen       = 10000
+	maxImageCommentaryLen = 10000
 )
 
-// updateExternal writes the operator-edited images.source / images.url
-// fields. The form may carry either; an absent key leaves the existing
-// value alone, while an empty key clears it. The detail-page dialogs
-// each ship only their own field (Source, URL), so opening one and
-// saving never clobbers the other. URLs must start with http:// or
-// https:// so the rendered <a href> survives both the html/template
-// scheme sanitiser and the explicit allowlist below. Collections live in
-// image_collections and are edited through setCollection / removeCollection.
-//
-// HTMX callers (the detail-page dialogs) get a flash-err fragment on
-// validation failures so the dialog stays open with the user's input
-// intact, and HX-Refresh on success so the detail page reloads with
-// the new value rendered. Non-HTMX callers see the legacy plain text
-// + 303 redirect.
-func (s *Server) updateExternal(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		externalErr(w, r, "bad id", http.StatusBadRequest)
+// setSource upserts one origin for an image: adding it, updating its url /
+// position, or (with a prev identity) relabelling an existing origin. Each
+// origin is a site label plus the post's url; images.source / images.url
+// mirror the primary one. URLs must start with http:// or https:// so the
+// rendered <a href> survives both the html/template scheme sanitiser and the
+// explicit allowlist. The detail dialog ships one origin per submit and gets
+// HX-Refresh on success, matching setCollection.
+func (s *Server) setSource(w http.ResponseWriter, r *http.Request) {
+	id, ok := imageIDForm(w, r)
+	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		externalErr(w, r, "bad form", http.StatusBadRequest)
+	site := strings.TrimSpace(r.FormValue("site"))
+	url := strings.TrimSpace(r.FormValue("url"))
+	if site == "" && url == "" {
+		externalErr(w, r, "source label or url required", http.StatusBadRequest)
 		return
 	}
-
-	updates := []string{}
-	args := []any{}
-	if r.Form.Has("source") {
-		src := strings.TrimSpace(r.FormValue("source"))
-		if len(src) > maxExternalSourceLen {
-			externalErr(w, r, fmt.Sprintf("source too long (max %d chars)", maxExternalSourceLen), http.StatusBadRequest)
+	if len(site) > maxExternalSourceLen {
+		externalErr(w, r, fmt.Sprintf("source too long (max %d chars)", maxExternalSourceLen), http.StatusBadRequest)
+		return
+	}
+	if url != "" {
+		if len(url) > maxExternalURLLen {
+			externalErr(w, r, fmt.Sprintf("url too long (max %d chars)", maxExternalURLLen), http.StatusBadRequest)
 			return
 		}
-		updates = append(updates, "source = ?")
-		args = append(args, src)
-	}
-	if r.Form.Has("url") {
-		raw := strings.TrimSpace(r.FormValue("url"))
-		if raw != "" {
-			if len(raw) > maxExternalURLLen {
-				externalErr(w, r, fmt.Sprintf("url too long (max %d chars)", maxExternalURLLen), http.StatusBadRequest)
-				return
-			}
-			lower := strings.ToLower(raw)
-			if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
-				externalErr(w, r, "url must start with http:// or https://", http.StatusBadRequest)
-				return
-			}
+		lower := strings.ToLower(url)
+		if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+			externalErr(w, r, "url must start with http:// or https://", http.StatusBadRequest)
+			return
 		}
-		updates = append(updates, "url = ?")
-		args = append(args, raw)
 	}
-	if len(updates) == 0 {
-		externalErr(w, r, "no fields supplied", http.StatusBadRequest)
-		return
-	}
-
-	args = append(args, id)
-	res, err := s.db().Write.Exec(
-		`UPDATE images SET `+strings.Join(updates, ", ")+` WHERE id = ?`, args...,
-	)
-	if err != nil {
+	postID := strings.TrimSpace(r.FormValue("post_id"))
+	prevSite := strings.TrimSpace(r.FormValue("prev_site"))
+	prevPost := strings.TrimSpace(r.FormValue("prev_post"))
+	if prevSite != "" && (!strings.EqualFold(prevSite, site) || prevPost != postID) {
+		if err := gallery.RenameSourceMembership(s.db(), id, prevSite, prevPost, site, postID, url); err != nil {
+			externalErr(w, r, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else if err := gallery.AddSourceMembership(s.db(), id, site, postID, url); err != nil {
 		externalErr(w, r, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		externalErr(w, r, "image not found", http.StatusNotFound)
+	s.Active().InvalidateCaches()
+	hxDone(w, r, "Source updated.", "", "/images/"+strconv.FormatInt(id, 10))
+}
+
+// removeSource drops one origin from an image, keyed by its site + post id.
+func (s *Server) removeSource(w http.ResponseWriter, r *http.Request) {
+	id, ok := imageIDForm(w, r)
+	if !ok {
 		return
 	}
+	site := strings.TrimSpace(r.FormValue("site"))
+	postID := strings.TrimSpace(r.FormValue("post_id"))
+	if err := gallery.RemoveSourceMembership(s.db(), id, site, postID); err != nil {
+		externalErr(w, r, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.Active().InvalidateCaches()
+	hxDone(w, r, "Source removed.", "", "/images/"+strconv.FormatInt(id, 10))
+}
+
+// fetchSource enqueues a metadata-only refetch of one source's URL on
+// monloader, which maps the post's tags + commentary + notes and enriches this
+// image back through the enrich endpoint. The button renders only when
+// monloader is paired; a click that can't reach monloader surfaces the error
+// inline. The refetch is asynchronous: this records a pending state and returns
+// a pill that polls fetchStatusHandler, so the page reflects the enrich outcome.
+func (s *Server) fetchSource(w http.ResponseWriter, r *http.Request) {
+	id, ok := imageIDForm(w, r)
+	if !ok {
+		return
+	}
+	url := strings.TrimSpace(r.FormValue("url"))
+	if url == "" {
+		externalErr(w, r, "this source has no url to fetch", http.StatusBadRequest)
+		return
+	}
+	// The route bypasses ContextMiddleware so the outbound call below never
+	// runs under ctxMu (a hanging monloader would stall a gallery switch);
+	// snapshot the active name under a short lock instead.
+	s.ctxMu.RLock()
+	galleryName := s.activeName
+	s.ctxMu.RUnlock()
+	if err := s.EnqueueMetadataFetch(r.Context(), id, galleryName, url); err != nil {
+		externalErr(w, r, "could not reach monloader: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	s.recordFetchStatus(galleryName, id, "pending", "")
 	if isHTMXRequest(r) {
-		// The detail dialogs each ship one field per submit; the first one
-		// present names the flash. Order matches the dialog list order.
-		label := ""
-		switch {
-		case r.Form.Has("source"):
-			label = "Source"
-		case r.Form.Has("url"):
-			label = "URL"
-		}
-		if label != "" {
-			setFlashHeader(w, label+" updated.", "ok", nil)
-		}
-		w.Header().Set("HX-Refresh", "true")
-		w.WriteHeader(http.StatusNoContent)
+		writeFetchPending(w, id, 0)
 		return
 	}
-	http.Redirect(w, r, "/images/"+idStr, http.StatusSeeOther)
+	http.Redirect(w, r, "/images/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// imageIDForm parses the {id} path segment plus the form body shared by the
+// detail-page editor handlers, rendering the failure inline for HTMX callers.
+func imageIDForm(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
+		return 0, false
+	}
+	if err := r.ParseForm(); err != nil {
+		externalErr(w, r, "bad form", http.StatusBadRequest)
+		return 0, false
+	}
+	return id, true
 }
 
 // externalErr renders the validation error inline for HTMX callers
@@ -395,17 +414,81 @@ func externalErr(w http.ResponseWriter, r *http.Request, msg string, code int) {
 	http.Error(w, msg, code)
 }
 
-// setCollection upserts one membership for an image: adding the image to a
-// collection, updating that collection's position, or (with a prev value)
-// renaming an existing membership. The detail dialog ships one membership
-// per submit and gets HX-Refresh on success, matching updateExternal.
-func (s *Server) setCollection(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathInt64(w, r, "id")
+// setNote writes the operator's freeform note for an image. Import paths never
+// touch it, so a re-pull can't overwrite what the operator typed here.
+func (s *Server) setNote(w http.ResponseWriter, r *http.Request) {
+	id, ok := imageIDForm(w, r)
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		externalErr(w, r, "bad form", http.StatusBadRequest)
+	note := strings.TrimSpace(r.FormValue("note"))
+	if len(note) > maxImageNoteLen {
+		externalErr(w, r, fmt.Sprintf("note too long (max %d chars)", maxImageNoteLen), http.StatusBadRequest)
+		return
+	}
+	res, err := s.db().Write.Exec(`UPDATE images SET note = ? WHERE id = ?`, note, id)
+	if err != nil {
+		externalErr(w, r, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		externalErr(w, r, "image not found", http.StatusNotFound)
+		return
+	}
+	hxDone(w, r, "Note updated.", "", "/images/"+strconv.FormatInt(id, 10))
+}
+
+// setSourceCommentary sets the artist commentary attributed to one origin. A
+// re-pull of that source overwrites it, so it is the source's text, not the
+// operator's durable note.
+func (s *Server) setSourceCommentary(w http.ResponseWriter, r *http.Request) {
+	id, ok := imageIDForm(w, r)
+	if !ok {
+		return
+	}
+	site := strings.TrimSpace(r.FormValue("site"))
+	if site == "" {
+		externalErr(w, r, "source label required", http.StatusBadRequest)
+		return
+	}
+	commentary := strings.TrimSpace(r.FormValue("commentary"))
+	if len(commentary) > maxImageCommentaryLen {
+		externalErr(w, r, fmt.Sprintf("commentary too long (max %d chars)", maxImageCommentaryLen), http.StatusBadRequest)
+		return
+	}
+	postID := strings.TrimSpace(r.FormValue("post_id"))
+	if err := gallery.SetSourceCommentary(s.db(), id, site, postID, commentary); err != nil {
+		externalErr(w, r, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.Active().InvalidateCaches()
+	hxDone(w, r, "Commentary updated.", "", "/images/"+strconv.FormatInt(id, 10))
+}
+
+// removeSourceCommentary clears one origin's commentary, leaving the origin
+// itself in the sources list.
+func (s *Server) removeSourceCommentary(w http.ResponseWriter, r *http.Request) {
+	id, ok := imageIDForm(w, r)
+	if !ok {
+		return
+	}
+	site := strings.TrimSpace(r.FormValue("site"))
+	postID := strings.TrimSpace(r.FormValue("post_id"))
+	if err := gallery.SetSourceCommentary(s.db(), id, site, postID, ""); err != nil {
+		externalErr(w, r, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.Active().InvalidateCaches()
+	hxDone(w, r, "Commentary removed.", "", "/images/"+strconv.FormatInt(id, 10))
+}
+
+// setCollection upserts one membership for an image: adding the image to a
+// collection, updating that collection's position, or (with a prev value)
+// renaming an existing membership. The detail dialog ships one membership
+// per submit and gets HX-Refresh on success, matching setSource.
+func (s *Server) setCollection(w http.ResponseWriter, r *http.Request) {
+	id, ok := imageIDForm(w, r)
+	if !ok {
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("collection"))
@@ -441,23 +524,13 @@ func (s *Server) setCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Active().InvalidateCaches()
-	if isHTMXRequest(r) {
-		setFlashHeader(w, "Collection updated.", "ok", nil)
-		w.Header().Set("HX-Refresh", "true")
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, "/images/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	hxDone(w, r, "Collection updated.", "", "/images/"+strconv.FormatInt(id, 10))
 }
 
 // removeCollection drops one membership from an image.
 func (s *Server) removeCollection(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathInt64(w, r, "id")
+	id, ok := imageIDForm(w, r)
 	if !ok {
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		externalErr(w, r, "bad form", http.StatusBadRequest)
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("collection"))
@@ -470,13 +543,7 @@ func (s *Server) removeCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Active().InvalidateCaches()
-	if isHTMXRequest(r) {
-		setFlashHeader(w, "Collection removed.", "ok", nil)
-		w.Header().Set("HX-Refresh", "true")
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, "/images/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	hxDone(w, r, "Collection removed.", "", "/images/"+strconv.FormatInt(id, 10))
 }
 
 func (s *Server) deleteAlias(w http.ResponseWriter, r *http.Request) {

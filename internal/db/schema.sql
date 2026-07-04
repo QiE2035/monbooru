@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS images (
     origin         TEXT    NOT NULL DEFAULT 'ingest',
     source         TEXT    NOT NULL DEFAULT '',
     url            TEXT    NOT NULL DEFAULT '',
+    -- Operator's freeform note; never written by an import.
+    note           TEXT    NOT NULL DEFAULT '',
     -- Video duration in seconds (REAL so short clips and sub-second
     -- precision survive). NULL for non-video rows and for video rows
     -- that pre-date the column or whose ffprobe call failed; the
@@ -119,6 +121,45 @@ CREATE TABLE IF NOT EXISTS image_collections (
     position INTEGER,
     PRIMARY KEY (image_id, name)
 );
+
+-- Collections opted in to find-relations. A row lets the relations
+-- session surface pairs whose two images share that collection; absence
+-- (the default) hides them, since membership already relates the images.
+CREATE TABLE IF NOT EXISTS collection_find_relations (
+    name TEXT PRIMARY KEY COLLATE NOCASE
+);
+
+-- Per-image origin (provenance). An image can carry several sources; each
+-- is a site label plus the post URL it came from. images.source / images.url
+-- mirror the "primary" (first) origin so existing readers keep riding the
+-- scalar columns, the same way images.series mirrors a home collection.
+CREATE TABLE IF NOT EXISTS image_sources (
+    image_id   INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+    site       TEXT    NOT NULL DEFAULT '' COLLATE NOCASE,
+    post_id    TEXT    NOT NULL DEFAULT '',
+    url        TEXT    NOT NULL DEFAULT '',
+    md5        TEXT    NOT NULL DEFAULT '', -- md5 the source last claimed on a push/enrich; audit trail, never a dedup key
+    commentary TEXT    NOT NULL DEFAULT '', -- artist commentary from this source; operator-editable, overwritten by a re-pull
+    fetched_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (image_id, site, post_id)
+);
+
+-- Positional note boxes overlaid on an image (Danbooru "notes"), in original-
+-- image pixel coordinates. Pulled per source; the whole set a source
+-- contributed is replaced on a re-pull. Body is plain text.
+CREATE TABLE IF NOT EXISTS image_annotations (
+    id         INTEGER PRIMARY KEY,
+    image_id   INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+    site       TEXT    NOT NULL DEFAULT '' COLLATE NOCASE,
+    post_id    TEXT    NOT NULL DEFAULT '',
+    x          INTEGER NOT NULL,
+    y          INTEGER NOT NULL,
+    w          INTEGER NOT NULL,
+    h          INTEGER NOT NULL,
+    body       TEXT    NOT NULL DEFAULT '',
+    fetched_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_image_annotations_image ON image_annotations(image_id);
 
 CREATE TABLE IF NOT EXISTS tag_implications (
     parent_tag_id  INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
@@ -296,6 +337,9 @@ CREATE INDEX IF NOT EXISTS idx_image_tags_image  ON image_tags(image_id);
 -- position lookup. The PRIMARY KEY (image_id, name) covers the inverse
 -- "collections of one image" read.
 CREATE INDEX IF NOT EXISTS idx_image_collections_name ON image_collections(name, image_id, position);
+-- Covers the source: filter (site -> image_id semi-join) and the sidebar
+-- source-label counts (GROUP BY site), mirroring idx_image_collections_name.
+CREATE INDEX IF NOT EXISTS idx_image_sources_site ON image_sources(site, image_id);
 CREATE INDEX IF NOT EXISTS idx_tag_implications_implied ON tag_implications(implied_tag_id);
 CREATE INDEX IF NOT EXISTS idx_image_tags_user_tag ON image_tags(tag_id) WHERE is_auto = 0;
 CREATE INDEX IF NOT EXISTS idx_image_tags_auto_tagger ON image_tags(tagger_name)

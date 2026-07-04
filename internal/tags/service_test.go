@@ -161,14 +161,14 @@ func TestAddTagTwice_NoDouble(t *testing.T) {
 	}
 }
 
-func TestAddTagToImageFromTagger_ManualSource(t *testing.T) {
+func TestAddTagsToImageFromTagger_ManualSource(t *testing.T) {
 	database, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
 	imgID := insertTestImage(t, database, "abc130")
 
 	tag, _ := svc.GetOrCreateTag("sourced", catID)
-	if err := svc.AddTagToImageFromTagger(imgID, tag.ID, false, nil, "my_app"); err != nil {
-		t.Fatalf("AddTagToImageFromTagger: %v", err)
+	if err := svc.AddTagsToImageFromTagger(imgID, []int64{tag.ID}, false, "my_app"); err != nil {
+		t.Fatalf("AddTagsToImageFromTagger: %v", err)
 	}
 
 	var isAuto int
@@ -201,7 +201,7 @@ func TestAddTagToImage_PromotesAutoToUser(t *testing.T) {
 
 	tag, _ := svc.GetOrCreateTag("auto_to_user_tag", catID)
 	conf := 0.87
-	if err := svc.AddTagToImageFromTagger(imgID, tag.ID, true, &conf, "wd-swin"); err != nil {
+	if _, err := svc.AddTagToImageReportingDup(imgID, tag.ID, true, &conf, "wd-swin"); err != nil {
 		t.Fatalf("seed auto row: %v", err)
 	}
 
@@ -1016,7 +1016,7 @@ func TestListTags_APIOrigin(t *testing.T) {
 	if err := svc.AddTagToImage(img1, userTag.ID, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.AddTagToImageFromTagger(img1, apiTag.ID, false, nil, "scraper"); err != nil {
+	if err := svc.AddTagsToImageFromTagger(img1, []int64{apiTag.ID}, false, "scraper"); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.AddTagToImage(img1, autoTag.ID, true, &conf); err != nil {
@@ -1025,7 +1025,7 @@ func TestListTags_APIOrigin(t *testing.T) {
 	if err := svc.AddTagToImage(img1, mixedTag.ID, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.AddTagToImageFromTagger(img2, mixedTag.ID, false, nil, "scraper"); err != nil {
+	if err := svc.AddTagsToImageFromTagger(img2, []int64{mixedTag.ID}, false, "scraper"); err != nil {
 		t.Fatal(err)
 	}
 

@@ -18,24 +18,32 @@ import (
 // web handler so a canonical_path that somehow escapes the gallery root
 // is refused.
 func (h *Handler) serveImageFile(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
-	id, ok := apiPathInt64(w, r, "id")
+	canonPath, _, ok := containedCanonical(w, g, id)
 	if !ok {
-		return
-	}
-	var canonPath string
-	if err := g.DB.Read.QueryRow(`SELECT canonical_path FROM images WHERE id = ?`, id).Scan(&canonPath); err != nil {
-		apiError(w, http.StatusNotFound, "not_found", "image not found")
-		return
-	}
-	if !pathInsideGallery(g.GalleryPath, canonPath) {
-		apiError(w, http.StatusNotFound, "not_found", "image not found")
 		return
 	}
 	http.ServeFile(w, r, canonPath)
+}
+
+// containedCanonical resolves the row's canonical_path and file_type,
+// answering 404 when the row is missing or its path escapes the gallery
+// root.
+func containedCanonical(w http.ResponseWriter, g Gallery, id int64) (canonPath, fileType string, ok bool) {
+	if err := g.DB.Read.QueryRow(
+		`SELECT canonical_path, file_type FROM images WHERE id = ?`, id,
+	).Scan(&canonPath, &fileType); err != nil {
+		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return "", "", false
+	}
+	if !pathInsideGallery(g.GalleryPath, canonPath) {
+		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return "", "", false
+	}
+	return canonPath, fileType, true
 }
 
 // serveThumbnail handles GET /api/v1/images/{id}/thumbnail: the static
@@ -43,11 +51,7 @@ func (h *Handler) serveImageFile(w http.ResponseWriter, r *http.Request) {
 // thumbnail file is absent (e.g. a video ingested before ffmpeg was
 // available, awaiting a rebuild-thumbnails pass).
 func (h *Handler) serveThumbnail(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -78,11 +82,7 @@ func (h *Handler) serveMangaPagePath(
 	w http.ResponseWriter, r *http.Request,
 	ensure func(thumbnailsPath, canonPath string, imageID int64, n int) (string, error),
 ) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -91,19 +91,12 @@ func (h *Handler) serveMangaPagePath(
 		apiError(w, http.StatusBadRequest, "invalid_request", "invalid page number")
 		return
 	}
-	var canonPath, fileType string
-	if err := g.DB.Read.QueryRow(
-		`SELECT canonical_path, file_type FROM images WHERE id = ?`, id,
-	).Scan(&canonPath, &fileType); err != nil {
-		apiError(w, http.StatusNotFound, "not_found", "image not found")
+	canonPath, fileType, ok := containedCanonical(w, g, id)
+	if !ok {
 		return
 	}
 	if fileType != models.FileTypeCBZ {
 		apiError(w, http.StatusNotFound, "not_found", "image is not a manga archive")
-		return
-	}
-	if !pathInsideGallery(g.GalleryPath, canonPath) {
-		apiError(w, http.StatusNotFound, "not_found", "image not found")
 		return
 	}
 	page, err := ensure(g.ThumbnailsPath, canonPath, id, n)

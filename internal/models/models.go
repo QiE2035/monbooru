@@ -50,6 +50,7 @@ type Image struct {
 	Origin        string   // "ingest" | "upload" | caller-supplied string (app name, URL...)
 	Source        string   // free-form provenance label (site name, scraper, ...); operator-edited
 	URL           string   // canonical web URL the image came from; http(s) only
+	Note          string   // operator's freeform note; never set by an import
 	PageCount     *int     // page entry count for cbz manga rows; NULL otherwise
 	DurationSec   *float64 // video duration in seconds; NULL for non-video rows and for videos that pre-date the column or whose probe failed
 	Series        string   // operator-edited free-form series label (max 200 chars); '' when unset
@@ -64,6 +65,29 @@ type Image struct {
 type Collection struct {
 	Name  string
 	Order *int // position within Name; nil = unordered
+}
+
+// ImageSource is one origin of an image: a site label plus the post it came
+// from. An image can carry several; the oldest is the primary that
+// images.source / images.url mirror.
+type ImageSource struct {
+	Site       string
+	PostID     string // upstream post id as text; "" for a manually-added origin
+	URL        string
+	Commentary string // artist commentary from this source; "" when none
+}
+
+// Annotation is one positional note box overlaid on an image, in original-image
+// pixel coordinates. Pulled from a source; the whole set a source contributed
+// is replaced on a re-pull.
+type Annotation struct {
+	Site   string
+	PostID string
+	X      int
+	Y      int
+	W      int
+	H      int
+	Body   string
 }
 
 // MangaMetadata mirrors sd_metadata / comfyui_metadata for the manga

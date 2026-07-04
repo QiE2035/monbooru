@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/leqwin/monbooru/internal/relations"
@@ -32,11 +31,7 @@ type altGroupJSON struct {
 
 // relationsForImage serves GET /api/v1/images/{id}/relations.
 func (h *Handler) relationsForImage(w http.ResponseWriter, r *http.Request) {
-	g, ok := h.resolveGallery(w, r)
-	if !ok {
-		return
-	}
-	id, ok := apiPathInt64(w, r, "id")
+	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
 		return
 	}
@@ -88,8 +83,7 @@ func (h *Handler) addRelation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body relationsAddBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if body.A == 0 || body.B == 0 {
@@ -146,8 +140,7 @@ func (h *Handler) removeRelation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body relationsRemoveBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", "invalid JSON")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if g.RelationsSvc == nil {

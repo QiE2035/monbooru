@@ -36,6 +36,14 @@ Both run the same job. The Hamming-distance cutoff comes from
 **Settings -> Relations -> Find-pairs default distance** (default 4,
 range 0..12); set it tighter for fewer, more confident pairs.
 
+Pairs whose two images share a collection are kept out of the queue by
+default: the collection already relates them. The **find relations**
+switch on each `/collections` row opts that collection in; flipping it
+updates the pending candidate list immediately in both directions (the
+filter is applied when the queue is read, not when it is filled). A
+pair sharing several collections stays hidden while any of them is
+disabled.
+
 ## Triage with the session UI
 
 **Relations -> Start a session** opens the swipe view. Each pair is

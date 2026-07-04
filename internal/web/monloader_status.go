@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -34,6 +35,36 @@ func (s *Server) notifyMonloaderTeardown(baseURL, token string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("monloader returned %s", resp.Status)
+	}
+	return nil
+}
+
+// EnqueueMetadataFetch asks monloader to re-read the post at url (metadata
+// only, no download) and enrich monbooru image imageID in gallery. All the
+// work - gallery-dl, mapping, the enrich call back into monbooru - runs on
+// monloader; monbooru only enqueues, keeping its single-egress model intact.
+func (s *Server) EnqueueMetadataFetch(ctx context.Context, imageID int64, gallery, url string) error {
+	base := strings.TrimRight(s.monloaderAPIBase(), "/")
+	s.cfgMu.RLock()
+	token := s.cfg.Monloader.APIToken
+	s.cfgMu.RUnlock()
+	if base == "" || token == "" {
+		return fmt.Errorf("monloader is not configured")
+	}
+	body, _ := json.Marshal(map[string]any{"image_id": imageID, "gallery": gallery, "url": url})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/metadata", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := monloaderClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		return fmt.Errorf("monloader returned %s", resp.Status)
 	}
 	return nil
@@ -115,6 +146,43 @@ func (s *Server) monloaderReachable(ctx context.Context, base string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
+// monloaderStatusTTL bounds how often the footer light re-probes monloader, so
+// a burst of navigations (each firing the light's load poll) reuses one probe
+// instead of fanning out into a probe per page. Kept under the 15s poll cadence
+// so a page left open still refreshes on schedule.
+const monloaderStatusTTL = 10 * time.Second
+
+// monloaderStatusSeed returns the last cached probe result without probing, for
+// seeding a page's initial light render so it shows its last known state rather
+// than "checking". A cold cache yields "", which the partial renders as
+// "checking monloader".
+func (s *Server) monloaderStatusSeed() (status, version string) {
+	s.monloaderStatusMu.Lock()
+	defer s.monloaderStatusMu.Unlock()
+	return s.monloaderConn, s.monloaderVersion
+}
+
+// monloaderStatusCached probes monloader at most once per monloaderStatusTTL and
+// serves the cached result otherwise, so the light's per-navigation poll does
+// not re-probe on every page load. The probe runs without the lock held so a
+// slow monloader never serializes concurrent page renders.
+func (s *Server) monloaderStatusCached(ctx context.Context) (status, version string) {
+	s.monloaderStatusMu.Lock()
+	if s.monloaderConn != "" && time.Since(s.monloaderCheckedAt) < monloaderStatusTTL {
+		status, version = s.monloaderConn, s.monloaderVersion
+		s.monloaderStatusMu.Unlock()
+		return status, version
+	}
+	s.monloaderStatusMu.Unlock()
+
+	status, version = s.checkMonloader(ctx)
+
+	s.monloaderStatusMu.Lock()
+	s.monloaderConn, s.monloaderVersion, s.monloaderCheckedAt = status, version, time.Now()
+	s.monloaderStatusMu.Unlock()
+	return status, version
+}
+
 func (s *Server) monloaderStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if !s.pairedWith("monloader") {
 		// Stop polling and clear the light once the pairing is gone.
@@ -123,9 +191,10 @@ func (s *Server) monloaderStatusHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	status, version := s.checkMonloader(ctx)
+	status, version := s.monloaderStatusCached(ctx)
 	s.renderTemplate(w, "partials/monloader_light.html", map[string]any{
 		"MonloaderConn":    status,
 		"MonloaderVersion": version,
+		"MonloaderURL":     s.monloaderWebBase(),
 	})
 }

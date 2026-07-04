@@ -72,7 +72,7 @@
         {{end}}
       {{end}}
       {{if .Series}}
-        <span class="series-pill" title="Series: {{.Series}}{{if .SeriesOrder}} #{{deref .SeriesOrder}}{{end}}">
+        <span class="series-pill" title="Collection: {{.Series}}{{if .SeriesOrder}} #{{deref .SeriesOrder}}{{end}}">
           {{if .SeriesOrder}}<span class="series-pill-order">#{{deref .SeriesOrder}}</span>{{end}}
           <span class="series-pill-name">{{.Series}}</span>
         </span>

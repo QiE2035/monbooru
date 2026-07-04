@@ -212,65 +212,48 @@ type comfyNode struct {
 	Inputs map[string]json.RawMessage `json:"inputs"`
 }
 
-// resolveStringInput unmarshals raw as a string, or follows a reference
-// array [nodeID, slotIndex] to a "value" / "text" / "string" input on
-// the referenced node. Returns "" when nothing resolves.
-func resolveStringInput(raw json.RawMessage, nodes map[string]comfyAPINode) string {
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
-	}
-	var ref []json.RawMessage
-	if err := json.Unmarshal(raw, &ref); err != nil || len(ref) < 1 {
-		return ""
-	}
-	var nodeID string
-	if err := json.Unmarshal(ref[0], &nodeID); err != nil {
-		return ""
-	}
-	refNode, ok := nodes[nodeID]
-	if !ok {
-		return ""
-	}
-	for _, key := range []string{"value", "text", "string"} {
-		if valRaw, ok := refNode.Inputs[key]; ok {
-			var val string
-			if err := json.Unmarshal(valRaw, &val); err == nil && val != "" {
-				return val
-			}
-		}
-	}
-	return ""
-}
-
-// resolveInt64Input unmarshals raw as an int64, or follows a reference
-// array to a numeric "seed" / "value" / "int" input on the referenced
-// node.
-func resolveInt64Input(raw json.RawMessage, nodes map[string]comfyAPINode) (int64, bool) {
-	var v int64
+// resolveRefInput unmarshals raw as a T, or follows a reference array
+// [nodeID, slotIndex] to the first candidate input on the referenced node
+// that decodes as a T and passes keep.
+func resolveRefInput[T any](raw json.RawMessage, nodes map[string]comfyAPINode, candidates []string, keep func(T) bool) (T, bool) {
+	var zero, v T
 	if err := json.Unmarshal(raw, &v); err == nil {
 		return v, true
 	}
 	var ref []json.RawMessage
 	if err := json.Unmarshal(raw, &ref); err != nil || len(ref) < 1 {
-		return 0, false
+		return zero, false
 	}
 	var nodeID string
 	if err := json.Unmarshal(ref[0], &nodeID); err != nil {
-		return 0, false
+		return zero, false
 	}
 	refNode, ok := nodes[nodeID]
 	if !ok {
-		return 0, false
+		return zero, false
 	}
-	for _, key := range []string{"seed", "value", "int"} {
+	for _, key := range candidates {
 		if valRaw, ok := refNode.Inputs[key]; ok {
-			if err := json.Unmarshal(valRaw, &v); err == nil {
-				return v, true
+			var val T
+			if err := json.Unmarshal(valRaw, &val); err == nil && keep(val) {
+				return val, true
 			}
 		}
 	}
-	return 0, false
+	return zero, false
+}
+
+// resolveStringInput resolves raw to a string via a "value" / "text" /
+// "string" input on the referenced node. Returns "" when nothing resolves.
+func resolveStringInput(raw json.RawMessage, nodes map[string]comfyAPINode) string {
+	s, _ := resolveRefInput(raw, nodes, []string{"value", "text", "string"}, func(v string) bool { return v != "" })
+	return s
+}
+
+// resolveInt64Input resolves raw to an int64 via a numeric "seed" /
+// "value" / "int" input on the referenced node.
+func resolveInt64Input(raw json.RawMessage, nodes map[string]comfyAPINode) (int64, bool) {
+	return resolveRefInput(raw, nodes, []string{"seed", "value", "int"}, func(int64) bool { return true })
 }
 
 func parseComfyNodesArray(raw json.RawMessage, meta *models.ComfyUIMetadata) {

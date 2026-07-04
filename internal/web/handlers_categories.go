@@ -78,13 +78,7 @@ func (s *Server) createCategoryPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if isHTMXRequest(r) {
-		setFlashHeader(w, "Category "+name+" created.", "ok", nil)
-		w.Header().Set("HX-Redirect", "/categories")
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, "/categories", http.StatusSeeOther)
+	hxDone(w, r, "Category "+name+" created.", "/categories", "/categories")
 }
 
 func (s *Server) updateCategoryPatch(w http.ResponseWriter, r *http.Request) {
@@ -101,13 +95,7 @@ func (s *Server) updateCategoryPatch(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", err.Error())
 		return
 	}
-	if isHTMXRequest(r) {
-		setFlashHeader(w, "Category color updated.", "ok", nil)
-		w.Header().Set("HX-Redirect", "/categories")
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, "/categories", http.StatusSeeOther)
+	hxDone(w, r, "Category color updated.", "/categories", "/categories")
 }
 
 func (s *Server) deleteCategoryDelete(w http.ResponseWriter, r *http.Request) {
@@ -133,13 +121,7 @@ func (s *Server) deleteCategoryDelete(w http.ResponseWriter, r *http.Request) {
 	// Surface on /tags (the redirect target), not /categories - the
 	// flash rides the shared monbooru:flash channel which lands in
 	// whichever flash slot the destination page exposes.
-	if isHTMXRequest(r) {
-		setFlashHeader(w, "Category deleted.", "ok", nil)
-		w.Header().Set("HX-Redirect", "/tags")
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, "/tags", http.StatusSeeOther)
+	hxDone(w, r, "Category deleted.", "/tags", "/tags")
 }
 
 func (s *Server) renameCategoryPost(w http.ResponseWriter, r *http.Request) {
@@ -167,11 +149,5 @@ func (s *Server) renameCategoryPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if isHTMXRequest(r) {
-		setFlashHeader(w, "Category renamed to "+newName+".", "ok", nil)
-		w.Header().Set("HX-Redirect", "/categories")
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, "/categories", http.StatusSeeOther)
+	hxDone(w, r, "Category renamed to "+newName+".", "/categories", "/categories")
 }

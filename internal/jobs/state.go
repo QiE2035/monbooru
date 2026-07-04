@@ -34,6 +34,18 @@ func NewManager() *Manager {
 	return &Manager{}
 }
 
+// clearStateLocked resets the manager to idle, stopping any armed
+// auto-dismiss timer. Caller must hold m.mu.
+func (m *Manager) clearStateLocked() {
+	if m.timer != nil {
+		m.timer.Stop()
+		m.timer = nil
+	}
+	m.ctx, m.cancel = nil, nil
+	m.state = nil
+	m.viewed = false
+}
+
 // Start begins a new job. Returns ErrJobRunning if a job or scheduler run
 // is already active.
 func (m *Manager) Start(jobType string) error {
@@ -223,10 +235,7 @@ func (m *Manager) MarkViewed() {
 		if m.state == nil || m.state.Running {
 			return
 		}
-		m.ctx, m.cancel = nil, nil
-		m.state = nil
-		m.timer = nil
-		m.viewed = false
+		m.clearStateLocked()
 	})
 }
 
@@ -237,13 +246,7 @@ func (m *Manager) Dismiss() {
 	if m.state == nil || m.state.Running {
 		return
 	}
-	if m.timer != nil {
-		m.timer.Stop()
-		m.timer = nil
-	}
-	m.ctx, m.cancel = nil, nil
-	m.state = nil
-	m.viewed = false
+	m.clearStateLocked()
 }
 
 // SetWatcherMessage surfaces a transient watcher notification. When idle
@@ -279,8 +282,6 @@ func (m *Manager) scheduleAutoDismiss() {
 		if m.state == nil || m.state.Running {
 			return
 		}
-		m.ctx, m.cancel = nil, nil
-		m.state = nil
-		m.timer = nil
+		m.clearStateLocked()
 	})
 }

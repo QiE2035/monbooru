@@ -229,9 +229,9 @@ func TestThumbnailFitDefaultsAndClamps(t *testing.T) {
 		line string
 		want string
 	}{
-		{"absent defaults to square", "", "square"},
-		{"bogus snaps to square", `thumbnail_fit = "circle"`, "square"},
-		{"natural preserved", `thumbnail_fit = "natural"`, "natural"},
+		{"absent defaults to natural", "", "natural"},
+		{"bogus snaps to natural", `thumbnail_fit = "circle"`, "natural"},
+		{"square preserved", `thumbnail_fit = "square"`, "square"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -111,26 +111,14 @@ func ParseAllSDParams(rawParams string) []models.SDParam {
 // parseAllA1111Params extracts every "Key: Value" pair from an A1111
 // parameter line. Order is preserved; values with braces are kept whole.
 func parseAllA1111Params(paramLine string) []models.SDParam {
-	paramLine = strings.ReplaceAll(paramLine, "\n", " ")
 	var result []models.SDParam
 	seen := map[string]bool{}
-
-	parts := splitA1111Params(paramLine)
-	for _, part := range parts {
-		kv := strings.SplitN(strings.TrimSpace(part), ":", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(kv[0])
-		val := strings.TrimSpace(kv[1])
-		if key == "" {
-			continue
-		}
+	eachA1111Param(paramLine, func(key, val string) {
 		if !seen[key] {
 			seen[key] = true
 			result = append(result, models.SDParam{Key: key, Val: val})
 		}
-	}
+	})
 	return result
 }
 
@@ -161,17 +149,25 @@ func splitA1111Params(s string) []string {
 	return parts
 }
 
-func parseA1111Params(paramLine string, sd *models.SDMetadata) {
+// eachA1111Param walks the "Key: Value" pairs of an A1111 parameter line
+// in order, invoking fn with the trimmed key and value.
+func eachA1111Param(paramLine string, fn func(key, val string)) {
 	paramLine = strings.ReplaceAll(paramLine, "\n", " ")
-	parts := splitA1111Params(paramLine)
-	for _, part := range parts {
+	for _, part := range splitA1111Params(paramLine) {
 		kv := strings.SplitN(strings.TrimSpace(part), ":", 2)
 		if len(kv) != 2 {
 			continue
 		}
 		key := strings.TrimSpace(kv[0])
-		val := strings.TrimSpace(kv[1])
+		if key == "" {
+			continue
+		}
+		fn(key, strings.TrimSpace(kv[1]))
+	}
+}
 
+func parseA1111Params(paramLine string, sd *models.SDMetadata) {
+	eachA1111Param(paramLine, func(key, val string) {
 		switch key {
 		case "Steps":
 			if n, err := strconv.Atoi(val); err == nil {
@@ -203,5 +199,5 @@ func parseA1111Params(paramLine string, sd *models.SDMetadata) {
 				}
 			}
 		}
-	}
+	})
 }

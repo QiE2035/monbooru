@@ -40,6 +40,23 @@ func setFlashHeader(w http.ResponseWriter, text, kind string, extras map[string]
 	}
 }
 
+// hxDone finishes a successful mutating handler: HTMX callers get the ok
+// flash plus a full refresh (hxDest == "") or an HX-Redirect to hxDest;
+// plain form submits get a 303 to fallback.
+func hxDone(w http.ResponseWriter, r *http.Request, flash, hxDest, fallback string) {
+	if isHTMXRequest(r) {
+		setFlashHeader(w, flash, "ok", nil)
+		if hxDest == "" {
+			w.Header().Set("HX-Refresh", "true")
+		} else {
+			w.Header().Set("HX-Redirect", hxDest)
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, fallback, http.StatusSeeOther)
+}
+
 // writeInlineFlash writes a `<div class="flash flash-{kind}">...</div>`
 // fragment with text HTML-escaped, for handlers that need the flash
 // payload in the response body (htmx partial swap target) rather than
@@ -104,12 +121,12 @@ func loadImage(ctx context.Context, database *db.DB, id int64) (*models.Image, e
 	err := database.Read.QueryRowContext(ctx,
 		`SELECT id, sha256, canonical_path, folder_path, file_type,
 		        width, height, file_size, is_missing, is_favorited,
-		        is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, phash, ingested_at
+		        is_inbox, auto_tagged_at, source_type, origin, source, url, note, page_count, duration_seconds, series, series_order, phash, ingested_at
 		 FROM images WHERE id = ?`, id,
 	).Scan(
 		&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
 		&width, &height, &img.FileSize, &isMissing, &isFav,
-		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt,
+		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &img.Note, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt,
 	)
 	if err != nil {
 		return nil, err
