@@ -1,5 +1,38 @@
 # Changelog
 
+## [v1.14.0] - 2026-07-13
+Please update monloader to >=v1.4.0.
+
+### Added
+- Sort a collection by filename order from the reorder dialog. ([#37](https://github.com/leqwin/monbooru/issues/37))
+- Transfer an image, or a whole search or selection, to another gallery. ([#45](https://github.com/leqwin/monbooru/issues/45))
+- Draw your own annotation boxes on an image from the detail page.  ([#48](https://github.com/leqwin/monbooru/issues/48))
+- Remove tags scoped to a specific source or auto-tagger.  ([#47](https://github.com/leqwin/monbooru/issues/47))
+- Per-image original-source field, plus per-source original artist links. ([#49](https://github.com/leqwin/monbooru/issues/49))
+- Per-tag detail page with a usage graph, alias and implication editing, and recent images. ([#52](https://github.com/leqwin/monbooru/issues/52))
+- Batch selection bar on the Tags page to tag, merge, or delete many tags at once. ([#52](https://github.com/leqwin/monbooru/issues/52))
+- Tags record their creation origin and last use, as sortable columns and filters. ([#52](https://github.com/leqwin/monbooru/issues/52))
+- Look up an image against booru, similarity, and Public Tag Repository backends via monloader.
+- Public Tag Repository lookups also import tag aliases and implications.
+- Set which of an image's sources is the primary one. (used for batch refresh)
+- Booru parent/child posts are linked as derivative relations.
+- Keyboard shortcuts: `L` opens monloader lookup; `e o` and `e n` edit the original source and note.
+
+### Changed
+- Tags page sorts from column headers and filters in place, and hides aliases by default.
+- Renaming a tag can keep the old name as an alias pointing to it.
+- Each source's commentary and annotations move into their own collapsible panel.
+- The per-source "Fetch tags" button is now "Refresh"; source lookups moved to Lookup.
+- Timestamps display in the operator's timezone (set `TZ`); stored times stay UTC. ([#50](https://github.com/leqwin/monbooru/issues/50))
+
+### Fixed
+- Hydrus and Blombooru imports handle multi-word and namespaced tags correctly.
+- A fully failed auto-tag run no longer wipes an image's existing auto-tags.
+- Files already present in a newly-watched subdirectory are now ingested.
+- `max_file_size_mb = 0` no longer rejects multipart and monloader pushes.
+- Same-site posts with different IDs are kept as distinct sources.
+- Deleting a tag clears alias chains and cycles that pointed through it.
+
 ## [v1.13.0] - 2026-07-04
 ### Added
 - Click-to-order dialog for arranging the images in a collection. ([#37](https://github.com/leqwin/monbooru/issues/37))

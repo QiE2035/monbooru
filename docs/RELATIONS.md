@@ -1,6 +1,6 @@
 # Relations
 
-Monbooru tracks five kinds of operator-declared relationships between
+Monbooru tracks four kinds of operator-declared relationships between
 images, plus a "not related" rejection list so a pair never resurfaces:
 
 - **Duplicate** - same image, different files. Members live in an
@@ -15,6 +15,12 @@ images, plus a "not related" rejection list so a pair never resurfaces:
 - **Not related** - a rejected pair recorded so the find-pairs queue
   never surfaces it again.
 
+When [monloader](https://github.com/leqwin/monloader) pushes a booru post
+that declares a parent post, the pair links automatically as a derivative
+edge (parent as source) once both posts are in the gallery, whichever
+arrived first. A pair you already related otherwise - or marked not
+related - is left alone.
+
 Collections (the `image_collections` membership table) are a parallel
 grouping mechanism. An image can belong to several collections, each
 with its own order. They render in their own "Same collection" section
@@ -25,14 +31,23 @@ the duplicate / alternate / version / derivative graph.
 ## Find candidate pairs
 
 The find-pairs job populates a queue (`potential_relation_pairs`)
-the session UI walks. Trigger it from either:
+the session UI walks. It fills from several triggers:
 
 - **Relations -> Find new pairs** - adds new candidates from images
   hashed since the last scan.
+- **Automatically on ingest** - by default
+  (`relations.incremental_on_ingest`) each new image is probed against
+  the near-duplicate index as it is hashed, so fresh candidates appear
+  without a manual scan.
+- **Settings -> Schedule -> Find relation pairs** - a nightly pass over
+  every gallery (off by default).
 - **Settings -> Maintenance -> Rebuild pair queue** - wipes the
   existing queue (including skipped rows) and rescans from scratch.
+- **Relations -> Reset skipped** - clears the skipped flag on every
+  queue row so previously-skipped pairs return to the head of the
+  session without a full rebuild.
 
-Both run the same job. The Hamming-distance cutoff comes from
+The Hamming-distance cutoff comes from
 **Settings -> Relations -> Find-pairs default distance** (default 4,
 range 0..12); set it tighter for fewer, more confident pairs.
 
@@ -51,9 +66,8 @@ rendered side-by-side with the Hamming distance and the larger
 filesize on the left (a hint that bigger usually means "more
 canonical"). 
 
-Decisions commit in one transaction. A merge that drops the pair's
-co-grouped queue rows also sweeps `not_related_pairs` so the session
-moves to the next candidate immediately.
+Deciding a pair drops its co-grouped rows from the queue, so the session
+moves straight to the next candidate.
 
 Session ordering is set under **Settings -> Relations**:
 
@@ -70,8 +84,9 @@ Two parallel views, each with its own walker:
 - **Marked duplicates** (`/relations/duplicates/marked`) - declared
   duplicate groups. Each row shows the original and one non-original
   member; **Delete** removes the non-original from the gallery. The
-  **Copy tags** button (when relevant) layers the duplicate's tags
-  onto the original before the delete. **Delete all duplicate
+  **Copy tags** button (when relevant) opens a preview and then layers
+  the duplicate's tags onto the original; it is a separate step from
+  **Delete**. **Delete all duplicate
   images** removes every non-original member of every marked group.
 - **SHA-256 duplicates** (`/relations/duplicates/sha256`) - file-level
   alias paths: one byte-identical image stored at multiple paths on

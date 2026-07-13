@@ -208,6 +208,32 @@ func TestSearchImages_PopulatesNote(t *testing.T) {
 	}
 }
 
+// The per-image GET must carry the image-level original_source like it
+// carries its sibling operator field note.
+func TestGetImage_PopulatesOriginalSource(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "orig_src.png", 12, 12)
+	if _, err := env.database.Write.Exec(`UPDATE images SET original_source = 'https://example.test/art/1' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/images/%d", id), nil)
+	rec := httptest.NewRecorder()
+	env.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		OriginalSource string `json:"original_source"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.OriginalSource != "https://example.test/art/1" {
+		t.Errorf("original_source = %q, want the seeded URL", resp.OriginalSource)
+	}
+}
+
 // TestSearchImages_PopulatesTags: the search response shape matches
 // the per-image GET shape on the same Image.tags property.
 func TestSearchImages_PopulatesTags(t *testing.T) {
@@ -638,7 +664,7 @@ func TestCreateImage_DuplicateMergesTagsAndSource(t *testing.T) {
 	}
 }
 
-func TestCreateImage_DuplicateMergesCommentary(t *testing.T) {
+func TestCreateImage_DuplicateMergesCommentaryAndOriginal(t *testing.T) {
 	env := newTestEnv(t)
 	env.createTestImage(t, "comment_api.png", 20, 20)
 	var id int64
@@ -651,6 +677,7 @@ func TestCreateImage_DuplicateMergesCommentary(t *testing.T) {
 		"source":     "danbooru",
 		"url":        "https://danbooru.donmai.us/posts/1",
 		"commentary": "artist said hi",
+		"original":   "https://pixiv.net/artworks/1",
 	})
 	req := httptest.NewRequest("POST", "/api/v1/images", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -659,12 +686,15 @@ func TestCreateImage_DuplicateMergesCommentary(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var stored string
-	if err := env.database.Read.QueryRow(`SELECT commentary FROM image_sources WHERE site = 'danbooru'`).Scan(&stored); err != nil {
+	var stored, original string
+	if err := env.database.Read.QueryRow(`SELECT commentary, original FROM image_sources WHERE site = 'danbooru'`).Scan(&stored, &original); err != nil {
 		t.Fatal(err)
 	}
 	if stored != "artist said hi" {
 		t.Errorf("stored commentary = %q, want the pushed body", stored)
+	}
+	if original != "https://pixiv.net/artworks/1" {
+		t.Errorf("stored original = %q, want the pushed one", original)
 	}
 	req2 := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/images/%d", id), nil)
 	w2 := httptest.NewRecorder()
@@ -710,7 +740,7 @@ func TestCreateImage_DuplicateMergesAnnotations(t *testing.T) {
 	}
 }
 
-func TestEnrichImage_AppliesTagsCommentaryNotes(t *testing.T) {
+func TestEnrichImage_AppliesTagsCommentaryOriginalNotes(t *testing.T) {
 	env := newTestEnv(t)
 	id := env.createTestImage(t, "enrich.png", 12, 12)
 
@@ -719,6 +749,7 @@ func TestEnrichImage_AppliesTagsCommentaryNotes(t *testing.T) {
 		"source":     "danbooru",
 		"url":        "https://danbooru.donmai.us/posts/5",
 		"commentary": "artist said hi",
+		"original":   "https://pixiv.net/artworks/9",
 		"notes":      []map[string]any{{"x": 10, "y": 20, "w": 30, "h": 40, "body": "translated"}},
 	})
 	req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
@@ -746,6 +777,14 @@ func TestEnrichImage_AppliesTagsCommentaryNotes(t *testing.T) {
 	if commentary != "artist said hi" {
 		t.Errorf("commentary = %q, want 'artist said hi'", commentary)
 	}
+	var original string
+	if err := env.database.Read.QueryRow(
+		`SELECT original FROM image_sources WHERE image_id = ? AND site = 'danbooru'`, id).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	if original != "https://pixiv.net/artworks/9" {
+		t.Errorf("original = %q, want the pushed one", original)
+	}
 	var nAnn int
 	if err := env.database.Read.QueryRow(
 		`SELECT COUNT(*) FROM image_annotations WHERE image_id = ? AND site = 'danbooru'`, id).Scan(&nAnn); err != nil {
@@ -753,6 +792,139 @@ func TestEnrichImage_AppliesTagsCommentaryNotes(t *testing.T) {
 	}
 	if nAnn != 1 {
 		t.Errorf("annotations = %d, want 1", nAnn)
+	}
+
+	// An original-less re-enrich keeps the stored value.
+	body, _ = json.Marshal(map[string]any{"source": "danbooru"})
+	req = httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("second enrich: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := env.database.Read.QueryRow(
+		`SELECT original FROM image_sources WHERE image_id = ? AND site = 'danbooru'`, id).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	if original != "https://pixiv.net/artworks/9" {
+		t.Errorf("original after original-less enrich = %q, want kept", original)
+	}
+}
+
+func TestEnrichImage_ParentURLLinksDerivative(t *testing.T) {
+	env := newTestEnv(t)
+	parent := env.createTestImage(t, "parent.png", 12, 12)
+	child := env.createTestImage(t, "child.png", 14, 14)
+	enrich := func(id int64, payload map[string]any) {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("enrich %d: expected 200, got %d: %s", id, w.Code, w.Body.String())
+		}
+	}
+
+	// The parent's post lands first; the child then declares it as parent.
+	enrich(parent, map[string]any{"source": "danbooru", "url": "https://danbooru.donmai.us/posts/1"})
+	enrich(child, map[string]any{"source": "danbooru", "url": "https://danbooru.donmai.us/posts/2",
+		"parent_url": "https://danbooru.donmai.us/posts/1"})
+
+	var parentURL string
+	if err := env.database.Read.QueryRow(
+		`SELECT parent_url FROM image_sources WHERE image_id = ?`, child).Scan(&parentURL); err != nil {
+		t.Fatal(err)
+	}
+	if parentURL != "https://danbooru.donmai.us/posts/1" {
+		t.Errorf("parent_url = %q, want the declared parent", parentURL)
+	}
+	var n int
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM derivative_edges WHERE source_image_id = ? AND derivative_image_id = ?`,
+		parent, child).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("derivative edges parent->child = %d, want 1", n)
+	}
+
+	// A re-enrich of either side must not error on the existing edge.
+	enrich(child, map[string]any{"source": "danbooru", "url": "https://danbooru.donmai.us/posts/2",
+		"parent_url": "https://danbooru.donmai.us/posts/1"})
+}
+
+func TestEnrichImage_ParentArrivingLateLinksChildren(t *testing.T) {
+	env := newTestEnv(t)
+	child := env.createTestImage(t, "late_child.png", 12, 12)
+	parent := env.createTestImage(t, "late_parent.png", 14, 14)
+	enrich := func(id int64, payload map[string]any) {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("enrich %d: expected 200, got %d: %s", id, w.Code, w.Body.String())
+		}
+	}
+
+	// The child arrives while its parent is absent: no edge yet.
+	enrich(child, map[string]any{"source": "danbooru", "url": "https://danbooru.donmai.us/posts/20",
+		"parent_url": "https://danbooru.donmai.us/posts/10"})
+	var n int
+	if err := env.database.Read.QueryRow(`SELECT COUNT(*) FROM derivative_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("derivative edges before the parent landed = %d, want 0", n)
+	}
+
+	// The parent's post lands later: the waiting child links under it.
+	enrich(parent, map[string]any{"source": "danbooru", "url": "https://danbooru.donmai.us/posts/10"})
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM derivative_edges WHERE source_image_id = ? AND derivative_image_id = ?`,
+		parent, child).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("derivative edges parent->child = %d, want 1", n)
+	}
+}
+
+func TestEnrichImage_ParentLinkSkipsConflictedPair(t *testing.T) {
+	env := newTestEnv(t)
+	parent := env.createTestImage(t, "conflict_parent.png", 12, 12)
+	child := env.createTestImage(t, "conflict_child.png", 14, 14)
+	enrich := func(id int64, payload map[string]any) {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("enrich %d: expected 200, got %d: %s", id, w.Code, w.Body.String())
+		}
+	}
+
+	// The operator already ruled the pair not related; the link must yield
+	// without failing the enrich or overriding the ruling.
+	if err := relations.New(env.database).AddNotRelated(parent, child); err != nil {
+		t.Fatal(err)
+	}
+	enrich(child, map[string]any{"source": "danbooru", "url": "https://danbooru.donmai.us/posts/32",
+		"parent_url": "https://danbooru.donmai.us/posts/31"})
+	enrich(parent, map[string]any{"source": "danbooru", "url": "https://danbooru.donmai.us/posts/31"})
+	var n int
+	if err := env.database.Read.QueryRow(`SELECT COUNT(*) FROM derivative_edges`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("derivative edges on a not-related pair = %d, want 0", n)
 	}
 }
 
@@ -796,6 +968,165 @@ func TestEnrichImage_PersistsSourceMD5(t *testing.T) {
 	}
 	if md5 != "0123456789abcdef0123456789abcdef" {
 		t.Errorf("md5 after md5-less enrich = %q, want kept", md5)
+	}
+}
+
+// A tagless enrich that recorded a source (monloader's source-only similarity
+// match) must not claim tags were fetched.
+func TestFetchSummaryTaglessSourceOnly(t *testing.T) {
+	if got := fetchSummary(mergeSummary{SourceAdded: true}, 0); got != "Recorded the source; no tags were fetched." {
+		t.Errorf("tagless summary = %q", got)
+	}
+	if got := fetchSummary(mergeSummary{SourceAdded: true}, 2); got != "Fetched tags from the source." {
+		t.Errorf("unchanged-tags summary = %q", got)
+	}
+}
+
+// A PTR lookup enriches with no source page: an empty url and verify=false
+// must apply the tags without the stored-file md5 check.
+func TestEnrichImage_URLLessUnverifiedApplies(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "enrich_ptr.png", 12, 12)
+
+	body, _ := json.Marshal(map[string]any{
+		"tags":   []string{"1girl"},
+		"source": "ptr",
+		"url":    "",
+		"verify": false,
+	})
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("enrich: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var nTags int
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_tags it JOIN tags t ON t.id = it.tag_id
+		 WHERE it.image_id = ? AND t.name = '1girl' AND it.tagger_name = 'ptr'`, id).Scan(&nTags); err != nil {
+		t.Fatal(err)
+	}
+	if nTags != 1 {
+		t.Errorf("1girl attributed to ptr = %d rows, want 1", nTags)
+	}
+	var srcURL string
+	if err := env.database.Read.QueryRow(
+		`SELECT url FROM image_sources WHERE image_id = ? AND site = 'ptr'`, id).Scan(&srcURL); err != nil {
+		t.Fatal(err)
+	}
+	if srcURL != "" {
+		t.Errorf("ptr origin url = %q, want empty", srcURL)
+	}
+}
+
+// A lookup that hits both backends enriches the PTR first, so the url-less
+// "ptr" row lands as primary; the booru enrich must take the primary over
+// while both origins stay recorded.
+func TestEnrichImage_BooruOutranksPTRPrimary(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "enrich_both.png", 12, 12)
+
+	for _, payload := range []map[string]any{
+		{"tags": []string{"1girl"}, "source": "ptr", "url": "", "verify": false},
+		{"tags": []string{"1girl"}, "source": "danbooru", "url": "https://d/9", "verify": false},
+	} {
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("enrich %v: expected 200, got %d: %s", payload["source"], w.Code, w.Body.String())
+		}
+	}
+
+	var primary, primaryURL string
+	if err := env.database.Read.QueryRow(
+		`SELECT source, url FROM images WHERE id = ?`, id).Scan(&primary, &primaryURL); err != nil {
+		t.Fatal(err)
+	}
+	if primary != "danbooru" || primaryURL != "https://d/9" {
+		t.Errorf("primary mirror = (%q, %q), want the booru origin", primary, primaryURL)
+	}
+	var n int
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_sources WHERE image_id = ?`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("origins recorded = %d, want both kept", n)
+	}
+}
+
+// A similarity-matched origin serves a different file by design: the enrich
+// records the score, and a later verified refetch carrying the post's md5
+// applies despite the mismatch, while a plain origin still 409s.
+func TestEnrichImage_SimilarityMatchSkipsHashCheck(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "enrich_sim.png", 12, 12)
+
+	body, _ := json.Marshal(map[string]any{
+		"source": "sankaku", "url": "https://s/7", "similarity": 91.4,
+	})
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("enrich: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var score float64
+	if err := env.database.Read.QueryRow(
+		`SELECT similarity FROM image_sources WHERE image_id = ? AND site = 'sankaku'`, id).Scan(&score); err != nil {
+		t.Fatal(err)
+	}
+	if score != 91.4 {
+		t.Errorf("stored similarity = %v, want 91.4", score)
+	}
+	req = httptest.NewRequest("GET", fmt.Sprintf("/api/v1/images/%d", id), nil)
+	w = httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if !strings.Contains(w.Body.String(), `"similarity":91.4`) {
+		t.Errorf("image JSON missing the source similarity: %s", w.Body.String())
+	}
+
+	// The refetch reads the post's real md5, which never matches the stored
+	// file; the recorded match must let it through as unverified, its score
+	// kept.
+	body, _ = json.Marshal(map[string]any{
+		"tags": []string{"1girl"}, "source": "sankaku", "url": "https://s/7",
+		"source_md5": strings.Repeat("f", 32), "verify": true,
+	})
+	req = httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("similarity-matched refetch: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"verified":false`) {
+		t.Errorf("refetch response should be unverified: %s", w.Body.String())
+	}
+	if err := env.database.Read.QueryRow(
+		`SELECT similarity FROM image_sources WHERE image_id = ? AND site = 'sankaku'`, id).Scan(&score); err != nil {
+		t.Fatal(err)
+	}
+	if score != 91.4 {
+		t.Errorf("similarity after score-less refetch = %v, want kept", score)
+	}
+
+	// An origin never matched by similarity keeps the hard check.
+	body, _ = json.Marshal(map[string]any{
+		"tags": []string{"1girl"}, "source": "danbooru", "url": "https://d/1",
+		"source_md5": strings.Repeat("f", 32), "verify": true,
+	})
+	req = httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("plain-origin mismatch: expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -848,6 +1179,123 @@ func TestEnrichImage_HashMismatchMakesNoChanges(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("a hash mismatch must not apply tags, got %d", n)
+	}
+}
+
+// Two posts of one site on the same image are distinct origins: the second
+// enrich must add its own row instead of relabeling the first, and its tag
+// merge must not prune the sibling post's slice.
+func TestEnrichImage_SecondPostSameSiteKeepsBothOrigins(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "enrich_twoposts.png", 12, 12)
+
+	enrich := func(postID, url string, tags []string) {
+		body, _ := json.Marshal(map[string]any{
+			"tags": tags, "source": "danbooru", "post_id": postID, "url": url, "verify": false,
+		})
+		req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("enrich post %s: expected 200, got %d: %s", postID, w.Code, w.Body.String())
+		}
+	}
+	enrich("114", "https://danbooru.donmai.us/posts/114", []string{"alpha", "beta"})
+	enrich("777", "https://danbooru.donmai.us/posts/777", []string{"gamma"})
+
+	var rows int
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_sources WHERE image_id = ? AND site = 'danbooru'`, id).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 2 {
+		t.Fatalf("danbooru origin rows = %d, want 2", rows)
+	}
+	var firstURL string
+	if err := env.database.Read.QueryRow(
+		`SELECT url FROM image_sources WHERE image_id = ? AND site = 'danbooru' AND post_id = '114'`, id).Scan(&firstURL); err != nil {
+		t.Fatal(err)
+	}
+	if firstURL != "https://danbooru.donmai.us/posts/114" {
+		t.Errorf("first origin url = %q, want the post 114 url kept", firstURL)
+	}
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		var n int
+		if err := env.database.Read.QueryRow(
+			`SELECT COUNT(*) FROM image_tags it JOIN tags t ON t.id = it.tag_id
+			 WHERE it.image_id = ? AND t.name = ?`, id, name).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Errorf("tag %s rows = %d, want 1 (second post's merge must not prune the first's)", name, n)
+		}
+	}
+}
+
+// Enrich guards the origin url and source label with the same rules create
+// and PATCH enforce, so no write path can store a non-http url.
+func TestEnrichImage_RejectsInvalidURL(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "enrich_badurl.png", 12, 12)
+
+	body, _ := json.Marshal(map[string]any{
+		"tags": []string{}, "source": "evil", "url": "javascript:alert(1)", "verify": false,
+	})
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a non-http url, got %d: %s", w.Code, w.Body.String())
+	}
+	var n int
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_sources WHERE image_id = ?`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("origin rows = %d, want none recorded", n)
+	}
+}
+
+// A refetch carrying the post id for an origin row written before enriches
+// had one must update that row in place, matched by url, not add a twin.
+func TestEnrichImage_AdoptsLegacyOriginByURL(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.createTestImage(t, "enrich_adopt.png", 12, 12)
+
+	enrich := func(postID string) {
+		body, _ := json.Marshal(map[string]any{
+			"tags": []string{"alpha"}, "source": "danbooru", "post_id": postID,
+			"url": "https://danbooru.donmai.us/posts/114", "verify": false,
+		})
+		req := httptest.NewRequest("POST", fmt.Sprintf("/api/v1/images/%d/enrich", id), bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("enrich: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+	enrich("")
+	enrich("114")
+
+	var rows int
+	if err := env.database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_sources WHERE image_id = ? AND site = 'danbooru'`, id).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("danbooru origin rows = %d, want the legacy row adopted, not twinned", rows)
+	}
+	var postID string
+	if err := env.database.Read.QueryRow(
+		`SELECT post_id FROM image_sources WHERE image_id = ? AND site = 'danbooru'`, id).Scan(&postID); err != nil {
+		t.Fatal(err)
+	}
+	if postID != "114" {
+		t.Errorf("adopted post_id = %q, want 114", postID)
 	}
 }
 
@@ -1817,6 +2265,49 @@ func TestCreateImage_Multipart(t *testing.T) {
 	}
 }
 
+func TestCreateImage_Multipart_UnlimitedSize(t *testing.T) {
+	env := newTestEnv(t)
+	env.cfg.Gallery.MaxFileSizeMB = 0 // 0 means "no limit", as everywhere else
+
+	// A noisy image resists PNG compression, so the body clears the bare
+	// 4 KiB cap the old unconditional MaxBytesReader imposed at maxMB=0.
+	var imgBuf bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 128, 128))
+	seed := 1
+	for i := range img.Pix {
+		seed = seed*1103515245 + 12345
+		img.Pix[i] = byte(seed >> 16)
+	}
+	if err := png.Encode(&imgBuf, img); err != nil {
+		t.Fatal(err)
+	}
+	if imgBuf.Len() <= 4096 {
+		t.Fatalf("test image is %d bytes, too small to exercise the 4 KiB cap", imgBuf.Len())
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "big.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(imgBuf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/images", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("max_file_size_mb=0 should accept the push, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestCreateImage_Multipart_MissingFile(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -2189,6 +2680,66 @@ func TestCreateImage_DuplicateKeepsOriginalProvenance(t *testing.T) {
 	}
 	if got["source"] != "first_source" {
 		t.Errorf("source = %v, want first_source (duplicate must not overwrite)", got["source"])
+	}
+}
+
+// A duplicate-SHA re-push carrying a collection files the existing image
+// into that label, so a pool pull whose page was already in the gallery
+// still completes the pool; an existing home is never displaced.
+func TestCreateImage_DuplicateAddsCollectionMembership(t *testing.T) {
+	env := newTestEnv(t)
+	img := image.NewRGBA(image.Rect(0, 0, 12, 12))
+	path := filepath.Join(env.galleryDir, "dup_coll.png")
+	f, _ := os.Create(path)
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	first := createImageJSON(t, env, map[string]any{"path": path}, http.StatusCreated)
+	id := int64(first["id"].(float64))
+
+	getImage := func() map[string]any {
+		getReq := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/images/%d", id), nil)
+		gw := httptest.NewRecorder()
+		env.mux.ServeHTTP(gw, getReq)
+		var got map[string]any
+		if err := json.NewDecoder(gw.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	createImageJSON(t, env, map[string]any{
+		"path":             path,
+		"collection":       "pool 100",
+		"collection_order": 2,
+	}, http.StatusOK)
+	got := getImage()
+	if got["collection"] != "pool 100" {
+		t.Errorf("collection = %v, want pool 100", got["collection"])
+	}
+	if got["collection_order"] != float64(2) {
+		t.Errorf("collection_order = %v, want 2", got["collection_order"])
+	}
+
+	createImageJSON(t, env, map[string]any{
+		"path":       path,
+		"collection": "pool 200",
+	}, http.StatusOK)
+	got = getImage()
+	if got["collection"] != "pool 100" {
+		t.Errorf("collection = %v, want pool 100 (membership must not displace the home)", got["collection"])
+	}
+	var names []string
+	if cols, ok := got["collections"].([]any); ok {
+		for _, c := range cols {
+			names = append(names, c.(map[string]any)["name"].(string))
+		}
+	}
+	if len(names) != 2 || names[0] != "pool 100" || names[1] != "pool 200" {
+		t.Errorf("collections = %v, want [pool 100 pool 200]", names)
 	}
 }
 

@@ -310,13 +310,17 @@ func (s *Server) querySDStringField(sdField, comfyField, prefix string, limit in
 
 func (s *Server) tagSuggest(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	// Accept the input's value however it arrives: q=, tag=, or canonical_id=
+	// Accept the input's value however it arrives: q=, tag=, canonical_id=,
+	// or target= (the batch-imply input submits its value under its name).
 	prefix := q.Get("q")
 	if prefix == "" {
 		prefix = q.Get("tag")
 	}
 	if prefix == "" {
 		prefix = q.Get("canonical_id")
+	}
+	if prefix == "" {
+		prefix = q.Get("target")
 	}
 
 	// If the prefix contains "category:name" and the prefix is a real

@@ -9,7 +9,8 @@
     <a href="#inbox">Inbox</a>
     <a href="#rating">Rating &amp; SFW Ceiling</a>
     <a href="#manga">Manga, Comics &amp; Archives</a>
-    <a href="#relations">Relations</a>
+    <a href="#relations">Relations / Collections</a>
+    <a href="#lookups">Sources &amp; Lookups</a>
     <a href="#keymap">Keyboard Shortcuts</a>
   </nav>
 </div>
@@ -22,125 +23,135 @@
 
   <section id="search-syntax">
     <h3>Search Syntax</h3>
+    <p class="field-hint">All searches are case-insensitive; missing images are hidden by default. Numeric and date filters accept ranges: <code>X..Y</code>, <code>..Y</code>, <code>X..</code>.</p>
 
-    <h4>Basics</h4>
-    <table class="help-table">
-      <thead><tr><th>Syntax</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>tagname</code></td><td>Images with this tag.</td></tr>
-        <tr><td><code>-tagname</code></td><td>Exclude images with this tag.</td></tr>
-        <tr><td><code>tagA tagB</code></td><td>Images with both tags (AND).</td></tr>
-        <tr><td><code>tagA OR tagB</code></td><td>Images with either tag.</td></tr>
-        <tr><td><code>red*</code></td><td>Wildcard: tags starting with "red" (e.g. red_hair, red_eyes).</td></tr>
-        <tr><td><code>*hair*</code></td><td>Wildcard: tags containing "hair".</td></tr>
-        <tr><td><code>system:</code></td><td>Open the cheat-sheet dropdown in the search bar.</td></tr>
-      </tbody>
-    </table>
+    <div class="help-columns">
+      <div class="help-group">
+        <h4>Basics</h4>
+        <table class="help-table">
+          <tbody>
+            <tr><td><code>tagname</code></td><td>Images with this tag.</td></tr>
+            <tr><td><code>-tagname</code></td><td>Exclude images with this tag.</td></tr>
+            <tr><td><code>tagA tagB</code></td><td>Images with both tags (AND).</td></tr>
+            <tr><td><code>tagA OR tagB</code></td><td>Images with either tag.</td></tr>
+            <tr><td><code>red*</code></td><td>Wildcard: tags starting with "red" (e.g. red_hair, red_eyes).</td></tr>
+            <tr><td><code>*hair</code></td><td>Wildcard: tags ending in "hair" (e.g. red_hair, blue_hair).</td></tr>
+            <tr><td><code>*hair*</code></td><td>Wildcard: tags containing "hair".</td></tr>
+            <tr><td><code>system:</code></td><td>Open the cheat-sheet dropdown in the search bar.</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-    <h4>Tags &amp; categories</h4>
-    <table class="help-table">
-      <thead><tr><th>Syntax</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>character:tagname</code></td><td>Tag "tagname" in the "character" category specifically.</td></tr>
-        <tr><td><code>cat:character</code></td><td>Images with any tag in the given category.</td></tr>
-        <tr><td><code>tagged:true</code></td><td>Only images with at least one tag. <code>tagged:false</code> restricts to images with no tags.</td></tr>
-        <tr><td><code>autotagged:true</code></td><td>Only images with at least one auto-tag. <code>autotagged:false</code> restricts to images with no auto-tags.</td></tr>
-        <tr><td><code>tagcount:&gt;=10</code></td><td>Number of tags on the image (counts every row, including implied tags fanned out from an implication). Also accepts the <code>X..Y</code> range shape (e.g. <code>tagcount:5..20</code>) and the half-open <code>..Y</code> / <code>X..</code> forms.</td></tr>
-        <tr><td><code>rating:explicit</code></td><td>Filter by rating (<code>general</code>/<code>sensitive</code>/<code>questionable</code>/<code>explicit</code>). When an image carries more than one rating tag the highest wins. The footer's <code>sfw</code> level corresponds to <code>rating:general</code>.</td></tr>
-      </tbody>
-    </table>
+      <div class="help-group">
+        <h4>Tags &amp; categories</h4>
+        <table class="help-table">
+          <tbody>
+            <tr><td><code>character:tagname</code></td><td>Tag "tagname" in the "character" category specifically.</td></tr>
+            <tr><td><code>cat:character</code></td><td>Images with any tag in the given category.</td></tr>
+            <tr><td><code>tagged:true</code></td><td>Only images with at least one tag. <code>tagged:false</code> restricts to images with no tags.</td></tr>
+            <tr><td><code>autotagged:true</code></td><td>Only images with at least one auto-tag. <code>autotagged:false</code> restricts to images with no auto-tags.</td></tr>
+            <tr><td><code>tagcount:&gt;=10</code></td><td>Number of tags on the image.</td></tr>
+            <tr><td><code>rating:explicit</code></td><td>Filter by rating (<code>general</code>/<code>sensitive</code>/<code>questionable</code>/<code>explicit</code>); highest wins.</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-    <h4>File</h4>
-    <table class="help-table">
-      <thead><tr><th>Syntax</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>name:vacation</code></td><td>Substring match against the filename (the path segment after the last "/"). Case-insensitive; folder names don't bleed in.</td></tr>
-        <tr><td><code>size:&gt;=10MB</code></td><td>File size comparison. Accepts bare bytes or a unit suffix: <code>B</code>, <code>K</code>/<code>KB</code>/<code>KiB</code>, <code>M</code>/<code>MB</code>/<code>MiB</code>, <code>G</code>/<code>GB</code>/<code>GiB</code>, <code>T</code>/<code>TB</code>/<code>TiB</code>. Every unit is 1024-based.</td></tr>
-        <tr><td><code>mime:png</code></td><td>File-type filter. Accepts the bare bucket (<code>png</code>, <code>jpeg</code>, <code>webp</code>, <code>gif</code>, <code>mp4</code>, <code>webm</code>, <code>cbz</code>) or the <code>image/...</code> / <code>video/...</code> form. Comma-separates as a union.</td></tr>
-        <tr><td><code>type:image</code> / <code>type:archive</code> / <code>type:animated</code></td><td>Narrow by file-type bucket. <code>image</code> = jpeg/png/webp, <code>archive</code> = cbz/zip (manga, image-zip..), <code>animated</code> = gif/mp4/webm. Comma-separates as a union.</td></tr>
-        <tr><td><code>width:&gt;=1920</code></td><td>Filter by image width.</td></tr>
-        <tr><td><code>height:&lt;768</code></td><td>Filter by image height.</td></tr>
-        <tr><td><code>ratio:&gt;=1.5</code></td><td>Aspect ratio (width / height) comparison.</td></tr>
-        <tr><td><code>duration:&gt;=30</code></td><td>Video duration in seconds. Non-video rows never match.</td></tr>
-        <tr><td><code>pages:&gt;=100</code></td><td>Comparison filter on a archive's page count. Non-archive rows count as 0 pages.</td></tr>
-        <tr><td><code>X..Y</code></td><td>Every numeric filter above (<code>size</code>, <code>width</code>, <code>height</code>, <code>ratio</code>, <code>duration</code>, <code>pages</code>) accepts the inclusive range shape <code>X..Y</code>, and the half-open <code>..Y</code> / <code>X..</code> forms - same syntax as <code>date:</code>.</td></tr>
-        <tr><td><code>hash:abcd…</code></td><td>Exact-match on the image's SHA-256 (case-insensitive).</td></tr>
-        <tr><td><code>id:123</code></td><td>Exact match on the image id.</td></tr>
-        <tr><td><code>missing:true</code></td><td>Show images whose files are missing from disk.</td></tr>
-      </tbody>
-    </table>
+      <div class="help-group">
+        <h4>File</h4>
+        <table class="help-table">
+          <tbody>
+            <tr><td><code>name:vacation</code></td><td>Substring match against the filename (the path segment after the last "/"). Case-insensitive; folder names don't bleed in.</td></tr>
+            <tr><td><code>size:&gt;=10MB</code></td><td>File size. Bare bytes or a unit suffix <code>B</code>/<code>K</code>/<code>M</code>/<code>G</code>/<code>T</code> (1024-based).</td></tr>
+            <tr><td><code>mime:png</code></td><td>File type: bare bucket (<code>png</code>, <code>jpeg</code>, <code>webp</code>, <code>gif</code>, <code>mp4</code>, <code>webm</code>, <code>cbz</code>) or <code>image/...</code>/<code>video/...</code>. Comma = union.</td></tr>
+            <tr><td><code>type:image</code> / <code>type:archive</code> / <code>type:animated</code></td><td>File-type bucket: <code>image</code> = jpeg/png/webp, <code>archive</code> = cbz/zip, <code>animated</code> = gif/mp4/webm. Comma = union.</td></tr>
+            <tr><td><code>width:&gt;=1920</code></td><td>Filter by image width.</td></tr>
+            <tr><td><code>height:&lt;768</code></td><td>Filter by image height.</td></tr>
+            <tr><td><code>ratio:&gt;=1.5</code></td><td>Aspect ratio (width / height) comparison.</td></tr>
+            <tr><td><code>duration:&gt;=30</code></td><td>Video duration in seconds. Non-video rows never match.</td></tr>
+            <tr><td><code>pages:&gt;=100</code></td><td>Comparison filter on a archive's page count. Non-archive rows count as 0 pages.</td></tr>
+            <tr><td><code>hash:abcd…</code></td><td>Exact-match on the image's SHA-256 (case-insensitive).</td></tr>
+            <tr><td><code>id:123</code></td><td>Exact match on the image id.</td></tr>
+            <tr><td><code>missing:true</code></td><td>Show images whose files are missing from disk.</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-    <h4>Folder, source, collection</h4>
-    <table class="help-table">
-      <thead><tr><th>Syntax</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>folder:path/to</code></td><td>Images in that folder or any subfolder beneath it.</td></tr>
-        <tr><td><code>folderonly:path/to</code></td><td>Only images directly in that folder (no subfolders); use <code>folderonly:</code> for the gallery root alone.</td></tr>
-        <tr><td><code>folder:"path with spaces"</code></td><td>Folder path with spaces (use quotes).</td></tr>
-        <tr><td><code>source:"source name"</code></td><td>Matches any image carrying that source. An image can have several sources; this matches any of them. Bare <code>source:</code> matches images with no source.</td></tr>
-        <tr><td><code>collection:"collection name"</code></td><td>Matches any image filed under that collection. An image can belong to several collections; this matches any of them. Bare <code>collection:</code> matches images with no collection; <code>collection:any</code> matches images in at least one collection.</td></tr>
-      </tbody>
-    </table>
+      <div class="help-group">
+        <h4>Folder, source, collection</h4>
+        <table class="help-table">
+          <tbody>
+            <tr><td><code>folder:path/to</code></td><td>Images in that folder or any subfolder beneath it.</td></tr>
+            <tr><td><code>folderonly:path/to</code></td><td>Only images directly in that folder (no subfolders); use <code>folderonly:</code> for the gallery root alone.</td></tr>
+            <tr><td><code>folder:"path with spaces"</code></td><td>Folder path with spaces (use quotes).</td></tr>
+            <tr><td><code>source:"source name"</code></td><td>Matches any image carrying that source. An image can have several sources; this matches any of them. Bare <code>source:</code> matches images with no source.</td></tr>
+            <tr><td><code>collection:"collection name"</code></td><td>Matches any image filed under that collection. An image can belong to several collections; this matches any of them. Bare <code>collection:</code> matches images with no collection; <code>collection:any</code> matches images in at least one collection.</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-    <h4>AI &amp; generation metadata</h4>
-    <table class="help-table">
-      <thead><tr><th>Syntax</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>ai:any</code></td><td>Any AI-generated image (a1111 and/or comfyui metadata present)</td></tr>
-        <tr><td><code>ai:a1111</code></td><td>Images generated with A1111/Forge</td></tr>
-        <tr><td><code>ai:comfyui</code></td><td>Images generated with ComfyUI</td></tr>
-        <tr><td><code>ai:none</code></td><td>Images with no detected generation metadata</td></tr>
-        <tr><td><code>generated:abcd1234abcd</code></td><td>Other images sharing the same generation recipe (prompt + negative prompt + model + sampler + steps + cfg, seed ignored). The hash is shown in the Generation data block on the detail page.</td></tr>
-        <tr><td><code>prompt:cat</code></td><td>Substring match across the SD or ComfyUI prompt (whichever the image carries).</td></tr>
-        <tr><td><code>model:sdxl</code></td><td>Substring match against the SD model or ComfyUI checkpoint name.</td></tr>
-        <tr><td><code>sampler:dpm</code></td><td>Substring match against the SD / ComfyUI sampler name.</td></tr>
-        <tr><td><code>seed:12345</code></td><td>Exact SD or ComfyUI seed.</td></tr>
-      </tbody>
-    </table>
+      <div class="help-group">
+        <h4>AI &amp; generation metadata</h4>
+        <table class="help-table">
+          <tbody>
+            <tr><td><code>ai:any</code></td><td>Any AI-generated image (a1111 and/or comfyui metadata present)</td></tr>
+            <tr><td><code>ai:a1111</code></td><td>Images generated with A1111/Forge</td></tr>
+            <tr><td><code>ai:comfyui</code></td><td>Images generated with ComfyUI</td></tr>
+            <tr><td><code>ai:none</code></td><td>Images with no detected generation metadata</td></tr>
+            <tr><td><code>generated:abcd1234abcd</code></td><td>Other images sharing the same generation recipe. The hash is shown in the Generation data block on the detail page.</td></tr>
+            <tr><td><code>prompt:cat</code></td><td>Substring match across the SD or ComfyUI prompt (whichever the image carries).</td></tr>
+            <tr><td><code>model:sdxl</code></td><td>Substring match against the SD model or ComfyUI checkpoint name.</td></tr>
+            <tr><td><code>sampler:dpm</code></td><td>Substring match against the SD / ComfyUI sampler name.</td></tr>
+            <tr><td><code>seed:12345</code></td><td>Exact SD or ComfyUI seed.</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-    <h4>State &amp; ingestion</h4>
-    <table class="help-table">
-      <thead><tr><th>Syntax</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>fav:true</code> / <code>fav:false</code></td><td>Favorited / non-favorited images.</td></tr>
-        <tr><td><code>inbox:true</code> / <code>inbox:false</code></td><td>Inbox state: untriaged (default for added images) vs archived/curated.</td></tr>
-        <tr><td><code>date:&gt;2024-01-01</code></td><td>Images ingested after a date.</td></tr>
-        <tr><td><code>date:2024-01..2024-06</code></td><td>Images ingested within a date range.</td></tr>
-        <tr><td><code>date:2024-03-15</code></td><td>Images ingested on an exact date.</td></tr>
-        <tr><td><code>date:2024-03-15T19:23..2024-03-15T19:30</code></td><td>Same shape with hour (<code>T HH</code>), minute (<code>T HH:MM</code>), or second (<code>T HH:MM:SS</code>) precision.</td></tr>
-        <tr><td><code>via:upload</code></td><td>Filter by how the image was added: <code>ingest</code> (watcher / sync) or <code>upload</code> (web form). API uploads carry the caller-supplied string.</td></tr>
-      </tbody>
-    </table>
+      <div class="help-group">
+        <h4>State &amp; ingestion</h4>
+        <table class="help-table">
+          <tbody>
+            <tr><td><code>fav:true</code> / <code>fav:false</code></td><td>Favorited / non-favorited images.</td></tr>
+            <tr><td><code>inbox:true</code> / <code>inbox:false</code></td><td>Inbox state: untriaged (default for added images) vs archived/curated.</td></tr>
+            <tr><td><code>date:&gt;2024-01-01</code></td><td>Images ingested after a date.</td></tr>
+            <tr><td><code>date:2024-01..2024-06</code></td><td>Images ingested within a date range.</td></tr>
+            <tr><td><code>date:2024-03-15</code></td><td>Images ingested on an exact date.</td></tr>
+            <tr><td><code>date:2024-03-15T19:23..2024-03-15T19:30</code></td><td>Same shape with hour (<code>T HH</code>), minute (<code>T HH:MM</code>), or second (<code>T HH:MM:SS</code>) precision.</td></tr>
+            <tr><td><code>via:upload</code></td><td>How the image was added: <code>ingest</code> (watcher / sync) or <code>upload</code> (web form).</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-    <h4>Relations &amp; perceptual hash</h4>
-    <table class="help-table">
-      <thead><tr><th>Syntax</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>phash:&lt;16hex&gt;</code></td><td>Exact perceptual-hash match. Useful via the <code>[copy]</code> button on the detail page's pHash row.</td></tr>
-        <tr><td><code>phash:&lt;16hex&gt;~4</code></td><td>Within Hamming distance 4 (near-duplicates). Distances 0..64 accepted.</td></tr>
-        <tr><td><code>phash:</code> / <code>-phash:</code></td><td>Has a perceptual hash / doesn't have one.</td></tr>
-        <tr><td><code>relation:duplicate</code></td><td>Image is in any duplicate group.</td></tr>
-        <tr><td><code>relation:original</code></td><td>Image is the chosen original of a duplicate group.</td></tr>
-        <tr><td><code>relation:alternate</code></td><td>Image is in any alternate group.</td></tr>
-        <tr><td><code>relation:version</code></td><td>Image is on a version chain (either side).</td></tr>
-        <tr><td><code>relation:derivative</code></td><td>Image is the derivative end of an edge.</td></tr>
-        <tr><td><code>relation:source</code></td><td>Image is the source side of at least one derivative edge.</td></tr>
-        <tr><td><code>relation:collection</code></td><td>Image carries a collection label.</td></tr>
-        <tr><td><code>relation:any</code> / <code>relation:none</code></td><td>Has any declared relation / none. <code>any</code> includes images with a collection label.</td></tr>
-      </tbody>
-    </table>
+      <div class="help-group">
+        <h4>Relations &amp; perceptual hash</h4>
+        <table class="help-table">
+          <tbody>
+            <tr><td><code>phash:&lt;16hex&gt;</code></td><td>Exact perceptual-hash match. Useful via the <code>[copy]</code> button on the detail page's pHash row.</td></tr>
+            <tr><td><code>phash:&lt;16hex&gt;~4</code></td><td>Within Hamming distance 4 (near-duplicates). Distances 0..64 accepted.</td></tr>
+            <tr><td><code>phash:</code> / <code>-phash:</code></td><td>Has a perceptual hash / doesn't have one.</td></tr>
+            <tr><td><code>relation:duplicate</code></td><td>Image is in any duplicate group.</td></tr>
+            <tr><td><code>relation:original</code></td><td>Image is the chosen original of a duplicate group.</td></tr>
+            <tr><td><code>relation:alternate</code></td><td>Image is in any alternate group.</td></tr>
+            <tr><td><code>relation:version</code></td><td>Image is on a version chain (either side).</td></tr>
+            <tr><td><code>relation:derivative</code></td><td>Image is the derivative end of an edge.</td></tr>
+            <tr><td><code>relation:source</code></td><td>Image is the source side of at least one derivative edge.</td></tr>
+            <tr><td><code>relation:collection</code></td><td>Image carries a collection label.</td></tr>
+            <tr><td><code>relation:any</code> / <code>relation:none</code></td><td>Has any declared relation / none. <code>any</code> includes images with a collection label.</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-    <p class="field-hint">All searches are case-insensitive. Missing images are hidden by default.</p>
-    <h4>Sort options</h4>
-    <table class="help-table">
-      <thead><tr><th>Sort</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td>Newest</td><td>Sort by ingest date (default for most searches). Use the order toggle (↓/↑) next to the sort select to flip direction.</td></tr>
-        <tr><td>File size</td><td>Sort by file size, largest first.</td></tr>
-        <tr><td>Collection order</td><td>Group by collection alphabetically, then by the per-image order field. Images without a collection sit at the start; images with a collection but no order sit after the numbered ones. When the search pins a single <code>collection:</code>, the results read in that collection's own order.</td></tr>
-        <tr><td>Random (⇄)</td><td>Shuffle images randomly. Stable across page turns; click ⇄ again to re-shuffle.</td></tr>
-      </tbody>
-    </table>
+      <div class="help-group">
+        <h4>Sort options</h4>
+        <table class="help-table">
+          <tbody>
+            <tr><td>Newest</td><td>Sort by ingest date (default for most searches). Use the order toggle (↓/↑) next to the sort select to flip direction.</td></tr>
+            <tr><td>File size</td><td>Sort by file size, largest first.</td></tr>
+            <tr><td>Collection order</td><td>Group by collection alphabetically, then by the per-image order field. Images without a collection sit at the start; images with a collection but no order sit after the numbered ones. When the search pins a single <code>collection:</code>, the results read in that collection's own order.</td></tr>
+            <tr><td>Random (⇄)</td><td>Shuffle images randomly. Stable across page turns; click ⇄ again to re-shuffle.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </section>
 
   <hr class="help-sep">
@@ -148,7 +159,7 @@
   <section id="upload">
     <h3>Uploading Images</h3>
     <p>Open the <a href="/?q=inbox:true">Inbox</a> from the top menu. The drop zone at the top of the grid accepts files (JPEG, PNG, WebP, GIF, MP4, WebM, or a supported archive format: cbz or zip) : drag them in or pick them through the <strong>Choose files</strong> button.</p>
-    <p>From the gallery, open the <strong>Actions</strong> chooser (button next to the search bar) to save the search, add/remove tags, auto-tag, toggle inbox or favorite, set a collection or source, fetch tags from source, move, or delete every image in the current search. To scope an action to a few images, check their thumbnails and use the corresponding button in the batch bar.</p>
+    <p>The <strong>Actions</strong> chooser (next to the search bar) applies an operation to every image in the current search; check thumbnails first to scope it to a selection, using the matching button in the batch bar.</p>
   </section>
 
   <hr class="help-sep">
@@ -164,8 +175,7 @@
     </ul>
     <h4>Tag names</h4>
     <ul>
-      <li>Lowercase only: <code>a-z</code>, <code>0-9</code>, <code>_</code>, <code>(</code>, <code>)</code>, <code>!</code>, <code>@</code>, <code>#</code>, <code>$</code>, <code>.</code>, <code>~</code>, <code>+</code>, <code>-</code>, <code>:</code>, <code>?</code>, <code>&lt;</code>, <code>&gt;</code>, <code>=</code>, <code>^</code></li>
-      <li>Maximum 200 characters.</li>
+      <li>Lowercase <code>a-z</code>, <code>0-9</code> and <code>_ ( ) ! @ # $ . ~ + - : ? &lt; &gt; = ^</code>; up to 200 characters.</li>
     </ul>
   </section>
 
@@ -177,8 +187,14 @@
     <ul>
       <li><strong>Create tag</strong> declares a fresh tag (no image needed); useful for pre-seeding a vocabulary or wiring implications against unused names.</li>
       <li><strong>Create alias</strong> binds a name to an existing canonical so typing the alias adds the canonical instead.</li>
-      <li><strong>Alias</strong> on a non-alias row turns it into an alias of another tag: every image-tag row moves to the canonical and the source becomes a zero-usage alias entry.</li>
+      <li><strong>Rename</strong> can keep the old name as an alias, so searches built on the old spelling keep working.</li>
+      <li><strong>Alias to</strong> (selection bar) turns each selected tag into an alias of another: every image-tag row moves to the canonical and the source becomes a zero-usage alias entry. Selecting an alias row repoints it instead.</li>
+      <li><strong>Merge</strong> (selection bar) folds the selected tags into one of them: pick the survivor in the dialog and the others become its aliases, their images moving over.</li>
+      <li><strong>Change category</strong> (selection bar) moves the selection to another category; when the name already lives there, the optional merge folds the tag into the existing one.</li>
       <li><strong>Implications</strong> declare "tag X also implies tag Y": adding X to an image fans Y out as a dim implied row.</li>
+      <li><strong>Tag details</strong>: a row's <strong>See detail</strong> button opens its page - who applies it, usage over time, aliases pointing at it, implications in both directions, and its newest images.</li>
+      <li><strong>PTR lookup</strong> (shown when monloader is paired with the Hydrus PTR enabled) pulls each selected tag's known aliases and implications from the Public Tag Repository and adds them to the catalog.</li>
+      <li>The <strong>Origin</strong> column shows which source created each tag (you, a booru site, the PTR, an auto-tagger); <strong>Created</strong> shows when the tag entered the catalog and <strong>Last used</strong> when it was last applied to an image.</li>
     </ul>
   </section>
 
@@ -188,7 +204,6 @@
     <h3>Inbox</h3>
     <p>Every newly ingested or uploaded image lands in the <strong>inbox</strong>. Flip it to <strong>archived</strong> (curated) once you've reviewed the tags.</p>
     <ul>
-      <li>Top menu: the <a href="/?q=inbox:true">Inbox (N)</a> entry jumps to the inbox view. The parenthesised count tracks the post-ceiling match count.</li>
       <li>Image detail: the <strong>In inbox</strong> / <strong>Archived</strong> button left of the favorite toggles the current image between inbox and archived.</li>
       <li>Batch surface: the gallery's Actions chooser and the selection batch bar each carry a single <strong>Toggle inbox</strong> entry that flips every targeted row (inbox rows become archived; archived become inbox).</li>
       <li>Batch clusters: while the gallery is sorted newest-first on an <code>inbox:true</code> search, rows are grouped into batches. Each web upload (one drop) is its own batch; files that land on disk are batched by time, a new group every 15 minutes of inactivity.</li>
@@ -219,20 +234,27 @@
   <hr class="help-sep">
 
   <section id="relations">
-    <h3>Relations</h3>
-    <p>Five operator-declared relationships between images, plus a "not related" rejection list:</p>
-    <ul>
-      <li><strong>Duplicate</strong> - same image, different files. Members live in a group with a chosen <em>original</em> (the canonical representative).</li>
-      <li><strong>Alternate</strong> - same subject, different rendering. Members live in an unranked group; no member is privileged.</li>
-      <li><strong>Version</strong> - directed parent &rarr; child edge. Each image has at most one parent (the earlier version) and at most one child (the newer version).</li>
-      <li><strong>Derivative</strong> - directed source &rarr; derivative edge. A derivative has exactly one source it is based on; a source can carry many derivatives.</li>
-      <li><strong>Not related</strong> - a rejected pair recorded so the find-pairs queue never resurfaces it.</li>
-    </ul>
-    <p>Open the <a href="/relations">Relations</a> page to start a session to walk candidate pairs, and cleanup duplicates.</p>
-    <p>From any image's detail page, <strong>Add a relation</strong> opens a dialog for declaring an edge against another image directly without going through a session. If the chosen pair already carries a different relation, the dialog surfaces an <strong>Overwrite existing relation</strong> button that replaces the conflicting edge in one transaction.</p>
-    <p><strong>Collections</strong> are a lighter grouping that sits apart from the relation graph. An image can belong to several collections, each with its own optional order. Edit them from the <strong>Collections</strong> row on the detail page: <code>[+ add]</code> files the image under a collection (with an optional position), <code>[edit]</code> changes a membership, and <code>[&times;]</code> removes one. Images sharing a collection appear in the <strong>Same collection</strong> section below the related-images panel. The <a href="/collections">Collections</a> page lists every collection with a preview of its contents; from there you can <strong>rename</strong> a collection across all its members, <strong>reorder</strong> it, or <strong>dissolve</strong> one, which drops the label from every image while leaving the images and files in place.</p>
-    <p><strong>Sources</strong> record where an image came from. An image can carry several; edit them from the <strong>Sources</strong> row on the detail page the same way as collections (<code>[+ add]</code>, <code>[edit]</code>, <code>[&times;]</code>). When monloader is paired, each source with a URL also shows a <code>[fetch]</code> action that re-pulls that post's tags, commentary and notes through monloader; the batch <strong>Fetch tags from source</strong> action does the same for every image in the scope, using each image's primary (first) source URL. Removing a source also removes the note boxes it pulled.</p>
-    <p><strong>Commentary &amp; notes</strong> sit under the image, above the tags. Each source can carry its own <strong>commentary</strong> (the artist's text, pulled from the booru); <code>[edit]</code> changes it and <code>[&times;]</code> clears it, but a later re-pull of that source overwrites it. The single <strong>Note</strong> is your own and is never touched by an import. Positional <strong>annotations</strong> pulled from a booru are drawn over the image; hover a box to read it and use <code>[hide notes]</code> to toggle the overlay.</p>
+    <h3>Relations / Collections</h3>
+    <p>Four operator-declared relationships between images, plus a "not related" list that stops a rejected pair from resurfacing:</p>
+    <table class="help-table">
+      <tbody>
+        <tr><td>Duplicate</td><td>Same image, different files. One member is the chosen <em>original</em>.</td></tr>
+        <tr><td>Alternate</td><td>Same subject, different rendering. Unranked group.</td></tr>
+        <tr><td>Version</td><td>Directed parent &rarr; child edge (earlier to newer); one parent, one child.</td></tr>
+        <tr><td>Derivative</td><td>Directed source &rarr; derivative edge; one source, many derivatives.</td></tr>
+        <tr><td>Not related</td><td>A rejected pair the find-pairs queue won't surface again.</td></tr>
+      </tbody>
+    </table>
+    <p>Open the <a href="/relations">Relations</a> page to walk candidate pairs and clean up duplicates, or use <strong>Add a relation</strong> on any image's detail page to declare an edge directly; if the pair already carries one, <strong>Overwrite existing relation</strong> replaces it.</p>
+    <p><strong>Collections</strong> are a lighter grouping outside the relation graph. An image can belong to several, each with its own order. Edit them from the detail page's <strong>Collections</strong> row (<code>[+ add]</code>, <code>[edit]</code>, <code>[&times;]</code>); the <a href="/collections">Collections</a> page renames, reorders, or dissolves one across all its members.</p>
+  </section>
+
+  <hr class="help-sep">
+
+  <section id="lookups">
+    <h3>Sources &amp; Lookups</h3>
+    <p>A <strong>source</strong> records where an image came from, and an image can carry several. Edit them from the <strong>Sources</strong> row on the detail page, with <code>[set primary]</code> to pick the one that search and refresh follow. Each source also carries the artist's <strong>original</strong> link, <strong>commentary</strong>, and any pulled <strong>annotations</strong>.</p>
+    <p>A <strong>lookup</strong> uses a paired monloader to fill those sources for you. On the detail page, <code>[refresh]</code> re-pulls one source's tags, commentary and notes; <strong>Lookup</strong> reverse-searches an image against boorus and the Hydrus PTR to backfill its tags and sources. The batch <strong>Lookup</strong> action does the same across a whole search or selection.</p>
   </section>
 
   <hr class="help-sep">

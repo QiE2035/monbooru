@@ -6,6 +6,7 @@ import (
 
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/searchkw"
+	"github.com/leqwin/monbooru/internal/tags"
 )
 
 // fastTagTotal returns a visible-image count for an Expr by reading
@@ -169,7 +170,7 @@ func extractCeilingShape(expr Expr) (Expr, []string, bool) {
 func ceilingRankFromExcluded(levels []string) int {
 	minRank := -1
 	for _, name := range levels {
-		r := ratingRank(name)
+		r := tags.RatingRank(name)
 		if r < 0 {
 			continue
 		}
@@ -431,7 +432,7 @@ func fastCountRating(database *db.DB, e FilterExpr) (int, bool) {
 		return 0, false
 	}
 	level := strings.ToLower(e.Val)
-	rank := ratingRank(level)
+	rank := tags.RatingRank(level)
 	if rank < 0 {
 		// Out-of-vocabulary level matches no rows; the slow-path
 		// `1=0` short-circuit returns 0 too.
@@ -454,7 +455,7 @@ func fastCountRating(database *db.DB, e FilterExpr) (int, bool) {
 	// (explicit, no higher to hide it) are both exact regardless of
 	// fixture size; everything else gates so test/small libraries stay
 	// on the slow path's exact count.
-	if n == 0 || rank == len(ratingLevels)-1 {
+	if n == 0 || rank == len(tags.RatingLevels)-1 {
 		return n, true
 	}
 	if n < fastApproxThreshold {

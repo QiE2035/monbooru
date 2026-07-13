@@ -283,11 +283,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 
 	selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName)
 	if selErr != nil {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", selErr.Error())
-			return
-		}
-		http.Error(w, selErr.Error(), http.StatusBadRequest)
+		externalErr(w, r, selErr.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -298,11 +294,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 		// result set without buffering an extra copy.
 		expr, parseErr := search.Parse(r.FormValue("q"))
 		if parseErr != nil {
-			if isHTMXRequest(r) {
-				writeInlineFlash(w, "err", "Could not parse search: "+parseErr.Error())
-				return
-			}
-			http.Error(w, parseErr.Error(), http.StatusBadRequest)
+			hxErr(w, r, "Could not parse search: "+parseErr.Error(), parseErr.Error(), http.StatusBadRequest)
 			return
 		}
 		expr = resolveCeiling(r, s.Active()).Apply(expr)
@@ -320,20 +312,12 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil && err != errAutotagOverCap {
 			logx.Errorf("autotag search: %v", err)
-			if isHTMXRequest(r) {
-				writeInlineFlash(w, "err", "Search error.")
-				return
-			}
-			http.Error(w, "search error", http.StatusInternalServerError)
+			hxErr(w, r, "Search error.", "search error", http.StatusInternalServerError)
 			return
 		}
 		if err == errAutotagOverCap {
 			msg := fmt.Sprintf("Search matches more than %d images; narrow the query and re-run.", autotagSearchScopeCap)
-			if isHTMXRequest(r) {
-				writeInlineFlash(w, "err", msg)
-				return
-			}
-			http.Error(w, msg, http.StatusBadRequest)
+			externalErr(w, r, msg, http.StatusBadRequest)
 			return
 		}
 	} else {
@@ -346,20 +330,12 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(ids) == 0 {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", "No images to tag.")
-			return
-		}
-		http.Error(w, "no images selected", http.StatusBadRequest)
+		hxErr(w, r, "No images to tag.", "no images selected", http.StatusBadRequest)
 		return
 	}
 
 	if err := s.jobs.Start(models.JobTypeAutotag); err != nil {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", "A job is already running.")
-			return
-		}
-		http.Error(w, "job already running", http.StatusConflict)
+		hxErr(w, r, "A job is already running.", "job already running", http.StatusConflict)
 		return
 	}
 	// Loading the ONNX model (and initialising CUDA when enabled) can take a
@@ -380,11 +356,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 	if !tagger.IsAvailable(s.cfg) {
 		reason := tagger.UnavailableReason(s.cfg)
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", "Auto-tagger not available: "+reason+".")
-			return
-		}
-		http.Error(w, "auto-tagger not available: "+reason, http.StatusServiceUnavailable)
+		hxErr(w, r, "Auto-tagger not available: "+reason+".", "auto-tagger not available: "+reason, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -399,20 +371,12 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 
 	selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName)
 	if selErr != nil {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", selErr.Error())
-			return
-		}
-		http.Error(w, selErr.Error(), http.StatusBadRequest)
+		externalErr(w, r, selErr.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if err := s.jobs.Start(models.JobTypeAutotag); err != nil {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", "A job is already running.")
-			return
-		}
-		http.Error(w, "job already running", http.StatusConflict)
+		hxErr(w, r, "A job is already running.", "job already running", http.StatusConflict)
 		return
 	}
 	// Surface a starting line so the status bar isn't blank while the

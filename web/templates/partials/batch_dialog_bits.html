@@ -7,7 +7,7 @@
 {{define "suggest_input"}}
       <div class="series-input-wrap">
         <input type="text" name="{{.Name}}" id="{{.InputID}}" maxlength="200"
-               autocomplete="off"
+               {{if .Required}}required {{end}}autocomplete="off"
                hx-get="{{.Endpoint}}"
                hx-trigger="input changed delay:200ms"
                hx-target="#{{.SuggestID}}"
@@ -15,5 +15,21 @@
                hx-vals='js:{prefix: document.getElementById("{{.InputID}}").value}'
                onkeydown="handleSuggestKey(event, '{{.SuggestID}}', '{{.InputID}}')">
         <div id="{{.SuggestID}}" class="suggest-dropdown series-suggest-dropdown"></div>
+      </div>
+{{end}}
+
+{{/* The tag-input twin: fixed /internal/tags/suggest endpoint, form-value
+     submission via hx-include, and the tag-flavoured dropdown. */}}
+{{define "tag_suggest_input"}}
+      <div class="series-input-wrap">
+        <input type="text" name="{{.Name}}" id="{{.InputID}}"
+               placeholder="tag name, category:name, or ID" {{if .Required}}required {{end}}autocomplete="off"
+               hx-get="/internal/tags/suggest"
+               hx-trigger="input changed delay:200ms"
+               hx-target="#{{.SuggestID}}"
+               hx-swap="innerHTML"
+               hx-include="this"
+               onkeydown="handleSuggestKey(event, '{{.SuggestID}}', '{{.InputID}}')">
+        <div id="{{.SuggestID}}" class="suggest-dropdown tag-suggest-dropdown"></div>
       </div>
 {{end}}

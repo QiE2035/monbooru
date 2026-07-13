@@ -286,6 +286,8 @@ const (
 	maxExternalURLLen     = 2048
 	maxImageNoteLen       = 10000
 	maxImageCommentaryLen = 10000
+	maxImageOriginalLen   = 2048
+	maxAnnotationBodyLen  = 2000
 )
 
 // setSource upserts one origin for an image: adding it, updating its url /
@@ -337,20 +339,37 @@ func (s *Server) setSource(w http.ResponseWriter, r *http.Request) {
 	hxDone(w, r, "Source updated.", "", "/images/"+strconv.FormatInt(id, 10))
 }
 
-// removeSource drops one origin from an image, keyed by its site + post id.
-func (s *Server) removeSource(w http.ResponseWriter, r *http.Request) {
+// sourceMembershipAction is the shared skeleton for the origin-row edit
+// handlers: resolve the image, read site + post id, run the mutation,
+// invalidate caches, and redirect back to the detail page.
+func (s *Server) sourceMembershipAction(w http.ResponseWriter, r *http.Request, successMsg string, action func(id int64, site, postID string) error) {
 	id, ok := imageIDForm(w, r)
 	if !ok {
 		return
 	}
 	site := strings.TrimSpace(r.FormValue("site"))
 	postID := strings.TrimSpace(r.FormValue("post_id"))
-	if err := gallery.RemoveSourceMembership(s.db(), id, site, postID); err != nil {
+	if err := action(id, site, postID); err != nil {
 		externalErr(w, r, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.Active().InvalidateCaches()
-	hxDone(w, r, "Source removed.", "", "/images/"+strconv.FormatInt(id, 10))
+	hxDone(w, r, successMsg, "", "/images/"+strconv.FormatInt(id, 10))
+}
+
+// removeSource drops one origin from an image, keyed by its site + post id.
+func (s *Server) removeSource(w http.ResponseWriter, r *http.Request) {
+	s.sourceMembershipAction(w, r, "Source removed.", func(id int64, site, postID string) error {
+		return gallery.RemoveSourceMembership(s.db(), id, site, postID)
+	})
+}
+
+// makeSourcePrimary reorders one origin to primary, so its site / url become
+// the scalar mirror the search executor and exports ride.
+func (s *Server) makeSourcePrimary(w http.ResponseWriter, r *http.Request) {
+	s.sourceMembershipAction(w, r, "Primary source updated.", func(id int64, site, postID string) error {
+		return gallery.MakeSourcePrimary(s.db(), id, site, postID)
+	})
 }
 
 // fetchSource enqueues a metadata-only refetch of one source's URL on
@@ -387,6 +406,67 @@ func (s *Server) fetchSource(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/images/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
+// lookupImage enqueues a hash lookup on monloader: backend "all" runs every
+// backend monloader has enabled (the booru walk by md5, the PTR index by
+// sha256), backend "ptr" targets the PTR alone (the url-less "ptr" source's
+// fetch action and the dialog's PTR-only choice), backend "booru" the online
+// walk alone. The md5 is hashed on demand from the stored bytes (never
+// persisted - sha256 stays the only content key); the result comes back
+// through the same enrich / fetch-status callbacks as a source refetch, so
+// the pending pill and its poll are reused unchanged.
+func (s *Server) lookupImage(w http.ResponseWriter, r *http.Request) {
+	id, ok := imageIDForm(w, r)
+	if !ok {
+		return
+	}
+	backend := r.FormValue("backend")
+	if backend != "all" && backend != "ptr" && backend != "booru" {
+		externalErr(w, r, "unknown lookup backend", http.StatusBadRequest)
+		return
+	}
+	var canonPath, sha string
+	if err := s.db().Read.QueryRow(
+		`SELECT canonical_path, sha256 FROM images WHERE id = ?`, id,
+	).Scan(&canonPath, &sha); err != nil {
+		externalErr(w, r, "image not found", http.StatusNotFound)
+		return
+	}
+	var md5 string
+	if backend != "ptr" {
+		var err error
+		if md5, err = gallery.Md5File(canonPath); err != nil {
+			externalErr(w, r, "cannot hash the file: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	// Like fetchSource, this route bypasses ContextMiddleware so the outbound
+	// call never runs under ctxMu; snapshot the active name under a short lock.
+	s.ctxMu.RLock()
+	galleryName := s.activeName
+	s.ctxMu.RUnlock()
+	if err := s.EnqueueHashLookup(r.Context(), id, galleryName, backend, md5, sha); err != nil {
+		if errors.Is(err, errPTRUnavailable) {
+			externalErr(w, r, err.Error(), http.StatusConflict)
+			return
+		}
+		externalErr(w, r, "could not reach monloader: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	hashes := "md5 " + md5 + ", sha256 " + sha
+	switch backend {
+	case "ptr":
+		hashes = "sha256 " + sha
+	case "booru":
+		hashes = "md5 " + md5
+	}
+	s.recordFetchLookup(galleryName, id, hashes)
+	if isHTMXRequest(r) {
+		writeFetchPending(w, id, 0)
+		return
+	}
+	http.Redirect(w, r, "/images/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
 // imageIDForm parses the {id} path segment plus the form body shared by the
 // detail-page editor handlers, rendering the failure inline for HTMX callers.
 func imageIDForm(w http.ResponseWriter, r *http.Request) (int64, bool) {
@@ -405,13 +485,19 @@ func imageIDForm(w http.ResponseWriter, r *http.Request) (int64, bool) {
 // (so the dialog can keep its target slot up to date) and falls back
 // to plain http.Error for non-HTMX callers.
 func externalErr(w http.ResponseWriter, r *http.Request, msg string, code int) {
+	hxErr(w, r, msg, msg, code)
+}
+
+// hxErr is externalErr's two-message twin for handlers whose htmx flash
+// is friendlier than the terse plain-HTTP error.
+func hxErr(w http.ResponseWriter, r *http.Request, htmxMsg, plainMsg string, code int) {
 	if isHTMXRequest(r) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		writeInlineFlash(w, "err", msg)
+		writeInlineFlash(w, "err", htmxMsg)
 		return
 	}
-	http.Error(w, msg, code)
+	http.Error(w, plainMsg, code)
 }
 
 // setNote writes the operator's freeform note for an image. Import paths never
@@ -438,10 +524,42 @@ func (s *Server) setNote(w http.ResponseWriter, r *http.Request) {
 	hxDone(w, r, "Note updated.", "", "/images/"+strconv.FormatInt(id, 10))
 }
 
-// setSourceCommentary sets the artist commentary attributed to one origin. A
-// re-pull of that source overwrites it, so it is the source's text, not the
-// operator's durable note.
-func (s *Server) setSourceCommentary(w http.ResponseWriter, r *http.Request) {
+// setImageOriginalSource writes the operator's image-level original source URL.
+// Distinct from a per-origin original (image_sources.original) a booru pull
+// fills; an import never touches this. An empty value clears it.
+func (s *Server) setImageOriginalSource(w http.ResponseWriter, r *http.Request) {
+	id, ok := imageIDForm(w, r)
+	if !ok {
+		return
+	}
+	original := strings.TrimSpace(r.FormValue("original"))
+	if len(original) > maxImageOriginalLen {
+		externalErr(w, r, fmt.Sprintf("original source too long (max %d chars)", maxImageOriginalLen), http.StatusBadRequest)
+		return
+	}
+	if original != "" {
+		lower := strings.ToLower(original)
+		if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+			externalErr(w, r, "original source must start with http:// or https://", http.StatusBadRequest)
+			return
+		}
+	}
+	res, err := s.db().Write.Exec(`UPDATE images SET original_source = ? WHERE id = ?`, original, id)
+	if err != nil {
+		externalErr(w, r, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		externalErr(w, r, "image not found", http.StatusNotFound)
+		return
+	}
+	hxDone(w, r, "Original source updated.", "", "/images/"+strconv.FormatInt(id, 10))
+}
+
+// setSourceText sets one text field (commentary or original) on an origin,
+// length-capped by maxLen. label names the field in the too-long error; the
+// setter binds the concrete gallery mutation.
+func (s *Server) setSourceText(w http.ResponseWriter, r *http.Request, field, label string, maxLen int, successMsg string, setter func(id int64, site, postID, val string) error) {
 	id, ok := imageIDForm(w, r)
 	if !ok {
 		return
@@ -451,35 +569,143 @@ func (s *Server) setSourceCommentary(w http.ResponseWriter, r *http.Request) {
 		externalErr(w, r, "source label required", http.StatusBadRequest)
 		return
 	}
-	commentary := strings.TrimSpace(r.FormValue("commentary"))
-	if len(commentary) > maxImageCommentaryLen {
-		externalErr(w, r, fmt.Sprintf("commentary too long (max %d chars)", maxImageCommentaryLen), http.StatusBadRequest)
+	val := strings.TrimSpace(r.FormValue(field))
+	if len(val) > maxLen {
+		externalErr(w, r, fmt.Sprintf("%s too long (max %d chars)", label, maxLen), http.StatusBadRequest)
 		return
 	}
 	postID := strings.TrimSpace(r.FormValue("post_id"))
-	if err := gallery.SetSourceCommentary(s.db(), id, site, postID, commentary); err != nil {
+	if err := setter(id, site, postID, val); err != nil {
 		externalErr(w, r, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.Active().InvalidateCaches()
-	hxDone(w, r, "Commentary updated.", "", "/images/"+strconv.FormatInt(id, 10))
+	hxDone(w, r, successMsg, "", "/images/"+strconv.FormatInt(id, 10))
+}
+
+// setSourceCommentary sets the artist commentary attributed to one origin. A
+// re-pull of that source overwrites it, so it is the source's text, not the
+// operator's durable note.
+func (s *Server) setSourceCommentary(w http.ResponseWriter, r *http.Request) {
+	s.setSourceText(w, r, "commentary", "commentary", maxImageCommentaryLen, "Commentary updated.",
+		func(id int64, site, postID, val string) error {
+			return gallery.SetSourceCommentary(s.db(), id, site, postID, val)
+		})
 }
 
 // removeSourceCommentary clears one origin's commentary, leaving the origin
 // itself in the sources list.
 func (s *Server) removeSourceCommentary(w http.ResponseWriter, r *http.Request) {
+	s.sourceMembershipAction(w, r, "Commentary removed.", func(id int64, site, postID string) error {
+		return gallery.SetSourceCommentary(s.db(), id, site, postID, "")
+	})
+}
+
+// setSourceOriginal sets the upstream artist source attributed to one origin;
+// a re-pull of that source overwrites it. Deliberately freeform - unlike the
+// image-level original source's http(s):// check - since a booru declares it as
+// one or more lines, URL or not, rendered link-or-text per line. Enforcing a
+// URL here would reject that and desync web edits from the enrich / API-create
+// paths that fill the field with no such gate.
+func (s *Server) setSourceOriginal(w http.ResponseWriter, r *http.Request) {
+	s.setSourceText(w, r, "original", "original source", maxImageOriginalLen, "Original source updated.",
+		func(id int64, site, postID, val string) error {
+			return gallery.SetSourceOriginal(s.db(), id, site, postID, val)
+		})
+}
+
+// removeSourceOriginal clears one origin's upstream artist source, leaving
+// the origin itself in the sources list.
+func (s *Server) removeSourceOriginal(w http.ResponseWriter, r *http.Request) {
+	s.sourceMembershipAction(w, r, "Original source removed.", func(id int64, site, postID string) error {
+		return gallery.SetSourceOriginal(s.db(), id, site, postID, "")
+	})
+}
+
+// setAnnotation adds a new operator-drawn box (no id) or edits an existing box
+// by id, source-pulled or operator-drawn. Coordinates are original-image pixels;
+// they are validated non-negative and clamped to the image bounds when the
+// dimensions are known. A dimensionless
+// image (video / undecodable) accepts the box but won't overlay it - the
+// editable list still shows it.
+func (s *Server) setAnnotation(w http.ResponseWriter, r *http.Request) {
 	id, ok := imageIDForm(w, r)
 	if !ok {
 		return
 	}
-	site := strings.TrimSpace(r.FormValue("site"))
-	postID := strings.TrimSpace(r.FormValue("post_id"))
-	if err := gallery.SetSourceCommentary(s.db(), id, site, postID, ""); err != nil {
+	var wImg, hImg sql.NullInt64
+	if err := s.db().Read.QueryRow(`SELECT width, height FROM images WHERE id = ?`, id).Scan(&wImg, &hImg); err != nil {
+		externalErr(w, r, "image not found", http.StatusNotFound)
+		return
+	}
+	x, okX := annotationCoord(r, "x")
+	y, okY := annotationCoord(r, "y")
+	bw, okW := annotationCoord(r, "w")
+	bh, okH := annotationCoord(r, "h")
+	if !okX || !okY || !okW || !okH {
+		externalErr(w, r, "coordinates must be non-negative integers", http.StatusBadRequest)
+		return
+	}
+	if wImg.Valid && hImg.Valid && wImg.Int64 > 0 && hImg.Int64 > 0 {
+		iw, ih := int(wImg.Int64), int(hImg.Int64)
+		x = min(x, iw)
+		y = min(y, ih)
+		bw = min(bw, iw-x)
+		bh = min(bh, ih-y)
+	}
+	if bw <= 0 || bh <= 0 {
+		externalErr(w, r, "the box has no area inside the image", http.StatusBadRequest)
+		return
+	}
+	body := strings.TrimSpace(r.FormValue("body"))
+	if len(body) > maxAnnotationBodyLen {
+		externalErr(w, r, fmt.Sprintf("annotation too long (max %d chars)", maxAnnotationBodyLen), http.StatusBadRequest)
+		return
+	}
+	if raw := strings.TrimSpace(r.FormValue("id")); raw != "" {
+		annID, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			externalErr(w, r, "bad annotation id", http.StatusBadRequest)
+			return
+		}
+		if err := gallery.UpdateAnnotation(s.db(), annID, x, y, bw, bh, body); err != nil {
+			externalErr(w, r, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else if err := gallery.AddManualAnnotation(s.db(), id, x, y, bw, bh, body); err != nil {
 		externalErr(w, r, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.Active().InvalidateCaches()
-	hxDone(w, r, "Commentary removed.", "", "/images/"+strconv.FormatInt(id, 10))
+	hxDone(w, r, "Annotation updated.", "", "/images/"+strconv.FormatInt(id, 10))
+}
+
+// removeAnnotation drops one operator-drawn box by id.
+func (s *Server) removeAnnotation(w http.ResponseWriter, r *http.Request) {
+	id, ok := imageIDForm(w, r)
+	if !ok {
+		return
+	}
+	annID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
+	if err != nil {
+		externalErr(w, r, "bad annotation id", http.StatusBadRequest)
+		return
+	}
+	if err := gallery.DeleteAnnotation(s.db(), annID); err != nil {
+		externalErr(w, r, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.Active().InvalidateCaches()
+	hxDone(w, r, "Annotation removed.", "", "/images/"+strconv.FormatInt(id, 10))
+}
+
+// annotationCoord parses one non-negative integer coordinate field.
+func annotationCoord(r *http.Request, field string) (int, bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(r.FormValue(field)))
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // setCollection upserts one membership for an image: adding the image to a

@@ -16,12 +16,12 @@ import (
 var exifMagic = []byte("Exif\x00\x00")
 
 // extractSDFromWebP reads A1111 metadata from a WebP's EXIF chunk.
-func extractSDFromWebP(path string) (*models.SDMetadata, error) {
+func extractSDFromWebP(path string) *models.SDMetadata {
 	x, err := decodeWebPEXIF(path)
 	if err != nil || x == nil {
-		return nil, nil
+		return nil
 	}
-	return sdFromEXIF(x), nil
+	return sdFromEXIF(x)
 }
 
 // decodeWebPEXIF walks the WebP RIFF container for its EXIF chunk and
@@ -42,10 +42,6 @@ func decodeWebPEXIF(path string) (*exif.Exif, error) {
 	return exif.Decode(io.MultiReader(bytes.NewReader(exifMagic), bytes.NewReader(exifData)))
 }
 
-// maxWebPChunkBytes caps any single RIFF chunk we'll buffer. A forged
-// size field could otherwise trigger a ~4 GiB allocation.
-const maxWebPChunkBytes = 16 * 1024 * 1024
-
 // readWebPEXIF returns the raw EXIF chunk bytes from a WebP RIFF
 // stream, or nil for non-WebP or no EXIF chunk.
 func readWebPEXIF(r io.Reader) ([]byte, error) {
@@ -63,7 +59,7 @@ func readWebPEXIF(r io.Reader) ([]byte, error) {
 		}
 		chunkType := string(chunk[0:4])
 		size := binary.LittleEndian.Uint32(chunk[4:8])
-		if size > maxWebPChunkBytes {
+		if size > maxChunkBytes {
 			// Skip oversize chunks wholesale, advancing past payload +
 			// padding so subsequent chunks still line up.
 			toSkip := int64(size)

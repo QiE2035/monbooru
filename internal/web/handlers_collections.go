@@ -150,6 +150,13 @@ func (s *Server) collectionFindRelationsPost(w http.ResponseWriter, r *http.Requ
 // doesn't render tens of thousands of tiles in one dialog body; the
 // [show more] button re-fetches with a larger limit.
 func (s *Server) collectionOrderDialog(w http.ResponseWriter, r *http.Request) {
+	// Fetched as a fragment by the collections page's order dialog; a
+	// non-htmx caller (refresh, bookmark, shared link) gets the listing
+	// rather than a chrome-less fragment.
+	if !isHTMXRequest(r) {
+		http.Redirect(w, r, "/collections", http.StatusSeeOther)
+		return
+	}
 	name := strings.TrimSpace(r.URL.Query().Get("name"))
 	if name == "" {
 		http.Error(w, "collection required", http.StatusBadRequest)
@@ -169,12 +176,14 @@ func (s *Server) collectionOrderDialog(w http.ResponseWriter, r *http.Request) {
 	if hasMore {
 		members = members[:limit]
 	}
+	ceilingHidden, _ := gallery.CollectionCeilingHidden(s.db(), name, excludeIDs)
 	s.renderTemplate(w, "partials/collection_order.html", map[string]any{
-		"Name":      name,
-		"Members":   members,
-		"Gallery":   s.activeName,
-		"HasMore":   hasMore,
-		"NextLimit": limit + collectionOrderWindow,
+		"Name":          name,
+		"Members":       members,
+		"Gallery":       s.activeName,
+		"HasMore":       hasMore,
+		"NextLimit":     limit + collectionOrderWindow,
+		"CeilingHidden": ceilingHidden,
 	})
 }
 
@@ -188,6 +197,18 @@ func (s *Server) reorderCollectionPost(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		writeInlineFlash(w, "err", "Collection label required.")
+		return
+	}
+	// Filename mode ignores the clicked ids and orders the whole collection by
+	// filename, ceiling-blind.
+	if r.FormValue("mode") == "filename" {
+		if err := gallery.SortCollectionByFilename(s.db(), name); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeInlineFlash(w, "err", "Could not reorder the collection.")
+			return
+		}
+		s.Active().InvalidateCaches()
+		writeInlineFlash(w, "ok", "Ordered by filename.")
 		return
 	}
 	raw := strings.TrimSpace(r.FormValue("ids"))

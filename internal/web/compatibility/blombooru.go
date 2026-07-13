@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/leqwin/monbooru/internal/tags"
 )
 
 func init() {
@@ -113,18 +115,22 @@ func translateBlombooru(entries []NormalizedEntry) (Result, error) {
 // `name` / `category:name` token form the apply path expects, using the
 // (tag → category) map built from tags.csv. Tags missing from the map
 // fall through as `general` (no prefix).
-func blombooruTagTokens(tags []string, catByTag map[string]string) []string {
-	out := make([]string, 0, len(tags))
-	for _, t := range tags {
+func blombooruTagTokens(names []string, catByTag map[string]string) []string {
+	out := make([]string, 0, len(names))
+	for _, t := range names {
 		t = strings.TrimSpace(t)
 		if t == "" {
 			continue
 		}
 		cat := catByTag[t]
+		name := tags.NormalizeName(t)
+		if name == "" {
+			continue
+		}
 		if cat != "" && cat != "general" {
-			out = append(out, cat+":"+t)
+			out = append(out, cat+":"+name)
 		} else {
-			out = append(out, t)
+			out = append(out, name)
 		}
 	}
 	return out

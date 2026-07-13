@@ -52,19 +52,23 @@
   {{end}}
 
   <div id="detail-flash"></div>
+  {{/* Lookup / source-fetch outcomes and errors sit with the action flash so
+       every job result reads from one spot; the tag-editor lookup's pending
+       pill renders in #fetch-pending below the add-tag bar instead. */}}
+  {{if .MonloaderPaired}}<div id="fetch-status" class="fetch-status"></div>{{end}}
 
   {{/* Top bar: back link | prev/next + download/fav (mirrors body column layout) */}}
   <div class="detail-topbar">
     <div class="detail-nav-group">
       {{if .RefURL}}
-      <a href="{{.RefURL}}" class="back-link">← Previous image</a>
+      <a href="{{.RefURL}}" class="back-link">‹ Previous image</a>
       {{else if or .BackQuery .BackSort}}
-      <a href="/?q={{urlQ .BackQuery}}&sort={{.BackSort}}&order={{.BackOrder}}{{if .BackPage}}&page={{.BackPage}}{{end}}{{if .BackSeed}}&seed={{.BackSeed}}{{end}}#img-{{.Image.ID}}" class="back-link">← Back</a>
+      <a href="/?q={{urlQ .BackQuery}}&sort={{.BackSort}}&order={{.BackOrder}}{{if .BackPage}}&page={{.BackPage}}{{end}}{{if .BackSeed}}&seed={{.BackSeed}}{{end}}#img-{{.Image.ID}}" class="back-link">‹ Search</a>
       {{else}}
-      <a href="/#img-{{.Image.ID}}" class="back-link">← Back</a>
+      <a href="/#img-{{.Image.ID}}" class="back-link">‹ Search</a>
       {{end}}
       {{if .Filename}}
-      <span class="detail-nav-sep">·</span>
+      <span class="detail-nav-sep">/</span>
       <span class="detail-filename mono-small" title="{{.Filename}}">{{.Filename}}</span>
       {{end}}
     </div>
@@ -121,16 +125,7 @@
       <p>Source: <strong id="source-dialog-title">add</strong></p>
       <div class="field">
         <label>Source label (max 200 chars)</label>
-        <div class="series-input-wrap">
-          <input id="source-site-input" type="text" name="site" maxlength="200" autocomplete="off"
-                 hx-get="/internal/source/suggest"
-                 hx-trigger="input changed delay:200ms"
-                 hx-target="#source-suggest"
-                 hx-swap="innerHTML"
-                 hx-vals='js:{prefix: document.getElementById("source-site-input").value}'
-                 onkeydown="handleSuggestKey(event, 'source-suggest', 'source-site-input')">
-          <div id="source-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
-        </div>
+        {{template "suggest_input" dict "Name" "site" "InputID" "source-site-input" "Endpoint" "/internal/source/suggest" "SuggestID" "source-suggest"}}
       </div>
       <div class="field">
         <label>URL (must start with http:// or https://; max 2048 chars)</label>
@@ -154,16 +149,7 @@
       <p>Collection: <strong id="collection-dialog-title">add</strong></p>
       <div class="field">
         <label>Collection label (max 200 chars)</label>
-        <div class="series-input-wrap">
-          <input id="collection-name-input" type="text" name="collection" maxlength="200" autocomplete="off"
-                 hx-get="/internal/collection/suggest"
-                 hx-trigger="input changed delay:200ms"
-                 hx-target="#collection-suggest"
-                 hx-swap="innerHTML"
-                 hx-vals='js:{prefix: document.getElementById("collection-name-input").value}'
-                 onkeydown="handleSuggestKey(event, 'collection-suggest', 'collection-name-input')">
-          <div id="collection-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
-        </div>
+        {{template "suggest_input" dict "Name" "collection" "InputID" "collection-name-input" "Endpoint" "/internal/collection/suggest" "SuggestID" "collection-suggest"}}
       </div>
       <div class="field">
         <label>Order within collection (optional, 1 or higher)</label>
@@ -184,11 +170,8 @@
           hx-on::after-request="onExternalEditResponse(event, 'commentary-dialog')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <input type="hidden" id="commentary-post" name="post_id" value="">
-      <p>Commentary</p>
-      <div class="field">
-        <label>Source label (max 200 chars)</label>
-        <input id="commentary-site" type="text" name="site" maxlength="200" autocomplete="off">
-      </div>
+      <input type="hidden" id="commentary-site" name="site" value="">
+      <p>Commentary: <strong id="commentary-dialog-site"></strong></p>
       <div class="field">
         <label>Commentary text</label>
         <textarea id="commentary-body" name="commentary" rows="6" maxlength="10000"></textarea>
@@ -197,6 +180,57 @@
       <div class="dialog-actions">
         <button type="submit">Save</button>
         <button type="button" onclick="document.getElementById('commentary-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="original-dialog">
+    <form id="original-form" hx-post="/images/{{.Image.ID}}/original/set"
+          hx-target="#original-error"
+          hx-swap="innerHTML"
+          hx-on::after-request="onExternalEditResponse(event, 'original-dialog')">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <input type="hidden" id="original-post" name="post_id" value="">
+      <input type="hidden" id="original-site" name="site" value="">
+      <p>Original source: <strong id="original-dialog-site"></strong></p>
+      <div class="field">
+        <label>Where the artist first posted it (one per line; max 2048 chars)</label>
+        <textarea id="original-body" name="original" rows="2" maxlength="2048"></textarea>
+      </div>
+      <div id="original-error"></div>
+      <div class="dialog-actions">
+        <button type="submit">Save</button>
+        <button type="button" onclick="document.getElementById('original-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="annotation-dialog">
+    <form id="annotation-form" hx-post="/images/{{.Image.ID}}/annotations/set"
+          hx-target="#annotation-error"
+          hx-swap="innerHTML"
+          hx-on::after-request="onExternalEditResponse(event, 'annotation-dialog')">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <input type="hidden" id="annotation-id" name="id" value="">
+      <p><span id="annotation-dialog-title">Add</span> annotation</p>
+      <p class="field-hint">Position and size in original-image pixels{{if .Image.Width}} (image is {{deref .Image.Width}} × {{deref .Image.Height}}){{end}}.</p>
+      <div class="field">
+        <label>x, y, width, height</label>
+        <div class="annotation-coord-row">
+          <input id="annotation-x" type="number" name="x" min="0" placeholder="x" autocomplete="off">
+          <input id="annotation-y" type="number" name="y" min="0" placeholder="y" autocomplete="off">
+          <input id="annotation-w" type="number" name="w" min="1" placeholder="width" autocomplete="off">
+          <input id="annotation-h" type="number" name="h" min="1" placeholder="height" autocomplete="off">
+        </div>
+      </div>
+      <div class="field">
+        <label>Text</label>
+        <textarea id="annotation-body" name="body" rows="3" maxlength="2000"></textarea>
+      </div>
+      <div id="annotation-error"></div>
+      <div class="dialog-actions">
+        <button type="submit">Save</button>
+        <button type="button" onclick="document.getElementById('annotation-dialog').close()">Cancel</button>
       </div>
     </form>
   </dialog>
@@ -219,17 +253,46 @@
       </div>
     </form>
   </dialog>
+
+  <dialog id="image-original-dialog">
+    <form id="image-original-form" hx-post="/images/{{.Image.ID}}/original-source"
+          hx-target="#image-original-error"
+          hx-swap="innerHTML"
+          hx-on::after-request="onExternalEditResponse(event, 'image-original-dialog')">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <p>Original source</p>
+      <div class="field">
+        <label>Where the artist first posted it (a URL; max 2048 chars)</label>
+        <input id="image-original-body" type="url" name="original" maxlength="2048" placeholder="https://...">
+      </div>
+      <div id="image-original-error"></div>
+      <div class="dialog-actions">
+        <button type="submit">Save</button>
+        <button type="button" onclick="document.getElementById('image-original-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
   <script>
   document.addEventListener('click', function(e) {
     if (!e.target.closest) return;
     var ec = e.target.closest('.btn-edit-commentary');
     if (ec) {
       document.getElementById('commentary-site').value = ec.dataset.site || '';
-      document.getElementById('commentary-site').readOnly = true;
+      document.getElementById('commentary-dialog-site').textContent = ec.dataset.site || 'source';
       document.getElementById('commentary-post').value = ec.dataset.post || '';
       document.getElementById('commentary-body').value = ec.dataset.commentary || '';
       clearSlots('commentary-error');
       document.getElementById('commentary-dialog').showModal();
+      return;
+    }
+    var eo = e.target.closest('.btn-edit-original');
+    if (eo) {
+      document.getElementById('original-site').value = eo.dataset.site || '';
+      document.getElementById('original-dialog-site').textContent = eo.dataset.site || 'source';
+      document.getElementById('original-post').value = eo.dataset.post || '';
+      document.getElementById('original-body').value = eo.dataset.original || '';
+      clearSlots('original-error');
+      document.getElementById('original-dialog').showModal();
       return;
     }
     var en = e.target.closest('.btn-edit-note');
@@ -237,6 +300,13 @@
       document.getElementById('note-body').value = en.dataset.note || '';
       clearSlots('note-error');
       document.getElementById('note-dialog').showModal();
+      return;
+    }
+    var eio = e.target.closest('.btn-edit-image-original');
+    if (eio) {
+      document.getElementById('image-original-body').value = eio.dataset.original || '';
+      clearSlots('image-original-error');
+      document.getElementById('image-original-dialog').showModal();
     }
   });
   </script>
@@ -444,13 +514,13 @@
           {{if .Annotations}}
           <div class="annotation-overlay">
             {{range .Annotations}}
-            <div class="annotation-box" style="{{.Style}}"><span class="annotation-body">{{.Body}}</span></div>
+            <div class="annotation-box" data-ann-id="{{.ID}}" style="{{.Style}}"><span class="annotation-body">{{.Body}}</span></div>
             {{end}}
           </div>
           {{end}}
         </div>
         {{if .Annotations}}
-        <div class="annotation-controls"><button type="button" class="btn-link-accent annotation-toggle" onclick="toggleAnnotations(this)">[hide notes]</button></div>
+        <div class="annotation-controls"><button type="button" class="btn-link-accent annotation-toggle" onclick="toggleAnnotations(this)">[hide annotations]</button></div>
         {{end}}
         {{end}}
       </div>
@@ -464,35 +534,45 @@
       </div>
       {{end}}
 
-      {{/* Artist commentary (per source) and the operator's own note. Under
-           the image, above the tags, like a booru post page. */}}
+      {{/* The operator's own note and hand-drawn annotations, under the image
+           like a booru post page. Per-source commentary and pulled annotations
+           live in the source panels beside the metadata. */}}
       <section class="detail-commentary">
-        {{range .Sources}}{{if .Commentary}}
-        <div class="commentary-block">
-          <div class="commentary-head">
-            {{if .Site}}<a href="/?q={{urlQ (printf "source:\"%s\"" (qval .Site))}}" class="commentary-label" title="Search this source">{{.Site}}</a>{{else}}<span class="commentary-label">source</span>{{end}}
-            <button type="button" class="btn-link-accent btn-edit-commentary" data-site="{{.Site}}" data-post="{{.PostID}}" data-commentary="{{.Commentary}}" title="Edit commentary">[edit]</button>
-            <form method="POST" action="/images/{{$.Image.ID}}/commentary/remove"
-                  hx-post="/images/{{$.Image.ID}}/commentary/remove" hx-swap="none"
-                  hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
-                  hx-confirm="Remove this commentary?" data-confirm-ok="Remove"
-                  style="display:inline">
-              <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-              <input type="hidden" name="site" value="{{.Site}}">
-              <input type="hidden" name="post_id" value="{{.PostID}}">
-              <button type="submit" class="btn-link-accent" title="Remove commentary">[×]</button>
-            </form>
-          </div>
-          <div class="commentary-body">{{.Commentary}}</div>
-        </div>
-        {{end}}{{end}}
         <div class="commentary-block detail-note">
           <div class="commentary-head">
-            <span class="commentary-label">Note</span>
-            {{if not .Image.Note}}<span class="field-hint">(none)</span>{{end}}
+            <span class="commentary-label">Personal note</span>
+            {{if .Image.Note}}
             <button type="button" class="btn-link-accent btn-edit-note" data-note="{{.Image.Note}}" title="Edit note">[edit]</button>
+            {{else}}
+            <button type="button" class="btn-link-accent btn-edit-note" data-note="" title="Add note">[+ add note]</button>
+            {{end}}
           </div>
           {{if .Image.Note}}<div class="commentary-body">{{.Image.Note}}</div>{{end}}
+        </div>
+        <div class="commentary-block detail-annotations">
+          <div class="commentary-head">
+            <span class="commentary-label">Annotations</span>
+            <button type="button" class="btn-link-accent btn-add-annotation" title="Add an annotation">[+ add annotation]</button>
+          </div>
+          {{if .ManualAnnotations}}
+          <ul class="collection-list operator-annotation-list">
+            {{range .ManualAnnotations}}
+            <li class="collection-item annotation-entry" data-ann-id="{{.ID}}">
+              <span class="meta-annotation-body" title="{{.Body}}">{{if .Body}}{{.Body}}{{else}}(no text){{end}}</span>
+              <button type="button" class="btn-link-accent btn-edit-annotation" data-id="{{.ID}}" data-x="{{.X}}" data-y="{{.Y}}" data-w="{{.W}}" data-h="{{.H}}" data-body="{{.Body}}" title="Edit">[edit]</button>
+              <form method="POST" action="/images/{{$.Image.ID}}/annotations/remove"
+                    hx-post="/images/{{$.Image.ID}}/annotations/remove" hx-swap="none"
+                    hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+                    hx-confirm="Remove this annotation?" data-confirm-ok="Remove"
+                    style="display:inline">
+                <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                <input type="hidden" name="id" value="{{.ID}}">
+                <button type="submit" class="btn-link-accent" title="Remove annotation">[×]</button>
+              </form>
+            </li>
+            {{end}}
+          </ul>
+          {{end}}
         </div>
       </section>
 
@@ -520,13 +600,106 @@
           <button type="button" class="btn-autotag" title="Auto-tag this image (t)"
                   onclick="document.getElementById('autotag-dialog').showModal()">Auto-tag</button>
           {{end}}
+          {{if .MonloaderPaired}}
+          {{if .MonloaderPTR}}
+          <button type="button" class="btn-hash-lookup monloader-accent"
+                  title="Lookup this file via monloader"
+                  onclick="document.getElementById('lookup-dialog').showModal()">Lookup</button>
+          {{else}}
+          <button type="button" class="btn-hash-lookup monloader-accent"
+                  title="Lookup this file's tags and source on online boorus via monloader"
+                  hx-post="/images/{{.Image.ID}}/lookup" hx-vals='{"backend":"all"}'
+                  hx-target="#fetch-pending" hx-swap="innerHTML">Lookup</button>
+          {{end}}
+          {{end}}
         </form>
+        {{if .MonloaderPaired}}<div id="fetch-pending" class="fetch-status"></div>{{end}}
+        {{if and .MonloaderPaired .MonloaderPTR}}
+        <dialog id="lookup-dialog">
+          <form hx-post="/images/{{.Image.ID}}/lookup"
+                hx-target="#fetch-pending" hx-swap="innerHTML"
+                hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
+                hx-on::after-request="document.getElementById('lookup-dialog').close()">
+            <p>Look up this file's tags and source via monloader:</p>
+            {{if .MonloaderPTRSyncing}}<p class="field-hint">The Public Tag Repository is still syncing, so its answers come from partial data.</p>{{end}}
+            <div class="field">
+              <label style="display:block"><input type="radio" name="backend" value="all" checked> Both (PTR and online boorus)</label>
+              <label style="display:block"><input type="radio" name="backend" value="ptr"> Public Tag Repository only</label>
+              <label style="display:block"><input type="radio" name="backend" value="booru"> Online boorus only</label>
+            </div>
+            <div class="dialog-actions">
+              <button type="submit" autofocus>Lookup</button>
+              <button type="button" onclick="document.getElementById('lookup-dialog').close()">Cancel</button>
+            </div>
+          </form>
+        </dialog>
+        {{end}}
       </div>
 
-      {{/* Danger zone: delete + remove all tags + remove auto-tagged. Rendered
-           via a partial so HTMX tag-list updates can refresh it via OOB swap. */}}
-      {{template "partials/detail_danger_zone.html" (dict "ImageID" .Image.ID "ImageTags" .ImageTags "HasUserTags" .HasUserTags "ImageTaggers" .ImageTaggers "CSRFToken" .CSRFToken "BackQuery" .BackQuery "BackSort" .BackSort "BackOrder" .BackOrder "BackPage" .BackPage "BackSeed" .BackSeed "Ref" .Ref "CurrentFolder" .Image.FolderPath)}}
+      {{/* Danger zone: delete + a remove-tags dialog. Rendered via a partial so
+           HTMX tag-list updates can refresh it via OOB swap. */}}
+      {{template "partials/detail_danger_zone.html" (dict "ImageID" .Image.ID "ImageTags" .ImageTags "HasUserTags" .HasUserTags "ImageTaggers" .ImageTaggers "ImageSources" .ImageSources "CanTransfer" (gt (len .Galleries) 1) "CSRFToken" .CSRFToken "BackQuery" .BackQuery "BackSort" .BackSort "BackOrder" .BackOrder "BackPage" .BackPage "BackSeed" .BackSeed "Ref" .Ref "CurrentFolder" .Image.FolderPath)}}
+      {{if gt (len .Galleries) 1}}
+      <dialog id="transfer-image-dialog">
+        <p>Transfer this image to another gallery:</p>
+        <p class="field-hint">The image and its tags, sources and notes are copied into the target gallery.</p>
+        <p class="field-hint" style="color:var(--error)">Relations and collections are not carried over.</p>
+        <form id="transfer-image-form"
+              hx-post="/images/{{.Image.ID}}/transfer"
+              hx-swap="none"
+              hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'>
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <div class="field">
+            <label>Target gallery</label>
+            <select name="target" id="transfer-image-target" class="upload-wide-input">
+              {{range .Galleries}}{{if ne .Name $.ActiveGallery}}<option value="{{.Name}}">{{.Name}}</option>{{end}}{{end}}
+            </select>
+          </div>
+          <div class="field">
+            <label><input type="checkbox" name="remove_after" id="transfer-image-remove" value="1"> Remove from this gallery after transfer</label>
+          </div>
+          <div class="dialog-actions">
+            <button type="submit">Transfer</button>
+            <button type="button" onclick="document.getElementById('transfer-image-dialog').close()">Cancel</button>
+          </div>
+        </form>
+      </dialog>
+      {{end}}
       <script>
+      function openTransferImageDialog() {
+        var dlg = document.getElementById('transfer-image-dialog');
+        if (!dlg) return;
+        var rm = document.getElementById('transfer-image-remove');
+        if (rm) rm.checked = false;
+        dlg.showModal();
+      }
+      function openRemoveTagsDialog() {
+        var dlg = document.getElementById('remove-tags-dialog');
+        if (!dlg) return;
+        // Default to the operator's own tags when present, else the first
+        // scoped option - never the nuclear "All tags", and don't re-arm it
+        // when the dialog is reopened.
+        var pref = dlg.querySelector('input[name="mode"][value="user"]')
+                || dlg.querySelector('input[name="mode"]');
+        if (pref) pref.checked = true;
+        dlg.showModal();
+      }
+      function confirmRemoveTags() {
+        var dlg = document.getElementById('remove-tags-dialog');
+        if (!dlg) return;
+        var id = dlg.dataset.imageId;
+        var checked = dlg.querySelector('input[name="mode"]:checked');
+        var mode = checked ? checked.value : 'all';
+        var url;
+        switch (mode) {
+          case 'user':   url = '/images/' + id + '/user-tags'; break;
+          case 'source': url = '/images/' + id + '/source-tags?sources=' + encodeURIComponent(document.getElementById('remove-tags-source').value); break;
+          case 'tagger': url = '/images/' + id + '/auto-tags?taggers=' + encodeURIComponent(document.getElementById('remove-tags-tagger').value); break;
+          default:       url = '/images/' + id + '/tags';
+        }
+        htmx.ajax('DELETE', url, {target: '#image-tags', swap: 'outerHTML', headers: {'X-CSRF-Token': dlg.dataset.csrf}});
+        dlg.close();
+      }
       function openMoveImageDialog() {
         var dlg = document.getElementById('move-image-dialog');
         var input = document.getElementById('move-image-folder');
@@ -577,15 +750,40 @@
         var ed = e.target.closest('.btn-edit-collection');
         if (ed) openCollectionDialog(ed.dataset.name, ed.dataset.order);
       });
-      function submitRemoveAutoTags(imageId) {
-        var form = document.getElementById('remove-auto-form');
-        var names = Array.from(form.querySelectorAll('input[name="taggers"]:checked')).map(function(cb){ return cb.value; });
-        var qs = names.length ? ('?taggers=' + encodeURIComponent(names.join(','))) : '';
-        var csrf = form.querySelector('[name="_csrf"]').value;
-        window.htmx.ajax('DELETE', '/images/' + imageId + '/auto-tags' + qs, {
-          target: '#image-tags', swap: 'outerHTML', headers: {'X-CSRF-Token': csrf}
-        }).then(function(){ document.getElementById('remove-auto-dialog').close(); });
+      function openAnnotationDialog(id, x, y, w, h, body) {
+        var dlg = document.getElementById('annotation-dialog');
+        if (!dlg) return;
+        document.getElementById('annotation-id').value = id || '';
+        document.getElementById('annotation-x').value = x || '';
+        document.getElementById('annotation-y').value = y || '';
+        document.getElementById('annotation-w').value = w || '';
+        document.getElementById('annotation-h').value = h || '';
+        document.getElementById('annotation-body').value = body || '';
+        document.getElementById('annotation-dialog-title').textContent = id ? 'Edit' : 'Add';
+        clearSlots('annotation-error');
+        dlg.showModal();
+        document.getElementById('annotation-x').focus();
       }
+      document.addEventListener('click', function(e) {
+        if (!e.target.closest) return;
+        if (e.target.closest('.btn-add-annotation')) { openAnnotationDialog('', '', '', '', '', ''); return; }
+        var ed = e.target.closest('.btn-edit-annotation');
+        if (ed) openAnnotationDialog(ed.dataset.id, ed.dataset.x, ed.dataset.y, ed.dataset.w, ed.dataset.h, ed.dataset.body);
+      });
+      // Hovering an annotation entry (source panel or operator list) highlights
+      // its box on the image.
+      function setAnnHighlight(id, on) {
+        var box = document.querySelector('.annotation-box[data-ann-id="' + id + '"]');
+        if (box) box.classList.toggle('ann-highlight', on);
+      }
+      document.addEventListener('mouseover', function(e) {
+        var li = e.target.closest && e.target.closest('.annotation-entry[data-ann-id]');
+        if (li) setAnnHighlight(li.dataset.annId, true);
+      });
+      document.addEventListener('mouseout', function(e) {
+        var li = e.target.closest && e.target.closest('.annotation-entry[data-ann-id]');
+        if (li && (!e.relatedTarget || !li.contains(e.relatedTarget))) setAnnHighlight(li.dataset.annId, false);
+      });
       </script>
     </div>
 
@@ -603,7 +801,7 @@
                       data-copy="{{.Image.ID}}" title="Click to copy">{{.Image.ID}}</button>
               <span class="copy-flash" hidden>copied</span>
             </td></tr>
-            <tr><th>Path</th><td class="mono-small">{{.Image.CanonicalPath}}</td></tr>
+            <tr><th>Path</th><td class="mono-small meta-path" title="{{.Image.CanonicalPath}}">{{.Image.CanonicalPath}}</td></tr>
             <tr><th>Type</th><td>{{.Image.FileType}}
               {{if and .Image.SourceType (ne .Image.SourceType "none")}}
                 <span class="source-badge">AI</span>
@@ -642,13 +840,13 @@
                 </form>
               {{end}}
             </td></tr>
-            <tr><th>Ingested</th><td>{{.Image.IngestedAt.Format "2006-01-02 15:04:05"}}</td></tr>
+            <tr><th>Ingested</th><td>{{localTime .Image.IngestedAt}}</td></tr>
             {{if .Image.Origin}}<tr><th>Added via</th><td>{{.Image.Origin}}</td></tr>{{end}}
             {{if and .IsManga .Image.PageCount}}
             <tr><th>Pages</th><td>{{deref .Image.PageCount}}</td></tr>
             {{end}}
             {{if .Image.AutoTaggedAt}}
-            <tr><th>Auto-tagged</th><td>{{.Image.AutoTaggedAt.Format "2006-01-02 15:04:05"}}</td></tr>
+            <tr><th>Auto-tagged</th><td>{{localTimePtr .Image.AutoTaggedAt}}</td></tr>
             {{end}}
             {{if .Image.IsMissing}}
             <tr><th>Status</th><td class="text-warning">⚠ File missing from disk</td></tr>
@@ -663,17 +861,32 @@
           <tbody>
             <tr><th>Sources</th><td>
               {{if .Sources}}
-              <ul class="collection-list">
-                {{range .Sources}}
+              <ul class="collection-list source-list">
+                {{range $i, $src := .Sources}}
                 <li class="collection-item">
-                  {{if .Site}}<a href="/?q={{urlQ (printf "source:\"%s\"" (qval .Site))}}" class="meta-source-value" title="Search this source">{{.Site}}</a>{{if .URL}} <a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="btn-link-accent" title="{{.URL}}">[open]</a>{{end}}{{else}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="meta-url-value">{{.URL}}</a>{{end}}
-                  <button type="button" class="btn-link-accent btn-edit-source" data-site="{{.Site}}" data-post="{{.PostID}}" data-url="{{.URL}}" title="Edit">[edit]</button>
+                  {{if .Site}}<a href="/?q={{urlQ (printf "source:\"%s\"" (qval .Site))}}" class="meta-source-value" title="Search this source">{{.Site}}</a>{{if gt .Similarity 0.0}} <span class="field-hint" title="Found by image similarity at {{printf "%.0f" .Similarity}}%">~{{printf "%.0f" .Similarity}}%</span>{{end}}{{if .URL}} <a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="btn-link-accent" title="{{.URL}}">[open]</a>{{end}}{{else}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="meta-url-value">{{.URL}}</a>{{if gt .Similarity 0.0}} <span class="field-hint" title="Found by image similarity at {{printf "%.0f" .Similarity}}%">~{{printf "%.0f" .Similarity}}%</span>{{end}}{{end}}
+                  {{if gt $i 0}}<form method="POST" action="/images/{{$.Image.ID}}/sources/primary"
+                        hx-post="/images/{{$.Image.ID}}/sources/primary" hx-swap="none"
+                        hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+                        style="display:inline">
+                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="site" value="{{.Site}}">
+                    <input type="hidden" name="post_id" value="{{.PostID}}">
+                    <button type="submit" class="btn-link-accent" title="Make this the primary source">[set primary]</button>
+                  </form>{{end}}
+                  {{if not (isPTRSite .Site)}}<button type="button" class="btn-link-accent btn-edit-source" data-site="{{.Site}}" data-post="{{.PostID}}" data-url="{{.URL}}" title="Edit">[edit]</button>{{end}}
                   {{if and .URL $.MonloaderPaired}}<form hx-post="/images/{{$.Image.ID}}/sources/fetch"
                         hx-target="#fetch-status" hx-swap="innerHTML"
                         hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}' style="display:inline">
                     <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                     <input type="hidden" name="url" value="{{.URL}}">
-                    <button type="submit" class="btn-link-accent monloader-accent" title="Fetch tags from this source via monloader">[fetch]</button>
+                    <button type="submit" class="btn-link-accent monloader-accent" title="Refresh tags from this source via monloader">[refresh]</button>
+                  </form>{{else if and $.MonloaderPaired (isPTRSite .Site)}}<form hx-post="/images/{{$.Image.ID}}/lookup"
+                        hx-target="#fetch-status" hx-swap="innerHTML"
+                        hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}' style="display:inline">
+                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="backend" value="ptr">
+                    <button type="submit" class="btn-link-accent monloader-accent" title="Refresh tags from the Public Tag Repository via monloader">[refresh]</button>
                   </form>{{end}}
                   <form method="POST" action="/images/{{$.Image.ID}}/sources/remove"
                         hx-post="/images/{{$.Image.ID}}/sources/remove" hx-swap="none"
@@ -690,7 +903,19 @@
               </ul>
               {{else}}<span class="field-hint">(none)</span>{{end}}
               <button type="button" class="btn-link-accent btn-add-source" title="Add a source">[+ add]</button>
-              {{if .MonloaderPaired}}<div id="fetch-status" class="fetch-status"></div>{{end}}
+            </td></tr>
+            <tr><th>Original</th><td>
+              {{if .Image.OriginalSource}}<a href="{{.Image.OriginalSource}}" target="_blank" rel="noopener noreferrer" class="meta-url-value" title="{{.Image.OriginalSource}}">{{urlDomain .Image.OriginalSource}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
+              <button type="button" class="btn-link-accent btn-edit-image-original" data-original="{{.Image.OriginalSource}}" title="{{if .Image.OriginalSource}}Edit original source{{else}}Add original source{{end}}">{{if .Image.OriginalSource}}[edit]{{else}}[+ add]{{end}}</button>
+              {{if .Image.OriginalSource}}<form method="POST" action="/images/{{.Image.ID}}/original-source"
+                    hx-post="/images/{{.Image.ID}}/original-source" hx-swap="none"
+                    hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
+                    hx-confirm="Remove the original source?" data-confirm-ok="Remove"
+                    style="display:inline">
+                <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+                <input type="hidden" name="original" value="">
+                <button type="submit" class="btn-link-accent" title="Remove original source">[×]</button>
+              </form>{{end}}
             </td></tr>
             <tr><th>Collections</th><td>
               {{if .Collections}}
@@ -877,6 +1102,74 @@
 
       </div>
     </details>
+
+    {{/* One collapsible panel per source, carrying that origin's commentary and
+         pulled annotations. The origin itself is edited from the metadata
+         Sources row; here only the commentary body and the boxes are. */}}
+    {{range .SourcePanels}}
+    <details class="detail-meta-panel detail-source-panel" open>
+      <summary>{{if .Site}}{{.Site}}{{else}}source{{end}}</summary>
+      <div class="detail-meta-content">
+        <table class="meta-table meta-editable">
+          <tbody>
+            <tr><th>Original</th><td>
+              {{if .OriginalLines}}<ul class="collection-list">
+                {{range .OriginalLines}}
+                <li class="collection-item">{{if .IsURL}}<a href="{{.Text}}" target="_blank" rel="noopener noreferrer" class="meta-url-value" title="{{.Text}}">{{urlDomain .Text}}</a>{{else}}<span class="meta-source-value" title="{{.Text}}">{{.Text}}</span>{{end}}</li>
+                {{end}}
+              </ul>{{end}}
+              <button type="button" class="btn-link-accent btn-edit-original" data-site="{{.Site}}" data-post="{{.PostID}}" data-original="{{.Original}}" title="{{if .Original}}Edit original source{{else}}Add original source{{end}}">{{if .Original}}[edit]{{else}}[+ add]{{end}}</button>
+              {{if .Original}}<form method="POST" action="/images/{{$.Image.ID}}/original/remove"
+                    hx-post="/images/{{$.Image.ID}}/original/remove" hx-swap="none"
+                    hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+                    hx-confirm="Remove this original source?" data-confirm-ok="Remove"
+                    style="display:inline">
+                <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                <input type="hidden" name="site" value="{{.Site}}">
+                <input type="hidden" name="post_id" value="{{.PostID}}">
+                <button type="submit" class="btn-link-accent" title="Remove original source">[×]</button>
+              </form>{{end}}
+            </td></tr>
+            <tr><th>Commentary</th><td>
+              {{if .Commentary}}<div class="commentary-body">{{.Commentary}}</div>{{end}}
+              <button type="button" class="btn-link-accent btn-edit-commentary" data-site="{{.Site}}" data-post="{{.PostID}}" data-commentary="{{.Commentary}}" title="{{if .Commentary}}Edit commentary{{else}}Add commentary{{end}}">{{if .Commentary}}[edit]{{else}}[+ add]{{end}}</button>
+              {{if .Commentary}}<form method="POST" action="/images/{{$.Image.ID}}/commentary/remove"
+                    hx-post="/images/{{$.Image.ID}}/commentary/remove" hx-swap="none"
+                    hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+                    hx-confirm="Remove this commentary?" data-confirm-ok="Remove"
+                    style="display:inline">
+                <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                <input type="hidden" name="site" value="{{.Site}}">
+                <input type="hidden" name="post_id" value="{{.PostID}}">
+                <button type="submit" class="btn-link-accent" title="Remove commentary">[×]</button>
+              </form>{{end}}
+            </td></tr>
+            {{if .Annotations}}
+            <tr><th>Annotations</th><td>
+              <ul class="collection-list">
+                {{range .Annotations}}
+                <li class="collection-item annotation-entry" data-ann-id="{{.ID}}">
+                  <span class="meta-annotation-body" title="{{.Body}}">{{if .Body}}{{.Body}}{{else}}(no text){{end}}</span>
+                  <button type="button" class="btn-link-accent btn-edit-annotation" data-id="{{.ID}}" data-x="{{.X}}" data-y="{{.Y}}" data-w="{{.W}}" data-h="{{.H}}" data-body="{{.Body}}" title="Edit">[edit]</button>
+                  <form method="POST" action="/images/{{$.Image.ID}}/annotations/remove"
+                        hx-post="/images/{{$.Image.ID}}/annotations/remove" hx-swap="none"
+                        hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+                        hx-confirm="Remove this annotation?" data-confirm-ok="Remove"
+                        style="display:inline">
+                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="id" value="{{.ID}}">
+                    <button type="submit" class="btn-link-accent" title="Remove annotation">[×]</button>
+                  </form>
+                </li>
+                {{end}}
+              </ul>
+            </td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </details>
+    {{end}}
     <div id="related-entries-panel"
          hx-get="/internal/images/{{.Image.ID}}/related-entries?back_q={{urlQ .BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}"
          hx-trigger="load, relations-changed"

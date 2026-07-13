@@ -21,8 +21,7 @@ func Extract(path, fileType string) (*models.SDMetadata, *models.ComfyUIMetadata
 		sd, err := extractSDFromJPEG(path)
 		return sd, nil, err
 	case "webp":
-		sd, err := extractSDFromWebP(path)
-		return sd, nil, err
+		return extractSDFromWebP(path), nil, nil
 	default:
 		return nil, nil, nil
 	}

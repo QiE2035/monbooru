@@ -12,11 +12,11 @@ import (
 
 var errNotPNG = errors.New("not a PNG file")
 
-// maxPNGChunkBytes bounds any individual chunk we'll buffer. A1111
-// parameter blobs and ComfyUI workflow JSON are kilobytes; the 32-bit
-// chunk length field is otherwise attacker-controlled and a forged
-// header could try to allocate up to ~4 GiB.
-const maxPNGChunkBytes = 16 * 1024 * 1024
+// maxChunkBytes bounds any single metadata chunk we'll buffer (PNG tEXt/iTXt,
+// WebP RIFF). A1111 parameter blobs and ComfyUI workflow JSON are kilobytes;
+// the length fields are otherwise attacker-controlled and a forged header
+// could try to allocate up to ~4 GiB.
+const maxChunkBytes = 16 * 1024 * 1024
 
 // readPNGTextChunks returns every tEXt and iTXt chunk from a PNG reader
 // as keyword -> text.
@@ -42,7 +42,7 @@ func readPNGTextChunks(r io.Reader) (map[string]string, error) {
 
 		// Skip oversized chunks without materialising them, but still
 		// advance the reader past their body + CRC.
-		if length > maxPNGChunkBytes {
+		if length > maxChunkBytes {
 			if _, err := io.CopyN(io.Discard, r, int64(length)+4); err != nil {
 				break
 			}

@@ -1,11 +1,22 @@
 {{define "partials/collection_order.html"}}
-<p>Click the images of <strong>{{.Name}}</strong> in reading order (1, 2, ...). Click a numbered image to unpick it; images left unclicked become unordered.</p>
+<div class="filter-group collection-order-modes">
+  <button type="button" class="filter-btn active" data-order-mode="order">By order</button>
+  <button type="button" class="filter-btn" data-order-mode="filename">By filename</button>
+</div>
+<p>
+  <span class="order-mode-order">Showing <strong>{{.Name}}</strong> in its current order.<br>Click images in reading order (1, 2, ...) to reorder; click a numbered image to unpick it.<br>Unclicked images stay unordered.</span>
+  <span class="order-mode-filename" hidden>Showing <strong>{{.Name}}</strong> by filename.<br>Save stores this order, or click images to set your own instead.</span>
+</p>
+{{if .CeilingHidden}}
+<p class="field-hint">{{.CeilingHidden}} {{plural .CeilingHidden "image" "images"}} in this collection {{if eq .CeilingHidden 1}}is{{else}}are{{end}} hidden by the rating ceiling; ordering still covers {{if eq .CeilingHidden 1}}it{{else}}them{{end}}.</p>
+{{end}}
 <div class="collection-order-grid">
   {{range .Members}}
-  <button type="button" class="collection-order-tile" data-id="{{.ID}}" title="Image {{.ID}}">
+  <button type="button" class="collection-order-tile" data-id="{{.ID}}" data-filename="{{.Filename}}" title="{{.Filename}}">
     <img src="/thumbnails/{{$.Gallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy">
     <span class="collection-order-num"></span>
     {{with .Order}}<span class="relations-card-id">#{{.}}</span>{{end}}
+    <span class="collection-order-fname">{{.Filename}}</span>
   </button>
   {{else}}
   <span class="field-hint">No previewable images.</span>

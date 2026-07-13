@@ -13,6 +13,9 @@ See these pages for guidance on how to set up monbooru. Help on how to use the a
 - [Relations](RELATIONS.md) - declared duplicates, alternates, version chains,
   derivatives; perceptual-hash; the find-pairs job and the swipe
   session UI; the two duplicates walkers.
+- [Lookups](LOOKUP.md) - reverse-searching your images against
+  boorus, similarity services, and the Hydrus PTR to backfill tags and
+  sources.
 - [Maintenance, Schedule, Stats, and Troubleshooting](MAINTENANCE.md) - the
   manual maintenance tools, the nightly schedule, the diagnostic Stats
   block, and common failure modes.

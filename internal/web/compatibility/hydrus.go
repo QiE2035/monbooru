@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/leqwin/monbooru/internal/tags"
 )
 
 func init() {
@@ -86,7 +87,8 @@ func translateHydrus(entries []NormalizedEntry) (Result, error) {
 
 // readHydrusSidecar parses one tag per line; blank lines and `#`-prefixed
 // comments are ignored. Tokens already in `category:tag` form pass
-// through unchanged so the apply path's category resolver routes them.
+// through so the apply path's category resolver routes them; each is
+// normalized to monbooru's tag-name charset first (hydrus stores spaces).
 // A few Hydrus namespaces are rewritten to their Monbooru counterparts
 // since they share the same semantic; without the rewrite they would
 // land as literal `<prefix>:name` tags in `general`:
@@ -115,7 +117,9 @@ func readHydrusSidecar(f *zip.File) ([]string, error) {
 		case strings.HasPrefix(line, "studio:"):
 			line = "copyright:" + line[len("studio:"):]
 		}
-		tagsList = append(tagsList, line)
+		if norm := tags.NormalizeName(line); norm != "" {
+			tagsList = append(tagsList, norm)
+		}
 	}
 	return tagsList, sc.Err()
 }

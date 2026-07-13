@@ -24,12 +24,24 @@ func (s *Service) AddTagToImage(imageID, tagID int64, isAuto bool, confidence *f
 // overhead. Used by gallery_merge.go's import path so a record
 // carrying dozens of tags doesn't pay one tx per row.
 func (s *Service) AddTagsToImageFromTagger(imageID int64, tagIDs []int64, isAuto bool, taggerName string) error {
+	return s.AddTagsToImageFromTaggerConf(imageID, tagIDs, nil, isAuto, taggerName)
+}
+
+// AddTagsToImageFromTaggerConf is AddTagsToImageFromTagger with a per-tag
+// confidence: confs[i] pairs with tagIDs[i], and a nil or missing entry stores
+// NULL. The transfer path uses it so an auto-tag keeps the score it was
+// assigned.
+func (s *Service) AddTagsToImageFromTaggerConf(imageID int64, tagIDs []int64, confs []*float64, isAuto bool, taggerName string) error {
 	if len(tagIDs) == 0 {
 		return nil
 	}
 	return s.inWriteTx(func(tx *sql.Tx) error {
-		for _, tagID := range tagIDs {
-			if _, _, _, err := addOneTagTx(tx, imageID, tagID, isAuto, nil, taggerName, s.ratingCatID); err != nil {
+		for i, tagID := range tagIDs {
+			var c *float64
+			if i < len(confs) {
+				c = confs[i]
+			}
+			if _, _, _, err := addOneTagTx(tx, imageID, tagID, isAuto, c, taggerName, s.ratingCatID); err != nil {
 				return err
 			}
 		}
@@ -206,10 +218,13 @@ type SyncResult struct {
 // SyncSourceTags reconciles the tags one source contributed to an image (the
 // image_tags rows with tagger_name = site, is_auto = 0) to exactly the
 // incoming set: incoming tags are added attributed to the site (an existing
-// manual / auto / other-source row keeps its own attribution), and tags the
-// source no longer carries are dropped. An incoming rating tag is skipped when
-// the image is already rated, so a merge never displaces an existing rating.
-func (s *Service) SyncSourceTags(imageID int64, tagIDs []int64, site string) (SyncResult, error) {
+// manual / auto / other-source row keeps its own attribution), and, when prune
+// is set, tags the source no longer carries are dropped. Prune is off when the
+// site holds more than one post on the image - the slice is shared per site,
+// so one post's fetch must not sweep its sibling's tags. An incoming rating
+// tag is skipped when the image is already rated, so a merge never displaces
+// an existing rating.
+func (s *Service) SyncSourceTags(imageID int64, tagIDs []int64, site string, prune bool) (SyncResult, error) {
 	if site == "" {
 		return SyncResult{}, errors.New("source label required")
 	}
@@ -256,6 +271,10 @@ func (s *Service) SyncSourceTags(imageID int64, tagIDs []int64, site string) (Sy
 			}
 		}
 
+		if !prune {
+			out = res
+			return nil
+		}
 		// Prune this source's own tags no longer in the incoming set, but never a
 		// rating: an existing rating is protected, so it is neither overwritten
 		// (skipped above) nor swept out here.
@@ -415,7 +434,8 @@ func (s *Service) RemoveTagsFromOneImage(imageID int64, tagIDs []int64) error {
 // be silently corrected back down by the next RecalcIDs.
 func bumpTagUsageTx(tx *sql.Tx, tagID, imageID int64) error {
 	_, err := tx.Exec(
-		`UPDATE tags SET usage_count = usage_count + 1
+		`UPDATE tags SET usage_count = usage_count + 1,
+		        last_used_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		 WHERE id = ? AND (SELECT is_missing FROM images WHERE id = ?) = 0`,
 		tagID, imageID,
 	)
@@ -493,11 +513,31 @@ func removeTagFromImageTx(tx *sql.Tx, imageID, tagID int64) error {
 	return nil
 }
 
-// RemoveUserTagsFromImage drops every manual image_tags row for one
-// image and adjusts usage counts.
+// RemoveUserTagsFromImage drops the operator's manual tags for one image
+// and adjusts usage counts. Manual tags are is_auto = 0 rows with no
+// tagger_name; a source's tags (is_auto = 0 carrying the site as
+// tagger_name) are left in place - RemoveSourceTagsFromImage handles those.
 func (s *Service) RemoveUserTagsFromImage(imageID int64) error {
 	return s.inWriteTx(func(tx *sql.Tx) error {
-		tagIDs, err := scanTagIDsTx(tx, `SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 0`, imageID)
+		tagIDs, err := scanTagIDsTx(tx, `SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 0 AND (tagger_name IS NULL OR tagger_name = '')`, imageID)
+		if err != nil {
+			return err
+		}
+		return removeTagIDsFromImageTx(tx, imageID, tagIDs)
+	})
+}
+
+// RemoveSourceTagsFromImage drops the tags one or more external sources
+// contributed - is_auto = 0 rows whose tagger_name is a listed site - leaving
+// the operator's manual tags and the auto-tagger rows untouched.
+func (s *Service) RemoveSourceTagsFromImage(imageID int64, sources []string) error {
+	if len(sources) == 0 {
+		return nil
+	}
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		placeholders, nameArgs := db.InPlaceholders(sources)
+		args := append([]any{imageID}, nameArgs...)
+		tagIDs, err := scanTagIDsTx(tx, `SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 0 AND tagger_name IN (`+placeholders+`)`, args...)
 		if err != nil {
 			return err
 		}
@@ -566,11 +606,10 @@ func (s *Service) RemoveAllTagsFromImage(imageID int64) error {
 // signal worth the scan even when common.
 const relatedGeneralTagsCap = 15
 
-// ratingRank returns the position of name in RatingLevels (0-indexed,
+// RatingRank returns the position of name in RatingLevels (0-indexed,
 // general < sensitive < questionable < explicit). Returns -1 for any
-// non-canonical name. Mirrors the same helper in internal/search; kept
-// package-private here so tags doesn't depend on search.
-func ratingRank(name string) int {
+// non-canonical name.
+func RatingRank(name string) int {
 	for i, l := range RatingLevels {
 		if l == name {
 			return i
@@ -621,10 +660,13 @@ func pruneRatingsAfterAddTx(tx *sql.Tx, ratingCatID, imageID, tagID int64, isAut
 	return pruneOtherRatingsTx(tx, ratingCatID, imageID, tagID)
 }
 
-func pruneLowerRatingsTx(tx *sql.Tx, ratingCatID, imageID int64) error {
-	if ratingCatID == 0 {
-		return nil
-	}
+type ratingRow struct {
+	tagID int64
+	name  string
+}
+
+// ratingRowsOnImageTx returns the rating-category rows on imageID.
+func ratingRowsOnImageTx(tx *sql.Tx, ratingCatID, imageID int64) ([]ratingRow, error) {
 	rows, err := tx.Query(
 		`SELECT it.tag_id, t.name FROM image_tags it
 		 JOIN tags t ON t.id = it.tag_id
@@ -632,36 +674,40 @@ func pruneLowerRatingsTx(tx *sql.Tx, ratingCatID, imageID int64) error {
 		imageID, ratingCatID,
 	)
 	if err != nil {
-		return fmt.Errorf("scan rating rows for prune: %w", err)
-	}
-	type ratingRow struct {
-		tagID int64
-		name  string
+		return nil, err
 	}
 	var present []ratingRow
 	for rows.Next() {
 		var r ratingRow
 		if err := rows.Scan(&r.tagID, &r.name); err != nil {
 			_ = rows.Close()
-			return err
+			return nil, err
 		}
 		present = append(present, r)
 	}
 	_ = rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
+	return present, rows.Err()
+}
+
+func pruneLowerRatingsTx(tx *sql.Tx, ratingCatID, imageID int64) error {
+	if ratingCatID == 0 {
+		return nil
+	}
+	present, err := ratingRowsOnImageTx(tx, ratingCatID, imageID)
+	if err != nil {
+		return fmt.Errorf("scan rating rows for prune: %w", err)
 	}
 	if len(present) <= 1 {
 		return nil
 	}
 	bestRank := -1
 	for _, r := range present {
-		if rank := ratingRank(r.name); rank > bestRank {
+		if rank := RatingRank(r.name); rank > bestRank {
 			bestRank = rank
 		}
 	}
 	for _, r := range present {
-		if ratingRank(r.name) >= bestRank {
+		if RatingRank(r.name) >= bestRank {
 			continue
 		}
 		if err := removeTagFromImageTx(tx, imageID, r.tagID); err != nil {
@@ -682,35 +728,19 @@ func pruneOtherRatingsTx(tx *sql.Tx, ratingCatID, imageID, keepTagID int64) ([]s
 	if ratingCatID == 0 {
 		return nil, nil
 	}
-	rows, err := tx.Query(
-		`SELECT it.tag_id, t.name FROM image_tags it
-		 JOIN tags t ON t.id = it.tag_id
-		 WHERE it.image_id = ? AND t.category_id = ? AND t.is_alias = 0 AND it.tag_id != ?`,
-		imageID, ratingCatID, keepTagID,
-	)
+	present, err := ratingRowsOnImageTx(tx, ratingCatID, imageID)
 	if err != nil {
 		return nil, fmt.Errorf("scan rating rows for overwrite: %w", err)
 	}
-	var others []int64
 	var displaced []string
-	for rows.Next() {
-		var id int64
-		var name string
-		if err := rows.Scan(&id, &name); err != nil {
-			_ = rows.Close()
-			return nil, err
+	for _, r := range present {
+		if r.tagID == keepTagID {
+			continue
 		}
-		others = append(others, id)
-		displaced = append(displaced, name)
-	}
-	_ = rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for _, id := range others {
-		if err := removeTagFromImageTx(tx, imageID, id); err != nil {
-			return nil, fmt.Errorf("overwrite prior rating %d: %w", id, err)
+		if err := removeTagFromImageTx(tx, imageID, r.tagID); err != nil {
+			return nil, fmt.Errorf("overwrite prior rating %d: %w", r.tagID, err)
 		}
+		displaced = append(displaced, r.name)
 	}
 	return displaced, nil
 }
@@ -725,7 +755,7 @@ func (s *Service) RatingTagIDsAbove(ceiling string) []int64 {
 	if s.ratingCatID == 0 {
 		return nil
 	}
-	rank := ratingRank(ceiling)
+	rank := RatingRank(ceiling)
 	if rank < 0 || rank >= len(RatingLevels)-1 {
 		return nil
 	}

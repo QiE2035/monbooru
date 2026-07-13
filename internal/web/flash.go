@@ -12,14 +12,14 @@ import (
 // fragment with the requested status so the swap target paints it;
 // non-HTMX callers fall back to plain http.Error which sets a content
 // type the browser renders as text.
-func flashErr(w http.ResponseWriter, r *http.Request, code int, msg string) {
+func flashErr(w http.ResponseWriter, r *http.Request, msg string) {
 	if isHTMXRequest(r) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(code)
+		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprintf(w, `<div class="flash flash-err">%s</div>`, html.EscapeString(msg))
 		return
 	}
-	http.Error(w, msg, code)
+	http.Error(w, msg, http.StatusBadRequest)
 }
 
 // setDialogSavedTrigger fires the JS-side dialog-close event ("tagger-saved"

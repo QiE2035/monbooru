@@ -311,6 +311,13 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data.SidebarURL = buildSidebarURL(queryStr, sortStr, orderStr, pageStr, q.Get("seed"), ids)
+	// The batch-strip dialog's source select rides SourceLabelCounts even on
+	// the full-page render, where the sidebar (and its labels) is lazy-loaded;
+	// fill it from the cheap cached, ceiling-blind count. cx read under the
+	// ContextMiddleware RLock, matching s.base.
+	if cx := s.contexts[s.activeName]; cx != nil {
+		data.SourceLabelCounts, _ = cx.SourceLabelCounts()
+	}
 	s.renderTemplate(w, "gallery.html", data)
 }
 
@@ -732,24 +739,27 @@ func sameBatch(a, b *int64) bool {
 
 func buildInboxCluster(rows []models.Image, queryStr string) *inboxCluster {
 	// rows[0] is the newest entry (DESC), rows[len-1] the oldest.
-	// Format the header label oldest -> newest so the visible time
-	// arrow reads left-to-right.
-	newest := rows[0].IngestedAt.UTC()
-	oldest := rows[len(rows)-1].IngestedAt.UTC()
+	newestUTC := rows[0].IngestedAt.UTC()
+	oldestUTC := rows[len(rows)-1].IngestedAt.UTC()
+	// Header labels read in the operator's local zone; the date: bounds
+	// below stay UTC to string-match the UTC-stored ingested_at column.
+	// The visible arrow reads oldest -> newest, left-to-right.
+	newest := newestUTC.In(time.Local)
+	oldest := oldestUTC.In(time.Local)
 	dateLabel := newest.Format("2006-01-02")
 	rangeLabel := oldest.Format("15:04")
-	if len(rows) > 1 && !oldest.Equal(newest) {
+	if len(rows) > 1 && !oldestUTC.Equal(newestUTC) {
 		rangeLabel = oldest.Format("15:04") + " -> " + newest.Format("15:04")
 	}
 	// Minute-precise bounds so a cluster spanning 19:23 -> 19:30 lands
 	// on exactly the rows whose ingest minute falls in that window;
 	// day-precise bounds would widen the link to the whole day.
-	clusterQ := "inbox:true date:" + oldest.Format("2006-01-02T15:04") + ".." + newest.Format("2006-01-02T15:04")
+	clusterQ := "inbox:true date:" + oldestUTC.Format("2006-01-02T15:04") + ".." + newestUTC.Format("2006-01-02T15:04")
 	if queryStr != "" && queryStr != "inbox:true" {
 		// Preserve any extra leaves the operator added while still
 		// scoping to the cluster's date range; the search merges as
 		// an implicit AND.
-		clusterQ = queryStr + " date:" + oldest.Format("2006-01-02T15:04") + ".." + newest.Format("2006-01-02T15:04")
+		clusterQ = queryStr + " date:" + oldestUTC.Format("2006-01-02T15:04") + ".." + newestUTC.Format("2006-01-02T15:04")
 	}
 	// RangeLink omits sort/order so the receiving gallery handler falls
 	// through to its defaults (newest, desc). The cluster gate

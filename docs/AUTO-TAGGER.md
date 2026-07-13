@@ -1,7 +1,6 @@
 # Auto-tagger
 
-The auto-tagger uses ONNX models to suggest tags for your images. Off
-by default.
+The auto-tagger uses ONNX models to suggest tags for your images. Disabled by default.
 
 ## Install a supported tagger from the catalog
 
@@ -25,14 +24,18 @@ own subfolder under the `models/` volume. Each subfolder needs:
 
 Reload the Settings page; the new tagger appears in the table.
 
-If a model needs preprocessing monbooru can't infer (input size,
-channel order, normalization, padding, output activation), drop an
-optional `tagger.json` next to `model.onnx` to pin it; the sidecar
-overrides the auto-detected profile.
+Monbooru auto-detects the profile only for `.csv` (WD14) and `.txt`
+(JoyTag) label files. A Camie-style `.json` needs a `tagger.json`
+sidecar next to `model.onnx` (declaring at least `label_format` and
+`category_scheme`) unless the subfolder is named after a built-in
+catalog entry. Use the same sidecar for any model whose preprocessing
+monbooru can't infer (input size, channel order, normalization,
+padding, output activation); it overrides the auto-detected profile. (see `internal/tagger/profile_default` for examples.)
 
 To run it, use the auto-tag button in the image detail or in batch
-actions. "Auto-tag all current search" is capped at 50,000 images per
-run.
+actions, or turn on **Run enabled auto-taggers** in Settings → Schedule
+for a nightly pass. "Auto-tag all current search" is capped at 50,000
+images per run.
 
 Multiple taggers can run together; per-image results are merged so a
 tag detected by two taggers is inserted once with the higher

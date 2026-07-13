@@ -9,11 +9,11 @@ import (
 
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.Auth.EnablePassword {
-		// Render the login form with an inline notice and the input/submit
-		// disabled instead of silently redirecting - a user who bookmarked
-		// /login after disabling auth otherwise gets no explanation for why
-		// the page vanished, and leaving the fields live makes it look like
-		// the 'login' somehow worked when the server just redirects to /.
+		// Render the login page with an inline notice instead of silently
+		// redirecting - a user who bookmarked /login after disabling auth
+		// otherwise gets no explanation for why the page vanished. The
+		// template hides the form itself; a dead field and button only
+		// suggest a login that could work.
 		s.renderTemplate(w, "login.html", s.loginPageData(map[string]any{
 			"Error":        "Password authentication is disabled. Enable it from Settings → Authentication.",
 			"AuthDisabled": true,

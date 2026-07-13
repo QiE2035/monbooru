@@ -50,13 +50,14 @@
     <button type="button" class="batch-bar-right" onclick="openTagSelectedDialog()">Add tags manually</button>
     <button type="button" onclick="openStripSelectedDialog()">Remove tags</button>
     {{if .EnabledTaggers}}<button type="button" class="btn-autotag" onclick="openBatchAutotagDialog('selection')">Auto-tag</button>{{end}}
+    {{if .MonloaderPaired}}<button type="button" class="monloader-accent" onclick="openBatchLookupDialog('selection')">Lookup</button>{{end}}
     <span class="batch-bar-sep" aria-hidden="true"></span>
     <button type="button" onclick="openBatchInboxDialog('selection')">Toggle inbox</button>
     <button type="button" onclick="openBatchFavoriteDialog('selection')">Toggle favorite</button>
     <button type="button" onclick="openBatchCollectionDialog('selection')">Set collection</button>
     <button type="button" onclick="openBatchSourceDialog('selection')">Set source</button>
-    {{if .MonloaderPaired}}<button type="button" class="monloader-accent" onclick="openBatchSourceFetchDialog('selection')">Fetch tags</button>{{end}}
     <span class="batch-bar-sep" aria-hidden="true"></span>
+    {{if gt (len .Galleries) 1}}<button type="button" onclick="openBatchTransferDialog('selection')">Transfer</button>{{end}}
     <button type="button" onclick="openBatchMoveDialog('selection')">Move</button>
     <button type="button" class="btn-danger" onclick="batchDeleteSelected()">Delete</button>
   </form>
@@ -208,6 +209,14 @@
                onkeydown="handleSuggestKey(event, 'batch-strip-suggest', 'batch-strip-input')">
         <div id="batch-strip-suggest" class="suggest-dropdown tag-suggest-dropdown"></div>
       </div>
+      {{if .SourceLabelCounts}}
+      <label style="display:block"><input type="radio" name="mode" value="source-specific"> Specific source</label>
+      <div class="field" style="margin: 4px 0 8px 22px" id="batch-strip-source-row">
+        <select name="source" id="batch-strip-source" class="upload-wide-input">
+          {{range .SourceLabelCounts}}<option value="{{.Source}}">{{.Source}} ({{.Count}})</option>{{end}}
+        </select>
+      </div>
+      {{end}}
       {{if .EnabledTaggers}}
       <label style="display:block"><input type="radio" name="mode" value="auto-specific"> Specific auto-tagger</label>
       <div class="field" style="margin: 4px 0 8px 22px" id="batch-strip-tagger-row">
@@ -217,6 +226,7 @@
       </div>
       {{end}}
       <label style="display:block"><input type="radio" name="mode" value="user"> All user tags</label>
+      {{if .SourceLabelCounts}}<label style="display:block"><input type="radio" name="mode" value="source-all"> All external sources</label>{{end}}
       <label style="display:block"><input type="radio" name="mode" value="auto"> All auto-tagger tags</label>
       <label style="display:block"><input type="radio" name="mode" value="all"> All tags</label>
     </div>
@@ -250,6 +260,32 @@
     <div class="dialog-actions">
       <button type="submit">Move</button>
       <button type="button" onclick="closeDialogAndRestoreParent('batch-move-dialog')">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Transfer dialog: copy the scope into another gallery (scope flip via hidden
+     #batch-transfer-scope). -->
+<dialog id="batch-transfer-dialog">
+  <p>Transfer {{template "batch_count" "batch-transfer"}} to another gallery:</p>
+  <p class="field-hint">The image and its tags, sources and notes are copied into the target gallery.</p>
+  <p class="field-hint" style="color:var(--error)">Relations and collections are not carried over.</p>
+  <form id="batch-transfer-form" onsubmit="event.preventDefault(); confirmBatchTransfer();">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <input type="hidden" id="batch-transfer-scope">
+    <div class="field">
+      <label>Target gallery</label>
+      <select name="target" id="batch-transfer-target" class="upload-wide-input">
+        {{range .Galleries}}{{if ne .Name $.ActiveGallery}}<option value="{{.Name}}">{{.Name}}</option>{{end}}{{end}}
+      </select>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="remove_after" id="batch-transfer-remove" value="1"> Remove from this gallery after transfer</label>
+    </div>
+    <div id="batch-transfer-flash"></div>
+    <div class="dialog-actions">
+      <button type="submit">Transfer</button>
+      <button type="button" onclick="closeDialogAndRestoreParent('batch-transfer-dialog')">Cancel</button>
     </div>
   </form>
 </dialog>
@@ -334,20 +370,28 @@
   </form>
 </dialog>
 
-<!-- Batch source-fetch dialog. One monloader metadata job per image, so a
-     large scope means a long politeness-paced crawl that can't be drained
-     from monbooru once queued - hence the count confirm. -->
-<dialog id="batch-source-fetch-dialog">
-  <input type="hidden" id="batch-source-fetch-scope">
+<!-- Batch lookup dialog. One monloader job per image, so a large scope means
+     a long politeness-paced crawl that can't be drained from monbooru once
+     queued - hence the count confirm. -->
+<dialog id="batch-lookup-dialog">
+  <input type="hidden" id="batch-lookup-scope">
   <p>
-    Fetch tags from the source for
-    {{template "batch_count" "batch-source-fetch"}}?
+    Look up tags for
+    {{template "batch_count" "batch-lookup"}}:
   </p>
-  <p style="color:var(--fg-dim);font-size:12px">Each image is fetched from its primary source URL; images without one are skipped. Queued fetches run on monloader and cannot be cancelled from here.</p>
-  <div id="batch-source-fetch-flash"></div>
+  <div class="field">
+    <label style="display:block"><input type="radio" name="batch-lookup-mode" value="source" checked> Refresh tags from the declared source</label>
+    <label style="display:block"><input type="radio" name="batch-lookup-mode" value="all"> Look up new sources by file hash and fetch{{if .MonloaderPTR}} (PTR and online boorus){{end}}</label>
+    {{if .MonloaderPTR}}
+    <label style="display:block"><input type="radio" name="batch-lookup-mode" value="ptr"> Look up in the Public Tag Repository only</label>
+    <label style="display:block"><input type="radio" name="batch-lookup-mode" value="booru"> Look up on online boorus only</label>
+    {{end}}
+  </div>
+  <p style="color:var(--fg-dim);font-size:12px">The source refresh uses each image's primary source URL, or a PTR hash lookup when the primary is a url-less PTR source, and skips images with neither; the hash lookup finds posts for files with no known source. Queued jobs run on monloader and cannot be cancelled from here.</p>
+  <div id="batch-lookup-flash"></div>
   <div class="dialog-actions">
-    <button type="button" onclick="confirmBatchSourceFetch()">Fetch</button>
-    <button type="button" onclick="closeDialogAndRestoreParent('batch-source-fetch-dialog')">Cancel</button>
+    <button type="button" onclick="confirmBatchLookup()">Lookup</button>
+    <button type="button" onclick="closeDialogAndRestoreParent('batch-lookup-dialog')">Cancel</button>
   </div>
 </dialog>
 
@@ -358,13 +402,18 @@
 // confirmBatchSimple skeletons - lives in main.js so other pages can
 // share it. Each dialog below only names its id prefix, endpoint, and
 // per-dialog extras.
-function openBatchSourceFetchDialog(scope) {
-  openBatchDialog('batch-source-fetch', scope);
+function openBatchLookupDialog(scope) {
+  openBatchDialog('batch-lookup', scope, {
+    radio: '#batch-lookup-dialog input[name="batch-lookup-mode"][value="source"]'
+  });
 }
 
-// confirmBatchSourceFetch queues a monloader metadata refetch across the scope.
-function confirmBatchSourceFetch() {
-  confirmBatchSimple('batch-source-fetch', '/internal/batch-source-fetch', null, 'Fetch failed.');
+// confirmBatchLookup queues the picked lookup mode across the scope: a
+// monloader metadata refetch or a hash lookup per image.
+function confirmBatchLookup() {
+  var checked = document.querySelector('#batch-lookup-dialog input[name="batch-lookup-mode"]:checked');
+  confirmBatchSimple('batch-lookup', '/internal/batch-lookup',
+    ['mode=' + encodeURIComponent(checked ? checked.value : 'source')], 'Lookup failed.');
 }
 
 function openBatchDeleteDialog(scope) {
@@ -399,6 +448,27 @@ function confirmBatchMove() {
   var folder = document.getElementById('batch-move-folder').value;
   confirmBatchSimple('batch-move', '/internal/batch-move',
     ['folder=' + encodeURIComponent(folder)], 'Move failed.');
+}
+
+function openBatchTransferDialog(scope) {
+  openBatchDialog('batch-transfer', scope, {
+    beforeShow: function() {
+      var rm = document.getElementById('batch-transfer-remove');
+      if (rm) rm.checked = false;
+    }
+  });
+}
+
+function confirmBatchTransfer() {
+  var target = document.getElementById('batch-transfer-target');
+  var flash = document.getElementById('batch-transfer-flash');
+  if (!target || !target.value) {
+    if (flash) flash.innerHTML = '<div class="flash flash-err">Pick a target gallery.</div>';
+    return;
+  }
+  var params = ['target=' + encodeURIComponent(target.value)];
+  if (document.getElementById('batch-transfer-remove').checked) params.push('remove_after=1');
+  confirmBatchSimple('batch-transfer', '/internal/batch-transfer', params, 'Transfer failed.');
 }
 
 // Open the Actions chooser. The header announces the scope once (count +
@@ -484,6 +554,10 @@ function pickBatchAction(action) {
       openBatchAutotagDialog('search');
       subId = 'batch-autotag-dialog';
       break;
+    case 'transfer':
+      openBatchTransferDialog('search');
+      subId = 'batch-transfer-dialog';
+      break;
     case 'move':
       openBatchMoveDialog('search');
       subId = 'batch-move-dialog';
@@ -504,9 +578,9 @@ function pickBatchAction(action) {
       openBatchSourceDialog('search');
       subId = 'batch-source-dialog';
       break;
-    case 'source-fetch':
-      openBatchSourceFetchDialog('search');
-      subId = 'batch-source-fetch-dialog';
+    case 'lookup':
+      openBatchLookupDialog('search');
+      subId = 'batch-lookup-dialog';
       break;
     case 'delete':
       openBatchDeleteDialog('search');
@@ -551,6 +625,7 @@ function openStripDialog(scope) {
 function updateBatchStripRow() {
   var picked = (document.querySelector('#batch-strip-form input[name="mode"]:checked') || {}).value;
   toggleStripModeRow('batch-strip-specific-row', picked !== 'specific');
+  toggleStripModeRow('batch-strip-source-row', picked !== 'source-specific');
   toggleStripModeRow('batch-strip-tagger-row', picked !== 'auto-specific');
 }
 
@@ -581,9 +656,9 @@ function confirmBatchStrip() {
 
   // mode=specific dispatches through the existing batch-tag handler with
   // op=remove; the bulk modes go through batch-strip with the matching
-  // predicate. mode=auto-specific is a UI shorthand for mode=auto plus a
-  // tagger_name filter; the server only knows mode=auto, so unwrap before
-  // sending.
+  // predicate. mode=auto-specific / source-specific are UI shorthands for
+  // mode=auto / mode=source plus a name filter; the server only knows the
+  // bare mode, so unwrap before sending.
   var url, params;
   if (mode === 'specific') {
     var tags = (document.getElementById('batch-strip-input').value || '').trim();
@@ -595,7 +670,9 @@ function confirmBatchStrip() {
     params = ['op=remove', 'tags=' + encodeURIComponent(tags)];
   } else {
     url = '/internal/batch-strip';
-    var serverMode = mode === 'auto-specific' ? 'auto' : mode;
+    var serverMode = mode;
+    if (mode === 'auto-specific') serverMode = 'auto';
+    else if (mode === 'source-specific') serverMode = 'source';
     params = ['mode=' + encodeURIComponent(serverMode)];
     if (mode === 'auto-specific') {
       var taggerEl = document.getElementById('batch-strip-tagger');
@@ -605,6 +682,14 @@ function confirmBatchStrip() {
         return;
       }
       params.push('tagger_name=' + encodeURIComponent(taggerName));
+    } else if (mode === 'source-specific') {
+      var srcEl = document.getElementById('batch-strip-source');
+      var src = srcEl ? srcEl.value : '';
+      if (!src) {
+        if (flash) flash.innerHTML = '<div class="flash flash-err">Pick a source.</div>';
+        return;
+      }
+      params.push('source=' + encodeURIComponent(src));
     }
   }
   if (scope === 'search') {
@@ -711,38 +796,37 @@ function confirmBatchFavorite() {
   confirmBatchSimple('batch-fav', '/internal/batch-favorite', null, 'Favorite update failed.');
 }
 
-function openBatchCollectionDialog(scope) {
-  openBatchDialog('batch-collection', scope, {
-    radio: '#batch-collection-dialog input[name="mode"][value="add"]',
-    clearIds: ['batch-collection-input', 'batch-collection-suggest'],
-    focusId: 'batch-collection-input'
+function openBatchLabeledDialog(prefix, scope) {
+  openBatchDialog(prefix, scope, {
+    radio: '#' + prefix + '-dialog input[name="mode"][value="add"]',
+    clearIds: [prefix + '-input', prefix + '-suggest'],
+    focusId: prefix + '-input'
   });
+}
+
+function confirmBatchLabeled(prefix, endpoint, field) {
+  var labelEl = document.getElementById(prefix + '-input');
+  var modeEl = document.querySelector('#' + prefix + '-dialog input[name="mode"]:checked');
+  confirmBatchSimple(prefix, endpoint,
+    [field + '=' + encodeURIComponent(labelEl ? labelEl.value : ''),
+     'mode=' + (modeEl ? modeEl.value : 'add')],
+    'Apply failed.');
+}
+
+function openBatchCollectionDialog(scope) {
+  openBatchLabeledDialog('batch-collection', scope);
 }
 
 function confirmBatchCollection() {
-  var collectionEl = document.getElementById('batch-collection-input');
-  var modeEl = document.querySelector('#batch-collection-dialog input[name="mode"]:checked');
-  confirmBatchSimple('batch-collection', '/internal/batch-collection',
-    ['collection=' + encodeURIComponent(collectionEl ? collectionEl.value : ''),
-     'mode=' + (modeEl ? modeEl.value : 'add')],
-    'Apply failed.');
+  confirmBatchLabeled('batch-collection', '/internal/batch-collection', 'collection');
 }
 
 function openBatchSourceDialog(scope) {
-  openBatchDialog('batch-source', scope, {
-    radio: '#batch-source-dialog input[name="mode"][value="add"]',
-    clearIds: ['batch-source-input', 'batch-source-suggest'],
-    focusId: 'batch-source-input'
-  });
+  openBatchLabeledDialog('batch-source', scope);
 }
 
 function confirmBatchSource() {
-  var siteEl = document.getElementById('batch-source-input');
-  var modeEl = document.querySelector('#batch-source-dialog input[name="mode"]:checked');
-  confirmBatchSimple('batch-source', '/internal/batch-source',
-    ['site=' + encodeURIComponent(siteEl ? siteEl.value : ''),
-     'mode=' + (modeEl ? modeEl.value : 'add')],
-    'Apply failed.');
+  confirmBatchLabeled('batch-source', '/internal/batch-source', 'site');
 }
 
 function applyRandomSort() {

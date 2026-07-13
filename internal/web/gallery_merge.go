@@ -754,32 +754,78 @@ func readExportMergeRecords(exp galleryExport) []mergeRecord {
 // O(tokens) and 1 commit on merges that pour dozens of tags onto each
 // image.
 func applyImportTagsToImage(database *db.DB, tagSvc *tags.Service, imageID int64, tokens []string, generalID int64, source string) {
-	tagIDs := make([]int64, 0, len(tokens))
-	for _, token := range tokens {
-		token = strings.TrimSpace(token)
-		if token == "" {
-			continue
-		}
-		catID, bareName := resolveImportTag(database, token, generalID)
-		t, err := tagSvc.GetOrCreateTag(bareName, catID)
-		if err != nil {
-			logx.Warnf("import tag %q: %v", token, err)
-			continue
-		}
-		tagIDs = append(tagIDs, t.ID)
-	}
+	// Foreign imports drop a namespace with no matching category (species:fox
+	// -> fox) so they land the same tags the monloader paths do; native keeps
+	// colon-bearing names verbatim so an export round-trip stays lossless.
+	tagIDs, _ := resolveTokenTagIDsConf(database, tagSvc, tokens, nil, generalID, source != importSourceNative, source)
 	if err := tagSvc.AddTagsToImageFromTagger(imageID, tagIDs, false, source); err != nil {
 		logx.Warnf("import tags to image %d: %v", imageID, err)
 	}
 }
 
-func resolveImportTag(database *db.DB, token string, generalID int64) (int64, string) {
+// resolveTokenTagIDsConf resolves each "name" or "category:name" token to a tag
+// id in the target gallery (creating the tag when absent, stamped with origin),
+// keeping a confidence slice aligned to the surviving ids (confs[i] pairs with
+// tokens[i]); a skipped token drops its confidence too. Pass nil confs to
+// ignore scores.
+func resolveTokenTagIDsConf(database *db.DB, tagSvc *tags.Service, tokens []string, confs []*float64, generalID int64, dropUnknownNamespace bool, origin string) ([]int64, []*float64) {
+	tagIDs := make([]int64, 0, len(tokens))
+	outConfs := make([]*float64, 0, len(tokens))
+	for i, token := range tokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		catID, bareName := resolveImportTag(database, token, generalID, dropUnknownNamespace)
+		t, err := tagSvc.GetOrCreateTagFrom(bareName, catID, origin)
+		if err != nil {
+			logx.Warnf("import tag %q: %v", token, err)
+			continue
+		}
+		tagIDs = append(tagIDs, t.ID)
+		if confs != nil {
+			outConfs = append(outConfs, confs[i])
+		}
+	}
+	return tagIDs, outConfs
+}
+
+// applyTransferTags re-applies each attribution group onto the target image,
+// preserving is_auto, the source / auto-tagger label and each auto-tag's
+// confidence so a transferred tag keeps crediting its origin instead of
+// collapsing into a manual user tag. The error propagates so a move can gate
+// its source-delete on the tags actually landing.
+func applyTransferTags(database *db.DB, tagSvc *tags.Service, imageID int64, groups []transferTagGroup, generalID int64) error {
+	for _, g := range groups {
+		// A transferred group's attribution label is the closest thing to
+		// the creator of a tag the target gallery has never seen; an
+		// unlabelled group is an anonymous UI add on the source side.
+		origin := g.taggerName
+		if origin == "" {
+			origin = "user"
+		}
+		tagIDs, confs := resolveTokenTagIDsConf(database, tagSvc, g.tokens, g.confs, generalID, false, origin)
+		if err := tagSvc.AddTagsToImageFromTaggerConf(imageID, tagIDs, confs, g.isAuto, g.taggerName); err != nil {
+			return fmt.Errorf("transfer tags to image %d: %w", imageID, err)
+		}
+	}
+	return nil
+}
+
+// resolveImportTag maps a "category:name" or bare token to a (categoryID, name).
+// A namespace matching a category routes there; an unknown namespace is dropped
+// to its subtag in general when dropUnknownNamespace is set (foreign imports),
+// otherwise the whole token is kept as a general name (native round-trip).
+func resolveImportTag(database *db.DB, token string, generalID int64, dropUnknownNamespace bool) (int64, string) {
 	if idx := strings.Index(token, ":"); idx > 0 {
 		var catID int64
 		if err := database.Read.QueryRow(
 			`SELECT id FROM tag_categories WHERE name = ?`, token[:idx],
 		).Scan(&catID); err == nil {
 			return catID, token[idx+1:]
+		}
+		if dropUnknownNamespace {
+			return generalID, token[idx+1:]
 		}
 	}
 	return generalID, token

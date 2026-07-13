@@ -34,30 +34,31 @@ const (
 )
 
 type Image struct {
-	ID            int64
-	SHA256        string
-	CanonicalPath string
-	FolderPath    string // relative dir from gallery_path root; "" = root
-	FileType      string // "jpeg" | "png" | "webp" | "gif" | "mp4" | "webm" | "cbz"
-	Width         *int
-	Height        *int
-	FileSize      int64
-	IsMissing     bool
-	IsFavorited   bool
-	IsInbox       bool // 1 = needs triage; 0 = archived/curated
-	AutoTaggedAt  *time.Time
-	SourceType    string   // "a1111" | "comfyui" | "none" | "a1111,comfyui"
-	Origin        string   // "ingest" | "upload" | caller-supplied string (app name, URL...)
-	Source        string   // free-form provenance label (site name, scraper, ...); operator-edited
-	URL           string   // canonical web URL the image came from; http(s) only
-	Note          string   // operator's freeform note; never set by an import
-	PageCount     *int     // page entry count for cbz manga rows; NULL otherwise
-	DurationSec   *float64 // video duration in seconds; NULL for non-video rows and for videos that pre-date the column or whose probe failed
-	Series        string   // operator-edited free-form series label (max 200 chars); '' when unset
-	SeriesOrder   *int     // operator-edited position within Series; NULL = unspecified
-	Phash         *int64   // 64-bit perceptual hash; NULL until backfilled or for rows without a decodable thumbnail
-	IngestedAt    time.Time
-	UploadBatch   *int64 // shared token across one web-UI upload POST; NULL for watcher/sync/API rows. Groups a drop into one inbox cluster.
+	ID             int64
+	SHA256         string
+	CanonicalPath  string
+	FolderPath     string // relative dir from gallery_path root; "" = root
+	FileType       string // "jpeg" | "png" | "webp" | "gif" | "mp4" | "webm" | "cbz"
+	Width          *int
+	Height         *int
+	FileSize       int64
+	IsMissing      bool
+	IsFavorited    bool
+	IsInbox        bool // 1 = needs triage; 0 = archived/curated
+	AutoTaggedAt   *time.Time
+	SourceType     string   // "a1111" | "comfyui" | "none" | "a1111,comfyui"
+	Origin         string   // "ingest" | "upload" | caller-supplied string (app name, URL...)
+	Source         string   // free-form provenance label (site name, scraper, ...); operator-edited
+	URL            string   // canonical web URL the image came from; http(s) only
+	Note           string   // operator's freeform note; never set by an import
+	OriginalSource string   // operator's image-level original source URL; never set by an import
+	PageCount      *int     // page entry count for cbz manga rows; NULL otherwise
+	DurationSec    *float64 // video duration in seconds; NULL for non-video rows and for videos that pre-date the column or whose probe failed
+	Series         string   // operator-edited free-form series label (max 200 chars); '' when unset
+	SeriesOrder    *int     // operator-edited position within Series; NULL = unspecified
+	Phash          *int64   // 64-bit perceptual hash; NULL until backfilled or for rows without a decodable thumbnail
+	IngestedAt     time.Time
+	UploadBatch    *int64 // shared token across one web-UI upload POST; NULL for watcher/sync/API rows. Groups a drop into one inbox cluster.
 }
 
 // Collection is one membership of an image: a collection label plus an
@@ -68,19 +69,23 @@ type Collection struct {
 }
 
 // ImageSource is one origin of an image: a site label plus the post it came
-// from. An image can carry several; the oldest is the primary that
-// images.source / images.url mirror.
+// from. An image can carry several; the first (lowest rowid) is the primary
+// that images.source / images.url mirror.
 type ImageSource struct {
 	Site       string
 	PostID     string // upstream post id as text; "" for a manually-added origin
 	URL        string
-	Commentary string // artist commentary from this source; "" when none
+	Commentary string  // artist commentary from this source; "" when none
+	Original   string  // upstream artist source the post declared (usually a URL, newline-joined when several); "" when none
+	Similarity float64 // best similarity-service score a lookup matched this origin with; 0 = exact or manual
 }
 
 // Annotation is one positional note box overlaid on an image, in original-image
-// pixel coordinates. Pulled from a source; the whole set a source contributed
-// is replaced on a re-pull.
+// pixel coordinates. Either pulled from a source (the whole set a source
+// contributed is replaced on a re-pull) or drawn by the operator (Manual, with
+// empty Site/PostID).
 type Annotation struct {
+	ID     int64
 	Site   string
 	PostID string
 	X      int
@@ -88,6 +93,7 @@ type Annotation struct {
 	W      int
 	H      int
 	Body   string
+	Manual bool
 }
 
 // MangaMetadata mirrors sd_metadata / comfyui_metadata for the manga
@@ -142,13 +148,13 @@ type Tag struct {
 	CategoryColor          string
 	UsageCount             int
 	IsAlias                bool
-	IsAutoOnly             bool // true if all usages of this tag are auto-tagged (no manual usage)
-	IsAPIOnly              bool // true if every manual usage carries an API source label (no anonymous UI add)
 	CanonicalTagID         *int64
 	CanonicalName          string // populated on alias rows when ListTags joins the canonical
 	CanonicalCategoryName  string
 	CanonicalCategoryColor string
 	CreatedAt              time.Time
+	Origin                 string    // creation provenance label; "" on rows predating the column
+	LastUsedAt             time.Time // zero when never applied to an image
 }
 
 type TagCategory struct {
@@ -184,6 +190,7 @@ type Implication struct {
 	ImpliedCategoryName  string
 	ImpliedCategoryColor string
 	CreatedAt            time.Time
+	Origin               string // creation provenance label; "" on edges predating the column
 }
 
 // SDParam is a single parsed key-value pair from A1111 generation parameters.
@@ -203,7 +210,7 @@ type SDMetadata struct {
 	CFGScale       *float64
 	RawParams      string    // full A1111 parameter line for display
 	ParsedParams   []SDParam // all key-value pairs parsed from RawParams
-	GenerationHash string    // short hex digest over prompt/model/sampler/steps/cfg (seed excluded)
+	GenerationHash string    // short hex digest over prompt/negative/model/sampler/steps/cfg (seed excluded)
 }
 
 type ComfyUIMetadata struct {
@@ -270,6 +277,7 @@ const (
 	JobTypeDelete        = "delete"
 	JobTypeRebuildThumbs = "rebuild-thumbs"
 	JobTypeMove          = "move"
+	JobTypeTransfer      = "transfer"
 	JobTypeTag           = "tag"
 	JobTypeWatcher       = "watcher"
 	JobTypePruneThumbs   = "prune-thumbs"

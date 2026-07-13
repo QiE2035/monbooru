@@ -2,28 +2,13 @@
 <div id="detail-danger-zone"{{if .OOB}} hx-swap-oob="true"{{end}}>
   <div class="danger-zone">
     {{if .ImageTags}}
-    <button class="btn-warning"
-            hx-delete="/images/{{.ImageID}}/tags"
-            hx-target="#image-tags"
-            hx-swap="outerHTML"
-            hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
-            hx-confirm="Remove all tags from this image?"
-            data-confirm-ok="Remove">Remove all tags</button>
+    <button type="button" class="btn-warning" onclick="openRemoveTagsDialog()">Remove tag(s)...</button>
     {{end}}
-    {{if .HasUserTags}}
-    <button class="btn-warning-subtle"
-            hx-delete="/images/{{.ImageID}}/user-tags"
-            hx-target="#image-tags"
-            hx-swap="outerHTML"
-            hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
-            hx-confirm="Remove all user-added tags from this image?"
-            data-confirm-ok="Remove">Remove user tags</button>
-    {{end}}
-    {{if .ImageTaggers}}
-    <button class="btn-warning-subtle" type="button"
-            onclick="document.getElementById('remove-auto-dialog').showModal()">Remove auto-tags</button>
-    {{end}}
+    {{if .CanTransfer}}
     <button type="button" class="danger-zone-trailing"
+            onclick="openTransferImageDialog()">Transfer to another gallery</button>
+    {{end}}
+    <button type="button"{{if not .CanTransfer}} class="danger-zone-trailing"{{end}}
             onclick="openMoveImageDialog()">Move image</button>
     <button class="btn-danger"
             id="delete-image-btn"
@@ -34,6 +19,38 @@
             data-confirm-danger="Files are permanently deleted from disk. This cannot be undone."
             data-confirm-ok="Delete">Delete image</button>
   </div>
+
+  {{if .ImageTags}}
+  <dialog id="remove-tags-dialog" data-image-id="{{.ImageID}}" data-csrf="{{.CSRFToken}}">
+    <p>Remove tags from this image:</p>
+    <form id="remove-tags-form" onsubmit="event.preventDefault(); confirmRemoveTags();">
+      <div class="field">
+        {{if .ImageSources}}
+        <label style="display:block"><input type="radio" name="mode" value="source"> Tags from a source</label>
+        <div class="field" style="margin: 4px 0 8px 22px">
+          <select id="remove-tags-source" class="upload-wide-input">
+            {{range .ImageSources}}<option value="{{.}}">{{.}}</option>{{end}}
+          </select>
+        </div>
+        {{end}}
+        {{if .ImageTaggers}}
+        <label style="display:block"><input type="radio" name="mode" value="tagger"> Tags from an auto-tagger</label>
+        <div class="field" style="margin: 4px 0 8px 22px">
+          <select id="remove-tags-tagger" class="upload-wide-input">
+            {{range .ImageTaggers}}<option value="{{.}}">{{.}}</option>{{end}}
+          </select>
+        </div>
+        {{end}}
+        {{if .HasUserTags}}<label style="display:block"><input type="radio" name="mode" value="user"> All user tags</label>{{end}}
+        <label style="display:block"><input type="radio" name="mode" value="all"> All tags</label>
+      </div>
+      <div class="dialog-actions">
+        <button type="submit" class="btn-warning">Remove</button>
+        <button type="button" onclick="document.getElementById('remove-tags-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+  {{end}}
 
   <dialog id="move-image-dialog" data-current-folder="{{.CurrentFolder}}">
     <p>Move this image to folder:</p>
@@ -62,23 +79,5 @@
     </form>
   </dialog>
 
-  {{if .ImageTaggers}}
-  <dialog id="remove-auto-dialog">
-    <p>Remove auto-tagged tags from this image. Pick the auto-taggers to remove (none selected = all of them).</p>
-    <form id="remove-auto-form">
-      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <div class="field">
-        {{range .ImageTaggers}}
-        <label style="display:block"><input type="checkbox" name="taggers" value="{{.}}"> {{.}}</label>
-        {{end}}
-      </div>
-      <div class="dialog-actions">
-        <button type="button" class="btn-warning"
-                onclick="submitRemoveAutoTags({{.ImageID}})">Remove</button>
-        <button type="button" onclick="document.getElementById('remove-auto-dialog').close()">Cancel</button>
-      </div>
-    </form>
-  </dialog>
-  {{end}}
 </div>
 {{end}}

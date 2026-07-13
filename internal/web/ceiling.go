@@ -111,13 +111,7 @@ func (c *Ceiling) Apply(userExpr search.Expr) search.Expr {
 	if c == nil || !c.IsActive() {
 		return userExpr
 	}
-	rank := -1
-	for i, l := range tags.RatingLevels {
-		if l == c.level {
-			rank = i
-			break
-		}
-	}
+	rank := tags.RatingRank(c.level)
 	if rank < 0 || rank >= len(tags.RatingLevels)-1 {
 		return userExpr
 	}
@@ -160,6 +154,12 @@ func (c *Ceiling) ExcludedTagIDs() []int64 {
 	return c.excludedIDs
 }
 
+// notExistsRatingPredicate gates col on the absence of any over-ceiling rating
+// tag; in is the pre-built placeholder list for the excluded ids.
+func notExistsRatingPredicate(col, in string) string {
+	return `NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = ` + col + ` AND it.tag_id IN (` + in + `))`
+}
+
 // WhereOne returns a NOT EXISTS predicate gating col on the absence of
 // any rating tag above the ceiling. Returns ("", nil) when the ceiling
 // is inactive so the caller can omit the WHERE entirely and keep the
@@ -170,7 +170,7 @@ func (c *Ceiling) WhereOne(col string) (string, []any) {
 		return "", nil
 	}
 	in, args := db.InPlaceholders(ids)
-	return `NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = ` + col + ` AND it.tag_id IN (` + in + `))`, args
+	return notExistsRatingPredicate(col, in), args
 }
 
 // WhereTwo returns a pair of NOT EXISTS predicates ANDed together that
@@ -182,11 +182,8 @@ func (c *Ceiling) WhereTwo(leftCol, rightCol string) (string, []any) {
 		return "", nil
 	}
 	in, a := db.InPlaceholders(ids)
-	tmpl := func(col string) string {
-		return `NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = ` + col + ` AND it.tag_id IN (` + in + `))`
-	}
 	args := append(append([]any{}, a...), a...)
-	return tmpl(leftCol) + " AND " + tmpl(rightCol), args
+	return notExistsRatingPredicate(leftCol, in) + " AND " + notExistsRatingPredicate(rightCol, in), args
 }
 
 // WhereGroupClean returns a NOT EXISTS predicate that drops a group

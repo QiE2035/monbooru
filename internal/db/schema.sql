@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS tags (
     is_alias         INTEGER NOT NULL DEFAULT 0,
     canonical_tag_id INTEGER REFERENCES tags(id),
     created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    -- Creation provenance: 'user', a booru site, 'ptr', an auto-tagger
+    -- name, an import label. Stamped once at insert, never overwritten.
+    origin           TEXT    NOT NULL DEFAULT '',
+    -- Most recent application to an image; NULL = never applied.
+    last_used_at     TEXT,
     UNIQUE(name, category_id)
 );
 
@@ -68,6 +73,10 @@ CREATE TABLE IF NOT EXISTS images (
     url            TEXT    NOT NULL DEFAULT '',
     -- Operator's freeform note; never written by an import.
     note           TEXT    NOT NULL DEFAULT '',
+    -- Operator's image-level original source (where the artist first posted
+    -- it), one URL; distinct from the per-origin image_sources.original a
+    -- booru pull fills. Never written by an import.
+    original_source TEXT   NOT NULL DEFAULT '',
     -- Video duration in seconds (REAL so short clips and sub-second
     -- precision survive). NULL for non-video rows and for video rows
     -- that pre-date the column or whose ffprobe call failed; the
@@ -140,6 +149,9 @@ CREATE TABLE IF NOT EXISTS image_sources (
     url        TEXT    NOT NULL DEFAULT '',
     md5        TEXT    NOT NULL DEFAULT '', -- md5 the source last claimed on a push/enrich; audit trail, never a dedup key
     commentary TEXT    NOT NULL DEFAULT '', -- artist commentary from this source; operator-editable, overwritten by a re-pull
+    original   TEXT    NOT NULL DEFAULT '', -- upstream artist source the booru post declared (usually a URL, newline-joined when several); operator-editable, overwritten by a re-pull
+    similarity REAL    NOT NULL DEFAULT 0,  -- best similarity-service score (0-100) a lookup matched this origin with; 0 = exact or manual. A matched origin's file differs by design, so refetches skip the md5 verify
+    parent_url TEXT    NOT NULL DEFAULT '', -- canonical URL of the post this booru post declared as its parent; drives derivative-edge linking once both sides are in the gallery
     fetched_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     PRIMARY KEY (image_id, site, post_id)
 );
@@ -157,6 +169,10 @@ CREATE TABLE IF NOT EXISTS image_annotations (
     w          INTEGER NOT NULL,
     h          INTEGER NOT NULL,
     body       TEXT    NOT NULL DEFAULT '',
+    -- 1 for an operator-drawn box (site/post_id empty), 0 for a source-pulled
+    -- one. Source-keyed deletes/replaces gate on manual = 0 so an operator box
+    -- survives a source edit, removal or re-pull.
+    manual     INTEGER NOT NULL DEFAULT 0,
     fetched_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_image_annotations_image ON image_annotations(image_id);
@@ -165,6 +181,8 @@ CREATE TABLE IF NOT EXISTS tag_implications (
     parent_tag_id  INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     implied_tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     created_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    -- Same vocabulary as tags.origin; stamped when the edge is created.
+    origin         TEXT    NOT NULL DEFAULT '',
     PRIMARY KEY (parent_tag_id, implied_tag_id)
 );
 
@@ -340,6 +358,9 @@ CREATE INDEX IF NOT EXISTS idx_image_collections_name ON image_collections(name,
 -- Covers the source: filter (site -> image_id semi-join) and the sidebar
 -- source-label counts (GROUP BY site), mirroring idx_image_collections_name.
 CREATE INDEX IF NOT EXISTS idx_image_sources_site ON image_sources(site, image_id);
+-- Covers the parent-side probe of the derivative-edge linking (find the
+-- image holding a pushed post's declared parent URL).
+CREATE INDEX IF NOT EXISTS idx_image_sources_url ON image_sources(url) WHERE url != '';
 CREATE INDEX IF NOT EXISTS idx_tag_implications_implied ON tag_implications(implied_tag_id);
 CREATE INDEX IF NOT EXISTS idx_image_tags_user_tag ON image_tags(tag_id) WHERE is_auto = 0;
 CREATE INDEX IF NOT EXISTS idx_image_tags_auto_tagger ON image_tags(tagger_name)

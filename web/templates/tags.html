@@ -5,68 +5,99 @@
 {{$order := .Order}}
 {{$catID := .CategoryID}}
 {{$origin := .Origin}}
+{{$type := .Type}}
+{{$created := .CreatedAfter}}
+{{$conflicts := ""}}{{if .Conflicts}}{{$conflicts = "1"}}{{end}}
 {{$zero := "0"}}{{if .ZeroOnly}}{{$zero = "only"}}{{else if .ShowZero}}{{$zero = "1"}}{{end}}
 <div id="sidebar-inner">
-  <div class="sidebar-section">
+  <!-- Boosted filter links swap #tags-page in place and refresh this
+       sidebar out-of-band so active states and link hrefs track the
+       pushed URL without a full reload. -->
+  <div class="sidebar-section"
+       hx-boost="true" hx-target="#tags-page" hx-select="#tags-page" hx-swap="outerHTML"
+       hx-select-oob="#sidebar-inner" hx-push-url="true">
     <h3>Filter</h3>
     <form action="/tags" method="get" class="tags-filter-row">
-      <input type="text" name="q" value="{{$prefix}}" placeholder="Search tags…">
+      <!-- No sidebar OOB refresh here (the wrapper's hx-select-oob is
+           inherited without the unset): a slow render would swap this
+           input back to the request-time value and eat the letters
+           typed since. Only the table region follows the keystrokes;
+           boosted filter clicks still refresh the sidebar. -->
+      <input type="text" name="q" id="tags-q-input" value="{{$prefix}}" placeholder="Search tags…"
+             hx-get="/tags"
+             hx-trigger="input changed delay:300ms"
+             hx-include="closest form"
+             hx-target="#tags-page" hx-select="#tags-page" hx-swap="outerHTML"
+             hx-select-oob="unset"
+             hx-push-url="true">
       <input type="hidden" name="sort"      value="{{$sort}}">
       <input type="hidden" name="order"     value="{{$order}}">
       <input type="hidden" name="cat"       value="{{$catID}}">
       <input type="hidden" name="origin"    value="{{$origin}}">
+      <input type="hidden" name="type"      value="{{$type}}">
+      <input type="hidden" name="created_after" value="{{$created}}">
+      <input type="hidden" name="conflicts" value="{{$conflicts}}">
       <input type="hidden" name="show_zero" value="{{$zero}}">
       <button type="submit">OK</button>
     </form>
 
     <div class="filter-group">
-      <span class="filter-label">Sort</span>
-      <a class="filter-btn{{if eq $sort "usage"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort=usage&order={{$order}}&cat={{$catID}}&origin={{$origin}}&show_zero={{$zero}}">By usage</a>
-      <a class="filter-btn{{if eq $sort "name"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort=name&order={{$order}}&cat={{$catID}}&origin={{$origin}}&show_zero={{$zero}}">By name</a>
-    </div>
-
-    <div class="filter-group">
-      <span class="filter-label">Order</span>
-      <a class="filter-btn{{if eq $order "desc"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order=desc&cat={{$catID}}&origin={{$origin}}&show_zero={{$zero}}">Desc</a>
-      <a class="filter-btn{{if eq $order "asc"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order=asc&cat={{$catID}}&origin={{$origin}}&show_zero={{$zero}}">Asc</a>
-    </div>
-
-    <div class="filter-group">
       <span class="filter-label">Category</span>
       <a class="filter-btn{{if eq $catID ""}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat=&origin={{$origin}}&show_zero={{$zero}}">All</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat=&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">All</a>
       {{range .Categories}}
       <a class="filter-btn{{if eq (printf "%d" .ID) $catID}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{.ID}}&origin={{$origin}}&show_zero={{$zero}}">{{.Name}}</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{.ID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">{{.Name}}</a>
       {{end}}
+    </div>
+
+    <div class="filter-group">
+      <span class="filter-label">Type</span>
+      <a class="filter-btn{{if eq $type ""}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type=&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">All</a>
+      <a class="filter-btn{{if eq $type "tag"}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type=tag&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">Tags</a>
+      <a class="filter-btn{{if eq $type "alias"}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type=alias&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">Aliases</a>
     </div>
 
     <div class="filter-group">
       <span class="filter-label">Origin</span>
       <a class="filter-btn{{if eq $origin ""}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin=&show_zero={{$zero}}">All</a>
-      <a class="filter-btn{{if eq $origin "user"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin=user&show_zero={{$zero}}">User</a>
-      <a class="filter-btn{{if eq $origin "auto"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin=auto&show_zero={{$zero}}">Auto</a>
-      <a class="filter-btn{{if eq $origin "api"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin=api&show_zero={{$zero}}">Api</a>
-      <a class="filter-btn{{if eq $origin "alias"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin=alias&show_zero={{$zero}}">Alias</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin=&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">All</a>
+      {{range .OriginCounts}}
+      <a class="filter-btn{{if eq $origin .Label}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{.Label}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">{{.Label}} <span class="count-badge">{{.Count}}</span></a>
+      {{end}}
+    </div>
+
+    <div class="filter-group">
+      <span class="filter-label">Created</span>
+      <a class="filter-btn{{if eq $created ""}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after=&conflicts={{$conflicts}}&show_zero={{$zero}}">All</a>
+      <a class="filter-btn{{if eq $created "24h"}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after=24h&conflicts={{$conflicts}}&show_zero={{$zero}}">24h</a>
+      <a class="filter-btn{{if eq $created "7d"}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after=7d&conflicts={{$conflicts}}&show_zero={{$zero}}">7d</a>
+      <a class="filter-btn{{if eq $created "30d"}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after=30d&conflicts={{$conflicts}}&show_zero={{$zero}}">30d</a>
     </div>
 
     <div class="filter-group">
       <span class="filter-label">Zero-usage</span>
       <a class="filter-btn{{if and .ShowZero (not .ZeroOnly)}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&show_zero=1">Show</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero=1">Show</a>
       <a class="filter-btn{{if not .ShowZero}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&show_zero=0">Hide</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero=0">Hide</a>
       <a class="filter-btn{{if .ZeroOnly}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&show_zero=only">Only</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero=only">Only</a>
+    </div>
+
+    <div class="filter-group">
+      <span class="filter-label">Conflicts</span>
+      <a class="filter-btn{{if .Conflicts}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{if .Conflicts}}{{else}}1{{end}}&show_zero={{$zero}}"
+         title="Tag names living in more than one category">Only conflicts <span class="count-badge">{{.ConflictsTotal}}</span></a>
     </div>
   </div>
 </div>
@@ -77,14 +108,47 @@
     <span>Tags <span class="count-badge">{{.Total}}</span></span>
     <button type="button" id="btn-create-tag" class="btn-sm">Create tag…</button>
     <button type="button" id="btn-create-alias" class="btn-sm">Create alias…</button>
-    <button type="button" id="btn-delete-tags-search" class="btn-sm btn-danger">Delete tags in search…</button>
   </h2>
 
   <div id="tag-flash"></div>
 
+  <!-- Selection bar: appears when rows are checked. The selection is the
+       scope for every batch action; ticking the header checkbox offers
+       the whole-search escalation, which the endpoints resolve
+       server-side from the filter fields like delete-search always has. -->
+  <div id="tag-batch-bar" data-total="{{.Total}}" hidden>
+    <button type="button" id="btn-batch-select-all" class="btn-sm">Select all</button>
+    <button type="button" id="btn-batch-clear" class="btn-sm">Cancel</button>
+    <span id="tag-batch-count"></span>
+    <a href="#" id="tag-select-all-matching" hidden>Select all {{.Total}} matching</a>
+    <span class="tag-batch-spacer"></span>
+    <button type="button" id="btn-batch-category" class="btn-sm">Change category…</button>
+    <button type="button" id="btn-batch-merge" class="btn-sm">Merge…</button>
+    <button type="button" id="btn-batch-alias" class="btn-sm">Alias to…</button>
+    <button type="button" id="btn-batch-imply" class="btn-sm">Imply…</button>
+    {{if and .MonloaderPaired .MonloaderPTR}}<button type="button" id="btn-batch-ptr" class="btn-sm monloader-accent">PTR lookup</button>{{end}}
+    <button type="button" id="btn-batch-delete" class="btn-sm btn-danger">Delete</button>
+  </div>
+
   <table class="tag-table">
-    <thead>
-      <tr><th>ID</th><th>Name</th><th>Implied</th><th>Category</th><th>Usage</th><th>Origin</th><th>Action</th></tr>
+    <!-- Sortable headers: clicking sets the sort, clicking again flips
+         the direction. -->
+    {{$nameOrder := "asc"}}{{if and (eq $sort "name") (eq $order "asc")}}{{$nameOrder = "desc"}}{{end}}
+    {{$usageOrder := "desc"}}{{if and (eq $sort "usage") (eq $order "desc")}}{{$usageOrder = "asc"}}{{end}}
+    {{$createdOrder := "desc"}}{{if and (eq $sort "created") (eq $order "desc")}}{{$createdOrder = "asc"}}{{end}}
+    {{$lastOrder := "desc"}}{{if and (eq $sort "last_used") (eq $order "desc")}}{{$lastOrder = "asc"}}{{end}}
+    <thead hx-boost="true" hx-target="#tags-page" hx-select="#tags-page" hx-swap="outerHTML" hx-select-oob="#sidebar-inner" hx-push-url="true">
+      <tr>
+        <th class="tag-select-col"><input type="checkbox" id="tag-select-page" aria-label="Select page"></th>
+        <th><a class="th-sort" href="/tags?q={{$prefix}}&sort=name&order={{$nameOrder}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">Name{{if eq $sort "name"}}<span class="sort-arrow">{{if eq $order "asc"}}▲{{else}}▼{{end}}</span>{{end}}</a></th>
+        <th>Implied</th>
+        <th>Category</th>
+        <th><a class="th-sort" href="/tags?q={{$prefix}}&sort=usage&order={{$usageOrder}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">Usage{{if eq $sort "usage"}}<span class="sort-arrow">{{if eq $order "asc"}}▲{{else}}▼{{end}}</span>{{end}}</a></th>
+        <th>Origin</th>
+        <th><a class="th-sort" href="/tags?q={{$prefix}}&sort=created&order={{$createdOrder}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">Created{{if eq $sort "created"}}<span class="sort-arrow">{{if eq $order "asc"}}▲{{else}}▼{{end}}</span>{{end}}</a></th>
+        <th><a class="th-sort" href="/tags?q={{$prefix}}&sort=last_used&order={{$lastOrder}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">Last used{{if eq $sort "last_used"}}<span class="sort-arrow">{{if eq $order "asc"}}▲{{else}}▼{{end}}</span>{{end}}</a></th>
+        <th>Action</th>
+      </tr>
     </thead>
     <tbody>
       {{$csrf := .CSRFToken}}
@@ -93,12 +157,13 @@
       {{range .Tags}}
       {{$tag := .}}
       <tr class="tag-row" id="tag-row-{{.ID}}">
-        <td class="tag-id">{{.ID}}</td>
-        <td class="tag-name-cell">
+        <td class="tag-select-col"><input type="checkbox" class="tag-select" value="{{.ID}}" data-name="{{.Name}}" data-color="{{.CategoryColor}}" data-category="{{.CategoryName}}" aria-label="Select {{.Name}}"></td>
+        <td class="tag-name-cell{{if and (not .IsAlias) (eq .CategoryName "rating")}} tag-name-builtin{{end}}">
           {{if .IsAlias}}
           <span style="color:{{.CategoryColor}}">{{.Name}}</span>
           <span class="merge-arrow">→</span>
           <a href="/?q={{.CanonicalCategoryName}}:{{.CanonicalName}}" style="color:{{.CanonicalCategoryColor}}">{{.CanonicalName}}</a>
+          <span class="alias-badge">alias</span>
           {{else}}
           <a href="/?q={{.CategoryName}}:{{.Name}}" style="color:{{.CategoryColor}}">{{.Name}}</a>
           {{if eq .CategoryName "rating"}}<span class="field-hint">(built-in)</span>{{end}}
@@ -107,7 +172,9 @@
         <td class="tag-implied-cell"
             {{with index $imps .ID}}title="{{range $i, $im := .}}{{if $i}} {{end}}{{$im.ImpliedName}}{{end}}"{{end}}>
           {{with index $imps .ID}}
-            {{range $i, $im := .}}{{if $i}} {{end}}<a href="/?q={{$im.ImpliedCategoryName}}:{{$im.ImpliedName}}" style="color:{{$im.ImpliedCategoryColor}}">{{$im.ImpliedName}}</a>{{end}}
+            {{$n := len .}}
+            {{range $i, $im := .}}{{if lt $i 5}}{{if $i}} {{end}}<a href="/?q={{$im.ImpliedCategoryName}}:{{$im.ImpliedName}}" style="color:{{$im.ImpliedCategoryColor}}">{{$im.ImpliedName}}</a>{{end}}{{end}}
+            {{if gt $n 5}} <a class="tag-implied-more" href="/tags/{{$tag.ID}}">+{{sub $n 5}}</a>{{end}}
           {{end}}
         </td>
         <td>
@@ -122,7 +189,7 @@
                   hx-target="#tag-flash"
                   hx-swap="innerHTML"
                   hx-headers='{"X-CSRF-Token":"{{$csrf}}"}'
-                  hx-on::after-request="if(event.detail.successful){updateTagColor(this)}"
+                  hx-on::after-request="onTagCategoryPatch(event, this)"
                   onchange="updateTagColor(this)">
             {{range $cats}}
             <option value="{{.ID}}" data-color="{{.Color}}" {{if eq .ID $tag.CategoryID}}selected{{end}}>{{.Name}}</option>
@@ -132,26 +199,23 @@
         </td>
         <td>{{.UsageCount}}</td>
         <td>
-          {{if .IsAlias}}<span class="alias-badge">alias</span>
-          {{else if eq .UsageCount 0}}<span class="origin-none">—</span>
-          {{else if .IsAutoOnly}}<span class="auto-badge">auto</span>
-          {{else if .IsAPIOnly}}<span class="api-badge">api</span>
-          {{else}}user{{end}}
+          {{if .Origin}}
+          {{$kind := index $.OriginKinds .Origin}}
+          {{if eq $kind "user"}}<span class="origin-user">user</span>
+          {{else}}<span class="origin-chip origin-{{$kind}}" title="{{.Origin}}">{{.Origin}}</span>{{end}}
+          {{else}}<span class="origin-none">—</span>{{end}}
         </td>
+        <td class="tag-date">{{.CreatedAt.Format "2006-01-02"}}</td>
+        <td class="tag-date">{{if .LastUsedAt.IsZero}}<span class="origin-none">—</span>{{else}}{{.LastUsedAt.Format "2006-01-02"}}{{end}}</td>
         <td>
           <div class="tag-actions">
+            <a class="btn-sm btn-see-detail" href="/tags/{{.ID}}" title="Tag details">See detail</a>
             {{if ne .CategoryName "rating"}}
             <button class="btn-sm btn-rename-trigger"
                     title="Rename this tag"
-                    data-id="{{.ID}}" data-name="{{.Name}}">Rename</button>
-            <button class="btn-sm btn-merge-trigger"
-                    title="{{if .IsAlias}}Repoint this alias to a different canonical{{else}}Make this tag an alias of another{{end}}"
-                    data-id="{{.ID}}" data-name="{{.Name}}" data-is-alias="{{if .IsAlias}}1{{end}}">{{if .IsAlias}}Repoint→{{else}}Alias →{{end}}</button>
-            {{end}}
-            {{if not .IsAlias}}
-            <button class="btn-sm btn-implications-trigger"
-                    title="Manage tags this one implies"
-                    data-id="{{.ID}}" data-name="{{.Name}}">Implications…</button>
+                    data-id="{{.ID}}" data-name="{{.Name}}" data-is-alias="{{if .IsAlias}}1{{end}}">Rename</button>
+            {{else}}
+            <button class="btn-sm tag-action-spacer" tabindex="-1" aria-hidden="true">Rename</button>
             {{end}}
             <button class="btn-sm btn-danger btn-delete-tag"
                     title="{{if eq .CategoryName "rating"}}Strip this rating from every image (the catalog row stays){{else}}Delete this tag from every image{{end}}"
@@ -160,14 +224,16 @@
         </td>
       </tr>
       {{else}}
-      <tr><td colspan="7" class="no-results">No tags found.</td></tr>
+      <tr><td colspan="9" class="no-results">No tags found.</td></tr>
       {{end}}
     </tbody>
   </table>
 
   {{$page := .Page}}
-  {{$tagsBase := printf "/tags?q=%s&sort=%s&order=%s&cat=%s&origin=%s&show_zero=%s&page=" .Prefix .Sort .Order .CategoryID .Origin $zero}}
+  {{$tagsBase := printf "/tags?q=%s&sort=%s&order=%s&cat=%s&origin=%s&type=%s&created_after=%s&conflicts=%s&show_zero=%s&page=" .Prefix .Sort .Order .CategoryID .Origin .Type .CreatedAfter $conflicts $zero}}
+  <div hx-boost="true" hx-target="#tags-page" hx-select="#tags-page" hx-swap="outerHTML" hx-select-oob="#sidebar-inner" hx-push-url="true">
   {{template "partials/pagination.html" (dict "Base" $tagsBase "Page" $page "Total" .TotalPages)}}
+  </div>
 
 </div>
 
@@ -183,6 +249,10 @@
       <label>New name</label>
       <input type="text" name="name" id="rename-new-name" required autocomplete="off">
     </div>
+    <label style="display:block;font-size:12px" id="rename-keep-alias-row">
+      <input type="checkbox" name="keep_alias" value="1" id="rename-keep-alias">
+      Keep the old name as an alias
+    </label>
     <div id="rename-error"></div>
     <div class="dialog-actions">
       <button type="submit">Rename</button>
@@ -191,34 +261,77 @@
   </form>
 </dialog>
 
-<!-- Merge / Repoint dialog -->
-<dialog id="merge-dialog">
-  <form hx-post="/tags/merge"
-        hx-target="#merge-error"
-        hx-swap="innerHTML">
-    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <p id="merge-prompt">Alias <strong id="merge-src-name"></strong> <span class="merge-arrow">→</span> to:</p>
-    <input type="hidden" name="alias_id" id="merge-alias-id">
-    <div class="field">
-      <label>Target tag name or ID</label>
-      <div style="position:relative">
-        <input type="text" name="canonical_id" id="merge-canon-input"
-               placeholder="tag name or ID" required autocomplete="off"
-               hx-get="/internal/tags/suggest"
-               hx-trigger="input changed delay:200ms"
-               hx-target="#merge-suggest"
-               hx-swap="innerHTML"
-               hx-include="this"
-               onkeydown="handleSuggestKey(event, 'merge-suggest', 'merge-canon-input')">
-        <div id="merge-suggest" class="suggest-dropdown tag-suggest-dropdown"></div>
-      </div>
-    </div>
-    <div id="merge-error"></div>
-    <div class="dialog-actions">
-      <button type="submit" id="merge-submit" class="btn-danger">Alias</button>
-      <button type="button" onclick="document.getElementById('merge-dialog').close()">Cancel</button>
-    </div>
-  </form>
+<!-- Batch change-category dialog -->
+<dialog id="batch-category-dialog">
+  <p id="batch-category-scope"></p>
+  <div class="field">
+    <label>Target category</label>
+    <select id="batch-category-select">
+      {{range .Categories}}
+      <option value="{{.ID}}">{{.Name}}</option>
+      {{end}}
+    </select>
+  </div>
+  <label style="display:block;font-size:12px">
+    <input type="checkbox" id="batch-category-merge">
+    Merge into the existing tag when the name already lives in the target category
+  </label>
+  <div id="batch-category-flash"></div>
+  <div class="dialog-actions">
+    <button type="button" onclick="confirmBatchCategory()">Move</button>
+    <button type="button" onclick="document.getElementById('batch-category-dialog').close()">Cancel</button>
+  </div>
+</dialog>
+
+<!-- Batch alias dialog. MergeTags per tag in scope; an alias row in
+     scope repoints. -->
+<dialog id="batch-alias-dialog">
+  <p id="batch-alias-scope"></p>
+  <div class="field">
+    <label>Alias to (canonical tag)</label>
+    {{template "tag_suggest_input" dict "Name" "canonical_id" "InputID" "batch-alias-canon" "SuggestID" "batch-alias-suggest"}}
+  </div>
+  <p style="color:var(--error);font-size:12px">Each tag's images move onto the canonical and its implications go with it; the name stays as a zero-usage alias. This cannot be undone.</p>
+  <p style="color:var(--fg-dim);font-size:12px">The canonical is created if it doesn't exist yet.</p>
+  <div id="batch-alias-flash"></div>
+  <div class="dialog-actions">
+    <button type="button" class="btn-danger" onclick="confirmBatchAlias()">Alias</button>
+    <button type="button" onclick="document.getElementById('batch-alias-dialog').close()">Cancel</button>
+  </div>
+</dialog>
+
+<!-- Batch merge dialog: batch-alias with one of the selected rows as
+     the canonical. Needs an explicit selection to enumerate choices. -->
+<dialog id="batch-merge-dialog">
+  <p id="batch-merge-scope"></p>
+  <p class="field-hint">Which tag do the others merge into?</p>
+  <ul id="batch-merge-choices" class="merge-dup-choices"></ul>
+  <p style="color:var(--error);font-size:12px">The other tags' images move onto the chosen tag and their names stay as zero-usage aliases. This cannot be undone.</p>
+  <div id="batch-merge-flash"></div>
+  <div class="dialog-actions">
+    <button type="button" class="btn-danger" onclick="confirmBatchMerge()">Merge</button>
+    <button type="button" onclick="document.getElementById('batch-merge-dialog').close()">Cancel</button>
+  </div>
+</dialog>
+
+<!-- Batch imply dialog: declare or remove "each tag in scope implies X". -->
+<dialog id="batch-imply-dialog">
+  <p id="batch-imply-scope"></p>
+  <div class="field">
+    <label>Mode</label>
+    <label style="font-size:12px"><input type="radio" name="imply_mode" value="add" checked> Add</label>
+    <label style="font-size:12px"><input type="radio" name="imply_mode" value="remove"> Remove</label>
+  </div>
+  <div class="field">
+    <label>Implied tag</label>
+    {{template "tag_suggest_input" dict "Name" "target" "InputID" "batch-imply-target" "SuggestID" "batch-imply-suggest"}}
+  </div>
+  <p style="color:var(--fg-dim);font-size:12px">Add also applies the implication to images already carrying each tag; Remove sweeps implied rows the edge no longer justifies. Cycles and aliases are skipped and reported.</p>
+  <div id="batch-imply-flash"></div>
+  <div class="dialog-actions">
+    <button type="button" onclick="confirmBatchImply()">Run</button>
+    <button type="button" onclick="document.getElementById('batch-imply-dialog').close()">Cancel</button>
+  </div>
 </dialog>
 
 <!-- Create-tag dialog -->
@@ -254,7 +367,7 @@
         hx-target="#alias-create-error"
         hx-swap="innerHTML">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <p>Create an alias resolving to another tag. The canonical tag is created if it doesn't exist yet.</p>
+    <p>Create an alias resolving to another tag.<br>The canonical tag is created if it doesn't exist yet.</p>
     <div class="field">
       <label>Alias name</label>
       <input type="text" name="name" id="alias-create-name" required autocomplete="off">
@@ -269,17 +382,7 @@
     </div>
     <div class="field">
       <label>Resolves to (canonical tag)</label>
-      <div class="series-input-wrap">
-        <input type="text" name="canonical_id" id="alias-create-canon"
-               placeholder="tag name, category:name, or ID" required autocomplete="off"
-               hx-get="/internal/tags/suggest"
-               hx-trigger="input changed delay:200ms"
-               hx-target="#alias-create-suggest"
-               hx-swap="innerHTML"
-               hx-include="this"
-               onkeydown="handleSuggestKey(event, 'alias-create-suggest', 'alias-create-canon')">
-        <div id="alias-create-suggest" class="suggest-dropdown tag-suggest-dropdown"></div>
-      </div>
+      {{template "tag_suggest_input" dict "Name" "canonical_id" "InputID" "alias-create-canon" "SuggestID" "alias-create-suggest" "Required" true}}
     </div>
     <div id="alias-create-error"></div>
     <div class="dialog-actions">
@@ -289,19 +392,12 @@
   </form>
 </dialog>
 
-<!-- Delete-tags-in-search dialog. Mirrors gallery's delete-search dialog.
-     Wording adapts when no filter narrows the listing so "in current
-     search" doesn't lie when the count is the whole gallery. The count
-     excludes built-in rating rows, which DeleteTag treats as a usage-
-     strip rather than a catalog delete. -->
+<!-- Batch delete dialog. The scope line is set at open time from the
+     live selection (or the whole-search escalation). The count excludes
+     built-in rating rows, which DeleteTag treats as a usage-strip
+     rather than a catalog delete. -->
 <dialog id="delete-tags-search-dialog">
-  {{if .HasFilter}}
-  <p>Delete <strong>{{.DeletableTotal}}</strong> tag{{if ne .DeletableTotal 1}}s{{end}} in current search?</p>
-  {{else if eq .DeletableTotal .Total}}
-  <p>Delete all <strong>{{.DeletableTotal}}</strong> tag{{if ne .DeletableTotal 1}}s{{end}} in this gallery?</p>
-  {{else}}
-  <p>Delete <strong>{{.DeletableTotal}}</strong> of <strong>{{.Total}}</strong> tags in this gallery?</p>
-  {{end}}
+  <p id="delete-tags-scope-line"></p>
   <p style="color:var(--error);font-size:12px">Tags are removed from every image they touch. This cannot be undone. Built-in rating tags are usage-stripped (the catalog row stays).</p>
   <div id="delete-tags-search-flash"></div>
   <div class="dialog-actions">
@@ -310,196 +406,469 @@
   </div>
 </dialog>
 
-<!-- Implications dialog. Body fetched on open from
-     GET /tags/{id}/implications via the partial. -->
-<dialog id="implications-dialog" onclose="implicationsDialogClosed()">
-  <div id="implications-dialog-body" data-tag-id="">Loading…</div>
+{{if and .MonloaderPaired .MonloaderPTR}}
+<!-- Batch PTR lookup dialog, same scope resolution as the delete. -->
+<dialog id="ptr-lookup-search-dialog">
+  <p id="ptr-lookup-scope-line"></p>
+  <p style="color:var(--fg-dim);font-size:12px">Aliases and implications the Public Tag Repository declares are added to the catalog.</p>
+  <div id="ptr-lookup-search-flash"></div>
   <div class="dialog-actions">
-    <button type="button" onclick="document.getElementById('implications-dialog').close()">Close</button>
+    <button type="button" class="monloader-accent" onclick="confirmPTRLookupSearch()">Lookup</button>
+    <button type="button" onclick="document.getElementById('ptr-lookup-search-dialog').close()">Cancel</button>
   </div>
 </dialog>
+{{end}}
 
 <script>
-document.querySelectorAll('.btn-rename-trigger').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    var id = this.dataset.id;
-    var name = this.dataset.name;
-    document.getElementById('rename-src-name').textContent = name;
-    clearSlots('rename-error');
-    var input = document.getElementById('rename-new-name');
-    input.value = name;
-    openHxRewriteDialog('rename-form', 'hx-post', '/tags/' + id + '/rename', 'rename-dialog');
-    input.focus();
-    input.select();
-  });
-});
+// htmx swaps #tags-page in place on filter clicks, live search, and
+// header sorts, so everything inside it binds through delegated
+// document-level listeners that resolve their element at event time.
 
-document.querySelectorAll('.btn-delete-tag').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    var id = this.dataset.id;
-    var name = this.dataset.name;
-    var category = this.dataset.category;
-    var isRating = category === 'rating';
-    var msg = isRating
-      ? 'Strip "' + name + '" from every image?'
-      : 'Delete tag "' + name + '" and remove it from every image?';
-    var danger = isRating
-      ? 'The rating tag itself stays in the catalog and can be re-added later.'
-      : 'This cannot be undone.';
-    var btnLabel = isRating ? 'Strip' : 'Delete';
-    showConfirm(msg, function() {
-      var csrf = getCSRFToken();
-      fetch('/tags/' + id, {
-        method: 'DELETE',
-        headers: {'X-CSRF-Token': csrf}
-      }).then(function(r) {
-        if (r.ok) {
-          // The DELETE returns 204; raw fetch doesn't process HX-Trigger,
-          // so seed the shared stash directly before the reload.
-          var msgText = isRating
-            ? 'Stripped "' + name + '" from every image.'
-            : 'Tag "' + name + '" deleted.';
-          stashActionFlash(msgText, 'ok');
-          window.location.reload();
-        } else {
-          r.text().then(function(t) {
-            var el = document.getElementById('tag-flash');
-            if (el) el.innerHTML = '<div class="flash flash-err">' + (t || 'Delete failed.') + '</div>';
-          });
-        }
-      });
-    }, danger, btnLabel);
-  });
-});
+function openRenameDialog(btn) {
+  var id = btn.dataset.id;
+  var name = btn.dataset.name;
+  document.getElementById('rename-src-name').textContent = name;
+  clearSlots('rename-error');
+  var input = document.getElementById('rename-new-name');
+  input.value = name;
+  // An alias can't leave its old name behind (the leftover would
+  // point at an alias), so the checkbox only offers on plain rows.
+  var keep = document.getElementById('rename-keep-alias');
+  keep.checked = false;
+  document.getElementById('rename-keep-alias-row').hidden = btn.dataset.isAlias === '1';
+  openHxRewriteDialog('rename-form', 'hx-post', '/tags/' + id + '/rename', 'rename-dialog');
+  input.focus();
+  input.select();
+}
 
-document.querySelectorAll('.btn-merge-trigger').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    var id = this.dataset.id;
-    var name = this.dataset.name;
-    var isAlias = this.dataset.isAlias === '1';
-    document.getElementById('merge-src-name').textContent = name;
-    document.getElementById('merge-alias-id').value = id;
-    document.getElementById('merge-canon-input').value = '';
-    clearSlots('merge-error', 'merge-suggest');
-    var prompt = document.getElementById('merge-prompt');
-    if (prompt) {
-      prompt.firstChild.textContent = isAlias ? 'Repoint ' : 'Alias ';
-      prompt.lastChild.textContent = ' to:';
-    }
-    var submit = document.getElementById('merge-submit');
-    if (submit) submit.textContent = isAlias ? 'Repoint' : 'Alias';
-    document.getElementById('merge-dialog').showModal();
-  });
-});
+function confirmDeleteTag(btn) {
+  var id = btn.dataset.id;
+  var name = btn.dataset.name;
+  var isRating = btn.dataset.category === 'rating';
+  var msg = isRating
+    ? 'Strip "' + name + '" from every image?'
+    : 'Delete tag "' + name + '" and remove it from every image?';
+  var danger = isRating
+    ? 'The rating tag itself stays in the catalog and can be re-added later.'
+    : 'This cannot be undone.';
+  var btnLabel = isRating ? 'Strip' : 'Delete';
+  showConfirm(msg, function() {
+    // The cascade on a heavily-used tag takes seconds; surface the wait
+    // and block a second click until the DELETE answers.
+    btn.disabled = true;
+    var el = document.getElementById('tag-flash');
+    setFlashText(el, 'warn', (isRating ? 'Stripping' : 'Deleting') + ' "' + name + '"…');
+    var csrf = getCSRFToken();
+    fetch('/tags/' + id, {
+      method: 'DELETE',
+      headers: {'X-CSRF-Token': csrf}
+    }).then(function(r) {
+      if (r.ok) {
+        // The DELETE returns 204; raw fetch doesn't process HX-Trigger,
+        // so seed the shared stash directly before the reload.
+        var msgText = isRating
+          ? 'Stripped "' + name + '" from every image.'
+          : 'Tag "' + name + '" deleted.';
+        stashActionFlash(escapeHTML(msgText), 'ok');
+        window.location.reload();
+      } else {
+        btn.disabled = false;
+        r.text().then(function(t) {
+          setFlashText(el, 'err', t || 'Delete failed.');
+        });
+      }
+    }).catch(function() {
+      btn.disabled = false;
+      setFlashText(el, 'err', 'Delete request failed.');
+    });
+  }, danger, btnLabel);
+}
 
-(function() {
-  var trigger = document.getElementById('btn-create-alias');
-  if (!trigger) return;
-  trigger.addEventListener('click', function() {
+// --- Selection / batch bar ---
+// The selection is the scope of every batch action. Ticking the header
+// checkbox selects the page and offers the whole-search escalation;
+// escalated scope is resolved server-side from the sidebar filter
+// fields, the same way delete-search always has been.
+var tagSelectAllMatching = false;
+var _lastTagCheckbox = null;
+
+function selectedTagIds() {
+  return Array.prototype.filter.call(
+    document.querySelectorAll('.tag-select'),
+    function(b) { return b.checked; }
+  ).map(function(b) { return b.value; });
+}
+
+function updateTagBatchBar() {
+  var bar = document.getElementById('tag-batch-bar');
+  if (!bar) return;
+  var ids = selectedTagIds();
+  var link = document.getElementById('tag-select-all-matching');
+  var count = document.getElementById('tag-batch-count');
+  var pageBox = document.getElementById('tag-select-page');
+  if (!tagSelectAllMatching && ids.length === 0) { bar.hidden = true; return; }
+  bar.hidden = false;
+  if (tagSelectAllMatching) {
+    count.textContent = 'All ' + bar.dataset.total + ' matching selected';
+    link.hidden = true;
+  } else {
+    count.textContent = ids.length + ' selected';
+    link.hidden = !(pageBox && pageBox.checked);
+  }
+}
+
+function handleTagSelectClick(box, e) {
+  if (e.shiftKey && _lastTagCheckbox && _lastTagCheckbox !== box) {
+    var boxes = Array.prototype.slice.call(document.querySelectorAll('.tag-select'));
+    var a = boxes.indexOf(_lastTagCheckbox);
+    var b = boxes.indexOf(box);
+    var want = box.checked;
+    boxes.slice(Math.min(a, b), Math.max(a, b) + 1).forEach(function(x) { x.checked = want; });
+  }
+  _lastTagCheckbox = box;
+  tagSelectAllMatching = false;
+  if (!box.checked) {
+    var pageBox = document.getElementById('tag-select-page');
+    if (pageBox) pageBox.checked = false;
+  }
+  updateTagBatchBar();
+}
+
+function clearTagSelection() {
+  tagSelectAllMatching = false;
+  _lastTagCheckbox = null;
+  document.querySelectorAll('.tag-select').forEach(function(b) { b.checked = false; });
+  var pageBox = document.getElementById('tag-select-page');
+  if (pageBox) pageBox.checked = false;
+  updateTagBatchBar();
+}
+
+document.addEventListener('click', function(e) {
+  if (!e.target.closest) return;
+  var el = e.target.closest('.btn-rename-trigger');
+  if (el) { openRenameDialog(el); return; }
+  el = e.target.closest('.btn-delete-tag');
+  if (el) { confirmDeleteTag(el); return; }
+  el = e.target.closest('.tag-select');
+  if (el) { handleTagSelectClick(el, e); return; }
+  el = e.target.closest('#tag-select-all-matching');
+  if (el) {
+    e.preventDefault();
+    tagSelectAllMatching = true;
+    updateTagBatchBar();
+    return;
+  }
+  el = e.target.closest('#btn-batch-select-all');
+  if (el) {
+    tagSelectAllMatching = false;
+    var pageBox = document.getElementById('tag-select-page');
+    if (pageBox) pageBox.checked = true;
+    document.querySelectorAll('.tag-select').forEach(function(b) { b.checked = true; });
+    updateTagBatchBar();
+    return;
+  }
+  el = e.target.closest('#btn-batch-clear');
+  if (el) { clearTagSelection(); return; }
+  el = e.target.closest('#btn-batch-category');
+  if (el) {
+    clearSlots('batch-category-flash');
+    document.getElementById('batch-category-scope').textContent = 'Move ' + tagScopeLabel() + ' to:';
+    document.getElementById('batch-category-dialog').showModal();
+    return;
+  }
+  el = e.target.closest('#btn-batch-merge');
+  if (el) { openBatchMerge(); return; }
+  el = e.target.closest('#btn-batch-alias');
+  if (el) {
+    clearSlots('batch-alias-flash', 'batch-alias-suggest');
+    document.getElementById('batch-alias-canon').value = '';
+    document.getElementById('batch-alias-scope').textContent = 'Alias ' + tagScopeLabel() + ' to:';
+    document.getElementById('batch-alias-dialog').showModal();
+    document.getElementById('batch-alias-canon').focus();
+    return;
+  }
+  el = e.target.closest('#btn-batch-imply');
+  if (el) {
+    clearSlots('batch-imply-flash', 'batch-imply-suggest');
+    document.getElementById('batch-imply-target').value = '';
+    document.getElementById('batch-imply-scope').textContent = 'Each of ' + tagScopeLabel() + ' will imply:';
+    document.getElementById('batch-imply-dialog').showModal();
+    document.getElementById('batch-imply-target').focus();
+    return;
+  }
+  el = e.target.closest('#btn-batch-delete');
+  if (el) {
+    clearSlots('delete-tags-search-flash');
+    document.getElementById('delete-tags-scope-line').textContent = 'Delete ' + tagScopeLabel() + '?';
+    document.getElementById('delete-tags-search-dialog').showModal();
+    return;
+  }
+  el = e.target.closest('#btn-batch-ptr');
+  if (el) {
+    clearSlots('ptr-lookup-search-flash');
+    document.getElementById('ptr-lookup-scope-line').textContent = 'Look up ' + tagScopeLabel() + ' on the Public Tag Repository?';
+    document.getElementById('ptr-lookup-search-dialog').showModal();
+    return;
+  }
+  el = e.target.closest('#btn-create-alias');
+  if (el) {
     document.getElementById('alias-create-name').value = '';
     document.getElementById('alias-create-canon').value = '';
     clearSlots('alias-create-error', 'alias-create-suggest');
     document.getElementById('alias-create-dialog').showModal();
     document.getElementById('alias-create-name').focus();
-  });
-})();
-
-(function() {
-  var trigger = document.getElementById('btn-create-tag');
-  if (!trigger) return;
-  trigger.addEventListener('click', function() {
+    return;
+  }
+  el = e.target.closest('#btn-create-tag');
+  if (el) {
     document.getElementById('tag-create-name').value = '';
     clearSlots('tag-create-error');
     document.getElementById('tag-create-dialog').showModal();
     document.getElementById('tag-create-name').focus();
-  });
-})();
-
-// The merge / tag-create / alias-create dialogs need no after-request
-// hook: the success path answers 204 + HX-Redirect (htmx navigates, the
-// shared monbooru:flash listener seeds the destination's flash slot; a
-// reload here would race and clobber the redirect), and errors land in
-// the dialog's flash-err target for correction.
-function reloadImplicationsBody() {
-  var body = document.getElementById('implications-dialog-body');
-  if (!body || !body.dataset.tagId) return;
-  fetch('/tags/' + body.dataset.tagId + '/implications', {credentials: 'same-origin', headers: {'HX-Request': 'true'}})
-    .then(function(r) { return r.text(); })
-    .then(function(html) {
-      body.innerHTML = html;
-      if (window.htmx) window.htmx.process(body);
-    });
-}
-
-// Tracks whether the open implications dialog mutated the graph so the
-// underlying /tags table can refresh on close (the Implied column is
-// rendered server-side and otherwise stays stale until manual reload).
-var implicationsDialogDirty = false;
-
-function handleImplicationAdded(event) {
-  // Server signals "at least one new edge" via HX-Trigger and either 204
-  // (full success - no flash to render) or 200 with a partial-failure
-  // flash body. Either way, re-fetch the dialog body so new rows render
-  // without a full page refresh, and clear the input so the user can
-  // type the next batch. The header carries a JSON object since the
-  // monbooru:flash event piggybacks on the same trigger, so match by
-  // substring.
-  var hdr = event.detail.xhr.getResponseHeader('HX-Trigger') || '';
-  var added = hdr.indexOf('implication-added') !== -1;
-  if (added) {
-    var input = document.getElementById('implication-add-input');
-    if (input) input.value = '';
-    clearSlots('implication-add-suggest');
-    reloadImplicationsBody();
-    implicationsDialogDirty = true;
+    return;
   }
-}
-
-function implicationsDialogClosed() {
-  if (!implicationsDialogDirty) return;
-  implicationsDialogDirty = false;
-  window.location.reload();
-}
-
-document.querySelectorAll('.btn-implications-trigger').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    var id = this.dataset.id;
-    var body = document.getElementById('implications-dialog-body');
-    body.dataset.tagId = id;
-    body.innerHTML = 'Loading…';
-    reloadImplicationsBody();
-    document.getElementById('implications-dialog').showModal();
-  });
+  // While a selection is active, a plain click on a row's background
+  // toggles it, like the gallery's batch-mode thumbnails. Shift keeps
+  // the checkbox's range semantics; other modifiers keep their default.
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  var bar = document.getElementById('tag-batch-bar');
+  if (!bar || bar.hidden) return;
+  if (e.target.closest('a, button, select, input, label')) return;
+  var row = e.target.closest('.tag-row');
+  if (!row) return;
+  var cb = row.querySelector('.tag-select');
+  if (!cb) return;
+  cb.checked = !cb.checked;
+  handleTagSelectClick(cb, e);
 });
 
-(function() {
-  var trigger = document.getElementById('btn-delete-tags-search');
-  if (!trigger) return;
-  trigger.addEventListener('click', function() {
-    clearSlots('delete-tags-search-flash');
-    document.getElementById('delete-tags-search-dialog').showModal();
+document.addEventListener('change', function(e) {
+  if (e.target && e.target.id === 'tag-select-page') {
+    tagSelectAllMatching = false;
+    document.querySelectorAll('.tag-select').forEach(function(b) { b.checked = e.target.checked; });
+    updateTagBatchBar();
+  }
+});
+
+// A swapped-in table arrives with fresh, unchecked boxes; drop the
+// stale selection state so the bar doesn't lie about the scope.
+document.body.addEventListener('htmx:afterSwap', function(e) {
+  if (e.detail && e.detail.target && e.detail.target.id === 'tags-page') {
+    tagSelectAllMatching = false;
+    _lastTagCheckbox = null;
+  }
+});
+
+function tagScopeParams() {
+  if (tagSelectAllMatching) {
+    var form = document.querySelector('#sidebar-inner form[action="/tags"]');
+    return form ? new URLSearchParams(new FormData(form)) : new URLSearchParams();
+  }
+  var p = new URLSearchParams();
+  p.set('ids', selectedTagIds().join(','));
+  return p;
+}
+
+function tagScopeLabel() {
+  var bar = document.getElementById('tag-batch-bar');
+  if (tagSelectAllMatching) return 'all ' + bar.dataset.total + ' tags matching the current search';
+  var n = selectedTagIds().length;
+  return n + ' selected tag' + (n === 1 ? '' : 's');
+}
+
+// The shared 202-response follow-up: latch the reload and let the job
+// status poller refresh once the background batch reports done.
+function tagBatchDone() {
+  _pendingGalleryReload = true;
+  if (typeof refreshJobStatus === 'function') refreshJobStatus();
+}
+
+function confirmBatchCategory() {
+  clearSlots('batch-category-flash');
+  var params = tagScopeParams();
+  params.set('category_id', document.getElementById('batch-category-select').value);
+  if (document.getElementById('batch-category-merge').checked) params.set('merge', '1');
+  postForm('/tags/batch-category', params, {
+    dialogId: 'batch-category-dialog',
+    flashId: 'batch-category-flash',
+    failMsg: 'Category move failed.',
+    catchMsg: 'Category move request failed.',
+    onOK: tagBatchDone
   });
+}
+
+// Merge needs the individual rows to offer the canonical choice, so
+// the whole-search escalation can't drive it.
+function openBatchMerge() {
+  var flash = document.getElementById('tag-flash');
+  if (tagSelectAllMatching) {
+    if (flash) flash.innerHTML = '<div class="flash flash-err">Merge needs an explicit selection: check the rows to merge.</div>';
+    return;
+  }
+  var boxes = Array.prototype.filter.call(
+    document.querySelectorAll('.tag-select'),
+    function(b) { return b.checked; }
+  );
+  if (boxes.length < 2) {
+    if (flash) flash.innerHTML = '<div class="flash flash-err">Select at least two tags to merge.</div>';
+    return;
+  }
+  clearSlots('batch-merge-flash');
+  var choices = document.getElementById('batch-merge-choices');
+  choices.innerHTML = '';
+  boxes.forEach(function(b, i) {
+    var li = document.createElement('li');
+    li.className = 'merge-dup-choice';
+    var label = document.createElement('label');
+    var radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'merge_canon';
+    radio.value = b.value;
+    radio.checked = i === 0;
+    label.appendChild(radio);
+    var name = document.createElement('span');
+    name.textContent = b.dataset.name || b.value;
+    if (b.dataset.color) name.style.color = b.dataset.color;
+    label.appendChild(name);
+    var cat = document.createElement('span');
+    cat.className = 'merge-dup-meta';
+    cat.textContent = b.dataset.category || '';
+    label.appendChild(cat);
+    li.appendChild(label);
+    choices.appendChild(li);
+  });
+  document.getElementById('batch-merge-scope').textContent = 'Merge ' + tagScopeLabel() + ' into:';
+  document.getElementById('batch-merge-dialog').showModal();
+}
+
+function confirmBatchMerge() {
+  clearSlots('batch-merge-flash');
+  var canon = document.querySelector('#batch-merge-choices input[name=merge_canon]:checked');
+  if (!canon) return;
+  var params = tagScopeParams();
+  params.set('canonical_id', canon.value);
+  postForm('/tags/batch-alias', params, {
+    dialogId: 'batch-merge-dialog',
+    flashId: 'batch-merge-flash',
+    failMsg: 'Merge failed.',
+    catchMsg: 'Merge request failed.',
+    onOK: tagBatchDone
+  });
+}
+
+function confirmBatchAlias() {
+  clearSlots('batch-alias-flash');
+  var params = tagScopeParams();
+  params.set('canonical_id', document.getElementById('batch-alias-canon').value);
+  postForm('/tags/batch-alias', params, {
+    dialogId: 'batch-alias-dialog',
+    flashId: 'batch-alias-flash',
+    failMsg: 'Alias failed.',
+    catchMsg: 'Alias request failed.',
+    onOK: tagBatchDone
+  });
+}
+
+function confirmBatchImply() {
+  clearSlots('batch-imply-flash');
+  var params = tagScopeParams();
+  var mode = document.querySelector('input[name=imply_mode]:checked');
+  params.set('mode', mode ? mode.value : 'add');
+  params.set('target', document.getElementById('batch-imply-target').value);
+  postForm('/tags/batch-imply', params, {
+    dialogId: 'batch-imply-dialog',
+    flashId: 'batch-imply-flash',
+    failMsg: 'Implication batch failed.',
+    catchMsg: 'Implication batch request failed.',
+    onOK: tagBatchDone
+  });
+}
+
+// mergeCategoryCollision re-runs an inline category move with merge=1
+// after the collision flash offered it.
+function mergeCategoryCollision(tagID, catID) {
+  var body = new URLSearchParams();
+  body.set('category_id', String(catID));
+  body.set('merge', '1');
+  fetch('/tags/' + tagID + '/category', {
+    method: 'PATCH',
+    headers: {'X-CSRF-Token': getCSRFToken(), 'Content-Type': 'application/x-www-form-urlencoded'},
+    body: body
+  }).then(function(r) {
+    if (r.ok) {
+      stashActionFlash('Merged into the existing tag.', 'ok');
+      window.location.reload();
+    } else {
+      r.text().then(function(t) {
+        var el = document.getElementById('tag-flash');
+        if (el) el.innerHTML = '<div class="flash flash-err">' + (t || 'Merge failed.') + '</div>';
+      });
+    }
+  });
+}
+
+// The tag-create / alias-create dialogs need no after-request hook: the
+// success path answers 204 + HX-Redirect (htmx navigates, the shared
+// monbooru:flash listener seeds the destination's flash slot; a reload
+// here would race and clobber the redirect), and errors land in the
+// dialog's flash-err target for correction.
+
+// markPTRReviewStart records when a PTR sweep was submitted so the
+// post-job reload can offer a review link scoped to what the sweep
+// created (origin=ptr + created_after=<start>). Seconds precision to
+// match the stored created_at shape.
+function markPTRReviewStart() {
+  try {
+    sessionStorage.setItem('monbooru_ptr_review_from',
+      new Date().toISOString().replace(/\.\d+Z$/, 'Z'));
+  } catch (e) {}
+}
+
+(function() {
+  var from = null;
+  try {
+    from = sessionStorage.getItem('monbooru_ptr_review_from');
+    if (from) sessionStorage.removeItem('monbooru_ptr_review_from');
+  } catch (e) {}
+  if (!from) return;
+  var el = document.getElementById('tag-flash');
+  if (!el) return;
+  var link = document.createElement('a');
+  // Explicit type=: the sweep also creates aliases, which the page's
+  // tags-only default would hide from the review.
+  link.href = '/tags?origin=ptr&created_after=' + encodeURIComponent(from) + '&type=';
+  link.textContent = 'review what it created';
+  var div = document.createElement('div');
+  div.className = 'flash flash-ok';
+  div.appendChild(document.createTextNode('PTR lookup finished - '));
+  div.appendChild(link);
+  el.appendChild(div);
 })();
+
+function confirmPTRLookupSearch() {
+  clearSlots('ptr-lookup-search-flash');
+  postForm('/tags/ptr-lookup-search', tagScopeParams(), {
+    dialogId: 'ptr-lookup-search-dialog',
+    flashId: 'ptr-lookup-search-flash',
+    failMsg: 'PTR lookup failed.',
+    catchMsg: 'PTR lookup request failed.',
+    onOK: function() {
+      // Reload once the background sweep reports done so the table shows
+      // the new aliases and implications, same latch as the bulk delete.
+      markPTRReviewStart();
+      tagBatchDone();
+    }
+  });
+}
 
 function confirmDeleteTagsSearch() {
   clearSlots('delete-tags-search-flash');
-  // Pull current filter values straight off the sidebar form's hidden
-  // inputs (and the search box) so the server sees the same set the
-  // table is showing.
-  var form = document.querySelector('#sidebar-inner form[action="/tags"]');
-  var params = form ? new URLSearchParams(new FormData(form)) : null;
-  postForm('/tags/delete-search', params, {
+  postForm('/tags/delete-search', tagScopeParams(), {
     dialogId: 'delete-tags-search-dialog',
     flashId: 'delete-tags-search-flash',
     failMsg: 'Delete failed.',
     catchMsg: 'Delete request failed.',
-    onOK: function() {
-      // Latch the global pending-reload flag and let the job-status
-      // afterSettle hook reload once the background tag-delete job
-      // actually reports done, instead of racing a fixed timer.
-      _pendingGalleryReload = true;
-      if (typeof refreshJobStatus === 'function') refreshJobStatus();
-    }
+    onOK: tagBatchDone
   });
 }
 
@@ -512,6 +881,26 @@ function updateTagColor(sel) {
   // its own colour); canonical rows render the name as a link.
   var target = row.querySelector('.tag-name-cell > span') || row.querySelector('.tag-name-cell a');
   if (target) target.style.color = color;
+}
+
+// The PATCH answers 200 with a flash-err carrying the merge offer on a
+// category collision; nothing moved, so undo the onchange repaint and
+// put the select back. The stored selection lives in the options'
+// selected attribute, which the user's picking never touches.
+function onTagCategoryPatch(event, sel) {
+  var collided = event.detail.successful &&
+    event.detail.xhr.responseText.indexOf('flash-err') !== -1;
+  if (event.detail.successful && !collided) {
+    Array.prototype.forEach.call(sel.options, function(o) {
+      if (o.value === sel.value) o.setAttribute('selected', '');
+      else o.removeAttribute('selected');
+    });
+    updateTagColor(sel);
+    return;
+  }
+  var orig = sel.querySelector('option[selected]');
+  if (orig) sel.value = orig.value;
+  updateTagColor(sel);
 }
 
 </script>

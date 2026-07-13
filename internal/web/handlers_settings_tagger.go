@@ -203,7 +203,7 @@ func (s *Server) applyTaggerEnabled(w http.ResponseWriter, name string, enabled 
 // dispatch rule could route something into it). HTMX lazy-loads the
 // body via hx-get on first dialog open.
 func (s *Server) settingsTaggerThresholdsGet(w http.ResponseWriter, r *http.Request) {
-	name, ok := pathTaggerName(w, r, "name")
+	name, ok := pathTaggerName(w, r)
 	if !ok {
 		return
 	}
@@ -232,7 +232,7 @@ func (s *Server) settingsTaggerThresholdsGet(w http.ResponseWriter, r *http.Requ
 // `#flash-tagger` carries the confirmation, and the row's summary text
 // is OOB-swapped to reflect the new values without a page reload.
 func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Request) {
-	name, ok := pathTaggerName(w, r, "name")
+	name, ok := pathTaggerName(w, r)
 	if !ok {
 		return
 	}
@@ -310,7 +310,7 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 // parent table updates immediately. Stays inside the dialog so the
 // operator can fine-tune from the reset baseline before clicking Save.
 func (s *Server) settingsTaggerThresholdsResetPost(w http.ResponseWriter, r *http.Request) {
-	name, ok := pathTaggerName(w, r, "name")
+	name, ok := pathTaggerName(w, r)
 	if !ok {
 		return
 	}
@@ -488,7 +488,7 @@ func taggerThresholdSummary(global float64, overrides map[string]float64, disabl
 // galleries" sentinel renders pre-checked when the TaggerInstance has
 // no explicit Galleries list (the legacy default).
 func (s *Server) settingsTaggerGalleriesGet(w http.ResponseWriter, r *http.Request) {
-	name, ok := pathTaggerName(w, r, "name")
+	name, ok := pathTaggerName(w, r)
 	if !ok {
 		return
 	}
@@ -518,7 +518,7 @@ func (s *Server) settingsTaggerGalleriesGet(w http.ResponseWriter, r *http.Reque
 //
 // On success the dialog closes via the shared tagger-saved HX-Trigger.
 func (s *Server) settingsTaggerGalleriesPost(w http.ResponseWriter, r *http.Request) {
-	name, ok := pathTaggerName(w, r, "name")
+	name, ok := pathTaggerName(w, r)
 	if !ok {
 		return
 	}
@@ -684,7 +684,7 @@ func (s *Server) persistNewlyDiscoveredTaggers() {
 // enabled (the UI hides the button in that case; this is the server gate).
 // The name is validated so it can't escape model_path with `..` segments.
 func (s *Server) settingsTaggerDeletePost(w http.ResponseWriter, r *http.Request) {
-	name, ok := pathTaggerName(w, r, "name")
+	name, ok := pathTaggerName(w, r)
 	if !ok {
 		return
 	}
@@ -696,12 +696,7 @@ func (s *Server) settingsTaggerDeletePost(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	for i, t := range s.cfg.Tagger.Taggers {
-		if t.Name == name {
-			s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers[:i], s.cfg.Tagger.Taggers[i+1:]...)
-			break
-		}
-	}
+	s.cfg.Tagger.Taggers = slices.DeleteFunc(s.cfg.Tagger.Taggers, func(t config.TaggerInstance) bool { return t.Name == name })
 	dir := filepath.Join(s.cfg.Paths.ModelPath, name)
 	s.cfgMu.Unlock()
 	if err := os.RemoveAll(dir); err != nil {

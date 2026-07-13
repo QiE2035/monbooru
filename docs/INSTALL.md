@@ -92,12 +92,13 @@ All override the TOML config. Pattern: `MONBOORU_{SECTION}_{KEY}`.
 Per-tagger settings (enable, confidence, worker count) live in the
 Settings UI, not env vars.
 
-Two more environment variables affect runtime behaviour without
+A few more environment variables affect runtime behaviour without
 overriding a TOML key:
 
 | Variable | Effect |
 |---|---|
-| `MONBOORU_TAGGER_BACKEND` | Set to `inproc` to disable the default subprocess tagger backend and run inference inside the parent process. Undocumented rollback for operators who hit a subprocess regression. |
+| `TZ` | Timezone name (e.g. `Etc/UTC`) for displayed timestamps and the daily scheduled maintenance. Defaults to `UTC` when unset. |
+| `MONBOORU_TAGGER_BACKEND` | Set to `inproc` to disable the default subprocess tagger backend and run inference inside the parent process. |
 | `MONBOORU_TAGGER_WORKER_LOG` | Log level for the `tagger-worker` subprocess only. Accepts the same `warn` / `info` / `debug` values as `MONBOORU_LOG_LEVEL`. Read once when the worker starts. |
 
 ONNX Runtime and CUDA also honour their standard environment

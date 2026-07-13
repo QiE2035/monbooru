@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/tags"
@@ -13,14 +14,19 @@ import (
 // CreateAlias return, with category name + colour populated) into the
 // API's TagRow.
 func toTagResponse(t *models.Tag) tagResponse {
-	return tagResponse{
+	resp := tagResponse{
 		ID:         t.ID,
 		Name:       t.Name,
 		Category:   t.CategoryName,
 		Color:      t.CategoryColor,
 		UsageCount: t.UsageCount,
 		IsAlias:    t.IsAlias,
+		Origin:     t.Origin,
 	}
+	if !t.LastUsedAt.IsZero() {
+		resp.LastUsedAt = t.LastUsedAt.UTC().Format(time.RFC3339)
+	}
+	return resp
 }
 
 // resolveCategoryID maps a category name to its id; an empty name
@@ -31,6 +37,12 @@ func resolveCategoryID(g Gallery, name string) (int64, bool) {
 	if name == "" {
 		name = "general"
 	}
+	return categoryIDByName(g, name)
+}
+
+// categoryIDByName looks up a tag category id by exact name, with no
+// empty-name default; resolveCategoryID layers the "general" fallback.
+func categoryIDByName(g Gallery, name string) (int64, bool) {
 	var id int64
 	err := g.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = ?`, name).Scan(&id)
 	return id, err == nil
@@ -110,14 +122,13 @@ func (h *Handler) createTag(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "unknown category: "+body.Category)
 		return
 	}
-	tag, err := g.TagSvc.GetOrCreateTag(body.Name, catID)
+	tag, err := g.TagSvc.GetOrCreateTagFrom(body.Name, catID, "api")
 	if err != nil {
 		writeTagError(w, err)
 		return
 	}
 	full, err := g.TagSvc.GetTag(tag.ID)
-	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	if serverError(w, err) {
 		return
 	}
 	g.invalidate()
@@ -214,7 +225,7 @@ func (h *Handler) createAlias(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "unknown category: "+body.Category)
 		return
 	}
-	alias, err := g.TagSvc.CreateAlias(body.Name, catID, body.CanonicalID)
+	alias, err := g.TagSvc.CreateAliasFrom(body.Name, catID, body.CanonicalID, "api")
 	if err != nil {
 		writeTagError(w, err)
 		return
@@ -274,8 +285,7 @@ func (h *Handler) listImplications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	imps, err := g.TagSvc.ListImplications(id)
-	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	if serverError(w, err) {
 		return
 	}
 	out := make([]implicationJSON, 0, len(imps))
@@ -316,7 +326,7 @@ func (h *Handler) addImplication(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request", "implied_id is required")
 		return
 	}
-	isNew, err := g.TagSvc.AddImplication(parentID, body.ImpliedID)
+	isNew, err := g.TagSvc.AddImplicationFrom(parentID, body.ImpliedID, "api")
 	if err != nil {
 		writeTagError(w, err)
 		return

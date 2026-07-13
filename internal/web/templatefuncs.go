@@ -87,6 +87,11 @@ func templateFuncs() template.FuncMap {
 			}
 			return fmt.Sprintf("%016x", uint64(*p))
 		},
+		// The "ptr" source has no post page: its fetch action is a hash
+		// lookup instead of a url refetch, so templates branch on the label.
+		"isPTRSite": func(site string) bool {
+			return strings.EqualFold(strings.TrimSpace(site), "ptr")
+		},
 		"groupByImageSource": func(tagList []models.ImageTag) []imageTagSourceGroup {
 			// Manual tags split by source: plain UI adds (empty tagger_name)
 			// land in the "user" bucket; API-supplied sources each get their
@@ -111,10 +116,16 @@ func templateFuncs() template.FuncMap {
 					}
 					key := t.TaggerName
 					if _, ok := byUserSource[key]; !ok {
+						title := "Tags added by " + key
+						if strings.EqualFold(key, "ptr") {
+							// The source label stays "ptr" (search, image_sources);
+							// only the heading spells it out.
+							title = "Tags added by the Public Tag Repository"
+						}
 						userSourceOrder = append(userSourceOrder, key)
 						byUserSource[key] = &imageTagSourceGroup{
 							Source: key,
-							Title:  "Tags added by " + key,
+							Title:  title,
 						}
 					}
 					byUserSource[key].Tags = append(byUserSource[key].Tags, t)
@@ -227,6 +238,18 @@ func templateFuncs() template.FuncMap {
 			return "Stop"
 		},
 		"humanBytes": humanBytesFmt,
+		// localTime renders a stored-UTC timestamp in the process timezone
+		// (time.Local, driven by TZ) so displayed times match the operator's
+		// wall clock. Storage stays UTC; only the display converts.
+		"localTime": func(t time.Time) string {
+			return t.In(time.Local).Format("2006-01-02 15:04:05")
+		},
+		"localTimePtr": func(t *time.Time) string {
+			if t == nil {
+				return ""
+			}
+			return t.In(time.Local).Format("2006-01-02 15:04:05")
+		},
 		"browseSortLabel": func(s string) string {
 			switch s {
 			case "recent":
@@ -274,6 +297,16 @@ func templateFuncs() template.FuncMap {
 		},
 		"hasPrefix": func(s, prefix string) bool {
 			return strings.HasPrefix(s, prefix)
+		},
+		// urlDomain returns the host of a URL (without a leading "www.") for
+		// display; the full URL still drives the link's href. Falls back to
+		// the input when it doesn't parse as an absolute URL with a host.
+		"urlDomain": func(s string) string {
+			u, err := url.Parse(s)
+			if err != nil || u.Host == "" {
+				return s
+			}
+			return strings.TrimPrefix(u.Host, "www.")
 		},
 		"truncate": func(s string, n int) string {
 			if len(s) <= n {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -48,7 +49,25 @@ func ValidateTagName(name string) (string, error) {
 	return name, nil
 }
 
+// NormalizeName folds an externally-sourced tag name into the stored form:
+// lowercased, disallowed-character runs collapsed to `_`, ends trimmed. Import
+// tokens pass through it so a hydrus tag like `hatsune miku` is stored as
+// `hatsune_miku` instead of being rejected by ValidateTagName. Returns "" when
+// nothing usable remains.
+func NormalizeName(name string) string {
+	name = strings.ToLower(name)
+	name = disallowedTagCharsRe.ReplaceAllString(name, "_")
+	return strings.Trim(name, "_")
+}
+
 func (s *Service) GetOrCreateTag(name string, categoryID int64) (*models.Tag, error) {
+	return s.GetOrCreateTagFrom(name, categoryID, "user")
+}
+
+// GetOrCreateTagFrom is GetOrCreateTag with an explicit creation origin
+// (a booru site, "ptr", an import label). The origin is stamped only on
+// the insert; an existing row keeps its creator.
+func (s *Service) GetOrCreateTagFrom(name string, categoryID int64, origin string) (*models.Tag, error) {
 	normalized, err := ValidateTagName(name)
 	if err != nil {
 		return nil, err
@@ -60,13 +79,13 @@ func (s *Service) GetOrCreateTag(name string, categoryID int64) (*models.Tag, er
 	var tag *models.Tag
 	err = s.inWriteTx(func(tx *sql.Tx) error {
 		var txErr error
-		tag, txErr = getOrCreateTagTx(tx, normalized, categoryID)
+		tag, txErr = getOrCreateTagTx(tx, normalized, categoryID, origin)
 		return txErr
 	})
 	return tag, err
 }
 
-func getOrCreateTagTx(tx *sql.Tx, name string, categoryID int64) (*models.Tag, error) {
+func getOrCreateTagTx(tx *sql.Tx, name string, categoryID int64, origin string) (*models.Tag, error) {
 	var tag models.Tag
 	var createdAt string
 	var canonicalID sql.NullInt64
@@ -80,8 +99,8 @@ func getOrCreateTagTx(tx *sql.Tx, name string, categoryID int64) (*models.Tag, e
 	if err == sql.ErrNoRows {
 		var id int64
 		if err := tx.QueryRow(
-			`INSERT INTO tags (name, category_id) VALUES (?, ?) RETURNING id`,
-			name, categoryID,
+			`INSERT INTO tags (name, category_id, origin) VALUES (?, ?, ?) RETURNING id`,
+			name, categoryID, origin,
 		).Scan(&id); err != nil {
 			return nil, fmt.Errorf("inserting tag: %w", err)
 		}
@@ -89,6 +108,7 @@ func getOrCreateTagTx(tx *sql.Tx, name string, categoryID int64) (*models.Tag, e
 			ID:         id,
 			Name:       name,
 			CategoryID: categoryID,
+			Origin:     origin,
 			CreatedAt:  time.Now().UTC(),
 		}
 		return &tag, nil
@@ -130,23 +150,29 @@ func tagFilterWhere(filter TagFilter) (string, []any) {
 		args = append(args, db.EscapeLike(filter.Prefix)+"%")
 	}
 	switch filter.Origin {
-	case "auto":
-		// Require at least one row so a zero-usage tag (no rows at all) is
-		// not silently classified as auto-only by the negative existential.
-		where += " AND t.is_alias = 0 AND t.usage_count > 0 AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.tag_id = t.id AND it.is_auto = 0)"
-	case "user":
-		// "user" is a manual add made anonymously through the UI, so it
-		// must carry a non-auto row with no source label. A tag whose
-		// manual rows are all API-labelled is "api", not "user".
-		where += " AND t.is_alias = 0 AND EXISTS (SELECT 1 FROM image_tags it WHERE it.tag_id = t.id AND it.is_auto = 0 AND (it.tagger_name IS NULL OR it.tagger_name = ''))"
-	case "api":
-		// Applied through the REST API: at least one labelled manual row
-		// (a source in tagger_name) and no anonymous UI add.
-		where += " AND t.is_alias = 0 AND t.usage_count > 0" +
-			" AND EXISTS (SELECT 1 FROM image_tags it WHERE it.tag_id = t.id AND it.is_auto = 0 AND it.tagger_name IS NOT NULL AND it.tagger_name <> '')" +
-			" AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.tag_id = t.id AND it.is_auto = 0 AND (it.tagger_name IS NULL OR it.tagger_name = ''))"
+	case "":
+	case "alias":
+		// Legacy spelling kept for pre-Type URLs and API callers;
+		// alias-ness is structure, not provenance.
+		where += " AND t.is_alias = 1"
+	default:
+		where += " AND t.origin = ?"
+		args = append(args, filter.Origin)
+	}
+	switch filter.Type {
 	case "alias":
 		where += " AND t.is_alias = 1"
+	case "tag":
+		where += " AND t.is_alias = 0"
+	}
+	if filter.CreatedAfter != "" {
+		where += " AND t.created_at >= ?"
+		args = append(args, filter.CreatedAfter)
+	}
+	if filter.ConflictsOnly {
+		where += ` AND t.is_alias = 0 AND t.name IN (
+			SELECT name FROM tags WHERE is_alias = 0
+			GROUP BY name HAVING COUNT(DISTINCT category_id) >= 2)`
 	}
 	switch {
 	case filter.ZeroOnly:
@@ -170,13 +196,28 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 		dir = "DESC"
 	}
 	orderBy := "t.name " + dir
-	if filter.Sort == "usage" {
-		// Default usage to DESC when no order is set (most-used first).
+	switch {
+	case filter.ConflictsOnly:
+		// Colliding pairs must sit adjacent; the category tiebreak keeps
+		// each pair's order stable.
+		orderBy = "t.name ASC, t.category_id ASC"
+	case filter.Sort == "usage" || filter.Sort == "created" || filter.Sort == "last_used":
+		// These default to DESC when no order is set (most-used / newest /
+		// most recently applied first).
 		dir = "DESC"
 		if strings.EqualFold(filter.Order, "asc") {
 			dir = "ASC"
 		}
-		orderBy = "t.usage_count " + dir + ", t.name ASC"
+		switch filter.Sort {
+		case "usage":
+			orderBy = "t.usage_count " + dir + ", t.name ASC"
+		case "created":
+			orderBy = "t.created_at " + dir + ", t.id " + dir
+		case "last_used":
+			// SQLite sorts NULL smallest, so never-applied rows land last
+			// on the default DESC and first on ASC.
+			orderBy = "t.last_used_at " + dir + ", t.name ASC"
+		}
 	}
 
 	var total int
@@ -198,6 +239,7 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 	query := fmt.Sprintf(
 		`SELECT t.id, t.name, t.category_id, tc.name, tc.color,
 		        t.usage_count, t.is_alias, t.canonical_tag_id, t.created_at,
+		        t.origin, t.last_used_at,
 		        c.name, cc.name, cc.color
 		 FROM tags t
 		 JOIN tag_categories tc ON tc.id = t.category_id
@@ -220,13 +262,18 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 		var isAlias int
 		var canonicalID sql.NullInt64
 		var createdAt string
+		var lastUsed sql.NullString
 		var canonName, canonCatName, canonCatColor sql.NullString
 		if err := rows.Scan(
 			&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.CategoryColor,
 			&t.UsageCount, &isAlias, &canonicalID, &createdAt,
+			&t.Origin, &lastUsed,
 			&canonName, &canonCatName, &canonCatColor,
 		); err != nil {
 			return nil, 0, err
+		}
+		if lastUsed.Valid {
+			t.LastUsedAt, _ = time.Parse(time.RFC3339, lastUsed.String)
 		}
 		t.IsAlias = isAlias == 1
 		if canonicalID.Valid {
@@ -248,68 +295,89 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 		return nil, 0, err
 	}
 
-	// Aliases have no image_tags of their own; the origin badge for
-	// them is "alias", not "auto-only". Zero-usage rows are also
-	// excluded - no live image_tag means no origin to report, and
-	// flagging them auto would mislabel manually-added tags whose rows
-	// have all been removed.
-	var ids []int64
-	for _, t := range tagList {
-		if !t.IsAlias && t.UsageCount > 0 {
-			ids = append(ids, t.ID)
-		}
-	}
-	if len(ids) > 0 {
-		// Two probes over the candidate rows decide the origin badge.
-		// hasManual: the tag carries any non-auto (`is_auto = 0`) row.
-		// hasAnon: at least one of those non-auto rows is an anonymous UI
-		// add (empty tagger_name). No manual row at all => "auto"; a
-		// manual row but none anonymous (every one API-labelled via
-		// tagger_name) => "api"; otherwise => "user".
-		hasManual, err := s.tagIDSet(ids, "is_auto = 0")
-		if err != nil {
-			return nil, 0, err
-		}
-		hasAnon, err := s.tagIDSet(ids, "is_auto = 0 AND (tagger_name IS NULL OR tagger_name = '')")
-		if err != nil {
-			return nil, 0, err
-		}
-		for i := range tagList {
-			if tagList[i].IsAlias || tagList[i].UsageCount == 0 {
-				continue
-			}
-			if _, manual := hasManual[tagList[i].ID]; !manual {
-				tagList[i].IsAutoOnly = true
-			} else if _, anon := hasAnon[tagList[i].ID]; !anon {
-				tagList[i].IsAPIOnly = true
-			}
-		}
-	}
-
 	return tagList, total, nil
 }
 
-// tagIDSet returns the subset of ids that have at least one image_tags
-// row matching cond (a trusted, caller-supplied SQL fragment). ListTags
-// uses it to derive the per-tag origin badge from the non-auto and
-// anonymous-vs-labelled row populations.
-func (s *Service) tagIDSet(ids []int64, cond string) (map[int64]struct{}, error) {
-	placeholders, args := db.InPlaceholders(ids)
+// ConflictsCount reports how many tag names occupy more than one
+// category, for the /tags Conflicts filter badge and the Maintenance
+// diagnostic.
+func (s *Service) ConflictsCount() (int, error) {
+	var n int
+	err := s.db.Read.QueryRow(`SELECT COUNT(*) FROM (
+		SELECT name FROM tags WHERE is_alias = 0
+		GROUP BY name HAVING COUNT(DISTINCT category_id) >= 2)`).Scan(&n)
+	return n, err
+}
+
+// OriginCount pairs a stored creation-origin label with how many tags
+// carry it.
+type OriginCount struct {
+	Label string
+	Count int
+}
+
+// OriginCounts returns the distinct non-empty creation origins in the
+// catalog, most-populated first, for the /tags sidebar filter.
+func (s *Service) OriginCounts() ([]OriginCount, error) {
 	rows, err := s.db.Read.Query(
-		`SELECT DISTINCT tag_id FROM image_tags WHERE `+cond+` AND tag_id IN (`+placeholders+`)`,
+		`SELECT origin, COUNT(*) FROM tags WHERE origin <> '' GROUP BY origin ORDER BY COUNT(*) DESC, origin ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []OriginCount
+	for rows.Next() {
+		var oc OriginCount
+		if err := rows.Scan(&oc.Label, &oc.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, oc)
+	}
+	return out, rows.Err()
+}
+
+// AutoTaggerLabels reports which of labels appear as an auto-tagger
+// attribution (an is_auto = 1 tagger_name) so origin chips can color
+// machine creators apart from site creators.
+func (s *Service) AutoTaggerLabels(labels []string) (map[string]struct{}, error) {
+	set := make(map[string]struct{})
+	seen := make(map[string]struct{}, len(labels))
+	var args []any
+	var ph []string
+	for _, l := range labels {
+		if l == "" {
+			continue
+		}
+		if _, dup := seen[l]; dup {
+			continue
+		}
+		seen[l] = struct{}{}
+		args = append(args, l)
+		ph = append(ph, "?")
+	}
+	if len(args) == 0 {
+		return set, nil
+	}
+	// The literal IS NOT NULL / != '' terms restate
+	// idx_image_tags_auto_tagger's partial predicate; without them the
+	// planner can't prove the index applies and scans image_tags.
+	rows, err := s.db.Read.Query(
+		`SELECT DISTINCT tagger_name FROM image_tags
+		 WHERE is_auto = 1 AND tagger_name IS NOT NULL AND tagger_name != ''
+		   AND tagger_name IN (`+strings.Join(ph, ",")+`)`,
 		args...,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	set := make(map[int64]struct{})
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var l string
+		if err := rows.Scan(&l); err != nil {
 			return nil, err
 		}
-		set[id] = struct{}{}
+		set[l] = struct{}{}
 	}
 	return set, rows.Err()
 }
@@ -333,15 +401,16 @@ func (s *Service) GetTag(id int64) (*models.Tag, error) {
 	var canonicalID sql.NullInt64
 	var createdAt string
 
+	var lastUsed sql.NullString
 	err := s.db.Read.QueryRow(
 		`SELECT t.id, t.name, t.category_id, tc.name, tc.color, t.usage_count,
-		        t.is_alias, t.canonical_tag_id, t.created_at
+		        t.is_alias, t.canonical_tag_id, t.created_at, t.origin, t.last_used_at
 		 FROM tags t
 		 JOIN tag_categories tc ON tc.id = t.category_id
 		 WHERE t.id = ?`, id,
 	).Scan(
 		&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.CategoryColor,
-		&t.UsageCount, &isAlias, &canonicalID, &createdAt,
+		&t.UsageCount, &isAlias, &canonicalID, &createdAt, &t.Origin, &lastUsed,
 	)
 	if err == sql.ErrNoRows {
 		return nil, ErrTagNotFound
@@ -355,6 +424,9 @@ func (s *Service) GetTag(id int64) (*models.Tag, error) {
 		t.CanonicalTagID = &canonicalID.Int64
 	}
 	t.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	if lastUsed.Valid {
+		t.LastUsedAt, _ = time.Parse(time.RFC3339, lastUsed.String)
+	}
 	return &t, nil
 }
 
@@ -372,7 +444,7 @@ func (s *Service) AliasesForTagIDs(canonicalIDs []int64) (map[int64][]models.Tag
 		placeholders, args := db.InPlaceholders(batch)
 		rows, err := s.db.Read.Query(
 			`SELECT a.id, a.name, a.category_id, ac.name, ac.color,
-			        a.canonical_tag_id,
+			        a.canonical_tag_id, a.origin,
 			        c.name, cc.name, cc.color
 			 FROM tags a
 			 JOIN tag_categories ac ON ac.id = a.category_id
@@ -391,7 +463,7 @@ func (s *Service) AliasesForTagIDs(canonicalIDs []int64) (map[int64][]models.Tag
 			var canonicalID int64
 			if err := rows.Scan(
 				&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.CategoryColor,
-				&canonicalID,
+				&canonicalID, &t.Origin,
 				&t.CanonicalName, &t.CanonicalCategoryName, &t.CanonicalCategoryColor,
 			); err != nil {
 				return err
@@ -406,6 +478,75 @@ func (s *Service) AliasesForTagIDs(canonicalIDs []int64) (map[int64][]models.Tag
 		return nil, err
 	}
 	return out, nil
+}
+
+// AppliedByCount is one attribution group over a tag's image_tags rows:
+// which source applies the tag and on how many images.
+type AppliedByCount struct {
+	Label  string // tagger_name; "" = anonymous UI adds
+	IsAuto bool
+	Count  int
+}
+
+// UsageMonth is one month of a tag's still-present applications, keyed
+// by the row's created_at. Removals leave the history and rows moved by
+// a merge keep their original dates.
+type UsageMonth struct {
+	Month string // YYYY-MM
+	Count int
+}
+
+// UsageBreakdown aggregates a tag's image_tags rows once and returns
+// both detail-page views: applied-by attribution groups and the monthly
+// histogram. One pass because the row fetch dominates on popular tags -
+// a monster tag's hundreds of thousands of rows are read once, not once
+// per panel.
+func (s *Service) UsageBreakdown(tagID int64) ([]AppliedByCount, []UsageMonth, error) {
+	rows, err := s.db.Read.Query(
+		`SELECT COALESCE(tagger_name, ''), is_auto, strftime('%Y-%m', created_at), COUNT(*)
+		 FROM image_tags WHERE tag_id = ?
+		 GROUP BY COALESCE(tagger_name, ''), is_auto, strftime('%Y-%m', created_at)`,
+		tagID,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	appliedIdx := make(map[[2]any]int)
+	monthIdx := make(map[string]int)
+	var applied []AppliedByCount
+	var months []UsageMonth
+	for rows.Next() {
+		var label, month string
+		var isAuto, count int
+		if err := rows.Scan(&label, &isAuto, &month, &count); err != nil {
+			return nil, nil, err
+		}
+		ak := [2]any{label, isAuto}
+		if i, ok := appliedIdx[ak]; ok {
+			applied[i].Count += count
+		} else {
+			appliedIdx[ak] = len(applied)
+			applied = append(applied, AppliedByCount{Label: label, IsAuto: isAuto == 1, Count: count})
+		}
+		if i, ok := monthIdx[month]; ok {
+			months[i].Count += count
+		} else {
+			monthIdx[month] = len(months)
+			months = append(months, UsageMonth{Month: month, Count: count})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	sort.Slice(applied, func(i, j int) bool {
+		if applied[i].Count != applied[j].Count {
+			return applied[i].Count > applied[j].Count
+		}
+		return applied[i].Label < applied[j].Label
+	})
+	sort.Slice(months, func(i, j int) bool { return months[i].Month < months[j].Month })
+	return applied, months, nil
 }
 
 // GetImageTags returns the per-image tag list alongside the owning
@@ -526,7 +667,23 @@ func deleteTagsTx(tx *sql.Tx, ids []int64) ([]int64, error) {
 		}
 	}
 	for _, id := range ids {
-		if _, err := tx.Exec(`DELETE FROM tags WHERE canonical_tag_id = ?`, id); err != nil {
+		// Imported or legacy rows can chain alias -> alias, even back through
+		// the deleted tag. Null the tag's own pointer so a cycle can't
+		// dangle-check the sweep, then drop the whole alias subtree in one
+		// statement so intra-chain references vanish together.
+		if _, err := tx.Exec(`UPDATE tags SET canonical_tag_id = NULL WHERE id = ?`, id); err != nil {
+			return nil, fmt.Errorf("unlink canonical: %w", err)
+		}
+		if _, err := tx.Exec(
+			`DELETE FROM tags WHERE id IN (
+			     WITH RECURSIVE sub(id) AS (
+			         SELECT id FROM tags WHERE canonical_tag_id = ?
+			         UNION
+			         SELECT t.id FROM tags t JOIN sub ON t.canonical_tag_id = sub.id
+			     )
+			     SELECT id FROM sub
+			 )`, id,
+		); err != nil {
 			return nil, fmt.Errorf("delete aliases: %w", err)
 		}
 	}
@@ -643,9 +800,85 @@ func (s *Service) RenameTag(id int64, newName string) error {
 	return err
 }
 
+// RenameTagKeepAlias renames the tag and installs its old name as an
+// alias of the renamed row in the same transaction, so searches and
+// adds of the old spelling keep resolving. Refused on alias rows - the
+// leftover alias would point at an alias, a chain the resolver doesn't
+// follow.
+func (s *Service) RenameTagKeepAlias(id int64, newName string) error {
+	normalized, err := ValidateTagName(newName)
+	if err != nil {
+		return err
+	}
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		var catID int64
+		var oldName string
+		var isAlias int
+		if err := tx.QueryRow(`SELECT category_id, name, is_alias FROM tags WHERE id = ?`, id).Scan(&catID, &oldName, &isAlias); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrTagNotFound
+			}
+			return fmt.Errorf("look up tag %d: %w", id, err)
+		}
+		if isAlias == 1 {
+			return fmt.Errorf("cannot keep the old name of an alias; rename it plainly")
+		}
+		if s.ratingCatID != 0 && catID == s.ratingCatID {
+			return ErrRatingTagImmutable
+		}
+		if oldName == normalized {
+			return nil
+		}
+		var existing int64
+		if err := tx.QueryRow(
+			`SELECT id FROM tags WHERE name = ? AND category_id = ? AND id != ?`, normalized, catID, id,
+		).Scan(&existing); err == nil {
+			return fmt.Errorf("a tag named %q already exists in this category", normalized)
+		}
+		if _, err := tx.Exec(`UPDATE tags SET name = ? WHERE id = ?`, normalized, id); err != nil {
+			return err
+		}
+		// The old (name, category) slot vacated inside this tx, so the
+		// alias insert cannot collide.
+		_, err := tx.Exec(
+			`INSERT INTO tags (name, category_id, is_alias, canonical_tag_id, usage_count, origin) VALUES (?, ?, 1, ?, 0, 'user')`,
+			oldName, catID, id,
+		)
+		return err
+	})
+}
+
+// ErrCategoryCollision reports the (name, target category) collision a
+// category move runs into, carrying the surviving row's id so callers
+// can offer to merge into it instead.
+type ErrCategoryCollision struct {
+	Name       string
+	ExistingID int64
+}
+
+func (e *ErrCategoryCollision) Error() string {
+	return fmt.Sprintf("a tag named %q already exists in the target category", e.Name)
+}
+
+// ChangeTagCategoryMerge is ChangeTagCategory that resolves a name
+// collision by merging the tag into the target category's existing row
+// (the moving tag becomes an alias of the survivor). The bool reports
+// whether a merge happened instead of a plain move.
+func (s *Service) ChangeTagCategoryMerge(tagID, newCategoryID int64) (bool, error) {
+	err := s.ChangeTagCategory(tagID, newCategoryID)
+	var coll *ErrCategoryCollision
+	if errors.As(err, &coll) {
+		if err := s.MergeTags(tagID, coll.ExistingID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, err
+}
+
 // ChangeTagCategory moves a tag to a different category. Returns
-// ErrTagNotFound, ErrCategoryNotFound, or a clean error when a tag with
-// the same name already lives in the target category.
+// ErrTagNotFound, ErrCategoryNotFound, or ErrCategoryCollision when a
+// tag with the same name already lives in the target category.
 func (s *Service) ChangeTagCategory(tagID, newCategoryID int64) error {
 	var currentCatID int64
 	var name string
@@ -673,7 +906,7 @@ func (s *Service) ChangeTagCategory(tagID, newCategoryID int64) error {
 		`SELECT id FROM tags WHERE name = ? AND category_id = ? AND id != ?`,
 		name, newCategoryID, tagID,
 	).Scan(&existing); err == nil {
-		return fmt.Errorf("a tag named %q already exists in the target category", name)
+		return &ErrCategoryCollision{Name: name, ExistingID: existing}
 	}
 	_, err := s.db.Write.Exec(`UPDATE tags SET category_id = ? WHERE id = ?`, newCategoryID, tagID)
 	return err

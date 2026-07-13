@@ -434,6 +434,51 @@ func TestReorderCollection(t *testing.T) {
 	}
 }
 
+// TestSortCollectionByFilename pins the whole-collection filename sort: members
+// end up ordered by basename in NATURAL order (1, 2, 10 - not 1, 10, 2), with
+// 1-based positions.
+func TestSortCollectionByFilename(t *testing.T) {
+	database := newCollectionsTestDB(t)
+	insertNamed := func(fname string) int64 {
+		t.Helper()
+		res, err := database.Write.Exec(
+			`INSERT INTO images (sha256, canonical_path, file_type, file_size, is_missing) VALUES (?,?,?,?,0)`,
+			randSHA(t), "/dir/"+fname, "image", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		if _, err := database.Write.Exec(
+			`INSERT INTO image_collections (image_id, name, position) VALUES (?, 'Ser', NULL)`, id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	i10 := insertNamed("10.png")
+	i2 := insertNamed("2.png")
+	i1 := insertNamed("1.png")
+
+	if err := SortCollectionByFilename(database, "Ser"); err != nil {
+		t.Fatal(err)
+	}
+
+	members, err := CollectionMembers(database, "Ser", nil, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]int64, len(members))
+	for i, m := range members {
+		got[i] = m.ID
+		if m.Order == nil || *m.Order != i+1 {
+			t.Errorf("member %d position = %v, want %d", m.ID, m.Order, i+1)
+		}
+	}
+	want := []int64{i1, i2, i10}
+	if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Errorf("filename order = %v, want %v (natural 1,2,10)", got, want)
+	}
+}
+
 // TestCollectionCountsTriggers pins the trigger-maintained per-label
 // visible counts across every write shape that must keep them exact:
 // membership insert on visible and missing images, is_missing flips,

@@ -113,10 +113,12 @@ type Server struct {
 	// known state at once instead of flickering back to "checking" (and
 	// re-probing monloader) on every navigation; the poll refreshes it at
 	// most once per monloaderStatusTTL.
-	monloaderStatusMu  sync.Mutex
-	monloaderConn      string
-	monloaderVersion   string
-	monloaderCheckedAt time.Time
+	monloaderStatusMu   sync.Mutex
+	monloaderConn       string
+	monloaderVersion    string
+	monloaderPTR        bool
+	monloaderPTRSyncing bool
+	monloaderCheckedAt  time.Time
 
 	// fetchStatusMu guards fetchStatus, the last-known outcome of each image's
 	// source metadata fetch. monloader runs the fetch asynchronously and calls
@@ -308,7 +310,8 @@ func contextMiddlewareBypass(path string) bool {
 		// holding the read lock across the outbound call would stall a switch.
 		return true
 	}
-	if strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/sources/fetch") {
+	if strings.HasPrefix(path, "/images/") &&
+		(strings.HasSuffix(path, "/sources/fetch") || strings.HasSuffix(path, "/lookup")) {
 		// Same reason: the enqueue is an outbound monloader call. The handler
 		// snapshots the active gallery name under its own short lock.
 		return true
@@ -382,6 +385,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /images/{id}/tags", s.removeAllTagsFromImageHandler)
 	mux.HandleFunc("DELETE /images/{id}/user-tags", s.removeUserTagsFromImageHandler)
 	mux.HandleFunc("DELETE /images/{id}/auto-tags", s.removeAutoTagsFromImageHandler)
+	mux.HandleFunc("DELETE /images/{id}/source-tags", s.removeSourceTagsFromImageHandler)
 	mux.HandleFunc("DELETE /images/{id}/tags/{tagID}", s.removeTagFromImage)
 	mux.HandleFunc("POST /images/{id}/favorite", s.toggleFavorite)
 	mux.HandleFunc("POST /images/{id}/inbox", s.toggleInbox)
@@ -389,17 +393,29 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /images/{id}/canonical-path", s.promoteCanonical)
 	mux.HandleFunc("POST /images/{id}/sources/set", s.setSource)
 	mux.HandleFunc("POST /images/{id}/sources/remove", s.removeSource)
+	mux.HandleFunc("POST /images/{id}/sources/primary", s.makeSourcePrimary)
+	mux.HandleFunc("POST /images/{id}/annotations/set", s.setAnnotation)
+	mux.HandleFunc("POST /images/{id}/annotations/remove", s.removeAnnotation)
 	mux.HandleFunc("POST /images/{id}/sources/fetch", s.fetchSource)
+	mux.HandleFunc("POST /images/{id}/lookup", s.lookupImage)
 	mux.HandleFunc("POST /images/{id}/note", s.setNote)
+	mux.HandleFunc("POST /images/{id}/original-source", s.setImageOriginalSource)
 	mux.HandleFunc("POST /images/{id}/commentary/set", s.setSourceCommentary)
 	mux.HandleFunc("POST /images/{id}/commentary/remove", s.removeSourceCommentary)
+	mux.HandleFunc("POST /images/{id}/original/set", s.setSourceOriginal)
+	mux.HandleFunc("POST /images/{id}/original/remove", s.removeSourceOriginal)
 	mux.HandleFunc("POST /images/{id}/collections/set", s.setCollection)
 	mux.HandleFunc("POST /images/{id}/collections/remove", s.removeCollection)
 	mux.HandleFunc("POST /images/{id}/move", s.moveImage)
+	mux.HandleFunc("POST /images/{id}/transfer", s.transferImage)
 	mux.HandleFunc("DELETE /images/{id}/aliases/{pathID}", s.deleteAlias)
 
 	mux.HandleFunc("GET /tags", s.tagsHandler)
-	mux.HandleFunc("POST /tags/merge", s.mergeTagsPost)
+	mux.HandleFunc("GET /tags/{id}", s.tagDetailHandler)
+	mux.HandleFunc("GET /tags/{id}/usage", s.tagUsagePanelHandler)
+	mux.HandleFunc("POST /tags/batch-category", s.batchTagCategoryPost)
+	mux.HandleFunc("POST /tags/batch-alias", s.batchTagAliasPost)
+	mux.HandleFunc("POST /tags/batch-imply", s.batchTagImplyPost)
 	mux.HandleFunc("POST /tags/new", s.createTagPost)
 	mux.HandleFunc("POST /tags/aliases", s.createAliasPost)
 	mux.HandleFunc("POST /tags/{id}/rename", s.renameTagPost)
@@ -437,6 +453,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/maintenance/prune-missing", s.pruneMissingImagesPost)
 	mux.HandleFunc("POST /settings/maintenance/prune-orphaned-thumbnails", s.pruneOrphanedThumbnailsPost)
 	mux.HandleFunc("POST /settings/maintenance/recalc-tags", s.recalcTagsPost)
+	mux.HandleFunc("POST /settings/maintenance/tag-conflicts", s.tagCategoryConflictsPost)
 	// Relocated to /relations/file-duplicates/* in v1.8; old routes
 	// stay alive as 301 redirects for one release so bookmarks survive.
 	mux.HandleFunc("GET /settings/maintenance/duplicates-list", func(w http.ResponseWriter, r *http.Request) {
@@ -500,15 +517,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /internal/autotag", s.autotagTrigger)
 	mux.HandleFunc("POST /internal/batch-delete", s.batchDelete)
 	mux.HandleFunc("POST /internal/batch-move", s.batchMove)
+	mux.HandleFunc("POST /internal/batch-transfer", s.batchTransfer)
 	mux.HandleFunc("POST /internal/batch-tag", s.batchTag)
 	mux.HandleFunc("POST /internal/batch-strip", s.batchStrip)
 	mux.HandleFunc("POST /internal/batch-inbox", s.batchInbox)
 	mux.HandleFunc("POST /internal/batch-favorite", s.batchFavorite)
 	mux.HandleFunc("POST /internal/batch-collection", s.batchCollection)
 	mux.HandleFunc("POST /internal/batch-source", s.batchSource)
-	mux.HandleFunc("POST /internal/batch-source-fetch", s.batchSourceFetch)
+	mux.HandleFunc("POST /internal/batch-lookup", s.batchLookup)
 	mux.HandleFunc("POST /internal/delete-search", s.deleteSearchPost)
 	mux.HandleFunc("POST /tags/delete-search", s.deleteTagsSearchPost)
+	mux.HandleFunc("POST /tags/ptr-lookup-search", s.ptrLookupSearchPost)
+	mux.HandleFunc("POST /tags/{id}/ptr-lookup", s.ptrLookupTagPost)
 	mux.HandleFunc("POST /internal/delete-folder", s.deleteFolderPost)
 	mux.HandleFunc("GET /internal/tags/suggest", s.tagSuggest)
 	mux.HandleFunc("GET /internal/search/suggest", s.searchSuggest)
@@ -703,6 +723,13 @@ type baseData struct {
 	// on every page struct, not just the poll handler's map.
 	MonloaderConn    string
 	MonloaderVersion string
+	// MonloaderPTR gates the PTR-backed lookup controls: true when the last
+	// cached probe saw monloader report its PTR index enabled. Stale reads
+	// are fine - monloader answers 409 and the UI degrades in place.
+	MonloaderPTR bool
+	// MonloaderPTRSyncing caveats the lookup backend dialog while the PTR
+	// index is still building: it answers on partial data by design.
+	MonloaderPTRSyncing bool
 }
 
 // AsMap renders baseData as a string→any map for handlers that pass
@@ -711,33 +738,35 @@ type baseData struct {
 // because every map starts with the same canonical set.
 func (b baseData) AsMap() map[string]any {
 	return map[string]any{
-		"Title":            b.Title,
-		"ActiveNav":        b.ActiveNav,
-		"CSRFToken":        b.CSRFToken,
-		"AuthEnabled":      b.AuthEnabled,
-		"Degraded":         b.Degraded,
-		"Version":          b.Version,
-		"RepoURL":          b.RepoURL,
-		"Variant":          b.Variant,
-		"CustomCSS":        b.CustomCSS,
-		"BooruName":        b.BooruName,
-		"BooruLogo":        b.BooruLogo,
-		"BooruFavicon":     b.BooruFavicon,
-		"MonloaderURL":     b.MonloaderURL,
-		"MonloaderPaired":  b.MonloaderPaired,
-		"MonloaderConn":    b.MonloaderConn,
-		"MonloaderVersion": b.MonloaderVersion,
-		"ActiveGallery":    b.ActiveGallery,
-		"Galleries":        b.Galleries,
-		"VisibleCount":     b.VisibleCount,
-		"InboxCount":       b.InboxCount,
-		"InboxNavActive":   b.InboxNavActive,
-		"TagCount":         b.TagCount,
-		"CollectionsCount": b.CollectionsCount,
-		"HiddenByCeiling":  b.HiddenByCeiling,
-		"RatingLevels":     b.RatingLevels,
-		"ActiveRating":     b.ActiveRating,
-		"RequestStart":     b.RequestStart,
+		"Title":               b.Title,
+		"ActiveNav":           b.ActiveNav,
+		"CSRFToken":           b.CSRFToken,
+		"AuthEnabled":         b.AuthEnabled,
+		"Degraded":            b.Degraded,
+		"Version":             b.Version,
+		"RepoURL":             b.RepoURL,
+		"Variant":             b.Variant,
+		"CustomCSS":           b.CustomCSS,
+		"BooruName":           b.BooruName,
+		"BooruLogo":           b.BooruLogo,
+		"BooruFavicon":        b.BooruFavicon,
+		"MonloaderURL":        b.MonloaderURL,
+		"MonloaderPaired":     b.MonloaderPaired,
+		"MonloaderConn":       b.MonloaderConn,
+		"MonloaderVersion":    b.MonloaderVersion,
+		"MonloaderPTR":        b.MonloaderPTR,
+		"MonloaderPTRSyncing": b.MonloaderPTRSyncing,
+		"ActiveGallery":       b.ActiveGallery,
+		"Galleries":           b.Galleries,
+		"VisibleCount":        b.VisibleCount,
+		"InboxCount":          b.InboxCount,
+		"InboxNavActive":      b.InboxNavActive,
+		"TagCount":            b.TagCount,
+		"CollectionsCount":    b.CollectionsCount,
+		"HiddenByCeiling":     b.HiddenByCeiling,
+		"RatingLevels":        b.RatingLevels,
+		"ActiveRating":        b.ActiveRating,
+		"RequestStart":        b.RequestStart,
 	}
 }
 
@@ -769,34 +798,36 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 	if active == "" {
 		active = "explicit"
 	}
-	conn, connVer := s.monloaderStatusSeed()
+	conn, connVer, ptrEnabled, ptrSyncing := s.monloaderStatusSeed()
 	return baseData{
-		Title:            title,
-		ActiveNav:        nav,
-		CSRFToken:        s.csrfToken(sessID),
-		AuthEnabled:      s.cfg.Auth.EnablePassword,
-		Degraded:         degraded,
-		Version:          Version,
-		RepoURL:          RepoURL,
-		Variant:          Variant,
-		CustomCSS:        s.cfg.Server.CustomCSS != "",
-		BooruName:        s.booruName(),
-		BooruLogo:        s.booruLogoURL(),
-		BooruFavicon:     s.booruFaviconURL(),
-		MonloaderURL:     s.monloaderWebBase(),
-		MonloaderPaired:  s.pairedWith("monloader"),
-		MonloaderConn:    conn,
-		MonloaderVersion: connVer,
-		ActiveGallery:    s.activeName,
-		Galleries:        galleries,
-		VisibleCount:     visible,
-		InboxCount:       inbox,
-		TagCount:         tagCount,
-		CollectionsCount: collectionsCount,
-		InboxNavActive:   inboxNavActive,
-		RatingLevels:     ratingFooterLevels,
-		ActiveRating:     active,
-		RequestStart:     requestStartFromContext(r.Context()),
+		Title:               title,
+		ActiveNav:           nav,
+		CSRFToken:           s.csrfToken(sessID),
+		AuthEnabled:         s.cfg.Auth.EnablePassword,
+		Degraded:            degraded,
+		Version:             Version,
+		RepoURL:             RepoURL,
+		Variant:             Variant,
+		CustomCSS:           s.cfg.Server.CustomCSS != "",
+		BooruName:           s.booruName(),
+		BooruLogo:           s.booruLogoURL(),
+		BooruFavicon:        s.booruFaviconURL(),
+		MonloaderURL:        s.monloaderWebBase(),
+		MonloaderPaired:     s.pairedWith("monloader"),
+		MonloaderConn:       conn,
+		MonloaderVersion:    connVer,
+		MonloaderPTR:        ptrEnabled,
+		MonloaderPTRSyncing: ptrSyncing,
+		ActiveGallery:       s.activeName,
+		Galleries:           galleries,
+		VisibleCount:        visible,
+		InboxCount:          inbox,
+		TagCount:            tagCount,
+		CollectionsCount:    collectionsCount,
+		InboxNavActive:      inboxNavActive,
+		RatingLevels:        ratingFooterLevels,
+		ActiveRating:        active,
+		RequestStart:        requestStartFromContext(r.Context()),
 	}
 }
 
@@ -840,14 +871,12 @@ func (s *Server) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 	fullPath := filepath.Join(cx.ThumbnailsPath, file)
 	// Hover variants are generated by ffmpeg after the static thumb and are
-	// absent for recently-ingested animated files (and every static image,
-	// which the grid doesn't request a hover for). Respond 204 so the img
+	// absent for recently-ingested animated files; static thumbs are absent
+	// when generation failed on an undecodable file. Respond 204 so the img
 	// tag's onerror still fires but the console doesn't log a 404 per card.
-	if strings.HasSuffix(file, "_hover.webp") {
-		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
+	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
 	// SQLite reuses the highest deleted INTEGER PRIMARY KEY id, so a
 	// deleted image's URL can be reborn the next ingest with brand-new

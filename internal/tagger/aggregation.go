@@ -150,6 +150,7 @@ func AggregateInferenceScores(perFrame [][]float32, labels []CandidateLabel, opt
 	}
 
 	byCat := map[int64][]AggregatedCandidate{}
+	catNames := map[int64]string{}
 	for idx, e := range agg {
 		if idx >= len(labels) {
 			continue
@@ -174,18 +175,14 @@ func AggregateInferenceScores(perFrame [][]float32, labels []CandidateLabel, opt
 		}
 		byCat[lbl.CatID] = append(byCat[lbl.CatID],
 			AggregatedCandidate{Name: lbl.Name, CatID: lbl.CatID, Score: mean})
+		catNames[lbl.CatID] = lbl.CatName
 	}
 
 	var out []AggregatedCandidate
-	for _, list := range byCat {
+	for catID, list := range byCat {
 		// Tie-break by name asc so two equivalent runs produce the
-		// same emission set. catName is the same for everyone in the
-		// list so picking from list[0] is safe.
-		catName := ""
-		if len(list) > 0 {
-			catName = catNameFromLabels(labels, list[0].CatID)
-		}
-		k := ResolveTopK(opts.PerCategoryTopK, catName)
+		// same emission set.
+		k := ResolveTopK(opts.PerCategoryTopK, catNames[catID])
 		sort.Slice(list, func(i, j int) bool {
 			if list[i].Score != list[j].Score {
 				return list[i].Score > list[j].Score
@@ -198,17 +195,4 @@ func AggregateInferenceScores(perFrame [][]float32, labels []CandidateLabel, opt
 		out = append(out, list...)
 	}
 	return out
-}
-
-// catNameFromLabels picks the CatName for the first label matching
-// catID. The caller passes the same labels slice we already iterated;
-// a linear scan is fine since the vocabulary is typically a couple
-// thousand entries and this runs once per surviving category.
-func catNameFromLabels(labels []CandidateLabel, catID int64) string {
-	for i := range labels {
-		if labels[i].CatID == catID {
-			return labels[i].CatName
-		}
-	}
-	return ""
 }

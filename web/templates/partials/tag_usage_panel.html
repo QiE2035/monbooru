@@ -1,0 +1,33 @@
+{{define "partials/tag_usage_panel.html"}}
+{{$kinds := .OriginKinds}}
+<h3>Applied by</h3>
+{{if .AppliedBy}}
+<table class="tag-table tag-applied-table">
+  <thead><tr><th>Source</th><th>Kind</th><th>Images</th></tr></thead>
+  <tbody>
+    {{range .AppliedBy}}
+    <tr>
+      <td>
+        {{if .Label}}
+        {{$kind := index $kinds .Label}}
+        <span class="origin-chip origin-{{$kind}}">{{.Label}}</span>
+        {{else}}<span class="origin-user">user</span>{{end}}
+      </td>
+      <td class="field-hint">{{if .IsAuto}}auto{{else if .Label}}source{{else}}manual{{end}}</td>
+      <td>{{.Count}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="field-hint">Not applied to any image.</p>
+{{end}}
+
+<h3>Usage over time</h3>
+{{if .Bars}}
+<pre class="tag-usage-graph">{{range .Bars}}{{.Month}}  <span class="usage-bar">{{.Bar}}</span> {{.Count}}
+{{end}}</pre>
+{{else}}
+<p class="field-hint">No applications recorded.</p>
+{{end}}
+{{end}}

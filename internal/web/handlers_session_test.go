@@ -364,7 +364,7 @@ func TestSessionLoadNextPair_SameCollectionHiddenUntilOptIn(t *testing.T) {
 	if pair != nil || visible != 0 || raw != 0 {
 		t.Fatalf("same-collection pair surfaced by default: pair=%v visible=%d raw=%d", pair, visible, raw)
 	}
-	if c := loadRelationsCounts(srv, cx, none); c.QueueOpen != 0 {
+	if c := loadRelationsCounts(cx, none); c.QueueOpen != 0 {
 		t.Fatalf("hub QueueOpen = %d, want 0 while the collection is opted out", c.QueueOpen)
 	}
 
@@ -380,7 +380,7 @@ func TestSessionLoadNextPair_SameCollectionHiddenUntilOptIn(t *testing.T) {
 	if !pairHas(pair, a, bID) || visible != 1 || raw != 1 {
 		t.Fatalf("opted-in pair missing: pair=%v visible=%d raw=%d", pair, visible, raw)
 	}
-	if c := loadRelationsCounts(srv, cx, none); c.QueueOpen != 1 {
+	if c := loadRelationsCounts(cx, none); c.QueueOpen != 1 {
 		t.Fatalf("hub QueueOpen = %d, want 1 after opt-in", c.QueueOpen)
 	}
 

@@ -1,6 +1,7 @@
 package tags
 
 import (
+	"database/sql"
 	"fmt"
 
 	"github.com/leqwin/monbooru/internal/db"
@@ -170,22 +171,22 @@ func suggestUsageRanked(database *db.DB, prefix, categoryName string, requireUsa
 			return prior, err
 		}
 		defer func() { _ = rows.Close() }()
+		scanned, err := scanTags(rows)
+		if err != nil {
+			return prior, err
+		}
 		seen := map[int64]bool{}
 		for _, t := range prior {
 			seen[t.ID] = true
 		}
-		for rows.Next() {
-			var t models.Tag
-			if err := rows.Scan(&t.ID, &t.Name, &t.CategoryName, &t.CategoryColor, &t.UsageCount); err != nil {
-				return prior, err
-			}
+		for _, t := range scanned {
 			if seen[t.ID] {
 				continue
 			}
 			prior = append(prior, t)
 			seen[t.ID] = true
 		}
-		return prior, rows.Err()
+		return prior, nil
 	}
 
 	out, err := run(prefix+"%", nil, limit, "")
@@ -217,14 +218,19 @@ func (s *Service) SuggestTagsInCategory(prefix, categoryName string, limit int) 
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
+	return scanTags(rows)
+}
 
-	var result []models.Tag
+// scanTags collects the rows of a five-column tag SELECT (id, name,
+// category name, color, usage_count). The caller owns rows.Close.
+func scanTags(rows *sql.Rows) ([]models.Tag, error) {
+	var out []models.Tag
 	for rows.Next() {
 		var t models.Tag
 		if err := rows.Scan(&t.ID, &t.Name, &t.CategoryName, &t.CategoryColor, &t.UsageCount); err != nil {
 			return nil, err
 		}
-		result = append(result, t)
+		out = append(out, t)
 	}
-	return result, rows.Err()
+	return out, rows.Err()
 }

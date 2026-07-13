@@ -27,7 +27,7 @@ func (s *Service) ListImplications(parentID int64) ([]models.Implication, error)
 		`SELECT ti.parent_tag_id, ti.implied_tag_id,
 		        p.name, pc.name, pc.color,
 		        i.name, ic.name, ic.color,
-		        ti.created_at
+		        ti.created_at, ti.origin
 		 FROM tag_implications ti
 		 JOIN tags p ON p.id = ti.parent_tag_id
 		 JOIN tag_categories pc ON pc.id = p.category_id
@@ -48,7 +48,41 @@ func (s *Service) ListImplications(parentID int64) ([]models.Implication, error)
 			&im.ParentID, &im.ImpliedID,
 			&im.ParentName, &im.ParentCategoryName, &im.ParentCategoryColor,
 			&im.ImpliedName, &im.ImpliedCategoryName, &im.ImpliedCategoryColor,
-			&created,
+			&created, &im.Origin,
+		); err != nil {
+			return nil, err
+		}
+		im.CreatedAt, _ = time.Parse(time.RFC3339, created)
+		out = append(out, im)
+	}
+	return out, rows.Err()
+}
+
+// ImpliedBy returns the direct edges whose implied side is tagID, with
+// parent display fields joined for the detail page's reverse view.
+func (s *Service) ImpliedBy(tagID int64) ([]models.Implication, error) {
+	rows, err := s.db.Read.Query(
+		`SELECT ti.parent_tag_id, ti.implied_tag_id,
+		        p.name, pc.name, pc.color,
+		        ti.created_at, ti.origin
+		 FROM tag_implications ti
+		 JOIN tags p ON p.id = ti.parent_tag_id
+		 JOIN tag_categories pc ON pc.id = p.category_id
+		 WHERE ti.implied_tag_id = ?
+		 ORDER BY p.name`, tagID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []models.Implication
+	for rows.Next() {
+		var im models.Implication
+		var created string
+		if err := rows.Scan(
+			&im.ParentID, &im.ImpliedID,
+			&im.ParentName, &im.ParentCategoryName, &im.ParentCategoryColor,
+			&created, &im.Origin,
 		); err != nil {
 			return nil, err
 		}
@@ -109,6 +143,12 @@ func (s *Service) ImplicationsForParents(parentIDs []int64) (map[int64][]models.
 // the tag row itself is still immutable. The returned bool reports
 // whether the row was new; false means the edge already existed.
 func (s *Service) AddImplication(parentID, impliedID int64) (bool, error) {
+	return s.AddImplicationFrom(parentID, impliedID, "user")
+}
+
+// AddImplicationFrom is AddImplication with an explicit creation origin,
+// stamped only when the edge is actually inserted.
+func (s *Service) AddImplicationFrom(parentID, impliedID int64, origin string) (bool, error) {
 	if parentID == impliedID {
 		return false, fmt.Errorf("cannot imply a tag from itself")
 	}
@@ -136,8 +176,8 @@ func (s *Service) AddImplication(parentID, impliedID int64) (bool, error) {
 		}
 
 		res, err := tx.Exec(
-			`INSERT OR IGNORE INTO tag_implications (parent_tag_id, implied_tag_id) VALUES (?, ?)`,
-			parentID, impliedID,
+			`INSERT OR IGNORE INTO tag_implications (parent_tag_id, implied_tag_id, origin) VALUES (?, ?, ?)`,
+			parentID, impliedID, origin,
 		)
 		if err != nil {
 			return err

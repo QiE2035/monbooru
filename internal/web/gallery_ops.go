@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -148,12 +148,7 @@ func (s *Server) RemoveGallery(name string, removeFolder bool) error {
 	dataDir := filepath.Dir(cx.DBPath) // /<data_path>/<name>
 	cx.close()
 	delete(s.contexts, name)
-	for i := range s.cfg.Galleries {
-		if s.cfg.Galleries[i].Name == name {
-			s.cfg.Galleries = append(s.cfg.Galleries[:i], s.cfg.Galleries[i+1:]...)
-			break
-		}
-	}
+	s.cfg.Galleries = slices.DeleteFunc(s.cfg.Galleries, func(g config.Gallery) bool { return g.Name == name })
 	s.ctxMu.Unlock()
 
 	if err := os.RemoveAll(dataDir); err != nil {
@@ -310,36 +305,23 @@ func (s *Server) galleryRowsWithSnapshot(activeName string, activeImages, active
 }
 
 // gallerySwitchHandler handles POST /internal/gallery/switch. Errors render
-// as an inline flash inside the topbar dialog; success triggers HX-Refresh.
+// as an inline flash inside the topbar dialog; success sends the browser
+// home.
 func (s *Server) gallerySwitchHandler(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	if err := s.SwitchGallery(name); err != nil {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", err.Error())
-			return
-		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		externalErr(w, r, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if isHTMXRequest(r) {
-		// Detail URLs are image-id-scoped and usually 404 in the target gallery,
-		// and gallery URLs carrying a search/sort/folder query belong to the
-		// old gallery's namespace - re-running them in the new one just
-		// surfaces unrelated results. Send the browser home in both cases
-		// instead of refreshing the current URL.
-		if cur := r.Header.Get("HX-Current-URL"); cur != "" {
-			if u, err := url.Parse(cur); err == nil {
-				if strings.HasPrefix(u.Path, "/images/") || (u.Path == "/" && u.RawQuery != "") {
-					w.Header().Set("HX-Redirect", "/")
-					w.WriteHeader(http.StatusOK)
-					return
-				}
-			}
-		}
-		w.Header().Set("HX-Refresh", "true")
+		// Every current URL belongs to the old gallery's namespace - image
+		// and tag ids resolve to unrelated rows (or 404) in the new one, and
+		// search queries surface unrelated results. Send the browser home
+		// instead of refreshing in place.
+		w.Header().Set("HX-Redirect", "/")
 		w.WriteHeader(http.StatusOK)
 		return
 	}

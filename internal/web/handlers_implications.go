@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -21,11 +22,11 @@ func (s *Server) implicationsDialogHandler(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	// Opened as an htmx dialog from the /tags table; a non-htmx caller
-	// (refresh, bookmark, shared link) gets the tag's row on the tags
-	// page rather than a chrome-less fragment.
+	// Fetched as a fragment by the tag detail page's implications
+	// editor; a non-htmx caller (refresh, bookmark, shared link) gets
+	// the tag's detail page rather than a chrome-less fragment.
 	if !isHTMXRequest(r) {
-		http.Redirect(w, r, fmt.Sprintf("/tags#tag-row-%d", id), http.StatusSeeOther)
+		http.Redirect(w, r, fmt.Sprintf("/tags/%d", id), http.StatusSeeOther)
 		return
 	}
 	parent, err := s.tagSvc().GetTag(id)
@@ -148,6 +149,60 @@ func (s *Server) startImplicationPropagation(parentID, impliedID int64, op strin
 	go s.runImplicationPropagation(parentID, impliedID, op)
 }
 
+// resolveRemoveClosure walks the removed target's transitive implied
+// closure once, in a throwaway read tx, and returns it with the target
+// prepended. The closure is invariant across a removal sweep, so the
+// removal runners resolve it up front instead of paying an N x graph-walk
+// inside the writer-held chunk transactions.
+func (s *Server) resolveRemoveClosure(tagID int64) ([]int64, error) {
+	tx, err := s.db().Read.Begin()
+	if err != nil {
+		return nil, err
+	}
+	closure, err := tags.TransitiveImpliedTx(tx, []int64{tagID})
+	_ = tx.Rollback()
+	if err != nil {
+		return nil, err
+	}
+	return append([]int64{tagID}, closure...), nil
+}
+
+// chunkImageTagsByParent runs perImage for every image carrying
+// parentID, in id order, committing 500-image write transactions and
+// bailing between chunks when ctx is cancelled.
+func (s *Server) chunkImageTagsByParent(ctx context.Context, parentID int64, perImage func(*sql.Tx, int64) error) error {
+	rows, err := s.db().Read.QueryContext(ctx,
+		`SELECT image_id FROM image_tags WHERE tag_id = ? ORDER BY image_id`, parentID)
+	if err != nil {
+		return err
+	}
+	ids, err := db.ScanIDs(rows)
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	const chunkSize = 500
+	for start := 0; start < len(ids); start += chunkSize {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		tx, err := s.db().Write.Begin()
+		if err != nil {
+			return err
+		}
+		for _, imageID := range ids[start:min(start+chunkSize, len(ids))] {
+			if err := perImage(tx, imageID); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string) {
 	ctx := s.jobs.Context()
 	const chunkSize = 500
@@ -171,25 +226,14 @@ func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string)
 		verb = "removing implication"
 	}
 
-	// Pre-walk the implied tag's closure once for the remove path; it's
-	// invariant across the propagation job. The chunked tx loop below
-	// then passes the resolved slice to propagateRemoveImplication so a
-	// big-fan-out parent doesn't pay an N×graph-walk inside the
-	// writer-held chunk transaction.
 	var removeClosure []int64
 	if op == "remove" {
-		closureTx, err := s.db().Read.Begin()
+		var err error
+		removeClosure, err = s.resolveRemoveClosure(impliedID)
 		if err != nil {
 			s.jobs.Fail(err.Error())
 			return
 		}
-		removeClosure, err = tags.TransitiveImpliedTx(closureTx, []int64{impliedID})
-		_ = closureTx.Rollback()
-		if err != nil {
-			s.jobs.Fail(err.Error())
-			return
-		}
-		removeClosure = append([]int64{impliedID}, removeClosure...)
 	}
 
 	processed, cancelled, err := chunkedJob(ctx, s.jobs, ids, chunkSize, verb, func(chunk []int64) error {
@@ -205,7 +249,7 @@ func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string)
 					return err
 				}
 			} else {
-				if err := propagateRemoveImplication(tx, imageID, parentID, removeClosure); err != nil {
+				if err := propagateRemoveImplication(tx, imageID, removeClosure); err != nil {
 					_ = tx.Rollback()
 					return err
 				}
@@ -252,7 +296,7 @@ func propagateAddImplication(tx *sql.Tx, imageID, parentID, ratingCatID int64) e
 // implied by another parent on the image are preserved. The closure
 // (impliedID plus its transitive children) is resolved once by the
 // caller and reused across every image carrying the parent.
-func propagateRemoveImplication(tx *sql.Tx, imageID, parentID int64, closure []int64) error {
+func propagateRemoveImplication(tx *sql.Tx, imageID int64, closure []int64) error {
 	for _, id := range closure {
 		var rowImplied int
 		err := tx.QueryRow(

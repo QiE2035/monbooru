@@ -69,6 +69,26 @@ func TestServerStartsAndServesStatic(t *testing.T) {
 	}
 }
 
+func TestTrailingSlashRedirect(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+
+	req := httptest.NewRequest("GET", "/categories/", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusMovedPermanently || w.Header().Get("Location") != "/categories" {
+		t.Errorf("GET /categories/ = %d -> %q, want 301 to /categories", w.Code, w.Header().Get("Location"))
+	}
+
+	// A genuinely unknown path still lands on the 404 page after the trim.
+	req = httptest.NewRequest("GET", "/definitely-not-here", nil)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("GET /definitely-not-here = %d, want 404", w.Code)
+	}
+}
+
 func TestCustomCSS_NotFoundWhenUnset(t *testing.T) {
 	srv := newTestServer(t)
 	h := srv.Handler()
@@ -589,6 +609,9 @@ func TestLoginPageRendersWithoutAuth(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "Password authentication is disabled") {
 		t.Errorf("expected disabled notice, got:\n%s", w.Body.String())
 	}
+	if strings.Contains(w.Body.String(), `type="password"`) {
+		t.Errorf("the dead login form should be hidden when auth is disabled")
+	}
 }
 
 func TestGalleryReturns200(t *testing.T) {
@@ -845,7 +868,7 @@ func TestDetailPage_BackPageReflectsCachedPositionWhenWarm(t *testing.T) {
 		ids[i] = int64(900_000 + i)
 	}
 	ids[12] = id
-	search.AdjacencyCacheClear()
+	search.AdjacencyCacheDropForGallery(srv.activeName)
 	search.AdjacencyCacheSet(cacheKey, ids)
 
 	// User arrived on the detail page from page 1 of the search but,
@@ -900,7 +923,7 @@ func TestDetailPage_BackPageRankQueryOnCacheMiss(t *testing.T) {
 		ids = append(ids, newID)
 	}
 	target := ids[3] // 4th inserted (zero-indexed rank 8 in DESC by id); page 2 with page_size 5.
-	search.AdjacencyCacheClear()
+	search.AdjacencyCacheDropForGallery(srv.activeName)
 
 	url := fmt.Sprintf(
 		"/images/%d?back_q=&back_sort=newest&back_order=desc&back_page=1",
@@ -1662,8 +1685,8 @@ func TestGallerySwitchChangesActive(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("switch expected 200, got %d body=%s", w.Code, w.Body.String())
 	}
-	if w.Header().Get("HX-Refresh") != "true" {
-		t.Error("switch should respond with HX-Refresh: true")
+	if got := w.Header().Get("HX-Redirect"); got != "/" {
+		t.Errorf("HX-Redirect = %q, want / (the old page belongs to the old gallery's namespace)", got)
 	}
 	if srv.activeName != "stock" {
 		t.Errorf("activeName = %q, want stock", srv.activeName)

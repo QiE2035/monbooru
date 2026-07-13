@@ -14,11 +14,13 @@
       {{if .Error}}
         <div class="login-error">{{.Error}}</div>
       {{end}}
+      {{if not .AuthDisabled}}
       <form method="POST" action="/login">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <input type="password" name="password" placeholder="Password"{{if .AuthDisabled}} disabled{{else}} autofocus{{end}}>
-        <button type="submit"{{if .AuthDisabled}} disabled{{end}}>Login</button>
+        <input type="password" name="password" placeholder="Password" autofocus>
+        <button type="submit">Login</button>
       </form>
+      {{end}}
     </div>
   </div>
 </body>

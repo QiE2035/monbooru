@@ -280,7 +280,7 @@ func reconcileFile(database *db.DB, galleryPath, thumbnailsPath string, fi syncF
 	// a re-hash; apply the new SHA / size / dimensions / metadata to
 	// the existing image row so tags survive the rewrite.
 	if k, knownPath := known[fi.path]; knownPath && k.sha256 != fi.sha256 {
-		if err := applyInPlaceEdit(database, galleryPath, thumbnailsPath, fi.path, fi.fileType, fi.sha256, fi.mtime, fi.size); err != nil {
+		if err := applyInPlaceEdit(database, thumbnailsPath, fi.path, fi.fileType, fi.sha256, fi.mtime, fi.size); err != nil {
 			logx.Warnf("sync: in-place edit %q: %v", fi.path, err)
 			return
 		}
@@ -544,7 +544,7 @@ func pruneStaleAliasPaths(ctx context.Context, database *db.DB, foundPaths map[s
 // on disk, and the thumbnail is regenerated. The mtime gate at the top
 // of the walk is what triggers entry; the corresponding image_paths
 // row's mtime is updated here so the next sync's shortcut can fire.
-func applyInPlaceEdit(database *db.DB, galleryPath, thumbnailsPath, path, fileType, newSHA string, newMtime, newSize int64) error {
+func applyInPlaceEdit(database *db.DB, thumbnailsPath, path, fileType, newSHA string, newMtime, newSize int64) error {
 	var imageID int64
 	if err := database.Read.QueryRow(
 		`SELECT image_id FROM image_paths WHERE path = ?`, path,
@@ -693,7 +693,7 @@ func buildFolderTree(flat []folderCount) []FolderNode {
 			Path:  fc.path,
 			Name:  filepath.Base(fc.path),
 			Count: fc.count,
-			Depth: countSlashes(fc.path) + 1,
+			Depth: strings.Count(fc.path, "/") + 1,
 		}}
 		pnodeMap[fc.path] = n
 
@@ -729,14 +729,4 @@ func buildFolderTree(flat []folderCount) []FolderNode {
 	}
 
 	return []FolderNode{toValue(rootP)}
-}
-
-func countSlashes(s string) int {
-	n := 0
-	for _, c := range s {
-		if c == '/' {
-			n++
-		}
-	}
-	return n
 }

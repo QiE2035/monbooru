@@ -12,8 +12,9 @@ var chordTimeoutMs = 500;
 // no args; a nested map is a sub-chord whose own keys resolve the next
 // step. `g` leads navigation (`g c a` categories, `g c o` collections).
 // `e` leads detail-page field edits: `s` opens the add-source dialog, `c`
-// opens the add-to-collection dialog, and a digit edits that Nth
-// collection. On pages without the matching control the chord no-ops.
+// opens the add-to-collection dialog, `o` / `n` the original-source and
+// note dialogs, and a digit edits that Nth collection. On pages without
+// the matching control the chord no-ops.
 var chordMap = {
   g: {
     g: '/',
@@ -29,6 +30,8 @@ var chordMap = {
   e: {
     s: function () { var b = document.querySelector('.btn-add-source'); if (b) b.click(); },
     c: function () { var b = document.querySelector('.btn-add-collection'); if (b) b.click(); },
+    o: function () { var b = document.querySelector('.btn-edit-image-original'); if (b) b.click(); },
+    n: function () { var b = document.querySelector('.btn-edit-note'); if (b) b.click(); },
   },
 };
 
@@ -870,6 +873,19 @@ document.addEventListener('keydown', function(e) {
     }
   }
 
+  // 'L' → monloader lookup: batch dialog on a selection, or the detail
+  // page's Lookup button (which opens the backend pop-in when the PTR is
+  // enabled). Both gate on the paired-only control being rendered.
+  if (e.key === 'L') {
+    if (batchBarVisible()) {
+      if (document.querySelector('#batch-bar .monloader-accent')) {
+        e.preventDefault(); openBatchLookupDialog('selection'); return;
+      }
+    }
+    var lookupBtn = document.querySelector('.add-tag-form .btn-hash-lookup');
+    if (lookupBtn) { e.preventDefault(); lookupBtn.click(); return; }
+  }
+
   // Gallery view-level toggles (Shift modifiers).
   if (isGalleryPage()) {
     if (e.key === 'F') {
@@ -1175,6 +1191,39 @@ document.addEventListener('input', function(e) {
   if (!tagsDiv) return;
   var err = tagsDiv.querySelector('.flash-err');
   if (err) err.remove();
+});
+
+// The tags/collections live search swaps only the page region and leaves
+// the sidebar alone, so the filter links keep the q from the last sidebar
+// render. Boosted links capture their path when the sidebar is processed,
+// so the request path is re-synced at request time; the hrefs are kept
+// honest too for open-in-new-tab.
+function sidebarFilterQ(url) {
+  const input = document.querySelector('#sidebar-inner form input[name=q]');
+  if (!input) return null;
+  url.searchParams.set('q', input.value);
+  return url.pathname + '?' + url.searchParams.toString();
+}
+
+document.body.addEventListener('htmx:configRequest', function(e) {
+  const elt = e.detail.elt;
+  if (!elt || !elt.matches || !elt.matches('#sidebar-inner a.filter-btn')) return;
+  const path = sidebarFilterQ(new URL(e.detail.path, window.location.origin));
+  if (path) e.detail.path = path;
+});
+
+// htmx skips swapping error responses; the job-conflict 409s carry the
+// inline "already running" flash as their body, so let those render.
+document.body.addEventListener('htmx:beforeSwap', function(e) {
+  if (e.detail.xhr && e.detail.xhr.status === 409) e.detail.shouldSwap = true;
+});
+
+document.addEventListener('input', function(e) {
+  if (!e.target.matches || !e.target.matches('#sidebar-inner form input[name=q]')) return;
+  document.querySelectorAll('#sidebar-inner a.filter-btn').forEach(function(a) {
+    const href = sidebarFilterQ(new URL(a.getAttribute('href'), window.location.origin));
+    if (href) a.setAttribute('href', href);
+  });
 });
 
 // Sidebar tag-add-btn: toggle tag in/out of the current search query.
@@ -1521,12 +1570,12 @@ function onExternalEditResponse(event, dialogID) {
   if (dlg) dlg.close();
 }
 
-// toggleAnnotations shows/hides the note-box overlay on the detail image.
+// toggleAnnotations shows/hides the annotation-box overlay on the detail image.
 function toggleAnnotations(btn) {
   var media = btn.closest('.detail-media');
   if (!media) return;
-  var hidden = media.classList.toggle('notes-hidden');
-  btn.textContent = hidden ? '[show notes]' : '[hide notes]';
+  var hidden = media.classList.toggle('annotations-hidden');
+  btn.textContent = hidden ? '[show annotations]' : '[hide annotations]';
 }
 
 // actionFlashSlots is the ordered list of per-page slot ids the shared
@@ -1563,6 +1612,25 @@ function showActionFlash(html, kind) {
   }, 5000);
 }
 
+// escapeHTML makes free text (tag names, server error text) safe for the
+// innerHTML-based flash slots.
+function escapeHTML(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// setFlashText replaces slot's content with a flash carrying free text;
+// textContent keeps interpolated names inert.
+function setFlashText(slot, kind, text) {
+  if (!slot) return;
+  var d = document.createElement('div');
+  d.className = 'flash flash-' + kind;
+  d.textContent = text;
+  slot.textContent = '';
+  slot.appendChild(d);
+}
+
 // stashActionFlash queues a flash for the next page load - used when an
 // action triggers a full reload / redirect and the in-place showActionFlash
 // would be wiped before the user could read it. The timestamp lets the
@@ -1575,9 +1643,6 @@ function stashActionFlash(html, kind) {
       JSON.stringify({h: html, k: kind || 'ok', t: Date.now()}));
   } catch (e) {}
 }
-
-var showGalleryFlash = showActionFlash;
-var stashGalleryFlash = stashActionFlash;
 
 // stashStalenessMs caps how long a stashed flash survives before the picker
 // drops it. Long enough to cover a normal action+navigation round-trip,
@@ -1823,6 +1888,15 @@ document.addEventListener('DOMContentLoaded', initFolderTree);
 document.addEventListener('htmx:afterSettle', initFolderTree);
 
 // Tag suggest (detail page + merge dialog): apply selected suggestion
+// lastWordIndex returns the index of the last non-whitespace token in a
+// split(/(\s+)/) word list, or -1 when every token is whitespace.
+function lastWordIndex(words) {
+  for (var i = words.length - 1; i >= 0; i--) {
+    if (words[i].trim() !== '') return i;
+  }
+  return -1;
+}
+
 function applyTagSuggest(btn) {
   var tagName = btn.dataset.tagName;
   if (!tagName) return;
@@ -1837,10 +1911,7 @@ function applyTagSuggest(btn) {
   // whitespace-separated word and append a trailing space for the next tag.
   if (input.dataset.multiTags) {
     var words = input.value.split(/(\s+)/);
-    var lastIdx = -1;
-    for (var i = words.length - 1; i >= 0; i--) {
-      if (words[i].trim() !== '') { lastIdx = i; break; }
-    }
+    var lastIdx = lastWordIndex(words);
     if (lastIdx >= 0) words[lastIdx] = tagName;
     else words.push(tagName);
     input.value = words.join('') + ' ';
@@ -1879,11 +1950,7 @@ function applySearchSuggest(tagName) {
   var si = document.getElementById('search-input');
   if (!si) return;
   var words = si.value.split(/(\s+)/);
-  // Find last non-whitespace word
-  var lastWordIdx = -1;
-  for (var i = words.length - 1; i >= 0; i--) {
-    if (words[i].trim() !== '') { lastWordIdx = i; break; }
-  }
+  var lastWordIdx = lastWordIndex(words);
   if (lastWordIdx >= 0) {
     var last = words[lastWordIdx];
     var prefix = last.startsWith('-') ? '-' : '';
@@ -1976,6 +2043,14 @@ var _jobAutoClearFinishedAt = '';
 // Track the FinishedAt timestamp of the last reloaded event so each new
 // watcher/job completion triggers exactly one reload.
 var _lastReloadedFinishedAt = '';
+// refreshGalleryGrid re-fetches the current URL into the gallery grid.
+// No-op off the gallery page or before htmx loads.
+function refreshGalleryGrid() {
+  if (!document.getElementById('gallery-grid') || !window.htmx) return;
+  var u = new URL(window.location.href);
+  window.htmx.ajax('GET', u.pathname + u.search, {target: '#gallery-grid', swap: 'innerHTML'});
+}
+
 // The first job-status settle after page load reports whatever job last
 // finished on the server, even when that job completed before the page was
 // rendered. Reloading the grid/tags on that first poll is wasted work (and
@@ -2078,11 +2153,7 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
       needRefresh = true;
     }
     if (needRefresh) {
-      var runningGrid = document.getElementById('gallery-grid');
-      if (runningGrid && window.htmx) {
-        var runURL = new URL(window.location.href);
-        window.htmx.ajax('GET', runURL.pathname + runURL.search, {target: '#gallery-grid', swap: 'innerHTML'});
-      }
+      refreshGalleryGrid();
     }
   }
 
@@ -2111,9 +2182,9 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
   if (isDone && _pendingGalleryReload) {
     _pendingGalleryReload = false;
     if (finishedAt) _lastReloadedFinishedAt = finishedAt;
-    if (document.getElementById('gallery-grid') || document.getElementById('tags-page') || document.getElementById('collections-page')) {
+    if (document.getElementById('gallery-grid') || document.getElementById('tags-page') || document.getElementById('tag-detail-page') || document.getElementById('collections-page')) {
       var pendingDone = el.querySelector('.job-done');
-      if (pendingDone) stashGalleryFlash(pendingDone.textContent || '', 'ok');
+      if (pendingDone) stashActionFlash(pendingDone.textContent || '', 'ok');
       window.location.reload();
       return;
     }
@@ -2127,17 +2198,22 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
     _lastReloadedFinishedAt = finishedAt;
     if (firstSettle) return;
 
+    // Relations hub: its queue and group counters are computed at render
+    // time, so a finished find-pairs or phash job leaves them stale until a
+    // reload.
+    if (document.getElementById('relations-page') && (jobType === 'relations' || jobType === 'phash')) {
+      window.location.reload();
+      return;
+    }
+
     // Gallery page: reload grid + lift the job summary into the inline
     // flash slot so the user sees the result without having to scan the
     // top-right job-status widget.
     var grid = document.getElementById('gallery-grid');
     if (grid) {
       var doneEl = el.querySelector('.job-done');
-      if (doneEl) showGalleryFlash(doneEl.textContent || '', 'ok');
-      var url = new URL(window.location.href);
-      if (window.htmx) {
-        window.htmx.ajax('GET', url.pathname + url.search, {target: '#gallery-grid', swap: 'innerHTML'});
-      }
+      if (doneEl) showActionFlash(doneEl.textContent || '', 'ok');
+      refreshGalleryGrid();
     }
 
     // Detail page: reload the tag list so freshly added auto-tags show up.
@@ -2458,7 +2534,6 @@ function initSuggestDismiss(dropdownId, inputId, opts) {
 
 initSuggestDismiss('search-suggest', 'search-input', {blurOnSubmit: true});
 initSuggestDismiss('tag-suggest-dropdown', 'tag-input');
-initSuggestDismiss('merge-suggest', 'merge-canon-input');
 initSuggestDismiss('batch-move-suggest', 'batch-move-folder');
 initSuggestDismiss('move-image-suggest', 'move-image-folder');
 initSuggestDismiss('batch-tag-suggest', 'batch-tag-input');
@@ -2466,6 +2541,15 @@ initSuggestDismiss('batch-strip-suggest', 'batch-strip-input');
 initSuggestDismiss('source-suggest', 'source-site-input');
 initSuggestDismiss('batch-series-search-suggest', 'batch-series-search-input');
 initSuggestDismiss('batch-series-selected-suggest', 'batch-series-selected-input');
+initSuggestDismiss('batch-collection-suggest', 'batch-collection-input');
+initSuggestDismiss('batch-source-suggest', 'batch-source-input');
+initSuggestDismiss('collection-suggest', 'collection-name-input');
+initSuggestDismiss('collection-rename-suggest', 'collection-rename-input');
+initSuggestDismiss('alias-create-suggest', 'alias-create-canon');
+initSuggestDismiss('batch-alias-suggest', 'batch-alias-canon');
+initSuggestDismiss('batch-imply-suggest', 'batch-imply-target');
+initSuggestDismiss('detail-alias-suggest', 'detail-alias-canon');
+initSuggestDismiss('implication-add-suggest', 'implication-add-input');
 
 // Detail page: tags added in the current session are split into a "just-added"
 // list and reset on full page reload.
@@ -2690,16 +2774,12 @@ function initInboxUpload() {
     // that slot lives inside #gallery-grid and the upcoming refresh would
     // wipe it. Lift the text into the gallery-level slot before the swap.
     if (result && result.innerHTML.trim() !== '') {
-      showGalleryFlash(result.innerHTML, /flash-err/.test(result.innerHTML) ? 'err' : 'ok');
+      showActionFlash(result.innerHTML, /flash-err/.test(result.innerHTML) ? 'err' : 'ok');
     }
     clearPending();
     // Refresh the grid so the freshly ingested rows surface at the top
     // of the inbox. Same idiom the job-status auto-refresh uses.
-    var grid = document.getElementById('gallery-grid');
-    if (grid && window.htmx) {
-      var u = new URL(window.location.href);
-      window.htmx.ajax('GET', u.pathname + u.search, {target: '#gallery-grid', swap: 'innerHTML'});
-    }
+    refreshGalleryGrid();
   });
 }
 

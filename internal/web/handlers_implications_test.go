@@ -380,8 +380,8 @@ drained:
 const chunkSizeImplication = 500
 
 // TestImplicationsDialogHandler_NonHTMXRedirects pins the HX-Request
-// gate: a direct (non-htmx) GET of the dialog URL redirects to the
-// tag's row on /tags instead of serving the chrome-less fragment,
+// gate: a direct (non-htmx) GET of the fragment URL redirects to the
+// tag's detail page instead of serving the chrome-less fragment,
 // matching duplicatesListHandler. An htmx GET still renders the body.
 func TestImplicationsDialogHandler_NonHTMXRedirects(t *testing.T) {
 	srv := newTestServer(t)
@@ -397,8 +397,8 @@ func TestImplicationsDialogHandler_NonHTMXRedirects(t *testing.T) {
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("non-htmx GET: code=%d, want %d", w.Code, http.StatusSeeOther)
 	}
-	if loc := w.Header().Get("Location"); loc != fmt.Sprintf("/tags#tag-row-%d", tag.ID) {
-		t.Errorf("redirect Location = %q, want /tags#tag-row-%d", loc, tag.ID)
+	if loc := w.Header().Get("Location"); loc != fmt.Sprintf("/tags/%d", tag.ID) {
+		t.Errorf("redirect Location = %q, want /tags/%d", loc, tag.ID)
 	}
 
 	hxReq := httptest.NewRequest("GET", path, nil)

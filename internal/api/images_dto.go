@@ -41,9 +41,11 @@ const (
 	maxImageSourceLen     = 200
 	maxImageURLLen        = 2048
 	maxImageCommentaryLen = 10000
+	maxImageOriginalLen   = 2048
 	maxAnnotations        = 500
 	maxAnnotationBodyLen  = 2000
 	maxSourceMD5Len       = 64
+	maxSourcePostIDLen    = 64
 )
 
 // validateImageSource / validateImageURL / validateImageCollection
@@ -86,12 +88,18 @@ func validateImageCollection(s string) error {
 // meaningful next to a non-empty collection label (the detail page
 // renders "(none) #5" otherwise and collection: search never surfaces
 // the row), so it is refused without one. Values arrive trimmed.
-func validateCreateProvenance(source, url, md5, collection, commentary string, order *int) error {
+func validateCreateProvenance(source, postID, url, md5, parentURL, collection, commentary, original string, order *int) error {
 	if err := validateImageSource(source); err != nil {
+		return err
+	}
+	if err := validateMaxLen("post_id", postID, maxSourcePostIDLen); err != nil {
 		return err
 	}
 	if err := validateImageURL(url); err != nil {
 		return err
+	}
+	if err := validateImageURL(parentURL); err != nil {
+		return fmt.Errorf("parent_url: %v", err)
 	}
 	if err := validateImageCollection(collection); err != nil {
 		return err
@@ -100,6 +108,9 @@ func validateCreateProvenance(source, url, md5, collection, commentary string, o
 		return err
 	}
 	if err := validateMaxLen("commentary", commentary, maxImageCommentaryLen); err != nil {
+		return err
+	}
+	if err := validateMaxLen("original", original, maxImageOriginalLen); err != nil {
 		return err
 	}
 	if order != nil {
@@ -115,33 +126,34 @@ func validateCreateProvenance(source, url, md5, collection, commentary string, o
 
 // imageResponse is the JSON representation of an image.
 type imageResponse struct {
-	ID            int64            `json:"id"`
-	SHA256        string           `json:"sha256"`
-	CanonicalPath string           `json:"canonical_path"`
-	Aliases       []string         `json:"aliases"`
-	FileType      string           `json:"file_type"`
-	Width         *int             `json:"width"`
-	Height        *int             `json:"height"`
-	FileSize      int64            `json:"file_size"`
-	IsFavorited   bool             `json:"is_favorited"`
-	IsInbox       bool             `json:"is_inbox"`
-	IsMissing     bool             `json:"is_missing"`
-	AutoTaggedAt  *time.Time       `json:"auto_tagged_at"`
-	SourceType    string           `json:"source_type"`
-	Origin        string           `json:"origin"`
-	Source        string           `json:"source"`
-	URL           string           `json:"url"`
-	Note          string           `json:"note"`
-	PageCount     *int             `json:"page_count"`
-	Series        string           `json:"collection"`
-	SeriesOrder   *int             `json:"collection_order"`
-	Collections   []collectionJSON `json:"collections,omitempty"`
-	Sources       []sourceJSON     `json:"sources,omitempty"`
-	Annotations   []annotationJSON `json:"annotations,omitempty"`
-	Phash         *string          `json:"phash"`
-	IngestedAt    time.Time        `json:"ingested_at"`
-	ThumbnailURL  string           `json:"thumbnail_url"`
-	Tags          []imageTagJSON   `json:"tags"`
+	ID             int64            `json:"id"`
+	SHA256         string           `json:"sha256"`
+	CanonicalPath  string           `json:"canonical_path"`
+	Aliases        []string         `json:"aliases"`
+	FileType       string           `json:"file_type"`
+	Width          *int             `json:"width"`
+	Height         *int             `json:"height"`
+	FileSize       int64            `json:"file_size"`
+	IsFavorited    bool             `json:"is_favorited"`
+	IsInbox        bool             `json:"is_inbox"`
+	IsMissing      bool             `json:"is_missing"`
+	AutoTaggedAt   *time.Time       `json:"auto_tagged_at"`
+	SourceType     string           `json:"source_type"`
+	Origin         string           `json:"origin"`
+	Source         string           `json:"source"`
+	URL            string           `json:"url"`
+	Note           string           `json:"note"`
+	OriginalSource string           `json:"original_source"`
+	PageCount      *int             `json:"page_count"`
+	Series         string           `json:"collection"`
+	SeriesOrder    *int             `json:"collection_order"`
+	Collections    []collectionJSON `json:"collections,omitempty"`
+	Sources        []sourceJSON     `json:"sources,omitempty"`
+	Annotations    []annotationJSON `json:"annotations,omitempty"`
+	Phash          *string          `json:"phash"`
+	IngestedAt     time.Time        `json:"ingested_at"`
+	ThumbnailURL   string           `json:"thumbnail_url"`
+	Tags           []imageTagJSON   `json:"tags"`
 }
 
 // collectionJSON is one membership in imageResponse.Collections. The
@@ -156,10 +168,12 @@ type collectionJSON struct {
 // url fields above mirror the primary origin for backwards compatibility;
 // this array carries them all.
 type sourceJSON struct {
-	Site       string `json:"site"`
-	PostID     string `json:"post_id,omitempty"`
-	URL        string `json:"url"`
-	Commentary string `json:"commentary,omitempty"`
+	Site       string  `json:"site"`
+	PostID     string  `json:"post_id,omitempty"`
+	URL        string  `json:"url"`
+	Commentary string  `json:"commentary,omitempty"`
+	Original   string  `json:"original,omitempty"`
+	Similarity float64 `json:"similarity,omitempty"`
 }
 
 // annotationJSON is one positional note box. On input (create/enrich) only the
@@ -224,30 +238,31 @@ func makeImageResponse(g Gallery, img models.Image, tags []imageTagJSON, aliases
 		aliases = []string{}
 	}
 	return imageResponse{
-		ID:            img.ID,
-		SHA256:        img.SHA256,
-		CanonicalPath: img.CanonicalPath,
-		Aliases:       aliases,
-		FileType:      img.FileType,
-		Width:         img.Width,
-		Height:        img.Height,
-		FileSize:      img.FileSize,
-		IsFavorited:   img.IsFavorited,
-		IsInbox:       img.IsInbox,
-		IsMissing:     img.IsMissing,
-		AutoTaggedAt:  img.AutoTaggedAt,
-		SourceType:    img.SourceType,
-		Origin:        img.Origin,
-		Source:        img.Source,
-		URL:           img.URL,
-		Note:          img.Note,
-		PageCount:     img.PageCount,
-		Series:        img.Series,
-		SeriesOrder:   img.SeriesOrder,
-		Phash:         phashHexPtr(img.Phash),
-		IngestedAt:    img.IngestedAt,
-		ThumbnailURL:  "/thumbnails/" + g.Name + "/" + strconv.FormatInt(img.ID, 10) + ".jpg",
-		Tags:          tags,
+		ID:             img.ID,
+		SHA256:         img.SHA256,
+		CanonicalPath:  img.CanonicalPath,
+		Aliases:        aliases,
+		FileType:       img.FileType,
+		Width:          img.Width,
+		Height:         img.Height,
+		FileSize:       img.FileSize,
+		IsFavorited:    img.IsFavorited,
+		IsInbox:        img.IsInbox,
+		IsMissing:      img.IsMissing,
+		AutoTaggedAt:   img.AutoTaggedAt,
+		SourceType:     img.SourceType,
+		Origin:         img.Origin,
+		Source:         img.Source,
+		URL:            img.URL,
+		Note:           img.Note,
+		OriginalSource: img.OriginalSource,
+		PageCount:      img.PageCount,
+		Series:         img.Series,
+		SeriesOrder:    img.SeriesOrder,
+		Phash:          phashHexPtr(img.Phash),
+		IngestedAt:     img.IngestedAt,
+		ThumbnailURL:   "/thumbnails/" + g.Name + "/" + strconv.FormatInt(img.ID, 10) + ".jpg",
+		Tags:           tags,
 	}
 }
 

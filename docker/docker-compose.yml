@@ -42,6 +42,7 @@ services:
       - MONBOORU_SERVER_BIND_ADDRESS=0.0.0.0:8080
       # Base URL (The one you use to reach monbooru from the browser)
       - MONBOORU_SERVER_BASE_URL=http://localhost:8080
+      # - TZ=Etc/UTC
     restart: unless-stopped
 
   ## monloader is an optional online boorus and galleries downloader
@@ -59,6 +60,8 @@ services:
       - ALL
     volumes:
       - /path/to/monloader/config:/config
+      # If you want to enable the Public Tag Repository syncing (>70GB required)
+      # - /path/to/monloader/ptr:/ptr
     environment:
       - MONLOADER_SERVER_BIND_ADDRESS=0.0.0.0:8081
       - MONLOADER_SERVER_BASE_URL=http://localhost:8081

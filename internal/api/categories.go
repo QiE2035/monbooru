@@ -63,8 +63,7 @@ func (h *Handler) listCategories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cats, err := g.TagSvc.ListCategories()
-	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	if serverError(w, err) {
 		return
 	}
 	out := make([]categoryResponse, 0, len(cats))

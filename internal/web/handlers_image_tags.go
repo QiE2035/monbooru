@@ -1,7 +1,9 @@
 package web
 
 import (
+	"errors"
 	"fmt"
+	"html/template"
 	"net/http"
 	"sort"
 	"strconv"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
+	"github.com/leqwin/monbooru/internal/tags"
 )
 
 // catTag pairs a resolved category ID with a tag name for creation/application.
@@ -317,7 +320,7 @@ func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request
 	folderPath, imageTags, _ := s.tagSvc().GetImageTags(id)
 	hasUserTags := false
 	for _, t := range imageTags {
-		if !t.IsAuto {
+		if !t.IsAuto && t.TaggerName == "" {
 			hasUserTags = true
 			break
 		}
@@ -330,7 +333,9 @@ func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request
 		"SidebarTags":   true,
 		"DangerZone":    true,
 		"HasUserTags":   hasUserTags,
-		"ImageTaggers":  distinctAutoTaggerNames(imageTags),
+		"ImageTaggers":  distinctTaggerNames(imageTags, true),
+		"ImageSources":  distinctTaggerNames(imageTags, false),
+		"CanTransfer":   len(s.galleryList()) > 1,
 		"BackQuery":     back.Q,
 		"BackSort":      back.Sort,
 		"BackOrder":     back.Order,
@@ -362,6 +367,29 @@ func (s *Server) removeAutoTagsFromImageHandler(w http.ResponseWriter, r *http.R
 		}
 	}
 	if err := s.tagSvc().RemoveAutoTagsFromImage(id, names); err != nil {
+		s.renderTagListWithSidebar(w, r, id, err.Error(), "", "", false)
+		return
+	}
+	s.Active().InvalidateCaches()
+	s.renderTagListWithSidebar(w, r, id, "", "", "", false)
+}
+
+// removeSourceTagsFromImageHandler removes the tags one or more external
+// sources contributed to one image, filtered by the caller-supplied `sources`
+// query parameter (comma-separated site labels).
+func (s *Server) removeSourceTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
+		return
+	}
+	raw := r.URL.Query().Get("sources")
+	var names []string
+	for _, n := range strings.Split(raw, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			names = append(names, n)
+		}
+	}
+	if err := s.tagSvc().RemoveSourceTagsFromImage(id, names); err != nil {
 		s.renderTagListWithSidebar(w, r, id, err.Error(), "", "", false)
 		return
 	}
@@ -426,12 +454,29 @@ func (s *Server) changeTagCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Route through the tag service for validation and consistency.
-	if err := s.tagSvc().ChangeTagCategory(id, catID); err != nil {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", err.Error())
+	var svcErr error
+	merged := false
+	if r.FormValue("merge") == "1" {
+		merged, svcErr = s.tagSvc().ChangeTagCategoryMerge(id, catID)
+	} else {
+		svcErr = s.tagSvc().ChangeTagCategory(id, catID)
+	}
+	if svcErr != nil {
+		var coll *tags.ErrCategoryCollision
+		if errors.As(svcErr, &coll) && isHTMXRequest(r) {
+			// Offer the merge instead of dead-ending: the survivor keeps
+			// the images, the moving tag becomes its alias.
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = fmt.Fprintf(w,
+				`<div class="flash flash-err">%s <button type="button" class="btn-sm" onclick="mergeCategoryCollision(%d, %d)">Merge into it</button></div>`,
+				template.HTMLEscapeString(svcErr.Error()), id, catID)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		if isHTMXRequest(r) {
+			writeInlineFlash(w, "err", svcErr.Error())
+			return
+		}
+		http.Error(w, svcErr.Error(), http.StatusInternalServerError)
 		return
 	}
 	// cat:/category-qualified searches resolve via the moved tag's
@@ -439,6 +484,10 @@ func (s *Server) changeTagCategory(w http.ResponseWriter, r *http.Request) {
 	// survive the move.
 	s.Active().InvalidateCaches()
 	if isHTMXRequest(r) {
+		if merged {
+			writeInlineFlash(w, "ok", "Merged into the existing tag.")
+			return
+		}
 		writeInlineFlash(w, "ok", "Category updated.")
 		return
 	}

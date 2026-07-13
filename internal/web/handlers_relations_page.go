@@ -152,14 +152,14 @@ type treeRow struct {
 }
 
 // relationsPage serves /relations: header counters and the per-section
-// CTAs. Per-group cards live on /relations/browse-groups.
+// CTAs. Per-group cards live on /relations/browse.
 func (s *Server) relationsPage(w http.ResponseWriter, r *http.Request) {
 	cx, ok := s.requireActive(w)
 	if !ok {
 		return
 	}
 	ceiling := resolveCeiling(r, cx)
-	counts := loadRelationsCounts(s, cx, ceiling)
+	counts := loadRelationsCounts(cx, ceiling)
 	s.renderTemplate(w, "relations.html", relationsPageData{
 		baseData:      s.base(r, "relations", "Relations - "+s.booruName()),
 		Counts:        counts,
@@ -200,7 +200,7 @@ func (s *Server) browseGroupsRedirect(w http.ResponseWriter, r *http.Request) {
 // side is hidden, PhashMissing skips hidden rows. This keeps the
 // /relations hub consistent with /relations/browse, whose cards apply
 // the same filters.
-func loadRelationsCounts(s *Server, cx *galleryCtx, ceiling *Ceiling) relationsCounts {
+func loadRelationsCounts(cx *galleryCtx, ceiling *Ceiling) relationsCounts {
 	var c relationsCounts
 	get := func(q string, dst *int, args ...any) {
 		if err := cx.DB.Read.QueryRow(q, args...).Scan(dst); err != nil {
@@ -512,7 +512,7 @@ func humanISOTime(s string) string {
 	if err != nil {
 		return s
 	}
-	return t.UTC().Format("2006-01-02 15:04:05")
+	return t.In(time.Local).Format("2006-01-02 15:04:05")
 }
 
 // humanISODate is humanISOTime's date-only sibling: the table-cell
@@ -527,7 +527,7 @@ func humanISODate(s string) string {
 		}
 		return s
 	}
-	return t.UTC().Format("2006-01-02")
+	return t.In(time.Local).Format("2006-01-02")
 }
 
 // sortedRootsDesc returns the keys of rootSet sorted by id descending,
@@ -843,7 +843,7 @@ func (s *Server) browseRelationsPage(w http.ResponseWriter, r *http.Request) {
 	// version/derivative kinds the kind-total override lands after
 	// the loader finishes its in-Go walk (the same walk drives the
 	// card list, so the count rides the same data).
-	counts := loadRelationsCounts(s, cx, ceiling)
+	counts := loadRelationsCounts(cx, ceiling)
 	total := kindTotal(counts, kind)
 	totalPages := 1
 	if total > 0 {

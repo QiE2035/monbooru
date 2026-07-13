@@ -96,7 +96,8 @@ func schedHasAnyEnabled(sc config.ScheduleConfig) bool {
 }
 
 // runScheduledActions iterates every configured gallery and runs the enabled
-// maintenance actions in a fixed order: sync → remove orphans → autotag.
+// maintenance actions in a fixed order: sync → remove orphans → autotag →
+// find-pairs.
 // Skips the whole run when a user-triggered job is already holding the
 // job manager. The reservation blocks user-triggered Start() calls for
 // the duration so the lock-less phases (RemoveOrphans) can't be raced
@@ -293,7 +294,7 @@ func (s *Server) runOrphanSweep(ctx context.Context, cx *galleryCtx) (removed, p
 		known[id] = struct{}{}
 	}
 
-	s.jobs.Update(0, total, fmt.Sprintf("[%s] pruning 0/%d…", cx.Name, total))
+	s.jobs.Update(0, total, fmt.Sprintf("[%s] pruning…", cx.Name))
 	for i, e := range entries {
 		if ctx.Err() != nil {
 			return removed, processed, total, nil
@@ -323,7 +324,7 @@ func (s *Server) runOrphanSweep(ctx context.Context, cx *galleryCtx) (removed, p
 			removed++
 		}
 		if (i+1)%50 == 0 || i == total-1 {
-			s.jobs.Update(i+1, total, fmt.Sprintf("[%s] pruning %d/%d…", cx.Name, i+1, total))
+			s.jobs.Update(i+1, total, fmt.Sprintf("[%s] pruning…", cx.Name))
 		}
 	}
 	return removed, processed, total, nil

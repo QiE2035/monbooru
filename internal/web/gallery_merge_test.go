@@ -373,6 +373,138 @@ func TestMergeGallery_Zip_HydrusBuiltinNamespacesRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMergeGallery_Zip_HydrusMultiWordTags pins that sidecar tags carrying
+// spaces (which monbooru's tag-name charset rejects) are normalized to
+// underscores on import instead of being dropped.
+func TestMergeGallery_Zip_HydrusMultiWordTags(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+	imgBytes := makeUniquePNG(t, 92)
+
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	if w, err := zw.Create("img.png"); err != nil {
+		t.Fatal(err)
+	} else if _, err := w.Write(imgBytes); err != nil {
+		t.Fatal(err)
+	}
+	sidecar := "character:hatsune miku\nseries:neon genesis evangelion\ncreator:john doe\nred hair\n"
+	if w, err := zw.Create("img.png.txt"); err != nil {
+		t.Fatal(err)
+	} else if _, err := w.Write([]byte(sidecar)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := srv.MergeGallery("stock", "zip", bytes.NewReader(zipBuf.Bytes())); err != nil {
+		t.Fatalf("MergeGallery: %v", err)
+	}
+
+	cx := srv.Get("stock")
+	rows, err := cx.DB.Read.Query(`
+		SELECT t.name, tc.name FROM image_tags it
+		JOIN tags t ON t.id = it.tag_id
+		JOIN tag_categories tc ON tc.id = t.category_id
+		ORDER BY tc.name, t.name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	got := map[string]string{}
+	for rows.Next() {
+		var name, cat string
+		if err := rows.Scan(&name, &cat); err != nil {
+			t.Fatal(err)
+		}
+		got[name] = cat
+	}
+	want := map[string]string{
+		"hatsune_miku":            "character",
+		"neon_genesis_evangelion": "copyright", // series→copyright rewrite
+		"john_doe":                "artist",     // creator→artist rewrite
+		"red_hair":                "general",
+	}
+	for n, wantCat := range want {
+		if gotCat, ok := got[n]; !ok {
+			t.Errorf("tag %q missing; got rows %v", n, got)
+		} else if gotCat != wantCat {
+			t.Errorf("tag %q in category %q, want %q", n, gotCat, wantCat)
+		}
+	}
+	for _, raw := range []string{"hatsune miku", "neon genesis evangelion", "john doe", "red hair"} {
+		if _, ok := got[raw]; ok {
+			t.Errorf("space-form literal %q should have been normalized; got rows %v", raw, got)
+		}
+	}
+}
+
+// TestMergeGallery_Zip_HydrusUnknownNamespaceDropped pins that a foreign
+// import drops a namespace with no matching category to its subtag in general
+// (species:red fox -> red_fox), so the tag lands the way a booru pull delivers
+// it; a known category still routes normally.
+func TestMergeGallery_Zip_HydrusUnknownNamespaceDropped(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+	imgBytes := makeUniquePNG(t, 93)
+
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	if w, err := zw.Create("img.png"); err != nil {
+		t.Fatal(err)
+	} else if _, err := w.Write(imgBytes); err != nil {
+		t.Fatal(err)
+	}
+	sidecar := "species:red fox\nmeme:doge\ncharacter:saya\n"
+	if w, err := zw.Create("img.png.txt"); err != nil {
+		t.Fatal(err)
+	} else if _, err := w.Write([]byte(sidecar)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := srv.MergeGallery("stock", "zip", bytes.NewReader(zipBuf.Bytes())); err != nil {
+		t.Fatalf("MergeGallery: %v", err)
+	}
+
+	cx := srv.Get("stock")
+	rows, err := cx.DB.Read.Query(`
+		SELECT t.name, tc.name FROM image_tags it
+		JOIN tags t ON t.id = it.tag_id
+		JOIN tag_categories tc ON tc.id = t.category_id
+		ORDER BY tc.name, t.name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	got := map[string]string{}
+	for rows.Next() {
+		var name, cat string
+		if err := rows.Scan(&name, &cat); err != nil {
+			t.Fatal(err)
+		}
+		got[name] = cat
+	}
+	want := map[string]string{
+		"red_fox": "general",   // species: dropped, spaces folded
+		"doge":    "general",   // meme: dropped
+		"saya":    "character", // known category still routes
+	}
+	for n, wantCat := range want {
+		if gotCat, ok := got[n]; !ok {
+			t.Errorf("tag %q missing; got rows %v", n, got)
+		} else if gotCat != wantCat {
+			t.Errorf("tag %q in category %q, want %q", n, gotCat, wantCat)
+		}
+	}
+	for _, raw := range []string{"species:red_fox", "species:red fox", "meme:doge"} {
+		if _, ok := got[raw]; ok {
+			t.Errorf("namespace-preserved literal %q should have been dropped; got rows %v", raw, got)
+		}
+	}
+}
+
 func TestMergeGallery_Zip_RejectsTraversalEntry(t *testing.T) {
 	srv := newMultiGalleryServer(t)
 	// Build a manifest pointing at an entry outside `gallery/`.

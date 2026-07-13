@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/logx"
@@ -22,25 +23,81 @@ type tagsPageData struct {
 	Categories   []models.TagCategory
 	Implications map[int64][]models.Implication // direct implications keyed by parent tag id
 	Total        int
-	// DeletableTotal excludes built-in rating rows from the bulk-delete
-	// dialog count so the wording doesn't overstate the blast radius -
-	// rating rows survive the bulk delete (they get usage-stripped, the
-	// catalog row stays).
-	DeletableTotal int
-	// HasFilter reports whether any of q / cat / origin / show_zero
-	// narrowed the listing. Drives the dialog wording so a no-filter
-	// "Delete tags in current search" reads honestly as "Delete all N
-	// tags in this gallery".
-	HasFilter  bool
-	Page       int
-	TotalPages int
-	CategoryID string
-	Prefix     string
-	Sort       string
-	Order      string
-	Origin     string
-	ShowZero   bool
-	ZeroOnly   bool
+	Page         int
+	TotalPages   int
+	CategoryID   string
+	Prefix       string
+	Sort         string
+	Order        string
+	Origin       string
+	Type         string
+	// CreatedAfter is the raw query value ("24h" / "7d" / "30d" or an ISO
+	// timestamp from a sweep-review link) so the sidebar chips highlight
+	// on the spelling the URL carries.
+	CreatedAfter string
+	// Conflicts narrows to names living in more than one category;
+	// ConflictsTotal is the badge count on the sidebar toggle.
+	Conflicts      bool
+	ConflictsTotal int
+	OriginCounts   []tags.OriginCount
+	// OriginKinds classifies each origin label on the page for chip
+	// coloring: "user", "auto", "ptr", or "site".
+	OriginKinds map[string]string
+	ShowZero    bool
+	ZeroOnly    bool
+}
+
+// originKinds buckets the given origin labels for the template's chip
+// classes. Anything that is not the operator, the PTR, or a known
+// auto-tagger attribution reads as a site / import label.
+func (s *Server) originKinds(labels []string) map[string]string {
+	kinds := make(map[string]string, len(labels))
+	var unknown []string
+	for _, l := range labels {
+		switch l {
+		case "":
+		case "user":
+			kinds[l] = "user"
+		case "ptr":
+			kinds[l] = "ptr"
+		case "auto":
+			kinds[l] = "auto"
+		default:
+			unknown = append(unknown, l)
+		}
+	}
+	if len(unknown) > 0 {
+		autoSet, err := s.tagSvc().AutoTaggerLabels(unknown)
+		if err != nil {
+			logx.Warnf("classify origin labels: %v", err)
+		}
+		for _, l := range unknown {
+			if _, ok := autoSet[l]; ok {
+				kinds[l] = "auto"
+			} else {
+				kinds[l] = "site"
+			}
+		}
+	}
+	return kinds
+}
+
+// createdAfterCutoff resolves the created_after query value: the quick
+// range tokens the sidebar emits become a UTC cutoff, anything else
+// (the ISO timestamp a sweep-review link carries) passes through.
+func createdAfterCutoff(raw string) string {
+	now := time.Now().UTC()
+	switch raw {
+	case "":
+		return ""
+	case "24h":
+		return now.Add(-24 * time.Hour).Format(time.RFC3339)
+	case "7d":
+		return now.AddDate(0, 0, -7).Format(time.RFC3339)
+	case "30d":
+		return now.AddDate(0, 0, -30).Format(time.RFC3339)
+	}
+	return raw
 }
 
 func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
@@ -76,15 +133,26 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	orderStr := q.Get("order")
 	if orderStr != "asc" && orderStr != "desc" {
-		// Default to the natural reading direction per sort: most-used first
-		// for usage, alphabetical A→Z for name.
-		if sortStr == "usage" {
+		// Default to the natural reading direction per sort: most-used /
+		// newest / most recently applied first, alphabetical A→Z for name.
+		switch sortStr {
+		case "usage", "created", "last_used":
 			orderStr = "desc"
-		} else {
+		default:
 			orderStr = "asc"
 		}
 	}
 	originStr := q.Get("origin")
+	// Plain tags by default; alias rows surface via the explicit sidebar
+	// filter (whose links always carry a type=, so "All" stays reachable).
+	// The legacy origin=alias spelling opts out - it selects alias rows by
+	// structure and would otherwise always come back empty.
+	typeStr := q.Get("type")
+	if !q.Has("type") && originStr != "alias" {
+		typeStr = "tag"
+	}
+	createdAfterRaw := q.Get("created_after")
+	conflictsOnly := q.Get("conflicts") == "1"
 	// show_zero is tri-state: empty/"1" → Show (default so freshly-declared
 	// tags surface without a filter flip); "0" → Hide; "only" → only zero-
 	// usage rows (triage view).
@@ -96,7 +164,8 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 		page = p
 	}
 
-	filter := s.buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr, showZero, zeroOnly, page, 100)
+	filter := s.buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr, typeStr, createdAfterRaw, showZero, zeroOnly, page, 100)
+	filter.ConflictsOnly = conflictsOnly
 
 	tagList, total, err := s.tagSvc().ListTags(filter)
 	if err != nil {
@@ -113,7 +182,8 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 	// survives a tag prune.
 	if total > 0 && page > totalPages {
 		page = totalPages
-		filter = s.buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr, showZero, zeroOnly, page, 100)
+		filter = s.buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr, typeStr, createdAfterRaw, showZero, zeroOnly, page, 100)
+		filter.ConflictsOnly = conflictsOnly
 		tagList, total, err = s.tagSvc().ListTags(filter)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -133,24 +203,23 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Compute the count that bulk-delete would actually remove from the
-	// catalog: total minus rating rows (which DeleteTag treats as a
-	// usage-strip, leaving the catalog rows in place).
-	deletable := total
-	if ratingID := s.tagSvc().RatingCategoryID(); ratingID != 0 {
-		ratingFilter := filter
-		ratingFilter.CategoryID = &ratingID
-		ratingFilter.PageIndex = 0
-		ratingFilter.Limit = 0
-		_, ratingTotal, ratingErr := s.tagSvc().ListTags(ratingFilter)
-		if ratingErr == nil {
-			deletable = total - ratingTotal
-			if deletable < 0 {
-				deletable = 0
-			}
-		}
+	conflictsTotal, err := s.tagSvc().ConflictsCount()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	hasFilter := prefix != "" || catIDStr != "" || originStr != "" || zeroParam == "0" || zeroOnly
+	originCounts, err := s.tagSvc().OriginCounts()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	pageLabels := make([]string, 0, len(tagList))
+	for _, t := range tagList {
+		pageLabels = append(pageLabels, t.Origin)
+	}
+	for _, oc := range originCounts {
+		pageLabels = append(pageLabels, oc.Label)
+	}
 
 	data := tagsPageData{
 		baseData:       s.base(r, "tags", "Tags - "+s.booruName()),
@@ -158,8 +227,6 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 		Categories:     cats,
 		Implications:   imps,
 		Total:          total,
-		DeletableTotal: deletable,
-		HasFilter:      hasFilter,
 		Page:           page,
 		TotalPages:     totalPages,
 		CategoryID:     catIDStr,
@@ -167,22 +234,30 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 		Sort:           sortStr,
 		Order:          orderStr,
 		Origin:         originStr,
+		Type:           typeStr,
+		CreatedAfter:   createdAfterRaw,
+		Conflicts:      conflictsOnly,
+		ConflictsTotal: conflictsTotal,
+		OriginCounts:   originCounts,
+		OriginKinds:    s.originKinds(pageLabels),
 		ShowZero:       showZero,
 		ZeroOnly:       zeroOnly,
 	}
 	s.renderTemplate(w, "tags.html", data)
 }
 
-func (s *Server) buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr string, showZero, zeroOnly bool, page, limit int) tags.TagFilter {
+func (s *Server) buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr, typeStr, createdAfterRaw string, showZero, zeroOnly bool, page, limit int) tags.TagFilter {
 	f := tags.TagFilter{
-		Prefix:    prefix,
-		Sort:      sortStr,
-		Order:     orderStr,
-		PageIndex: page - 1,
-		Limit:     limit,
-		Origin:    originStr,
-		ShowZero:  showZero,
-		ZeroOnly:  zeroOnly,
+		Prefix:       prefix,
+		Sort:         sortStr,
+		Order:        orderStr,
+		PageIndex:    page - 1,
+		Limit:        limit,
+		Origin:       originStr,
+		Type:         typeStr,
+		CreatedAfter: createdAfterCutoff(createdAfterRaw),
+		ShowZero:     showZero,
+		ZeroOnly:     zeroOnly,
 	}
 	if catIDStr != "" {
 		if id, err := strconv.ParseInt(catIDStr, 10, 64); err == nil {
@@ -192,72 +267,14 @@ func (s *Server) buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr s
 	return f
 }
 
-func (s *Server) mergeTagsPost(w http.ResponseWriter, r *http.Request) {
-	if !parseFormOK(w, r) {
-		return
-	}
-	aliasIDStr := r.FormValue("alias_id")
-	canonInput := strings.TrimSpace(r.FormValue("canonical_id"))
-
-	aliasID, err := strconv.ParseInt(aliasIDStr, 10, 64)
-	if err != nil {
-		if isHTMXRequest(r) {
-			// 200 + flash so htmx 1.9 swaps it into #merge-error;
-			// the dialog's after-request hook detects the
-			// flash-err class to stay open instead of closing.
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			writeInlineFlash(w, "err", "Invalid source tag.")
-			return
-		}
-		http.Error(w, "bad alias id", http.StatusBadRequest)
-		return
-	}
-
-	canonID, msg := s.resolveOrCreateCanonicalTag(canonInput)
-	if msg != "" {
-		flashErr(w, r, http.StatusBadRequest, msg)
-		return
-	}
-
-	// Capture the source name for the post-merge redirect to
-	// /tags?origin=alias&q=<source>.
-	srcTag, _ := s.tagSvc().GetTag(aliasID)
-	if err := s.tagSvc().MergeTags(aliasID, canonID); err != nil {
-		if isHTMXRequest(r) {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			writeInlineFlash(w, "err", err.Error())
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	s.Active().InvalidateCaches()
-
-	canon, _ := s.tagSvc().GetTag(canonID)
-	canonName := canonInput
-	if canon != nil && canon.Name != "" {
-		canonName = canon.Name
-	}
-	// Land on the alias-only filtered listing so the freshly-created
-	// alias row is the only thing on screen, mirroring the create-
-	// alias dialog's post-submit redirect. Falls back to /tags if
-	// the source lookup couldn't recover a name.
-	dest := "/tags?origin=alias"
-	if srcTag != nil && srcTag.Name != "" {
-		dest = "/tags?origin=alias&q=" + url.QueryEscape(srcTag.Name)
-	}
-	hxDone(w, r, "Aliased to "+canonName+".", dest, "/tags")
-}
-
-// resolveOrCreateCanonicalTag is the alias-side variant of
-// resolveCanonicalTag: when the canonical name doesn't yet name a
-// tag, the missing row is created via GetOrCreateTag instead of
-// surfacing a "Tag not found" error. Mirrors the implications dialog's
-// parseTagInput → GetOrCreateTag flow so users can declare an alias
-// (Create alias / Alias→ / Repoint→) to a still-pending name. A
-// numeric input still requires the id to exist (a typo'd id shouldn't
-// silently mint a fresh tag).
-func (s *Server) resolveOrCreateCanonicalTag(input string) (int64, string) {
+// resolveCanonicalTagInput resolves a "name", "category:name", or id
+// input to a tag id. With create set, a missing name is minted via
+// GetOrCreateTag - the implications dialog's parseTagInput →
+// GetOrCreateTag flow, so users can declare an alias or edge to a
+// still-pending name; without it the input must name an existing tag.
+// A numeric input always requires the id to exist (a typo'd id
+// shouldn't silently mint a fresh tag).
+func (s *Server) resolveCanonicalTagInput(input string, create bool) (int64, string) {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return 0, "Tag name is required."
@@ -281,6 +298,15 @@ func (s *Server) resolveOrCreateCanonicalTag(input string) (int64, string) {
 		).Scan(&catID); err != nil {
 			return 0, "Category not found: " + catName
 		}
+		if !create {
+			var id int64
+			if err := s.db().Read.QueryRow(
+				`SELECT id FROM tags WHERE name = ? AND category_id = ?`, tagName, catID,
+			).Scan(&id); err != nil {
+				return 0, "Tag not found: " + input
+			}
+			return id, ""
+		}
 		tag, err := s.tagSvc().GetOrCreateTag(tagName, catID)
 		if err != nil {
 			return 0, err.Error()
@@ -300,6 +326,9 @@ func (s *Server) resolveOrCreateCanonicalTag(input string) (int64, string) {
 	case 1:
 		return ids[0], ""
 	case 0:
+		if !create {
+			return 0, "Tag not found: " + input
+		}
 		cx := s.Active()
 		if cx == nil || cx.GeneralCategoryID == 0 {
 			return 0, "Could not resolve the general category."
@@ -323,11 +352,11 @@ func (s *Server) createTagPost(w http.ResponseWriter, r *http.Request) {
 
 	catID, err := strconv.ParseInt(catIDStr, 10, 64)
 	if err != nil {
-		flashErr(w, r, http.StatusBadRequest, "Invalid category.")
+		externalErr(w, r, "Invalid category.", http.StatusBadRequest)
 		return
 	}
 	if _, err := s.tagSvc().GetOrCreateTag(name, catID); err != nil {
-		flashErr(w, r, http.StatusBadRequest, err.Error())
+		externalErr(w, r, err.Error(), http.StatusBadRequest)
 		return
 	}
 	s.Active().InvalidateCaches()
@@ -347,7 +376,7 @@ func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
 		externalErr(w, r, "Invalid category.", http.StatusBadRequest)
 		return
 	}
-	canonID, msg := s.resolveOrCreateCanonicalTag(canonInput)
+	canonID, msg := s.resolveCanonicalTagInput(canonInput, true)
 	if msg != "" {
 		externalErr(w, r, msg, http.StatusBadRequest)
 		return
@@ -359,7 +388,7 @@ func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Active().InvalidateCaches()
 
-	hxDone(w, r, "Alias "+name+" created.", "/tags?origin=alias&q="+url.QueryEscape(name), "/tags?origin=alias")
+	hxDone(w, r, "Alias "+name+" created.", "/tags?type=alias&q="+url.QueryEscape(name), "/tags?type=alias")
 }
 
 func (s *Server) deleteTagHandler(w http.ResponseWriter, r *http.Request) {
@@ -375,33 +404,17 @@ func (s *Server) deleteTagHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// deleteTagsSearchPost deletes every tag matching the current /tags
-// filter. Mirrors the gallery's /internal/delete-search: resolves the
-// id set up front, kicks off a background "tag" job, and returns 202
+// deleteTagsSearchPost deletes every tag in scope - the checkbox
+// selection when ids are posted, else everything matching the posted
+// /tags filter. Mirrors the gallery's /internal/delete-search: resolve
+// the id set up front, kick off a background "tag" job, return 202
 // Accepted so the client surfaces progress via the job status bar.
 func (s *Server) deleteTagsSearchPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
-	q := r.Form
-	zeroParam := q.Get("show_zero")
-	zeroOnly := zeroParam == "only"
-	showZero := zeroOnly || zeroParam != "0"
-	filter := s.buildTagFilter(
-		q.Get("cat"), q.Get("q"), q.Get("sort"), q.Get("order"),
-		q.Get("origin"), showZero, zeroOnly, 1, 0,
-	)
-	ids, err := s.tagSvc().ListTagIDs(filter)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", err.Error())
-		return
-	}
-	if len(ids) == 0 {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	if !s.startJob(w, models.JobTypeTag) {
+	ids, ok := s.startTagScopeJob(w, r)
+	if !ok {
 		return
 	}
 	go s.runDeleteTagsByIDs(ids)
@@ -417,7 +430,7 @@ func (s *Server) runDeleteTagsByIDs(ids []int64) {
 	processed, deleted := 0, 0
 	cancelled := false
 
-	s.jobs.Update(0, total, fmt.Sprintf("deleting tags 0/%d…", total))
+	s.jobs.Update(0, total, "deleting tags…")
 	for i, id := range ids {
 		if ctx.Err() != nil {
 			cancelled = true
@@ -430,7 +443,7 @@ func (s *Server) runDeleteTagsByIDs(ids []int64) {
 		}
 		processed = i + 1
 		if processed%50 == 0 || processed == total {
-			s.jobs.Update(processed, total, fmt.Sprintf("deleting tags %d/%d…", processed, total))
+			s.jobs.Update(processed, total, "deleting tags…")
 		}
 	}
 
@@ -448,19 +461,17 @@ func (s *Server) renameTagPost(w http.ResponseWriter, r *http.Request) {
 	}
 	newName := strings.TrimSpace(r.FormValue("name"))
 	if newName == "" {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", "Name required.")
-			return
-		}
-		http.Error(w, "name required", http.StatusBadRequest)
+		externalErr(w, r, "Name required.", http.StatusBadRequest)
 		return
 	}
-	if err := s.tagSvc().RenameTag(id, newName); err != nil {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", err.Error())
-			return
-		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	var err error
+	if r.FormValue("keep_alias") == "1" {
+		err = s.tagSvc().RenameTagKeepAlias(id, newName)
+	} else {
+		err = s.tagSvc().RenameTag(id, newName)
+	}
+	if err != nil {
+		externalErr(w, r, err.Error(), http.StatusBadRequest)
 		return
 	}
 	// A tag rename moves it to a new literal-name match in the search

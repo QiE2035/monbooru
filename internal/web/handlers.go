@@ -6,6 +6,7 @@ import (
 	"html"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/leqwin/monbooru/internal/db"
@@ -105,6 +106,15 @@ func (s *Server) helpHandler(w http.ResponseWriter, r *http.Request) {
 // white page; routing through the standard layout keeps the user inside
 // the app with a back link.
 func (s *Server) notFoundHandler(w http.ResponseWriter, r *http.Request) {
+	// Routes are registered slash-less; retry /categories/ style paths
+	// without the trailing slash before giving up.
+	if p := strings.TrimRight(r.URL.Path, "/"); p != "" && p != r.URL.Path {
+		if r.URL.RawQuery != "" {
+			p += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, p, http.StatusMovedPermanently)
+		return
+	}
 	w.WriteHeader(http.StatusNotFound)
 	s.renderTemplate(w, "notfound.html", s.base(r, "", "Not found - "+s.booruName()))
 }
@@ -121,12 +131,12 @@ func loadImage(ctx context.Context, database *db.DB, id int64) (*models.Image, e
 	err := database.Read.QueryRowContext(ctx,
 		`SELECT id, sha256, canonical_path, folder_path, file_type,
 		        width, height, file_size, is_missing, is_favorited,
-		        is_inbox, auto_tagged_at, source_type, origin, source, url, note, page_count, duration_seconds, series, series_order, phash, ingested_at
+		        is_inbox, auto_tagged_at, source_type, origin, source, url, note, original_source, page_count, duration_seconds, series, series_order, phash, ingested_at
 		 FROM images WHERE id = ?`, id,
 	).Scan(
 		&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
 		&width, &height, &img.FileSize, &isMissing, &isFav,
-		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &img.Note, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt,
+		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &img.Note, &img.OriginalSource, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt,
 	)
 	if err != nil {
 		return nil, err

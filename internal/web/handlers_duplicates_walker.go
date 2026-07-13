@@ -303,7 +303,7 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 	go func() {
 		ctx := s.jobs.Context()
 		total := len(victims)
-		s.jobs.Update(0, total, fmt.Sprintf("removing 0/%d…", total))
+		s.jobs.Update(0, total, "removing…")
 		removed := 0
 		for i, id := range victims {
 			if ctx.Err() != nil {
@@ -317,7 +317,7 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 			}
 			removed++
 			if (i+1)%25 == 0 || i == total-1 {
-				s.jobs.Update(i+1, total, fmt.Sprintf("removing %d/%d…", i+1, total))
+				s.jobs.Update(i+1, total, "removing…")
 			}
 		}
 		s.Active().InvalidateCaches()

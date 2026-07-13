@@ -3,10 +3,24 @@
 {{$prefix := .Prefix}}
 {{$sort := .Sort}}
 <div id="sidebar-inner">
-  <div class="sidebar-section">
+  <!-- Boosted filter links swap #collections-page in place and refresh
+       this sidebar out-of-band so active states track the pushed URL
+       without a full reload, mirroring the tags page. -->
+  <div class="sidebar-section"
+       hx-boost="true" hx-target="#collections-page" hx-select="#collections-page" hx-swap="outerHTML"
+       hx-select-oob="#sidebar-inner" hx-push-url="true">
     <h3>Filter</h3>
     <form action="/collections" method="get" class="tags-filter-row">
-      <input type="text" name="q" value="{{$prefix}}" placeholder="Search collections…">
+      <!-- No sidebar OOB refresh here (the wrapper's hx-select-oob is
+           inherited without the unset): swapping the input would drop
+           focus and eat the letters typed since the request. -->
+      <input type="text" name="q" id="collections-q-input" value="{{$prefix}}" placeholder="Search…"
+             hx-get="/collections"
+             hx-trigger="input changed delay:300ms"
+             hx-include="closest form"
+             hx-target="#collections-page" hx-select="#collections-page" hx-swap="outerHTML"
+             hx-select-oob="unset"
+             hx-push-url="true">
       <input type="hidden" name="sort" value="{{$sort}}">
       <button type="submit">OK</button>
     </form>
@@ -61,7 +75,9 @@
   </ul>
 
   {{$base := printf "/collections?q=%s&sort=%s&page=" .Prefix .Sort}}
+  <div hx-boost="true" hx-target="#collections-page" hx-select="#collections-page" hx-swap="outerHTML" hx-select-oob="#sidebar-inner" hx-push-url="true">
   {{template "partials/pagination.html" (dict "Base" $base "Page" .Page "Total" .TotalPages)}}
+  </div>
 </div>
 
 <dialog id="collection-rename-dialog">
@@ -71,16 +87,7 @@
     <p>Rename <strong id="collection-rename-src"></strong></p>
     <div class="field">
       <label>New name (renaming onto an existing collection merges them)</label>
-      <div class="series-input-wrap">
-        <input id="collection-rename-input" type="text" name="name" maxlength="200" required autocomplete="off"
-               hx-get="/internal/collection/suggest"
-               hx-trigger="input changed delay:200ms"
-               hx-target="#collection-rename-suggest"
-               hx-swap="innerHTML"
-               hx-vals='js:{prefix: document.getElementById("collection-rename-input").value}'
-               onkeydown="handleSuggestKey(event, 'collection-rename-suggest', 'collection-rename-input')">
-        <div id="collection-rename-suggest" class="suggest-dropdown series-suggest-dropdown"></div>
-      </div>
+      {{template "suggest_input" dict "Name" "name" "InputID" "collection-rename-input" "Endpoint" "/internal/collection/suggest" "SuggestID" "collection-rename-suggest" "Required" true}}
     </div>
     <div id="collection-rename-error"></div>
     <div class="dialog-actions">
@@ -103,19 +110,20 @@
 </dialog>
 
 <script>
-document.querySelectorAll('.btn-rename-collection').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    var name = this.dataset.name;
-    document.getElementById('collection-rename-prev').value = name;
-    document.getElementById('collection-rename-src').textContent = name;
-    clearSlots('collection-rename-error', 'collection-rename-suggest');
-    var input = document.getElementById('collection-rename-input');
-    input.value = name;
-    document.getElementById('collection-rename-dialog').showModal();
-    input.focus();
-    input.select();
-  });
-});
+// htmx swaps #collections-page in place on filter clicks and the live
+// search, so the card buttons bind through delegated document-level
+// listeners that resolve their element at event time.
+function openCollectionRename(btn) {
+  var name = btn.dataset.name;
+  document.getElementById('collection-rename-prev').value = name;
+  document.getElementById('collection-rename-src').textContent = name;
+  clearSlots('collection-rename-error', 'collection-rename-suggest');
+  var input = document.getElementById('collection-rename-input');
+  input.value = name;
+  document.getElementById('collection-rename-dialog').showModal();
+  input.focus();
+  input.select();
+}
 
 document.getElementById('collection-rename-form').addEventListener('submit', function(e) {
   e.preventDefault();
@@ -138,32 +146,78 @@ document.getElementById('collection-rename-form').addEventListener('submit', fun
 });
 
 var _orderClicks = [];
+var _orderMode = 'order';
+var _origOrder = [];
 
+function captureOrigOrder() {
+  _origOrder = Array.prototype.map.call(
+    document.querySelectorAll('#collection-order-body .collection-order-tile'),
+    function(t) { return t.dataset.id; });
+}
+
+// applyOrderMode reflows the tiles for the current mode - filename mode sorts
+// them by filename (natural), order mode restores the server's reading order -
+// then flips the toggle's active button and the mode-specific intro line. The
+// mode only arranges the grid; it assigns no order on its own (that is a click,
+// or Save while in filename mode).
+function applyOrderMode() {
+  document.querySelectorAll('#collection-order-body [data-order-mode]').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.orderMode === _orderMode);
+  });
+  var oi = document.querySelector('#collection-order-body .order-mode-order');
+  var fi = document.querySelector('#collection-order-body .order-mode-filename');
+  if (oi) oi.hidden = _orderMode !== 'order';
+  if (fi) fi.hidden = _orderMode !== 'filename';
+  var grid = document.querySelector('#collection-order-body .collection-order-grid');
+  if (grid) {
+    var tiles = Array.prototype.slice.call(grid.querySelectorAll('.collection-order-tile'));
+    if (_orderMode === 'filename') {
+      tiles.sort(function(a, b) {
+        return (a.dataset.filename || '').localeCompare(b.dataset.filename || '', undefined, {numeric: true, sensitivity: 'base'});
+      });
+      tiles.forEach(function(t) { grid.appendChild(t); });
+    } else {
+      _origOrder.forEach(function(id) {
+        var t = grid.querySelector('.collection-order-tile[data-id="' + id + '"]');
+        if (t) grid.appendChild(t);
+      });
+    }
+  }
+  renumberOrderTiles();
+}
+
+// renumberOrderTiles labels each tile with its click position, if picked. The
+// mode only rearranges the grid; it never assigns an order on its own.
 function renumberOrderTiles() {
   document.querySelectorAll('#collection-order-body .collection-order-tile').forEach(function(tile) {
-    var idx = _orderClicks.indexOf(tile.dataset.id);
-    tile.querySelector('.collection-order-num').textContent = idx >= 0 ? String(idx + 1) : '';
-    tile.classList.toggle('picked', idx >= 0);
+    var i = _orderClicks.indexOf(tile.dataset.id);
+    tile.querySelector('.collection-order-num').textContent = i >= 0 ? String(i + 1) : '';
+    tile.classList.toggle('picked', i >= 0);
   });
 }
 
-document.querySelectorAll('.btn-reorder-collection').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    var dlg = document.getElementById('collection-order-dialog');
-    dlg.dataset.name = this.dataset.name;
-    _orderClicks = [];
-    clearSlots('collection-order-error');
-    var body = document.getElementById('collection-order-body');
-    body.innerHTML = 'Loading…';
-    fetch('/collections/order?name=' + encodeURIComponent(this.dataset.name), {credentials: 'same-origin'})
-      .then(function(r) { return r.text(); })
-      .then(function(html) { body.innerHTML = html; })
-      .catch(function() { body.innerHTML = '<div class="flash flash-err">Could not load the collection.</div>'; });
-    dlg.showModal();
-  });
-});
+function openCollectionOrder(btn) {
+  var dlg = document.getElementById('collection-order-dialog');
+  dlg.dataset.name = btn.dataset.name;
+  _orderClicks = [];
+  _orderMode = 'order';
+  clearSlots('collection-order-error');
+  var body = document.getElementById('collection-order-body');
+  body.innerHTML = 'Loading…';
+  fetch('/collections/order?name=' + encodeURIComponent(btn.dataset.name), {credentials: 'same-origin', headers: {'HX-Request': 'true'}})
+    .then(function(r) { return r.text(); })
+    .then(function(html) { body.innerHTML = html; captureOrigOrder(); applyOrderMode(); })
+    .catch(function() { body.innerHTML = '<div class="flash flash-err">Could not load the collection.</div>'; });
+  dlg.showModal();
+}
 
 document.getElementById('collection-order-body').addEventListener('click', function(e) {
+  var modeBtn = e.target.closest('[data-order-mode]');
+  if (modeBtn) {
+    _orderMode = modeBtn.dataset.orderMode;
+    applyOrderMode();
+    return;
+  }
   var more = e.target.closest('.collection-order-more');
   if (more) {
     // Re-fetch the window with a larger limit; picked ids live in
@@ -171,9 +225,9 @@ document.getElementById('collection-order-body').addEventListener('click', funct
     var dlg = document.getElementById('collection-order-dialog');
     var body = document.getElementById('collection-order-body');
     more.disabled = true;
-    fetch('/collections/order?name=' + encodeURIComponent(dlg.dataset.name) + '&limit=' + more.dataset.limit, {credentials: 'same-origin'})
+    fetch('/collections/order?name=' + encodeURIComponent(dlg.dataset.name) + '&limit=' + more.dataset.limit, {credentials: 'same-origin', headers: {'HX-Request': 'true'}})
       .then(function(r) { return r.text(); })
-      .then(function(html) { body.innerHTML = html; renumberOrderTiles(); })
+      .then(function(html) { body.innerHTML = html; captureOrigOrder(); applyOrderMode(); })
       .catch(function() { more.disabled = false; });
     return;
   }
@@ -193,11 +247,17 @@ document.getElementById('collection-order-form').addEventListener('submit', func
   e.preventDefault();
   var err = document.getElementById('collection-order-error');
   err.innerHTML = '';
-  if (!_orderClicks.length) { err.innerHTML = '<div class="flash flash-err">Click at least one image first.</div>'; return; }
-  postForm('/collections/order', {
-    collection: document.getElementById('collection-order-dialog').dataset.name,
-    ids: _orderClicks.join(',')
-  }, {
+  var name = document.getElementById('collection-order-dialog').dataset.name;
+  var params;
+  if (_orderClicks.length) {
+    params = {collection: name, ids: _orderClicks.join(',')};
+  } else if (_orderMode === 'filename') {
+    params = {collection: name, mode: 'filename'};
+  } else {
+    err.innerHTML = '<div class="flash flash-err">Click images to set an order, or switch to "By filename".</div>';
+    return;
+  }
+  postForm('/collections/order', params, {
     dialogId: 'collection-order-dialog',
     flashId: 'collection-order-error',
     failMsg: 'Reorder failed.',
@@ -213,22 +273,30 @@ document.getElementById('collection-order-form').addEventListener('submit', func
   });
 });
 
-document.querySelectorAll('.btn-dissolve-collection').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    var name = this.dataset.name;
-    showConfirm('Dissolve "' + name + '"? The collection label is removed from every image in it.', function() {
-      postForm('/collections/dissolve', {collection: name}, {
-        okStatus: 202,
-        flashId: 'collection-flash',
-        failMsg: 'Dissolve failed.',
-        catchMsg: 'Dissolve request failed.',
-        onOK: function() {
-          _pendingGalleryReload = true;
-          if (typeof refreshJobStatus === 'function') refreshJobStatus();
-        }
-      });
-    }, 'The images and the files on disk are not deleted.', 'Dissolve');
-  });
+function confirmDissolveCollection(btn) {
+  var name = btn.dataset.name;
+  showConfirm('Dissolve "' + name + '"? The collection label is removed from every image in it.', function() {
+    postForm('/collections/dissolve', {collection: name}, {
+      okStatus: 202,
+      flashId: 'collection-flash',
+      failMsg: 'Dissolve failed.',
+      catchMsg: 'Dissolve request failed.',
+      onOK: function() {
+        _pendingGalleryReload = true;
+        if (typeof refreshJobStatus === 'function') refreshJobStatus();
+      }
+    });
+  }, 'The images and the files on disk are not deleted.', 'Dissolve');
+}
+
+document.addEventListener('click', function(e) {
+  if (!e.target.closest) return;
+  var el = e.target.closest('.btn-rename-collection');
+  if (el) { openCollectionRename(el); return; }
+  el = e.target.closest('.btn-reorder-collection');
+  if (el) { openCollectionOrder(el); return; }
+  el = e.target.closest('.btn-dissolve-collection');
+  if (el) { confirmDissolveCollection(el); }
 });
 </script>
 

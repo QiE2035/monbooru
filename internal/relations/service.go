@@ -43,17 +43,12 @@ var (
 
 // FriendlyError carries an operator-facing message and the HTTP status
 // code a transport-layer error writer should surface for one of the
-// Service's typed errors. Wraps the original so callers can still
-// errors.Is() against the sentinel.
+// Service's typed errors.
 type FriendlyError struct {
-	Inner   error
 	Status  int    // HTTP status the caller should write (400, 409, ...)
 	Code    string // short identifier for JSON error envelopes
 	Message string // the line the operator sees
 }
-
-func (e *FriendlyError) Error() string { return e.Inner.Error() }
-func (e *FriendlyError) Unwrap() error { return e.Inner }
 
 // FriendlyErrorFor maps a Service error to the operator-facing message
 // shared by every transport. Returns nil when err is not one of the
@@ -61,15 +56,15 @@ func (e *FriendlyError) Unwrap() error { return e.Inner }
 func FriendlyErrorFor(err error) *FriendlyError {
 	switch {
 	case errors.Is(err, ErrSelfRelation):
-		return &FriendlyError{Inner: err, Status: 400, Code: "invalid_request", Message: "Cannot relate an image to itself."}
+		return &FriendlyError{Status: 400, Code: "invalid_request", Message: "Cannot relate an image to itself."}
 	case errors.Is(err, ErrRelationConflict):
-		return &FriendlyError{Inner: err, Status: 409, Code: "conflict", Message: "Pair already has a different relation; remove the existing one first."}
+		return &FriendlyError{Status: 409, Code: "conflict", Message: "Pair already has a different relation; remove the existing one first."}
 	case errors.Is(err, ErrVersionExists):
-		return &FriendlyError{Inner: err, Status: 409, Code: "conflict", Message: "One of the images already has a version edge; remove it first."}
+		return &FriendlyError{Status: 409, Code: "conflict", Message: "One of the images already has a version edge; remove it first."}
 	case errors.Is(err, ErrDerivativeExists):
-		return &FriendlyError{Inner: err, Status: 409, Code: "conflict", Message: "The chosen derivative already has a source; remove it first."}
+		return &FriendlyError{Status: 409, Code: "conflict", Message: "The chosen derivative already has a source; remove it first."}
 	case errors.Is(err, ErrNotInGroup):
-		return &FriendlyError{Inner: err, Status: 400, Code: "invalid_request", Message: "Image isn't a member of that group."}
+		return &FriendlyError{Status: 400, Code: "invalid_request", Message: "Image isn't a member of that group."}
 	}
 	return nil
 }

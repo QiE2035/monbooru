@@ -136,6 +136,123 @@ func TestImportGalleryDB_RestoresRows(t *testing.T) {
 	}
 }
 
+// A raw DB import restores tags verbatim, so it can carry alias shapes
+// the write paths refuse: chains, cycles, and canonical pointers on
+// plain rows. The import-time sanitizer must flatten them back to the
+// one-hop invariant the resolvers assume.
+func TestImportGalleryDB_NormalizesAliasChains(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+	seedImportExportFixture(t, srv)
+	cx := srv.Get("stock")
+
+	insertTag := func(name string, isAlias int, canonical any) int64 {
+		t.Helper()
+		var id int64
+		if err := cx.DB.Write.QueryRow(
+			`INSERT INTO tags (name, category_id, is_alias, canonical_tag_id, usage_count, origin)
+			 VALUES (?, 1, ?, ?, 0, 'user') RETURNING id`,
+			name, isAlias, canonical,
+		).Scan(&id); err != nil {
+			t.Fatalf("insert %s: %v", name, err)
+		}
+		return id
+	}
+	repoint := func(id, canonical int64) {
+		t.Helper()
+		if _, err := cx.DB.Write.Exec(`UPDATE tags SET canonical_tag_id = ? WHERE id = ?`, canonical, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	plainID := insertTag("norm_plain", 0, nil)
+	midID := insertTag("norm_mid", 1, plainID)
+	leafID := insertTag("norm_leaf", 1, midID) // chain: leaf -> mid -> plain
+	cycleA := insertTag("norm_cycle_a", 1, nil)
+	cycleB := insertTag("norm_cycle_b", 1, cycleA)
+	repoint(cycleA, cycleB) // cycle: a <-> b
+	strayID := insertTag("norm_stray", 0, nil)
+	repoint(strayID, plainID) // stray pointer on a plain row
+
+	var buf bytes.Buffer
+	if err := srv.ExportGalleryDB("stock", &buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ImportGallery("stock", "db", bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	cx = srv.Get("stock")
+	shape := func(id int64) (int, int64) {
+		t.Helper()
+		var alias int
+		var canonical int64
+		if err := cx.DB.Read.QueryRow(
+			`SELECT is_alias, COALESCE(canonical_tag_id, 0) FROM tags WHERE id = ?`, id,
+		).Scan(&alias, &canonical); err != nil {
+			t.Fatal(err)
+		}
+		return alias, canonical
+	}
+	if a, c := shape(leafID); a != 1 || c != plainID {
+		t.Errorf("leaf = (alias=%d, canonical=%d), want re-pointed at plain %d", a, c, plainID)
+	}
+	if a, c := shape(midID); a != 1 || c != plainID {
+		t.Errorf("mid = (alias=%d, canonical=%d), want %d unchanged", a, c, plainID)
+	}
+	// The sorted walk promotes the lower-id cycle member; the other
+	// re-points at it.
+	if a, c := shape(cycleA); a != 0 || c != 0 {
+		t.Errorf("cycle_a = (alias=%d, canonical=%d), want promoted to plain", a, c)
+	}
+	if a, c := shape(cycleB); a != 1 || c != cycleA {
+		t.Errorf("cycle_b = (alias=%d, canonical=%d), want re-pointed at %d", a, c, cycleA)
+	}
+	if a, c := shape(strayID); a != 0 || c != 0 {
+		t.Errorf("stray = (alias=%d, canonical=%d), want the pointer cleared", a, c)
+	}
+}
+
+// TestSanitizeImportedAliasChains_DanglingCanonical: an alias whose
+// canonical points at a row that no longer exists is promoted to a
+// plain tag. Driven directly - a round-trip cannot produce the dangling
+// FK the sanitizer guards against.
+func TestSanitizeImportedAliasChains_DanglingCanonical(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+	cx := srv.Get("stock")
+
+	// The dangling pointer only arises in foreign DB files written without
+	// FK enforcement; drop the pragma to reproduce that shape.
+	if _, err := cx.DB.Write.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		t.Fatal(err)
+	}
+	var danglingID int64
+	err := cx.DB.Write.QueryRow(
+		`INSERT INTO tags (name, category_id, is_alias, canonical_tag_id, usage_count, origin)
+		 VALUES ('dangling_alias', 1, 1, 999999, 0, 'user') RETURNING id`,
+	).Scan(&danglingID)
+	if _, pragmaErr := cx.DB.Write.Exec(`PRAGMA foreign_keys=ON`); pragmaErr != nil {
+		t.Fatal(pragmaErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sanitizeImportedAliasChains(cx.DB); err != nil {
+		t.Fatal(err)
+	}
+
+	var alias int
+	var canonical int64
+	if err := cx.DB.Read.QueryRow(
+		`SELECT is_alias, COALESCE(canonical_tag_id, 0) FROM tags WHERE id = ?`, danglingID,
+	).Scan(&alias, &canonical); err != nil {
+		t.Fatal(err)
+	}
+	if alias != 0 || canonical != 0 {
+		t.Errorf("dangling alias = (alias=%d, canonical=%d), want promoted to plain", alias, canonical)
+	}
+}
+
 func TestImportGalleryJSON_RestoresRows(t *testing.T) {
 	srv := newMultiGalleryServer(t)
 	seedImportExportFixture(t, srv)
@@ -181,6 +298,7 @@ func TestImportGalleryJSON_RoundTripsProvenance(t *testing.T) {
 		{`INSERT INTO image_sources (image_id, site, post_id, url, md5, commentary) VALUES (?, 'danbooru', '42', 'https://x/1', 'abc123', 'artist says hi')`, []any{imgID}},
 		{`INSERT INTO image_sources (image_id, site, post_id, url) VALUES (?, 'pixiv', '', 'https://x/2')`, []any{imgID}},
 		{`INSERT INTO image_annotations (image_id, site, post_id, x, y, w, h, body) VALUES (?, 'danbooru', '42', 1, 2, 3, 4, 'a note box')`, []any{imgID}},
+		{`INSERT INTO image_annotations (image_id, site, post_id, x, y, w, h, body, manual) VALUES (?, '', '', 5, 6, 7, 8, 'operator box', 1)`, []any{imgID}},
 		{`INSERT INTO image_collections (image_id, name, position) VALUES (?, 'extras', 7)`, []any{imgID}},
 		{`UPDATE images SET source = 'danbooru', url = 'https://x/1', note = 'operator note' WHERE id = ?`, []any{imgID}},
 	} {
@@ -217,8 +335,15 @@ func TestImportGalleryJSON_RoundTripsProvenance(t *testing.T) {
 	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM image_collections WHERE image_id = ? AND name = 'extras'`, imgID).Scan(&collCount); err != nil {
 		t.Fatal(err)
 	}
-	if srcCount != 2 || annCount != 1 || collCount != 1 {
-		t.Errorf("after import: sources=%d annotations=%d extra-collections=%d, want 2/1/1", srcCount, annCount, collCount)
+	if srcCount != 2 || annCount != 2 || collCount != 1 {
+		t.Errorf("after import: sources=%d annotations=%d extra-collections=%d, want 2/2/1", srcCount, annCount, collCount)
+	}
+	var manualCount int
+	if err := cx.DB.Read.QueryRow(`SELECT COUNT(*) FROM image_annotations WHERE image_id = ? AND manual = 1`, imgID).Scan(&manualCount); err != nil {
+		t.Fatal(err)
+	}
+	if manualCount != 1 {
+		t.Errorf("manual annotation flag did not round-trip: manual=1 count = %d, want 1", manualCount)
 	}
 	if err := cx.DB.Read.QueryRow(`SELECT note, source FROM images WHERE id = ?`, imgID).Scan(&note, &primary); err != nil {
 		t.Fatal(err)
@@ -228,6 +353,86 @@ func TestImportGalleryJSON_RoundTripsProvenance(t *testing.T) {
 	}
 	if primary != "danbooru" {
 		t.Errorf("scalar source mirror = %q, want danbooru (oldest row)", primary)
+	}
+}
+
+func TestImportGalleryJSON_RoundTripsRelations(t *testing.T) {
+	srv := newMultiGalleryServer(t)
+	seedImportExportFixture(t, srv)
+	cx := srv.Get("stock")
+
+	var a int64
+	if err := cx.DB.Read.QueryRow(`SELECT id FROM images WHERE sha256 = 'seed-sha'`).Scan(&a); err != nil {
+		t.Fatal(err)
+	}
+	newImg := func(name string) int64 {
+		res, err := cx.DB.Write.Exec(
+			`INSERT INTO images (sha256, canonical_path, file_type, file_size, ingested_at)
+			 VALUES (?, ?, 'png', 10, datetime('now'))`, name+"-sha", name+".png")
+		if err != nil {
+			t.Fatalf("seed image %s: %v", name, err)
+		}
+		id, _ := res.LastInsertId()
+		return id
+	}
+	// Distinct images so each relation gets its own non-overlapping pair.
+	b, c, d, e, f, g := newImg("b"), newImg("c"), newImg("d"), newImg("e"), newImg("f"), newImg("g")
+
+	for _, s := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO dup_groups (id, original_image_id) VALUES (1, ?)`, []any{a}},
+		{`INSERT INTO dup_group_members (image_id, group_id) VALUES (?, 1), (?, 1)`, []any{a, b}},
+		{`INSERT INTO alt_groups (id) VALUES (1)`, nil},
+		{`INSERT INTO alt_group_members (image_id, group_id) VALUES (?, 1), (?, 1)`, []any{c, d}},
+		{`INSERT INTO version_edges (child_image_id, parent_image_id) VALUES (?, ?)`, []any{e, f}},
+		{`INSERT INTO derivative_edges (derivative_image_id, source_image_id) VALUES (?, ?)`, []any{g, a}},
+		{`INSERT INTO not_related_pairs (a_image_id, b_image_id) VALUES (?, ?)`, []any{b, c}},
+	} {
+		if _, err := cx.DB.Write.Exec(s.sql, s.args...); err != nil {
+			t.Fatalf("seed relation: %v", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := srv.ExportGalleryJSON("stock", &buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ImportGallery("stock", "json", bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	cx = srv.Get("stock")
+	for _, want := range []struct {
+		query string
+		count int
+	}{
+		{`SELECT COUNT(*) FROM dup_groups`, 1},
+		{`SELECT COUNT(*) FROM dup_group_members`, 2},
+		{`SELECT COUNT(*) FROM alt_groups`, 1},
+		{`SELECT COUNT(*) FROM alt_group_members`, 2},
+		{`SELECT COUNT(*) FROM version_edges`, 1},
+		{`SELECT COUNT(*) FROM derivative_edges`, 1},
+		{`SELECT COUNT(*) FROM not_related_pairs`, 1},
+	} {
+		var got int
+		if err := cx.DB.Read.QueryRow(want.query).Scan(&got); err != nil {
+			t.Fatalf("%s: %v", want.query, err)
+		}
+		if got != want.count {
+			t.Errorf("%s = %d, want %d", want.query, got, want.count)
+		}
+	}
+
+	// Ids are preserved across a JSON round-trip, so the version edge still
+	// points at the same two images.
+	var child, parent int64
+	if err := cx.DB.Read.QueryRow(`SELECT child_image_id, parent_image_id FROM version_edges`).Scan(&child, &parent); err != nil {
+		t.Fatal(err)
+	}
+	if child != e || parent != f {
+		t.Errorf("version edge = %d->%d, want %d->%d", child, parent, e, f)
 	}
 }
 

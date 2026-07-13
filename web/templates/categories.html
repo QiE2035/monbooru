@@ -18,14 +18,14 @@
         <td><span style="color:{{.Color}}" class="mono-small">{{.Color}}</span></td>
         <td>
           <div class="cat-actions">
+            <button class="btn-sm btn-cat-recolor-trigger"
+                    data-id="{{.ID}}" data-name="{{.Name}}" data-color="{{.Color}}">Recolor</button>
             {{if not .IsBuiltin}}
             <button class="btn-sm btn-cat-rename-trigger"
                     data-id="{{.ID}}" data-name="{{.Name}}">Rename</button>
             {{else}}
             <button class="btn-sm cat-action-spacer" tabindex="-1" aria-hidden="true">Rename</button>
             {{end}}
-            <button class="btn-sm btn-cat-recolor-trigger"
-                    data-id="{{.ID}}" data-name="{{.Name}}" data-color="{{.Color}}">Recolor</button>
             {{if not .IsBuiltin}}
             <button class="btn-sm btn-danger btn-delete-category"
                     data-id="{{.ID}}" data-name="{{.Name}}"

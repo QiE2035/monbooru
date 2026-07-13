@@ -30,6 +30,13 @@ var ErrAliasNameInUse = errors.New("a tag with this name already has image_tags 
 // Mirrors MergeTags's rating-category and target-not-alias guards so
 // the resolver invariants hold the same way.
 func (s *Service) CreateAlias(name string, categoryID, canonicalID int64) (*models.Tag, error) {
+	return s.CreateAliasFrom(name, categoryID, canonicalID, "user")
+}
+
+// CreateAliasFrom is CreateAlias with an explicit creation origin. The
+// origin is stamped only on a fresh insert; the repoint and
+// upgrade-in-place branches keep the existing row's creator.
+func (s *Service) CreateAliasFrom(name string, categoryID, canonicalID int64, origin string) (*models.Tag, error) {
 	normalized, err := ValidateTagName(name)
 	if err != nil {
 		return nil, err
@@ -64,8 +71,8 @@ func (s *Service) CreateAlias(name string, categoryID, canonicalID int64) (*mode
 		case err == sql.ErrNoRows:
 			var id int64
 			if err := tx.QueryRow(
-				`INSERT INTO tags (name, category_id, is_alias, canonical_tag_id, usage_count) VALUES (?, ?, 1, ?, 0) RETURNING id`,
-				normalized, categoryID, canonicalID,
+				`INSERT INTO tags (name, category_id, is_alias, canonical_tag_id, usage_count, origin) VALUES (?, ?, 1, ?, 0, ?) RETURNING id`,
+				normalized, categoryID, canonicalID, origin,
 			).Scan(&id); err != nil {
 				return fmt.Errorf("inserting alias: %w", err)
 			}
@@ -256,16 +263,16 @@ func (s *Service) MergeTags(aliasID, canonicalID int64) error {
 // MaxImplicationDepth walk used by every consumer absorbs that.
 func repointImplicationsToCanonicalTx(tx *sql.Tx, aliasID, canonicalID int64) error {
 	if _, err := tx.Exec(
-		`INSERT OR IGNORE INTO tag_implications (parent_tag_id, implied_tag_id)
-		 SELECT ?, implied_tag_id FROM tag_implications
+		`INSERT OR IGNORE INTO tag_implications (parent_tag_id, implied_tag_id, origin)
+		 SELECT ?, implied_tag_id, origin FROM tag_implications
 		 WHERE parent_tag_id = ? AND implied_tag_id != ?`,
 		canonicalID, aliasID, canonicalID,
 	); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
-		`INSERT OR IGNORE INTO tag_implications (parent_tag_id, implied_tag_id)
-		 SELECT parent_tag_id, ? FROM tag_implications
+		`INSERT OR IGNORE INTO tag_implications (parent_tag_id, implied_tag_id, origin)
+		 SELECT parent_tag_id, ?, origin FROM tag_implications
 		 WHERE implied_tag_id = ? AND parent_tag_id != ?`,
 		canonicalID, aliasID, canonicalID,
 	); err != nil {

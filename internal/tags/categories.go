@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/models"
 )
 
@@ -142,14 +141,9 @@ func (s *Service) DeleteCategoryMoveOrDelete(id int64, action string, targetID i
 
 		switch action {
 		case "delete_all":
-			rows, err := tx.Query(`SELECT id FROM tags WHERE category_id = ?`, id)
+			tagIDs, err := scanTagIDsTx(tx, `SELECT id FROM tags WHERE category_id = ?`, id)
 			if err != nil {
 				return err
-			}
-			tagIDs, scanErr := db.ScanIDs(rows)
-			_ = rows.Close()
-			if scanErr != nil {
-				return scanErr
 			}
 			// Route through the same closure sweep DeleteTag uses so an implied
 			// child in a surviving category isn't orphaned when its only parent

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/leqwin/monbooru/internal/config"
@@ -44,10 +45,14 @@ func safeArchiveDest(root, rel string) (string, error) {
 // galleryExportVersion is the full-export JSON document's `"version"`
 // field. v2 carries manga_metadata + images.page_count + images.series;
 // v3 adds image_collections, image_sources, image_annotations and
-// images.note; older imports down to galleryExportMinSupported still
-// round-trip (the new columns default, the new tables stay empty or, for
-// image_collections, derive from images.series).
-const galleryExportVersion = 3
+// images.note; v4 adds image_annotations.manual (operator-drawn boxes);
+// v5 adds the relation tables (duplicate / alternate / version / derivative /
+// not-related); v6 adds image_sources.similarity; v7 adds
+// image_sources.original; v8 adds images.original_source. Older imports down to
+// galleryExportMinSupported still round-trip (the new columns default, the
+// new tables stay empty or, for image_collections, derive from
+// images.series).
+const galleryExportVersion = 8
 
 // galleryExportMinSupported is the oldest full-export version this
 // server reads; anything below is rejected.
@@ -90,6 +95,13 @@ type galleryExport struct {
 	SDMetadata       []sdMetadataRow      `json:"sd_metadata"`
 	ComfyUIMetadata  []comfyMetadataRow   `json:"comfyui_metadata"`
 	MangaMetadata    []mangaMetadataRow   `json:"manga_metadata,omitempty"`
+	DupGroups        []dupGroupRow        `json:"dup_groups,omitempty"`
+	DupGroupMembers  []dupGroupMemberRow  `json:"dup_group_members,omitempty"`
+	AltGroups        []altGroupRow        `json:"alt_groups,omitempty"`
+	AltGroupMembers  []altGroupMemberRow  `json:"alt_group_members,omitempty"`
+	VersionEdges     []versionEdgeRow     `json:"version_edges,omitempty"`
+	DerivativeEdges  []derivativeEdgeRow  `json:"derivative_edges,omitempty"`
+	NotRelatedPairs  []notRelatedPairRow  `json:"not_related_pairs,omitempty"`
 	SavedSearches    []savedSearchRow     `json:"saved_searches"`
 }
 
@@ -101,13 +113,15 @@ type tagCategoryRow struct {
 }
 
 type tagRow struct {
-	ID             int64         `json:"id"`
-	Name           string        `json:"name"`
-	CategoryID     int64         `json:"category_id"`
-	UsageCount     int           `json:"usage_count"`
-	IsAlias        int           `json:"is_alias"`
-	CanonicalTagID sql.NullInt64 `json:"canonical_tag_id"`
-	CreatedAt      string        `json:"created_at"`
+	ID             int64          `json:"id"`
+	Name           string         `json:"name"`
+	CategoryID     int64          `json:"category_id"`
+	UsageCount     int            `json:"usage_count"`
+	IsAlias        int            `json:"is_alias"`
+	CanonicalTagID sql.NullInt64  `json:"canonical_tag_id"`
+	CreatedAt      string         `json:"created_at"`
+	Origin         string         `json:"origin"`
+	LastUsedAt     sql.NullString `json:"last_used_at"`
 }
 
 type imageRow struct {
@@ -132,6 +146,7 @@ type imageRow struct {
 	Series          string          `json:"collection,omitempty"`
 	SeriesOrder     sql.NullInt64   `json:"collection_order,omitempty"`
 	Note            string          `json:"note,omitempty"`
+	OriginalSource  string          `json:"original_source,omitempty"`
 	IngestedAt      string          `json:"ingested_at"`
 }
 
@@ -142,13 +157,15 @@ type imageCollectionRow struct {
 }
 
 type imageSourceRow struct {
-	ImageID    int64  `json:"image_id"`
-	Site       string `json:"site"`
-	PostID     string `json:"post_id"`
-	URL        string `json:"url"`
-	MD5        string `json:"md5"`
-	Commentary string `json:"commentary"`
-	FetchedAt  string `json:"fetched_at"`
+	ImageID    int64   `json:"image_id"`
+	Site       string  `json:"site"`
+	PostID     string  `json:"post_id"`
+	URL        string  `json:"url"`
+	MD5        string  `json:"md5"`
+	Commentary string  `json:"commentary"`
+	Original   string  `json:"original,omitempty"`
+	Similarity float64 `json:"similarity,omitempty"`
+	FetchedAt  string  `json:"fetched_at"`
 }
 
 type imageAnnotationRow struct {
@@ -160,6 +177,7 @@ type imageAnnotationRow struct {
 	W         int    `json:"w"`
 	H         int    `json:"h"`
 	Body      string `json:"body"`
+	Manual    int    `json:"manual,omitempty"`
 	FetchedAt string `json:"fetched_at"`
 }
 
@@ -184,6 +202,7 @@ type tagImplicationRow struct {
 	ParentTagID  int64  `json:"parent_tag_id"`
 	ImpliedTagID int64  `json:"implied_tag_id"`
 	CreatedAt    string `json:"created_at"`
+	Origin       string `json:"origin"`
 }
 
 type sdMetadataRow struct {
@@ -253,6 +272,47 @@ type savedSearchRow struct {
 	CreatedAt string `json:"created_at"`
 }
 
+type dupGroupRow struct {
+	ID              int64  `json:"id"`
+	OriginalImageID int64  `json:"original_image_id"`
+	CreatedAt       string `json:"created_at"`
+}
+
+type dupGroupMemberRow struct {
+	ImageID   int64  `json:"image_id"`
+	GroupID   int64  `json:"group_id"`
+	CreatedAt string `json:"created_at"`
+}
+
+type altGroupRow struct {
+	ID        int64  `json:"id"`
+	CreatedAt string `json:"created_at"`
+}
+
+type altGroupMemberRow struct {
+	ImageID   int64  `json:"image_id"`
+	GroupID   int64  `json:"group_id"`
+	CreatedAt string `json:"created_at"`
+}
+
+type versionEdgeRow struct {
+	ChildImageID  int64  `json:"child_image_id"`
+	ParentImageID int64  `json:"parent_image_id"`
+	CreatedAt     string `json:"created_at"`
+}
+
+type derivativeEdgeRow struct {
+	DerivativeImageID int64  `json:"derivative_image_id"`
+	SourceImageID     int64  `json:"source_image_id"`
+	CreatedAt         string `json:"created_at"`
+}
+
+type notRelatedPairRow struct {
+	AImageID  int64  `json:"a_image_id"`
+	BImageID  int64  `json:"b_image_id"`
+	CreatedAt string `json:"created_at"`
+}
+
 // ExportGalleryDB produces a clean, WAL-consolidated SQLite snapshot via
 // VACUUM INTO and streams it to w. Safe to call while the source gallery is
 // being read/written; VACUUM INTO sees a consistent point-in-time view.
@@ -304,28 +364,28 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 			return r, err
 		})
 	streamRows(bw, "tags", cx.DB,
-		`SELECT id, name, category_id, usage_count, is_alias, canonical_tag_id, created_at FROM tags ORDER BY id`,
+		`SELECT id, name, category_id, usage_count, is_alias, canonical_tag_id, created_at, origin, last_used_at FROM tags ORDER BY id`,
 		func(rows *sql.Rows) (any, error) {
 			var r tagRow
-			err := rows.Scan(&r.ID, &r.Name, &r.CategoryID, &r.UsageCount, &r.IsAlias, &r.CanonicalTagID, &r.CreatedAt)
+			err := rows.Scan(&r.ID, &r.Name, &r.CategoryID, &r.UsageCount, &r.IsAlias, &r.CanonicalTagID, &r.CreatedAt, &r.Origin, &r.LastUsedAt)
 			return r, err
 		})
 	streamRows(bw, "tag_implications", cx.DB,
-		`SELECT parent_tag_id, implied_tag_id, created_at FROM tag_implications ORDER BY parent_tag_id, implied_tag_id`,
+		`SELECT parent_tag_id, implied_tag_id, created_at, origin FROM tag_implications ORDER BY parent_tag_id, implied_tag_id`,
 		func(rows *sql.Rows) (any, error) {
 			var r tagImplicationRow
-			err := rows.Scan(&r.ParentTagID, &r.ImpliedTagID, &r.CreatedAt)
+			err := rows.Scan(&r.ParentTagID, &r.ImpliedTagID, &r.CreatedAt, &r.Origin)
 			return r, err
 		})
 	streamRows(bw, "images", cx.DB,
 		`SELECT id, sha256, canonical_path, folder_path, file_type, width, height,
-		        file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, note, ingested_at
+		        file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, note, original_source, ingested_at
 		 FROM images ORDER BY id`,
 		func(rows *sql.Rows) (any, error) {
 			var r imageRow
 			err := rows.Scan(&r.ID, &r.SHA256, &r.CanonicalPath, &r.FolderPath, &r.FileType,
 				&r.Width, &r.Height, &r.FileSize, &r.IsMissing, &r.IsFavorited, &r.IsInbox,
-				&r.AutoTaggedAt, &r.SourceType, &r.Origin, &r.Source, &r.URL, &r.PageCount, &r.DurationSeconds, &r.Series, &r.SeriesOrder, &r.Note, &r.IngestedAt)
+				&r.AutoTaggedAt, &r.SourceType, &r.Origin, &r.Source, &r.URL, &r.PageCount, &r.DurationSeconds, &r.Series, &r.SeriesOrder, &r.Note, &r.OriginalSource, &r.IngestedAt)
 			return r, err
 		})
 	streamRows(bw, "image_collections", cx.DB,
@@ -336,17 +396,17 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 			return r, err
 		})
 	streamRows(bw, "image_sources", cx.DB,
-		`SELECT image_id, site, post_id, url, md5, commentary, fetched_at FROM image_sources ORDER BY rowid`,
+		`SELECT image_id, site, post_id, url, md5, commentary, original, similarity, fetched_at FROM image_sources ORDER BY rowid`,
 		func(rows *sql.Rows) (any, error) {
 			var r imageSourceRow
-			err := rows.Scan(&r.ImageID, &r.Site, &r.PostID, &r.URL, &r.MD5, &r.Commentary, &r.FetchedAt)
+			err := rows.Scan(&r.ImageID, &r.Site, &r.PostID, &r.URL, &r.MD5, &r.Commentary, &r.Original, &r.Similarity, &r.FetchedAt)
 			return r, err
 		})
 	streamRows(bw, "image_annotations", cx.DB,
-		`SELECT image_id, site, post_id, x, y, w, h, body, fetched_at FROM image_annotations ORDER BY id`,
+		`SELECT image_id, site, post_id, x, y, w, h, body, manual, fetched_at FROM image_annotations ORDER BY id`,
 		func(rows *sql.Rows) (any, error) {
 			var r imageAnnotationRow
-			err := rows.Scan(&r.ImageID, &r.Site, &r.PostID, &r.X, &r.Y, &r.W, &r.H, &r.Body, &r.FetchedAt)
+			err := rows.Scan(&r.ImageID, &r.Site, &r.PostID, &r.X, &r.Y, &r.W, &r.H, &r.Body, &r.Manual, &r.FetchedAt)
 			return r, err
 		})
 	streamRows(bw, "image_paths", cx.DB,
@@ -390,6 +450,55 @@ func (s *Server) ExportGalleryJSON(name string, w io.Writer) error {
 				&r.Year, &r.Month, &r.Day, &r.Writer, &r.Penciller, &r.Inker, &r.Colorist, &r.Letterer, &r.CoverArtist,
 				&r.Editor, &r.Publisher, &r.Imprint, &r.Genre, &r.Web, &r.LanguageISO, &r.Format, &r.Manga, &r.AgeRating,
 				&r.CommunityRating, &r.XMLPageCount, &r.RawXML)
+			return r, err
+		})
+	streamRows(bw, "dup_groups", cx.DB,
+		`SELECT id, original_image_id, created_at FROM dup_groups ORDER BY id`,
+		func(rows *sql.Rows) (any, error) {
+			var r dupGroupRow
+			err := rows.Scan(&r.ID, &r.OriginalImageID, &r.CreatedAt)
+			return r, err
+		})
+	streamRows(bw, "dup_group_members", cx.DB,
+		`SELECT image_id, group_id, created_at FROM dup_group_members ORDER BY image_id`,
+		func(rows *sql.Rows) (any, error) {
+			var r dupGroupMemberRow
+			err := rows.Scan(&r.ImageID, &r.GroupID, &r.CreatedAt)
+			return r, err
+		})
+	streamRows(bw, "alt_groups", cx.DB,
+		`SELECT id, created_at FROM alt_groups ORDER BY id`,
+		func(rows *sql.Rows) (any, error) {
+			var r altGroupRow
+			err := rows.Scan(&r.ID, &r.CreatedAt)
+			return r, err
+		})
+	streamRows(bw, "alt_group_members", cx.DB,
+		`SELECT image_id, group_id, created_at FROM alt_group_members ORDER BY image_id`,
+		func(rows *sql.Rows) (any, error) {
+			var r altGroupMemberRow
+			err := rows.Scan(&r.ImageID, &r.GroupID, &r.CreatedAt)
+			return r, err
+		})
+	streamRows(bw, "version_edges", cx.DB,
+		`SELECT child_image_id, parent_image_id, created_at FROM version_edges ORDER BY child_image_id`,
+		func(rows *sql.Rows) (any, error) {
+			var r versionEdgeRow
+			err := rows.Scan(&r.ChildImageID, &r.ParentImageID, &r.CreatedAt)
+			return r, err
+		})
+	streamRows(bw, "derivative_edges", cx.DB,
+		`SELECT derivative_image_id, source_image_id, created_at FROM derivative_edges ORDER BY derivative_image_id`,
+		func(rows *sql.Rows) (any, error) {
+			var r derivativeEdgeRow
+			err := rows.Scan(&r.DerivativeImageID, &r.SourceImageID, &r.CreatedAt)
+			return r, err
+		})
+	streamRows(bw, "not_related_pairs", cx.DB,
+		`SELECT a_image_id, b_image_id, created_at FROM not_related_pairs ORDER BY a_image_id, b_image_id`,
+		func(rows *sql.Rows) (any, error) {
+			var r notRelatedPairRow
+			err := rows.Scan(&r.AImageID, &r.BImageID, &r.CreatedAt)
 			return r, err
 		})
 	streamRows(bw, "saved_searches", cx.DB,
@@ -667,6 +776,9 @@ func replaceDBFromFile(srcPath, dbPath, thumbsPath, galleryPath string) error {
 	if err := sanitizeImportedCategoryColors(database); err != nil {
 		return fmt.Errorf("sanitize colors: %w", err)
 	}
+	if err := sanitizeImportedAliasChains(database); err != nil {
+		return fmt.Errorf("sanitize alias chains: %w", err)
+	}
 	return rebaseImagePaths(database, galleryPath)
 }
 
@@ -698,11 +810,120 @@ func sanitizeImportedCategoryColors(database *db.DB) error {
 	}
 	_ = rows.Close()
 	for _, r := range bad {
-		logx.Warnf("import: replaced invalid color %q on tag_category id=%d with #888888", r.color, r.id)
+		safe := tags.SafeCategoryColor(r.color)
+		logx.Warnf("import: replaced invalid color %q on tag_category id=%d with %s", r.color, r.id, safe)
 		if _, err := database.Write.Exec(
-			`UPDATE tag_categories SET color = ? WHERE id = ?`, "#888888", r.id,
+			`UPDATE tag_categories SET color = ? WHERE id = ?`, safe, r.id,
 		); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// sanitizeImportedAliasChains normalizes the canonical_tag_id graph of a
+// freshly imported DB. The write paths keep it one hop deep and only on
+// alias rows, but imported rows arrive verbatim, and the resolvers follow
+// COALESCE(canonical_tag_id, id) exactly once with no is_alias check - a
+// chained alias silently drops out of search and a pointer on a plain tag
+// misdirects it. Aliases resolving through other aliases are re-pointed at
+// their terminal plain tag; an alias with nowhere to land (cycle member,
+// missing canonical) is promoted to a plain tag; a plain tag's stray
+// pointer is cleared.
+func sanitizeImportedAliasChains(database *db.DB) error {
+	type node struct {
+		alias     bool
+		canonical int64 // 0 when NULL
+	}
+	rows, err := database.Read.Query(`SELECT id, is_alias, COALESCE(canonical_tag_id, 0) FROM tags`)
+	if err != nil {
+		return err
+	}
+	nodes := make(map[int64]node)
+	var ids []int64
+	for rows.Next() {
+		var id, canonical int64
+		var alias int
+		if err := rows.Scan(&id, &alias, &canonical); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		nodes[id] = node{alias: alias == 1, canonical: canonical}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	// Sorted walk order keeps the promoted cycle member deterministic.
+	slices.Sort(ids)
+
+	// root[id] is the plain tag id's pointer chain lands on; promoted rows
+	// become their own root.
+	root := make(map[int64]int64)
+	promoted := make(map[int64]bool)
+	for _, id := range ids {
+		if n := nodes[id]; !n.alias {
+			continue
+		}
+		if _, done := root[id]; done {
+			continue
+		}
+		var path []int64
+		onPath := make(map[int64]bool)
+		cur := id
+		var end int64
+		for {
+			n := nodes[cur]
+			if !n.alias {
+				end = cur
+				break
+			}
+			if r, ok := root[cur]; ok {
+				end = r
+				break
+			}
+			if _, ok := nodes[n.canonical]; !ok || onPath[cur] {
+				end = cur
+				promoted[cur] = true
+				break
+			}
+			onPath[cur] = true
+			path = append(path, cur)
+			cur = n.canonical
+		}
+		root[end] = end
+		for _, p := range path {
+			root[p] = end
+		}
+	}
+
+	for _, id := range ids {
+		n := nodes[id]
+		switch {
+		case !n.alias && n.canonical != 0:
+			if _, err := database.Write.Exec(
+				`UPDATE tags SET canonical_tag_id = NULL WHERE id = ?`, id,
+			); err != nil {
+				return err
+			}
+			logx.Warnf("import: cleared the canonical pointer on plain tag id=%d", id)
+		case !n.alias:
+		case promoted[id]:
+			if _, err := database.Write.Exec(
+				`UPDATE tags SET is_alias = 0, canonical_tag_id = NULL WHERE id = ?`, id,
+			); err != nil {
+				return err
+			}
+			logx.Warnf("import: promoted alias id=%d to a plain tag (alias cycle or missing canonical)", id)
+		case root[id] != n.canonical:
+			if _, err := database.Write.Exec(
+				`UPDATE tags SET canonical_tag_id = ? WHERE id = ?`, root[id], id,
+			); err != nil {
+				return err
+			}
+			logx.Warnf("import: re-pointed alias id=%d through its alias chain to tag id=%d", id, root[id])
 		}
 	}
 	return nil
@@ -746,6 +967,9 @@ func replaceDBFromJSON(srcPath, dbPath, thumbsPath, galleryPath string) error {
 		}
 		if err := loadExportIntoDB(database, exp); err != nil {
 			return err
+		}
+		if err := sanitizeImportedAliasChains(database); err != nil {
+			return fmt.Errorf("sanitize alias chains: %w", err)
 		}
 		return rebaseImagePaths(database, galleryPath)
 	}()
@@ -1166,6 +1390,13 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		`DELETE FROM comfyui_metadata`,
 		`DELETE FROM manga_metadata`,
 		`DELETE FROM saved_searches`,
+		`DELETE FROM dup_group_members`,
+		`DELETE FROM dup_groups`,
+		`DELETE FROM alt_group_members`,
+		`DELETE FROM alt_groups`,
+		`DELETE FROM version_edges`,
+		`DELETE FROM derivative_edges`,
+		`DELETE FROM not_related_pairs`,
 		`DELETE FROM images`,
 		`DELETE FROM tags`,
 		`DELETE FROM tag_categories`,
@@ -1192,17 +1423,17 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 	}
 	for _, r := range exp.Tags {
 		if _, err := tx.Exec(
-			`INSERT INTO tags (id, name, category_id, usage_count, is_alias, canonical_tag_id, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, r.Name, r.CategoryID, r.UsageCount, r.IsAlias, nullInt64Arg(r.CanonicalTagID), r.CreatedAt,
+			`INSERT INTO tags (id, name, category_id, usage_count, is_alias, canonical_tag_id, created_at, origin, last_used_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.Name, r.CategoryID, r.UsageCount, r.IsAlias, nullInt64Arg(r.CanonicalTagID), r.CreatedAt, r.Origin, nullStringArg(r.LastUsedAt),
 		); err != nil {
 			return fmt.Errorf("insert tag %d: %w", r.ID, err)
 		}
 	}
 	for _, r := range exp.TagImplications {
 		if _, err := tx.Exec(
-			`INSERT INTO tag_implications (parent_tag_id, implied_tag_id, created_at) VALUES (?, ?, ?)`,
-			r.ParentTagID, r.ImpliedTagID, r.CreatedAt,
+			`INSERT INTO tag_implications (parent_tag_id, implied_tag_id, created_at, origin) VALUES (?, ?, ?, ?)`,
+			r.ParentTagID, r.ImpliedTagID, r.CreatedAt, r.Origin,
 		); err != nil {
 			return fmt.Errorf("insert tag_implication (%d→%d): %w", r.ParentTagID, r.ImpliedTagID, err)
 		}
@@ -1210,10 +1441,10 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 	for _, r := range exp.Images {
 		if _, err := tx.Exec(
 			`INSERT INTO images (id, sha256, canonical_path, folder_path, file_type, width, height,
-			                    file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, note, ingested_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                    file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, note, original_source, ingested_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.SHA256, r.CanonicalPath, r.FolderPath, r.FileType, nullInt64Arg(r.Width), nullInt64Arg(r.Height),
-			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, nullStringArg(r.AutoTaggedAt), r.SourceType, r.Origin, r.Source, r.URL, nullInt64Arg(r.PageCount), nullFloat64Arg(r.DurationSeconds), r.Series, nullInt64Arg(r.SeriesOrder), r.Note, r.IngestedAt,
+			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, nullStringArg(r.AutoTaggedAt), r.SourceType, r.Origin, r.Source, r.URL, nullInt64Arg(r.PageCount), nullFloat64Arg(r.DurationSeconds), r.Series, nullInt64Arg(r.SeriesOrder), r.Note, r.OriginalSource, r.IngestedAt,
 		); err != nil {
 			return fmt.Errorf("insert image %d: %w", r.ID, err)
 		}
@@ -1238,18 +1469,18 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 	}
 	for _, r := range exp.ImageSources {
 		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO image_sources (image_id, site, post_id, url, md5, commentary, fetched_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			r.ImageID, r.Site, r.PostID, r.URL, r.MD5, r.Commentary, r.FetchedAt,
+			`INSERT OR IGNORE INTO image_sources (image_id, site, post_id, url, md5, commentary, original, similarity, fetched_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ImageID, r.Site, r.PostID, r.URL, r.MD5, r.Commentary, r.Original, r.Similarity, r.FetchedAt,
 		); err != nil {
 			return fmt.Errorf("insert image_source (%d,%q): %w", r.ImageID, r.Site, err)
 		}
 	}
 	for _, r := range exp.ImageAnnotations {
 		if _, err := tx.Exec(
-			`INSERT INTO image_annotations (image_id, site, post_id, x, y, w, h, body, fetched_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ImageID, r.Site, r.PostID, r.X, r.Y, r.W, r.H, r.Body, r.FetchedAt,
+			`INSERT INTO image_annotations (image_id, site, post_id, x, y, w, h, body, manual, fetched_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ImageID, r.Site, r.PostID, r.X, r.Y, r.W, r.H, r.Body, r.Manual, r.FetchedAt,
 		); err != nil {
 			return fmt.Errorf("insert image_annotation (image %d): %w", r.ImageID, err)
 		}
@@ -1316,6 +1547,62 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 			nullFloat64Arg(r.CommunityRating), nullInt64Arg(r.XMLPageCount), nullStringArg(r.RawXML),
 		); err != nil {
 			return fmt.Errorf("insert manga_metadata %d: %w", r.ImageID, err)
+		}
+	}
+	for _, r := range exp.DupGroups {
+		if _, err := tx.Exec(
+			`INSERT INTO dup_groups (id, original_image_id, created_at) VALUES (?, ?, ?)`,
+			r.ID, r.OriginalImageID, r.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert dup_group %d: %w", r.ID, err)
+		}
+	}
+	for _, r := range exp.DupGroupMembers {
+		if _, err := tx.Exec(
+			`INSERT INTO dup_group_members (image_id, group_id, created_at) VALUES (?, ?, ?)`,
+			r.ImageID, r.GroupID, r.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert dup_group_member %d: %w", r.ImageID, err)
+		}
+	}
+	for _, r := range exp.AltGroups {
+		if _, err := tx.Exec(
+			`INSERT INTO alt_groups (id, created_at) VALUES (?, ?)`,
+			r.ID, r.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert alt_group %d: %w", r.ID, err)
+		}
+	}
+	for _, r := range exp.AltGroupMembers {
+		if _, err := tx.Exec(
+			`INSERT INTO alt_group_members (image_id, group_id, created_at) VALUES (?, ?, ?)`,
+			r.ImageID, r.GroupID, r.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert alt_group_member %d: %w", r.ImageID, err)
+		}
+	}
+	for _, r := range exp.VersionEdges {
+		if _, err := tx.Exec(
+			`INSERT INTO version_edges (child_image_id, parent_image_id, created_at) VALUES (?, ?, ?)`,
+			r.ChildImageID, r.ParentImageID, r.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert version_edge %d: %w", r.ChildImageID, err)
+		}
+	}
+	for _, r := range exp.DerivativeEdges {
+		if _, err := tx.Exec(
+			`INSERT INTO derivative_edges (derivative_image_id, source_image_id, created_at) VALUES (?, ?, ?)`,
+			r.DerivativeImageID, r.SourceImageID, r.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert derivative_edge %d: %w", r.DerivativeImageID, err)
+		}
+	}
+	for _, r := range exp.NotRelatedPairs {
+		if _, err := tx.Exec(
+			`INSERT INTO not_related_pairs (a_image_id, b_image_id, created_at) VALUES (?, ?, ?)`,
+			r.AImageID, r.BImageID, r.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert not_related_pair (%d,%d): %w", r.AImageID, r.BImageID, err)
 		}
 	}
 	for _, r := range exp.SavedSearches {

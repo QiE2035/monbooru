@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,9 +21,44 @@ import (
 
 // annotationView is one positional note ready for the overlay: the box
 // geometry as CSS percentages of the rendered image so it scales at any size.
+// ID ties the overlay box to its list entry so hovering the entry can
+// highlight the box.
 type annotationView struct {
+	ID    int64
 	Body  string
 	Style template.CSS
+}
+
+// sourcePanelView is one collapsible per-source provenance panel: the origin
+// plus the annotations it pulled. Built only for a source that carries
+// commentary, an original source, or at least one box, so a bare origin adds
+// no empty panel.
+type sourcePanelView struct {
+	models.ImageSource
+	Annotations   []models.Annotation
+	OriginalLines []originalLine
+}
+
+// originalLine is one entry of an origin's newline-joined original source,
+// rendered as a link when it is an http(s) URL and as plain text otherwise
+// (upstream sources are sometimes dead hosts or free text).
+type originalLine struct {
+	Text  string
+	IsURL bool
+}
+
+func buildOriginalLines(original string) []originalLine {
+	var out []originalLine
+	for _, line := range strings.Split(original, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		isURL := strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+		out = append(out, originalLine{Text: line, IsURL: isURL})
+	}
+	return out
 }
 
 // buildAnnotationViews turns pixel-space note boxes into percentage-positioned
@@ -42,36 +78,38 @@ func buildAnnotationViews(img *models.Image, anns []models.Annotation) []annotat
 		h := min(max(a.H, 0), *img.Height-y)
 		style := fmt.Sprintf("left:%.4f%%;top:%.4f%%;width:%.4f%%;height:%.4f%%",
 			float64(x)/fw*100, float64(y)/fh*100, float64(w)/fw*100, float64(h)/fh*100)
-		out = append(out, annotationView{Body: a.Body, Style: template.CSS(style)})
+		out = append(out, annotationView{ID: a.ID, Body: a.Body, Style: template.CSS(style)})
 	}
 	return out
 }
 
 type detailData struct {
 	baseData
-	Image        models.Image
-	Filename     string // basename of the canonical path, shown on the detail page topbar
-	ImageTags    []models.ImageTag
-	SDMeta       *models.SDMetadata
-	ComfyMeta    *models.ComfyUIMetadata
-	ComfyNodes   []models.ComfyNode
-	GenericMeta  []models.SDParam
-	MangaMeta    *models.MangaMetadata // populated for cbz rows when ComicInfo.xml was parsed
-	IsManga      bool                  // shorthand for FileType == "cbz" so the template doesn't string-compare
-	Collections  []models.Collection   // every collection this image belongs to, ordered for display
-	Sources      []models.ImageSource  // every origin this image came from, primary first
-	Annotations  []annotationView      // positional note boxes overlaid on the media
-	ImagePaths   []models.ImagePath
-	ThumbnailURL string
-	PrevID       *int64
-	NextID       *int64
-	RefURL       string // predecessor detail URL when the user arrived via a Similar-images click; drives the "← Previous image" back link and Escape
-	Ref          string // raw ref=<sourceID> value when valid; forwarded on the delete button so the post-delete redirect returns to the source instead of an arbitrary neighbour
-	BackQuery    string
-	BackSort     string
-	BackOrder    string
-	BackPage     string
-	BackSeed     string
+	Image             models.Image
+	Filename          string // basename of the canonical path, shown on the detail page topbar
+	ImageTags         []models.ImageTag
+	SDMeta            *models.SDMetadata
+	ComfyMeta         *models.ComfyUIMetadata
+	ComfyNodes        []models.ComfyNode
+	GenericMeta       []models.SDParam
+	MangaMeta         *models.MangaMetadata // populated for cbz rows when ComicInfo.xml was parsed
+	IsManga           bool                  // shorthand for FileType == "cbz" so the template doesn't string-compare
+	Collections       []models.Collection   // every collection this image belongs to, ordered for display
+	Sources           []models.ImageSource  // every origin this image came from, primary first
+	Annotations       []annotationView      // positional note boxes overlaid on the media
+	SourcePanels      []sourcePanelView     // per-source panels (commentary + pulled annotations) below the metadata
+	ManualAnnotations []models.Annotation   // operator-drawn boxes, edited under the image beside the Note
+	ImagePaths        []models.ImagePath
+	ThumbnailURL      string
+	PrevID            *int64
+	NextID            *int64
+	RefURL            string // predecessor detail URL when the user arrived via a Similar-images click; drives the "← Previous image" back link and Escape
+	Ref               string // raw ref=<sourceID> value when valid; forwarded on the delete button so the post-delete redirect returns to the source instead of an arbitrary neighbour
+	BackQuery         string
+	BackSort          string
+	BackOrder         string
+	BackPage          string
+	BackSeed          string
 	// BackQS is the URL-safe `?back_*=...` fragment carrying every back_*
 	// the detail handler saw. Forwarded verbatim on the manga Read /
 	// Pages anchors so click-through preserves the gallery context;
@@ -81,7 +119,8 @@ type detailData struct {
 	BackKVQS       template.URL
 	EnabledTaggers []tagger.TaggerStatus // enabled+available taggers offered in the auto-tag control
 	ImageTaggers   []string              // distinct tagger names currently on this image's auto-tags
-	HasUserTags    bool                  // true when at least one manual (non-auto) tag is on this image
+	ImageSources   []string              // distinct source labels currently carrying tags on this image (is_auto=0 with a tagger_name)
+	HasUserTags    bool                  // true when at least one operator-added manual tag is on this image
 	Aliases        []models.Tag          // alias rows pointing at any non-implied tag on this image, flattened for display
 	// PhashDistance is the configured Find-pairs Hamming distance used by
 	// the phash row's [search near-duplicates] link. Pulled live from
@@ -288,13 +327,35 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	enabledTaggers := tagger.EnabledTaggersForGallery(s.cfg, s.activeName)
-	imageTaggers := distinctAutoTaggerNames(imageTags)
+	imageTaggers := distinctTaggerNames(imageTags, true)
+	imageSources := distinctTaggerNames(imageTags, false)
 	hasUserTags := false
 	for _, t := range imageTags {
-		if !t.IsAuto {
+		if !t.IsAuto && t.TaggerName == "" {
 			hasUserTags = true
 			break
 		}
+	}
+
+	// Split annotations into operator-drawn boxes (edited under the image, by
+	// the Note) and source-pulled boxes grouped onto their origin's panel.
+	var manualAnnotations []models.Annotation
+	annBySource := map[[2]string][]models.Annotation{}
+	for _, a := range annotations {
+		if a.Manual {
+			manualAnnotations = append(manualAnnotations, a)
+			continue
+		}
+		k := [2]string{a.Site, a.PostID}
+		annBySource[k] = append(annBySource[k], a)
+	}
+	var sourcePanels []sourcePanelView
+	for _, src := range sources {
+		boxes := annBySource[[2]string{src.Site, src.PostID}]
+		if src.Commentary == "" && src.Original == "" && len(boxes) == 0 {
+			continue
+		}
+		sourcePanels = append(sourcePanels, sourcePanelView{ImageSource: src, Annotations: boxes, OriginalLines: buildOriginalLines(src.Original)})
 	}
 
 	baseName := filepath.Base(img.CanonicalPath)
@@ -305,37 +366,40 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		titleName = parent + "/" + baseName
 	}
 	data := detailData{
-		baseData:       s.base(r, "gallery", fmt.Sprintf("%s - %s", titleName, s.booruName())),
-		Image:          *img,
-		Filename:       baseName,
-		ImageTags:      imageTags,
-		SDMeta:         sdMeta,
-		ComfyMeta:      comfyMeta,
-		ComfyNodes:     comfyNodes,
-		GenericMeta:    genericMeta,
-		MangaMeta:      mangaMeta,
-		IsManga:        isManga,
-		Collections:    collections,
-		Sources:        sources,
-		Annotations:    buildAnnotationViews(img, annotations),
-		ImagePaths:     imagePaths,
-		ThumbnailURL:   fmt.Sprintf("/thumbnails/%s/%d.jpg", s.activeName, id),
-		PrevID:         prevID,
-		NextID:         nextID,
-		RefURL:         refURL,
-		Ref:            refStrValid,
-		BackQuery:      backQ,
-		BackSort:       backSort,
-		BackOrder:      backOrder,
-		BackPage:       backPage,
-		BackSeed:       backSeed,
-		BackQS:         back.QueryString("?"),
-		BackKVQS:       back.QueryString("&"),
-		EnabledTaggers: enabledTaggers,
-		ImageTaggers:   imageTaggers,
-		HasUserTags:    hasUserTags,
-		Aliases:        s.aliasesForImageTags(imageTags),
-		PhashDistance:  s.findPairsDistance(),
+		baseData:          s.base(r, "gallery", fmt.Sprintf("%s - %s", titleName, s.booruName())),
+		Image:             *img,
+		Filename:          baseName,
+		ImageTags:         imageTags,
+		SDMeta:            sdMeta,
+		ComfyMeta:         comfyMeta,
+		ComfyNodes:        comfyNodes,
+		GenericMeta:       genericMeta,
+		MangaMeta:         mangaMeta,
+		IsManga:           isManga,
+		Collections:       collections,
+		Sources:           sources,
+		Annotations:       buildAnnotationViews(img, annotations),
+		SourcePanels:      sourcePanels,
+		ManualAnnotations: manualAnnotations,
+		ImagePaths:        imagePaths,
+		ThumbnailURL:      fmt.Sprintf("/thumbnails/%s/%d.jpg", s.activeName, id),
+		PrevID:            prevID,
+		NextID:            nextID,
+		RefURL:            refURL,
+		Ref:               refStrValid,
+		BackQuery:         backQ,
+		BackSort:          backSort,
+		BackOrder:         backOrder,
+		BackPage:          backPage,
+		BackSeed:          backSeed,
+		BackQS:            back.QueryString("?"),
+		BackKVQS:          back.QueryString("&"),
+		EnabledTaggers:    enabledTaggers,
+		ImageTaggers:      imageTaggers,
+		ImageSources:      imageSources,
+		HasUserTags:       hasUserTags,
+		Aliases:           s.aliasesForImageTags(imageTags),
+		PhashDistance:     s.findPairsDistance(),
 	}
 	s.renderTemplate(w, "detail.html", data)
 }
@@ -348,6 +412,17 @@ func (s *Server) relatedImagesHandler(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
+		return
+	}
+	// Fetched as a fragment by the detail page; a non-htmx caller
+	// (refresh, bookmark, shared link) gets the detail page rather than
+	// a chrome-less fragment. The back_* params ride along.
+	if !isHTMXRequest(r) {
+		dst := "/images/" + idStr
+		if r.URL.RawQuery != "" {
+			dst += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, dst, http.StatusSeeOther)
 		return
 	}
 	related, _ := s.tagSvc().RelatedImages(id, 6, readRatingCookie(r))
@@ -369,14 +444,16 @@ func (s *Server) relatedImagesHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// distinctAutoTaggerNames returns the unique tagger names seen in the
-// image's auto-tag rows, preserving the first-seen order from the sorted
-// tag list.
-func distinctAutoTaggerNames(tags []models.ImageTag) []string {
+// distinctTaggerNames returns the unique tagger_name values on the
+// image's tag rows, preserving the first-seen order from the sorted tag
+// list. auto=true selects the auto-tag rows (the taggers that ran);
+// auto=false the source rows, whose tagger_name SyncSourceTags stamps
+// with the originating site. Rows with no tagger_name are excluded.
+func distinctTaggerNames(tags []models.ImageTag, auto bool) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, t := range tags {
-		if !t.IsAuto || t.TaggerName == "" || seen[t.TaggerName] {
+		if t.IsAuto != auto || t.TaggerName == "" || seen[t.TaggerName] {
 			continue
 		}
 		seen[t.TaggerName] = true

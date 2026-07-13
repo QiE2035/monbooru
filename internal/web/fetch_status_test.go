@@ -23,7 +23,7 @@ func TestFetchStatusHandler_PendingThenReloadOnOk(t *testing.T) {
 	if got := rec.Header().Get("HX-Refresh"); got != "" {
 		t.Errorf("pending set HX-Refresh=%q, want empty", got)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "Fetching tags") || !strings.Contains(body, "hx-get") {
+	if body := rec.Body.String(); !strings.Contains(body, "Fetching data") || !strings.Contains(body, "hx-get") {
 		t.Errorf("pending body = %q, want the polling pill", body)
 	}
 
@@ -60,6 +60,96 @@ func TestFetchStatusHandler_SurfacesReportedFailure(t *testing.T) {
 	}
 	if _, ok := srv.loadFetchStatus(g, 11); ok {
 		t.Error("reported failure should be cleared after the poll consumes it")
+	}
+}
+
+// A lookup miss renders monloader's per-source trail as a list plus the
+// hashes recorded at enqueue time, as a warn (a result, not an error).
+func TestFetchStatusHandler_HashNotFoundListsTrailAndHashes(t *testing.T) {
+	srv := newTestServer(t)
+	g := srv.activeName
+
+	srv.recordFetchLookup(g, 12, "md5 0123abcd")
+	srv.recordFetchStatus(g, 12, "hash_not_found", "Public Tag Repository: no match; danbooru: no match")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/internal/images/12/fetch-status?n=1", nil))
+	body := rec.Body.String()
+	for _, want := range []string{"flash-warn", "No online source found",
+		"<div>Public Tag Repository: no match</div>", "<li>danbooru: no match</li>", "Searched md5 0123abcd",
+		"compressed or re-encoded", "similarity lookup service",
+		`id="fetch-status"`, "hx-swap-oob"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("miss body = %q, missing %q", body, want)
+		}
+	}
+	if strings.Contains(body, "<li>Public Tag Repository") {
+		t.Errorf("miss body = %q, the PTR line should sit apart from the online list", body)
+	}
+	if strings.Contains(body, "hx-get") {
+		t.Errorf("miss body should stop polling, got %q", body)
+	}
+
+	// An old monloader reporting no message still gets the plain sentence.
+	srv.recordFetchStatus(g, 12, "hash_not_found", "")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/internal/images/12/fetch-status?n=1", nil))
+	if body := rec.Body.String(); !strings.Contains(body, "No source found; no tags found.") {
+		t.Errorf("empty-trail body = %q, want the fallback sentence", body)
+	}
+}
+
+// The "set up a similarity lookup service" hint only renders when the trail
+// shows no similarity service ran: one that answered is already set up, while
+// a credential skip still counts as not set up.
+func TestFetchStatusHandler_MissHintOnlyWithoutSimilarity(t *testing.T) {
+	srv := newTestServer(t)
+	g := srv.activeName
+
+	srv.recordFetchStatus(g, 13, "hash_not_found", "danbooru: no match; iqdb: no match")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/internal/images/13/fetch-status?n=1", nil))
+	if body := rec.Body.String(); strings.Contains(body, "similarity lookup service") {
+		t.Errorf("miss body = %q, want no hint when iqdb answered", body)
+	}
+
+	srv.recordFetchStatus(g, 13, "hash_not_found", "danbooru: no match; saucenao: skipped, needs api key")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/internal/images/13/fetch-status?n=1", nil))
+	if body := rec.Body.String(); !strings.Contains(body, "similarity lookup service") {
+		t.Errorf("miss body = %q, want the hint when the only similarity entry is a skip", body)
+	}
+}
+
+// A PTR match with a full online miss renders both parts: the PTR line with
+// the reload hint (tags already landed), and the online trail with monloader's
+// closest candidates turned into host-labeled links.
+func TestFetchStatusHandler_PTRMatchAndCandidateLinks(t *testing.T) {
+	srv := newTestServer(t)
+	g := srv.activeName
+
+	srv.recordFetchLookup(g, 14, "md5 0123abcd, sha256 4567ef")
+	srv.recordFetchStatus(g, 14, "hash_not_found",
+		"Public Tag Repository: match, tags applied; danbooru: no match; "+
+			"iqdb: no match, closest candidates: https://danbooru.donmai.us/posts/1 (62%), https://yande.re/post/show/2 (58%)")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/internal/images/14/fetch-status?n=1", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		"<div>Public Tag Repository: match, tags applied (reload the page to see them)</div>",
+		"No online source found",
+		"<li>danbooru: no match</li>",
+		`<a href="https://danbooru.donmai.us/posts/1" target="_blank" rel="noopener">danbooru.donmai.us</a> (62%)`,
+		`<a href="https://yande.re/post/show/2" target="_blank" rel="noopener">yande.re</a> (58%)`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body = %q, missing %q", body, want)
+		}
+	}
+	if strings.Contains(body, "similarity lookup service") {
+		t.Errorf("body = %q, want no set-it-up hint when iqdb answered", body)
+	}
+	if got := rec.Header().Get("HX-Refresh"); got != "" {
+		t.Errorf("HX-Refresh = %q, want empty (the reload would wipe the trail)", got)
 	}
 }
 

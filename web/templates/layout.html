@@ -83,10 +83,8 @@
       {{end}}{{end}}
       <span class="footer-sep">·</span>
       <span>{{.VisibleCount}} img</span>
-      {{if .VisibleCount}}
       <span class="footer-sep">·</span>
       <span>{{.TagCount}} tags</span>
-      {{end}}
       <span class="footer-sep">·</span>
       <span>{{.CollectionsCount}} collections</span>
       {{if .Degraded}}<span class="footer-sep">·</span><span class="footer-degraded">degraded</span>{{end}}
@@ -162,6 +160,8 @@
             <tr><td><kbd>t</kbd></td><td>Auto-tag</td></tr>
             <tr><td><kbd>m</kbd></td><td>Move</td></tr>
             <tr><td><kbd>i</kbd></td><td>Toggle inbox / archive</td></tr>
+            <tr><td><kbd>f</kbd></td><td>Toggle favorite</td></tr>
+            <tr><td><kbd>L</kbd></td><td>Monloader lookup</td></tr>
             <tr><td><kbd>Delete</kbd></td><td>Delete</td></tr>
             <tr><td><kbd>Esc</kbd></td><td>Clear selection</td></tr>
           </tbody>
@@ -183,8 +183,10 @@
             <tr><td><kbd>Space</kbd></td><td>Play / pause</td></tr>
             <tr><td><kbd>e s</kbd></td><td>Edit Source</td></tr>
             <tr><td><kbd>e c</kbd></td><td>Add to collection</td></tr>
+            <tr><td><kbd>e o</kbd></td><td>Edit Original source</td></tr>
+            <tr><td><kbd>e n</kbd></td><td>Edit Note</td></tr>
             <tr><td><kbd>e 1</kbd>-<kbd>e 9</kbd></td><td>Edit Nth collection</td></tr>
-            <tr><td><kbd>e u</kbd></td><td>Edit URL</td></tr>
+            <tr><td><kbd>L</kbd></td><td>Monloader lookup</td></tr>
             <tr><td><kbd>R</kbd></td><td>Open in reader</td></tr>
             <tr><td><kbd>P</kbd></td><td>See all pages</td></tr>
             <tr><td><kbd>v</kbd></td><td>Open image viewer</td></tr>
@@ -261,7 +263,7 @@
         <table>
           <tbody>
             <tr><td><kbd>1</kbd></td><td>Right is duplicate of left</td></tr>
-            <tr><td><kbd>2</kbd></td><td>Right is variant of left</td></tr>
+            <tr><td><kbd>2</kbd></td><td>Right is alternate of left</td></tr>
             <tr><td><kbd>3</kbd></td><td>Right is newer version of left</td></tr>
             <tr><td><kbd>4</kbd></td><td>Right is based on left</td></tr>
             <tr><td><kbd>5</kbd></td><td>Not related</td></tr>

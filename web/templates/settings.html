@@ -702,6 +702,15 @@
         {{template "maintenance_row" dict "CSRF" $csrf "Title" "Compute perceptual hashes" "Desc" "backfill phash for every image that doesn't have one yet" "URL" "/settings/maintenance/compute-phashes" "Verb" "Compute" "JobKick" true "Confirm" "Compute perceptual hashes for every image still missing one?" "ConfirmOK" "Compute"}}
         {{template "maintenance_row" dict "CSRF" $csrf "Title" "Rebuild pair queue" "Desc" "wipe potential relation pairs and rescan from scratch" "URL" "/relations/find-pairs" "Verb" "Rebuild" "Danger" true "JobKick" true "Confirm" "Wipe the existing pair queue and rescan from scratch?" "ConfirmDanger" "Skipped pairs and any queue work in progress are dropped." "ConfirmOK" "Rebuild" "Fields" (dict "replace" "true" "confirm" "REBUILD")}}
         {{template "maintenance_row" dict "CSRF" $csrf "Title" "Tag counts" "Desc" "recompute usage counts" "URL" "/settings/maintenance/recalc-tags" "Verb" "Recalculate"}}
+        <tr>
+          <td><strong>Category conflicts</strong> <span class="field-hint">- list tags whose name occupies more than one category</span></td>
+          <td>
+            <form hx-post="/settings/maintenance/tag-conflicts" hx-target="#flash-maintenance" hx-swap="innerHTML" style="display:inline">
+              <input type="hidden" name="_csrf" value="{{$csrf}}">
+              <button type="submit" class="btn-sm">List</button>
+            </form>
+          </td>
+        </tr>
         {{template "maintenance_row" dict "CSRF" $csrf "Title" "Re-extract metadata" "Desc" "re-parse metadata for every image" "URL" "/settings/maintenance/re-extract-metadata" "Verb" "Re-extract" "Confirm" "Re-parse metadata for every image in this gallery?" "ConfirmDanger" "Long-running job; blocks other jobs until it finishes." "ConfirmOK" "Re-extract"}}
         {{template "maintenance_row" dict "CSRF" $csrf "Title" "Vacuum database" "Desc" "compact the SQLite file after mass deletions" "URL" "/settings/maintenance/vacuum-db" "Verb" "Vacuum" "Confirm" "Compact the SQLite database now?" "ConfirmDanger" "Holds a database lock for the duration of the VACUUM; other jobs and queries will wait." "ConfirmOK" "Vacuum"}}
         {{template "maintenance_row" dict "CSRF" $csrf "Title" "Free memory" "Desc" "shrink SQLite caches, return the Go heap, and release the auto-tagger from RAM/VRAM." "URL" "/settings/maintenance/free-memory" "Verb" "Free"}}

@@ -115,3 +115,25 @@ func TestWatcher_DebounceExtendsOnWrite(t *testing.T) {
 
 	pollForRow(t, database, `file_type = 'cbz' AND canonical_path LIKE '%slow.cbz'`, 5*time.Second)
 }
+
+// TestWatcher_IngestsFilesInNewSubdir covers the mkdir + write burst: files
+// land inside a freshly-created subdirectory before its Create event adds the
+// watch, so they emit no further event. The new-dir handler must walk the tree
+// and ingest what is already there rather than only registering the watch.
+func TestWatcher_IngestsFilesInNewSubdir(t *testing.T) {
+	_, database, galleryDir := startWatcher(t)
+
+	sub := filepath.Join(galleryDir, "batch", "deep")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i, name := range []string{"a.png", "b.png"} {
+		p := filepath.Join(sub, name)
+		if err := os.WriteFile(p, solidPNG(t, 8, 8, [3]uint8{uint8(30 + i*40), 10, 10}), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pollForRow(t, database, `canonical_path LIKE '%batch/deep/a.png'`, 5*time.Second)
+	pollForRow(t, database, `canonical_path LIKE '%batch/deep/b.png'`, 5*time.Second)
+}

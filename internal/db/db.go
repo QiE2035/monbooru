@@ -200,6 +200,7 @@ func Bootstrap(db *DB) error {
 	b.ensureColumn("images", "source", `ALTER TABLE images ADD COLUMN source TEXT NOT NULL DEFAULT ''`)
 	b.ensureColumn("images", "url", `ALTER TABLE images ADD COLUMN url TEXT NOT NULL DEFAULT ''`)
 	b.ensureColumn("images", "note", `ALTER TABLE images ADD COLUMN note TEXT NOT NULL DEFAULT ''`)
+	b.ensureColumn("images", "original_source", `ALTER TABLE images ADD COLUMN original_source TEXT NOT NULL DEFAULT ''`)
 	// The historical idx_images_source pointed at images(source_type); the
 	// name now belongs to the new images(source) column. Drop the old
 	// shape unconditionally and let schema.sql / the recreate below
@@ -227,6 +228,14 @@ func Bootstrap(db *DB) error {
 		 SELECT id, source, '', url FROM images
 		 WHERE (source != '' OR url != '') AND NOT EXISTS (SELECT 1 FROM image_sources)`)
 	b.ensureColumn("image_sources", "commentary", `ALTER TABLE image_sources ADD COLUMN commentary TEXT NOT NULL DEFAULT ''`)
+	b.ensureColumn("image_sources", "original", `ALTER TABLE image_sources ADD COLUMN original TEXT NOT NULL DEFAULT ''`)
+	b.ensureColumn("image_sources", "similarity", `ALTER TABLE image_sources ADD COLUMN similarity REAL NOT NULL DEFAULT 0`)
+	b.ensureColumn("image_sources", "parent_url", `ALTER TABLE image_sources ADD COLUMN parent_url TEXT NOT NULL DEFAULT ''`)
+	// Created here rather than in schema.sql so the ALTER above runs first on
+	// libraries that predate the column. Covers the child-side probe of the
+	// derivative-edge linking; partial since most origins declare no parent.
+	b.exec("create idx_image_sources_parent_url", `CREATE INDEX IF NOT EXISTS idx_image_sources_parent_url ON image_sources(parent_url) WHERE parent_url != ''`)
+	b.ensureColumn("image_annotations", "manual", `ALTER TABLE image_annotations ADD COLUMN manual INTEGER NOT NULL DEFAULT 0`)
 	b.ensureColumn("images", "page_count", `ALTER TABLE images ADD COLUMN page_count INTEGER`)
 	b.ensureColumn("images", "duration_seconds", `ALTER TABLE images ADD COLUMN duration_seconds REAL`)
 	// Partial visible duration index for the duration: filter. Excludes
@@ -430,6 +439,34 @@ func Bootstrap(db *DB) error {
 			WHERE it.image_id = images.id AND tc.name = 'rating'
 		), -1)`,
 		"backfill images.rating_rank")
+	// Tag provenance: origin is stamped once at creation with the label
+	// of whatever created the row (user, a booru site, ptr, an
+	// auto-tagger, an import label); last_used_at tracks the most recent
+	// application to an image. The backfills label pre-existing rows
+	// from their image_tags attribution: the exact tagger_name when
+	// every row agrees on one non-empty label, else the coarse bucket
+	// the derived origin badge used to report, and the newest row's
+	// created_at for last_used_at. Zero-usage rows (aliases included)
+	// stay '' - there is nothing to derive from.
+	b.backfillIfFreshColumn("tags", "origin",
+		`ALTER TABLE tags ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
+		`UPDATE tags SET origin = COALESCE((
+			SELECT CASE
+				WHEN COUNT(*) = 0 THEN NULL
+				WHEN COUNT(DISTINCT COALESCE(it.tagger_name, '')) = 1
+				     AND MAX(COALESCE(it.tagger_name, '')) <> '' THEN MAX(it.tagger_name)
+				WHEN SUM(it.is_auto = 0) = 0 THEN 'auto'
+				WHEN SUM(it.is_auto = 0 AND COALESCE(it.tagger_name, '') = '') = 0 THEN 'api'
+				ELSE 'user'
+			END
+			FROM image_tags it WHERE it.tag_id = tags.id), '')`,
+		"backfill tags.origin")
+	b.backfillIfFreshColumn("tags", "last_used_at",
+		`ALTER TABLE tags ADD COLUMN last_used_at TEXT`,
+		`UPDATE tags SET last_used_at = (SELECT MAX(it.created_at) FROM image_tags it WHERE it.tag_id = tags.id)`,
+		"backfill tags.last_used_at")
+	b.ensureColumn("tag_implications", "origin",
+		`ALTER TABLE tag_implications ADD COLUMN origin TEXT NOT NULL DEFAULT ''`)
 	// Partial covering index for `fav:true` searches. The bare
 	// idx_images_favorited (CREATE in schema.sql) covers both polarities
 	// but isn't partial; the planner under c=5 sometimes prefers

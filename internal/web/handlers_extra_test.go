@@ -1266,39 +1266,334 @@ func TestRenameTag_HTMXCollisionSurfacesError(t *testing.T) {
 	}
 }
 
-// TestMergeTags_HTMXSuccessRedirectsToAlias pins the post-merge
-// destination: a successful alias / repoint lands the user on
-// /tags?origin=alias&q=<src> so the freshly-aliased row is in scope,
-// mirroring the create-alias dialog's redirect.
-func TestMergeTags_HTMXSuccessRedirectsToAlias(t *testing.T) {
+// drainTagJob waits for the single background tag-job slot to empty so
+// a 202-answering batch handler's effects can be asserted.
+func drainTagJob(t *testing.T, srv *Server) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !srv.jobs.IsRunning() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("tag job never drained")
+}
+
+func postTagBatch(t *testing.T, srv *Server, path string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	csrf := srv.csrfToken("anon")
+	form.Set("_csrf", csrf)
+	req := httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", csrf)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	return w
+}
+
+// TestTagDetailPage covers the per-tag page: provenance header,
+// relations in both directions, the alias slim variant, the 404 on an
+// unknown id, and the lazy usage-panel fragment.
+func TestTagDetailPage(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	general := cx.GeneralCategoryID
+	parent, _ := cx.TagSvc.GetOrCreateTagFrom("detail_parent", general, "danbooru")
+	implied, _ := cx.TagSvc.GetOrCreateTag("detail_child", general)
+	if _, err := cx.TagSvc.AddImplicationFrom(parent.ID, implied.ID, "ptr"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cx.TagSvc.CreateAliasFrom("detail_alias", general, parent.ID, "ptr"); err != nil {
+		t.Fatal(err)
+	}
+	imgID := seedImage(t, srv, "detail.png", 8, 8)
+	if err := cx.TagSvc.AddTagToImage(imgID, parent.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		return w
+	}
+	getHX := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("HX-Request", "true")
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	w := get(fmt.Sprintf("/tags/%d", parent.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET tag detail = %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"detail_parent", "danbooru", "Aliases pointing here", "detail_alias", "detail_child", "Recent images"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("detail page missing %q", want)
+		}
+	}
+	// The heavy aggregates live in the lazy usage panel, not the page.
+	w = getHX(fmt.Sprintf("/tags/%d/usage", parent.ID))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Applied by") {
+		t.Errorf("usage panel = %d, missing the applied-by table", w.Code)
+	}
+
+	// The recent-images strip is the one ceiling-aware surface on the
+	// catalog pages: an explicit-rated carrier disappears under a
+	// sensitive ceiling while the blind counts around it stay put.
+	var explicitID int64
+	_ = srv.db().Read.QueryRow(
+		`SELECT t.id FROM tags t JOIN tag_categories tc ON tc.id = t.category_id
+		 WHERE tc.name = 'rating' AND t.name = 'explicit'`,
+	).Scan(&explicitID)
+	if err := cx.TagSvc.AddTagToImage(imgID, explicitID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	ceilReq := httptest.NewRequest("GET", fmt.Sprintf("/tags/%d", parent.ID), nil)
+	ceilReq.AddCookie(&http.Cookie{Name: "monbooru_rating_ceiling", Value: "sensitive"})
+	ceilW := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(ceilW, ceilReq)
+	if strings.Contains(ceilW.Body.String(), fmt.Sprintf("/images/%d", imgID)) {
+		t.Errorf("recent images should hide the explicit carrier under a sensitive ceiling")
+	}
+	if !strings.Contains(get(fmt.Sprintf("/tags/%d", parent.ID)).Body.String(), fmt.Sprintf("/images/%d", imgID)) {
+		t.Errorf("recent images should list the carrier with no ceiling")
+	}
+
+	w = get(fmt.Sprintf("/tags/%d", implied.ID))
+	if !strings.Contains(w.Body.String(), "Implied by") || !strings.Contains(w.Body.String(), "detail_parent") {
+		t.Errorf("implied tag's page missing the reverse edge")
+	}
+
+	var aliasID int64
+	_ = srv.db().Read.QueryRow(`SELECT id FROM tags WHERE name = 'detail_alias'`).Scan(&aliasID)
+	w = get(fmt.Sprintf("/tags/%d", aliasID))
+	aliasBody := w.Body.String()
+	if !strings.Contains(aliasBody, "Resolves to") || !strings.Contains(aliasBody, fmt.Sprintf("/tags/%d", parent.ID)) {
+		t.Errorf("alias page missing the Resolves-to card")
+	}
+	if strings.Contains(aliasBody, "/usage\"") {
+		t.Errorf("alias page should not render the deep sections")
+	}
+
+	if w = get("/tags/999999"); w.Code != http.StatusNotFound {
+		t.Errorf("unknown tag id = %d, want 404", w.Code)
+	}
+
+	w = getHX(fmt.Sprintf("/tags/%d/usage", parent.ID))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "tag-usage-graph") {
+		t.Errorf("usage panel fragment = %d, body %q", w.Code, w.Body.String())
+	}
+
+	// A non-htmx caller gets the detail page, not a bare fragment.
+	w = get(fmt.Sprintf("/tags/%d/usage", parent.ID))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != fmt.Sprintf("/tags/%d", parent.ID) {
+		t.Errorf("plain usage GET = %d -> %q, want 303 to the tag page", w.Code, w.Header().Get("Location"))
+	}
+}
+
+// TestBatchTagAlias_SelectionMergesIntoCanonical: the selection-scoped
+// batch alias merges every posted id into the canonical, leaving them
+// as alias rows.
+func TestBatchTagAlias_SelectionMergesIntoCanonical(t *testing.T) {
 	srv := newTestServer(t)
 	cx := srv.Active()
 	var generalID int64
 	_ = cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
-	src, _ := cx.TagSvc.GetOrCreateTag("alias_src", generalID)
+	srcA, _ := cx.TagSvc.GetOrCreateTag("alias_src_a", generalID)
+	srcB, _ := cx.TagSvc.GetOrCreateTag("alias_src_b", generalID)
 	dst, _ := cx.TagSvc.GetOrCreateTag("alias_dst", generalID)
 
-	csrf := srv.csrfToken("anon")
-	form := url.Values{
-		"_csrf":        {csrf},
-		"alias_id":     {fmt.Sprintf("%d", src.ID)},
+	w := postTagBatch(t, srv, "/tags/batch-alias", url.Values{
+		"ids":          {fmt.Sprintf("%d,%d", srcA.ID, srcB.ID)},
 		"canonical_id": {fmt.Sprintf("%d", dst.ID)},
+	})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("batch-alias expected 202, got %d: %s", w.Code, w.Body.String())
 	}
-	req := httptest.NewRequest("POST", "/tags/merge", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("X-CSRF-Token", csrf)
-	req.Header.Set("HX-Request", "true")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
+	drainTagJob(t, srv)
 
-	if w.Code != http.StatusNoContent {
-		t.Errorf("expected 204 on HTMX merge, got %d: %s", w.Code, w.Body.String())
+	for _, src := range []int64{srcA.ID, srcB.ID} {
+		full, err := cx.TagSvc.GetTag(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !full.IsAlias || full.CanonicalTagID == nil || *full.CanonicalTagID != dst.ID {
+			t.Errorf("tag %d after batch alias = %+v, want alias of %d", src, full, dst.ID)
+		}
 	}
-	if got := w.Header().Get("HX-Redirect"); got != "/tags?origin=alias&q=alias_src" {
-		t.Errorf("HX-Redirect = %q, want /tags?origin=alias&q=alias_src", got)
+}
+
+// TestBatchTagScope_FilterDefaultsToPlainTags: a batch POST carrying
+// filter fields but no ids and no type resolves the same plain-tags-only
+// scope the listing shows by default, leaving alias rows untouched.
+func TestBatchTagScope_FilterDefaultsToPlainTags(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	var generalID, metaID int64
+	_ = cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
+	_ = cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='meta'`).Scan(&metaID)
+	plain, _ := cx.TagSvc.GetOrCreateTag("scopeplain", generalID)
+	src, _ := cx.TagSvc.GetOrCreateTag("scopealias", generalID)
+	canon, _ := cx.TagSvc.GetOrCreateTag("scopecanon", generalID)
+	if err := cx.TagSvc.MergeTags(src.ID, canon.ID); err != nil {
+		t.Fatal(err)
 	}
-	if w.Header().Get("HX-Refresh") != "" {
-		t.Errorf("HX-Refresh = %q, want empty (HX-Redirect handles nav)", w.Header().Get("HX-Refresh"))
+
+	w := postTagBatch(t, srv, "/tags/batch-category", url.Values{
+		"q":           {"scope"},
+		"category_id": {fmt.Sprintf("%d", metaID)},
+	})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("batch-category expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	drainTagJob(t, srv)
+
+	for _, id := range []int64{plain.ID, canon.ID} {
+		full, _ := cx.TagSvc.GetTag(id)
+		if full.CategoryID != metaID {
+			t.Errorf("plain tag %d category = %d, want meta %d", id, full.CategoryID, metaID)
+		}
+	}
+	aliased, _ := cx.TagSvc.GetTag(src.ID)
+	if !aliased.IsAlias || aliased.CategoryID != generalID {
+		t.Errorf("alias row should stay out of the default scope; tag = %+v", aliased)
+	}
+}
+
+// TestBatchTagHandlers_RejectBadInput: every batch POST validates its
+// own field and the shared ids list before touching the job slot.
+func TestBatchTagHandlers_RejectBadInput(t *testing.T) {
+	srv := newTestServer(t)
+	cases := []struct {
+		name string
+		path string
+		form url.Values
+	}{
+		{"category: non-numeric id", "/tags/batch-category", url.Values{"category_id": {"abc"}, "ids": {"1"}}},
+		{"category: bad ids list", "/tags/batch-category", url.Values{"category_id": {"1"}, "ids": {"1,x"}}},
+		{"alias: empty canonical", "/tags/batch-alias", url.Values{"canonical_id": {""}, "ids": {"1"}}},
+		{"alias: unknown canonical id", "/tags/batch-alias", url.Values{"canonical_id": {"999999"}, "ids": {"1"}}},
+		{"imply: empty target", "/tags/batch-imply", url.Values{"target": {""}, "ids": {"1"}}},
+		{"imply remove: unknown target", "/tags/batch-imply", url.Values{"mode": {"remove"}, "target": {"nosuchtag"}, "ids": {"1"}}},
+	}
+	for _, tc := range cases {
+		if w := postTagBatch(t, srv, tc.path, tc.form); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: got %d, want 400 (%s)", tc.name, w.Code, w.Body.String())
+		}
+	}
+	if srv.jobs.IsRunning() {
+		t.Error("a rejected batch should not have claimed the job slot")
+	}
+}
+
+// TestBatchTagCategory_MergeOnCollision: without merge a colliding move
+// is skipped; with merge=1 the mover becomes an alias of the target
+// category's existing row and its images land there.
+func TestBatchTagCategory_MergeOnCollision(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	var generalID, metaID int64
+	_ = cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
+	_ = cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='meta'`).Scan(&metaID)
+	mover, _ := cx.TagSvc.GetOrCreateTag("collide", generalID)
+	survivor, _ := cx.TagSvc.GetOrCreateTag("collide", metaID)
+	imgID := seedImage(t, srv, "collide.png", 8, 8)
+	if err := cx.TagSvc.AddTagToImage(imgID, mover.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	w := postTagBatch(t, srv, "/tags/batch-category", url.Values{
+		"ids":         {fmt.Sprintf("%d", mover.ID)},
+		"category_id": {fmt.Sprintf("%d", metaID)},
+	})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("batch-category expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	drainTagJob(t, srv)
+	full, _ := cx.TagSvc.GetTag(mover.ID)
+	if full.CategoryID != generalID || full.IsAlias {
+		t.Fatalf("collision without merge should skip; tag = %+v", full)
+	}
+
+	w = postTagBatch(t, srv, "/tags/batch-category", url.Values{
+		"ids":         {fmt.Sprintf("%d", mover.ID)},
+		"category_id": {fmt.Sprintf("%d", metaID)},
+		"merge":       {"1"},
+	})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("batch-category merge expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	drainTagJob(t, srv)
+	full, _ = cx.TagSvc.GetTag(mover.ID)
+	if !full.IsAlias || full.CanonicalTagID == nil || *full.CanonicalTagID != survivor.ID {
+		t.Fatalf("merge-on-collision should alias into the survivor; tag = %+v", full)
+	}
+	surv, _ := cx.TagSvc.GetTag(survivor.ID)
+	if surv.UsageCount != 1 {
+		t.Errorf("survivor usage = %d, want 1 (the mover's image)", surv.UsageCount)
+	}
+}
+
+// TestBatchTagImply_AddAndRemove: batch add declares the edge and
+// backfills carriers inline; batch remove deletes the edge and sweeps
+// the implied rows it justified.
+func TestBatchTagImply_AddAndRemove(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	var generalID int64
+	_ = cx.DB.Read.QueryRow(`SELECT id FROM tag_categories WHERE name='general'`).Scan(&generalID)
+	parent, _ := cx.TagSvc.GetOrCreateTag("imply_parent", generalID)
+	target, _ := cx.TagSvc.GetOrCreateTag("imply_target", generalID)
+	imgID := seedImage(t, srv, "imply.png", 8, 8)
+	if err := cx.TagSvc.AddTagToImage(imgID, parent.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	w := postTagBatch(t, srv, "/tags/batch-imply", url.Values{
+		"ids":    {fmt.Sprintf("%d", parent.ID)},
+		"mode":   {"add"},
+		"target": {fmt.Sprintf("%d", target.ID)},
+	})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("batch-imply add expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	drainTagJob(t, srv)
+	var implied int
+	_ = srv.db().Read.QueryRow(
+		`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND tag_id = ? AND is_implied = 1`,
+		imgID, target.ID,
+	).Scan(&implied)
+	if implied != 1 {
+		t.Fatalf("implied row after batch add = %d, want 1", implied)
+	}
+
+	w = postTagBatch(t, srv, "/tags/batch-imply", url.Values{
+		"ids":    {fmt.Sprintf("%d", parent.ID)},
+		"mode":   {"remove"},
+		"target": {fmt.Sprintf("%d", target.ID)},
+	})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("batch-imply remove expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	drainTagJob(t, srv)
+	_ = srv.db().Read.QueryRow(
+		`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND tag_id = ?`,
+		imgID, target.ID,
+	).Scan(&implied)
+	if implied != 0 {
+		t.Errorf("implied row after batch remove = %d, want 0", implied)
+	}
+	var edges int
+	_ = srv.db().Read.QueryRow(
+		`SELECT COUNT(*) FROM tag_implications WHERE parent_tag_id = ?`, parent.ID,
+	).Scan(&edges)
+	if edges != 0 {
+		t.Errorf("edges after batch remove = %d, want 0", edges)
 	}
 }
 
@@ -1547,8 +1842,9 @@ func TestDeleteSearch_BulkDeleteReconcilesUsage(t *testing.T) {
 }
 
 // TestRemoveUserTagsFromImageHandler_DropsManualOnly: a DELETE on
-// /images/{id}/user-tags must clear every is_auto=0 row for the
-// image while leaving auto-tagged rows intact, with usage_count
+// /images/{id}/user-tags must clear the operator's manual rows (is_auto=0
+// with no tagger_name) while leaving auto-tagged rows and a source's tags
+// (is_auto=0 carrying the site as tagger_name) intact, with usage_count
 // reconciled on each affected tag.
 func TestRemoveUserTagsFromImageHandler_DropsManualOnly(t *testing.T) {
 	srv := newTestServer(t)
@@ -1569,6 +1865,7 @@ func TestRemoveUserTagsFromImageHandler_DropsManualOnly(t *testing.T) {
 	}
 	manualID := insertTag("manual_a")
 	autoID := insertTag("auto_b")
+	sourceID := insertTag("source_c")
 	if _, err := srv.db().Write.Exec(
 		`INSERT INTO image_tags (image_id, tag_id, is_auto, tagger_name) VALUES (?, ?, 0, NULL)`,
 		id, manualID,
@@ -1578,6 +1875,12 @@ func TestRemoveUserTagsFromImageHandler_DropsManualOnly(t *testing.T) {
 	if _, err := srv.db().Write.Exec(
 		`INSERT INTO image_tags (image_id, tag_id, is_auto, tagger_name) VALUES (?, ?, 1, ?)`,
 		id, autoID, "tagger-A",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.db().Write.Exec(
+		`INSERT INTO image_tags (image_id, tag_id, is_auto, tagger_name) VALUES (?, ?, 0, ?)`,
+		id, sourceID, "danbooru",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1591,20 +1894,28 @@ func TestRemoveUserTagsFromImageHandler_DropsManualOnly(t *testing.T) {
 		t.Fatalf("DELETE /user-tags expected 200, got %d", w.Code)
 	}
 
-	var manualLeft, autoLeft int
-	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND is_auto = 0`, id).Scan(&manualLeft)
+	var manualLeft, sourceLeft, autoLeft int
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND is_auto = 0 AND (tagger_name IS NULL OR tagger_name = '')`, id).Scan(&manualLeft)
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND is_auto = 0 AND tagger_name = 'danbooru'`, id).Scan(&sourceLeft)
 	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND is_auto = 1`, id).Scan(&autoLeft)
 	if manualLeft != 0 {
-		t.Errorf("user-tags should be 0 after delete, got %d", manualLeft)
+		t.Errorf("manual user-tags should be 0 after delete, got %d", manualLeft)
+	}
+	if sourceLeft != 1 {
+		t.Errorf("source tags should survive a user-tags delete, got %d", sourceLeft)
 	}
 	if autoLeft != 1 {
 		t.Errorf("auto-tags should remain 1 (left alone), got %d", autoLeft)
 	}
-	var manualUsage, autoUsage int
+	var manualUsage, sourceUsage, autoUsage int
 	_ = srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, manualID).Scan(&manualUsage)
+	_ = srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, sourceID).Scan(&sourceUsage)
 	_ = srv.db().Read.QueryRow(`SELECT usage_count FROM tags WHERE id = ?`, autoID).Scan(&autoUsage)
 	if manualUsage != 0 {
 		t.Errorf("manual_a usage_count = %d after user-tags delete, want 0", manualUsage)
+	}
+	if sourceUsage != 1 {
+		t.Errorf("source_c usage_count = %d after user-tags delete, want 1 (unchanged)", sourceUsage)
 	}
 	if autoUsage != 1 {
 		t.Errorf("auto_b usage_count = %d after user-tags delete, want 1 (unchanged)", autoUsage)
@@ -1659,6 +1970,132 @@ func TestRemoveAutoTagsFromImageHandler_RespectsTaggerFilter(t *testing.T) {
 	}
 	if leftB != 1 {
 		t.Errorf("tagger-B row should survive (out of scope), got %d", leftB)
+	}
+}
+
+// insertProvenanceTag inserts a tag on id with the given is_auto flag and
+// tagger_name (pass nil for a manual user tag), returning the tag id. Shared by
+// the source-removal tests.
+func insertProvenanceTag(t *testing.T, srv *Server, id int64, name string, isAuto int, tagger any) int64 {
+	t.Helper()
+	var general int64
+	_ = srv.db().Read.QueryRow(`SELECT id FROM tag_categories WHERE name = 'general'`).Scan(&general)
+	res, err := srv.db().Write.Exec(`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 1)`, name, general)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagID, _ := res.LastInsertId()
+	if _, err := srv.db().Write.Exec(
+		`INSERT INTO image_tags (image_id, tag_id, is_auto, tagger_name) VALUES (?, ?, ?, ?)`, id, tagID, isAuto, tagger); err != nil {
+		t.Fatal(err)
+	}
+	return tagID
+}
+
+func imageTagCount(t *testing.T, srv *Server, id, tagID int64) int {
+	t.Helper()
+	var n int
+	_ = srv.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ? AND tag_id = ?`, id, tagID).Scan(&n)
+	return n
+}
+
+// TestRemoveSourceTagsFromImageHandler: DELETE /images/{id}/source-tags?sources=<site>
+// removes only that source's is_auto=0 rows, leaving other sources, auto-tags,
+// and the operator's manual tags in place.
+func TestRemoveSourceTagsFromImageHandler(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "st.png", 10, 10)
+	danb := insertProvenanceTag(t, srv, id, "from_danbooru", 0, "danbooru")
+	gelb := insertProvenanceTag(t, srv, id, "from_gelbooru", 0, "gelbooru")
+	manual := insertProvenanceTag(t, srv, id, "manual_tag", 0, nil)
+	auto := insertProvenanceTag(t, srv, id, "auto_tag", 1, "tagger-A")
+
+	// The detail danger zone renders one "Remove tag(s)..." control whose dialog
+	// offers each source and tagger currently carrying tags as a pickable option.
+	dreq := httptest.NewRequest("GET", fmt.Sprintf("/images/%d", id), nil)
+	dw := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(dw, dreq)
+	body := dw.Body.String()
+	if !strings.Contains(body, "Remove tag(s)...") {
+		t.Error("detail page should show the Remove tag(s) control")
+	}
+	if !strings.Contains(body, `<option value="danbooru">`) {
+		t.Error("remove-tags dialog should offer the danbooru source")
+	}
+	if !strings.Contains(body, `<option value="tagger-A">`) {
+		t.Error("remove-tags dialog should offer the tagger-A auto-tagger")
+	}
+
+	req := httptest.NewRequest("DELETE", fmt.Sprintf("/images/%d/source-tags?sources=danbooru", id), nil)
+	req.Header.Set("X-CSRF-Token", srv.csrfToken("anon"))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("DELETE /source-tags expected 200, got %d", w.Code)
+	}
+
+	if imageTagCount(t, srv, id, danb) != 0 {
+		t.Error("danbooru's tag should be removed")
+	}
+	if imageTagCount(t, srv, id, gelb) != 1 {
+		t.Error("gelbooru's tag should survive (out of scope)")
+	}
+	if imageTagCount(t, srv, id, manual) != 1 {
+		t.Error("the operator's manual tag should survive")
+	}
+	if imageTagCount(t, srv, id, auto) != 1 {
+		t.Error("auto-tag should survive")
+	}
+}
+
+// TestBatchStrip_SourceModes: batch mode=source strips one site's tags across
+// the selection; mode=source-all strips every source's tags but leaves manual
+// and auto rows.
+func TestBatchStrip_SourceModes(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedImage(t, srv, "bs.png", 10, 10)
+	danb := insertProvenanceTag(t, srv, id, "bs_danbooru", 0, "danbooru")
+	gelb := insertProvenanceTag(t, srv, id, "bs_gelbooru", 0, "gelbooru")
+	manual := insertProvenanceTag(t, srv, id, "bs_manual", 0, nil)
+	auto := insertProvenanceTag(t, srv, id, "bs_auto", 1, "tagger-A")
+
+	csrf := srv.csrfToken("anon")
+	post := func(form string) {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/internal/batch-strip", strings.NewReader(form))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("X-CSRF-Token", csrf)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("batch-strip: %d %s", w.Code, w.Body.String())
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) && srv.jobs.IsRunning() {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if srv.jobs.IsRunning() {
+			t.Fatal("batch-strip job never drained")
+		}
+	}
+
+	post(fmt.Sprintf("_csrf=%s&scope=selection&ids=%d&mode=source&source=danbooru", csrf, id))
+	if imageTagCount(t, srv, id, danb) != 0 {
+		t.Error("mode=source should strip danbooru's tag")
+	}
+	if imageTagCount(t, srv, id, gelb) != 1 || imageTagCount(t, srv, id, manual) != 1 || imageTagCount(t, srv, id, auto) != 1 {
+		t.Error("mode=source should strip only the named source")
+	}
+
+	post(fmt.Sprintf("_csrf=%s&scope=selection&ids=%d&mode=source-all", csrf, id))
+	if imageTagCount(t, srv, id, gelb) != 0 {
+		t.Error("mode=source-all should strip gelbooru's tag")
+	}
+	if imageTagCount(t, srv, id, manual) != 1 {
+		t.Error("mode=source-all must leave manual tags")
+	}
+	if imageTagCount(t, srv, id, auto) != 1 {
+		t.Error("mode=source-all must leave auto tags")
 	}
 }
 
@@ -2062,9 +2499,10 @@ func TestTagsPage_CategoryPrefixRedirectsToCatFilter(t *testing.T) {
 }
 
 // TestTagsPage_RatingRowOmitsImmutableActions pins the UI gating that
-// matches spec §5.9: rating rows must not surface Rename / Alias→ /
-// Delete buttons because the server uniformly rejects those operations.
-// Implications stays visible because rating tags are valid edge sides.
+// matches spec §5.9: rating rows must not surface a Rename button or an
+// editable category select because the server uniformly rejects those
+// operations. Delete stays because the rating branch of DeleteTag is a
+// usage-strip.
 func TestTagsPage_RatingRowOmitsImmutableActions(t *testing.T) {
 	srv := newTestServer(t)
 
@@ -2104,17 +2542,13 @@ func TestTagsPage_RatingRowOmitsImmutableActions(t *testing.T) {
 			t.Errorf("rating row should not contain %q; row was: %s", forbidden, row)
 		}
 	}
-	// Implications and Delete stay available on the rating row.
-	// Implications because rating tags are valid edge sides per §5.6.1;
-	// Delete because the rating-tag branch of DeleteTag strips
-	// image_tags rows but leaves the immutable catalog row in place.
+	// Delete stays available on the rating row because the rating-tag
+	// branch of DeleteTag strips image_tags rows but leaves the
+	// immutable catalog row in place.
 	idx := strings.Index(body, `data-name="explicit"`)
 	rowStart := strings.LastIndex(body[:idx], "<tr")
 	rowEnd := strings.Index(body[idx:], "</tr>")
 	row := body[rowStart : idx+rowEnd]
-	if !strings.Contains(row, `btn-implications-trigger"`) {
-		t.Errorf("rating row missing the Implications trigger; row was: %s", row)
-	}
 	if !strings.Contains(row, `btn-delete-tag"`) {
 		t.Errorf("rating row missing the Delete trigger; row was: %s", row)
 	}

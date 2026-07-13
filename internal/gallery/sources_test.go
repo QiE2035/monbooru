@@ -143,6 +143,51 @@ func TestSetSourceCommentary_UpsertClearAndCreate(t *testing.T) {
 	}
 }
 
+func TestSetSourceOriginal_UpsertClearAndCreate(t *testing.T) {
+	database := newCollectionsTestDB(t)
+	id := insertImage(t, database, false)
+	_ = AddSourceMembership(database, id, "danbooru", "111", "https://d/111")
+
+	if err := SetSourceOriginal(database, id, "danbooru", "111", "https://pixiv/artworks/1"); err != nil {
+		t.Fatal(err)
+	}
+	if srcs, _ := SourcesForImage(database, id); len(srcs) != 1 || srcs[0].Original != "https://pixiv/artworks/1" {
+		t.Fatalf("sources = %+v, want original set", srcs)
+	}
+
+	// A re-pull overwrites the stored value.
+	if err := SetSourceOriginal(database, id, "danbooru", "111", "https://twitter/2"); err != nil {
+		t.Fatal(err)
+	}
+	if srcs, _ := SourcesForImage(database, id); srcs[0].Original != "https://twitter/2" {
+		t.Fatalf("original = %q, want overwritten", srcs[0].Original)
+	}
+
+	// Clearing leaves the origin in place.
+	if err := SetSourceOriginal(database, id, "danbooru", "111", ""); err != nil {
+		t.Fatal(err)
+	}
+	if srcs, _ := SourcesForImage(database, id); len(srcs) != 1 || srcs[0].Original != "" {
+		t.Fatalf("sources = %+v, want the origin kept with empty original", srcs)
+	}
+
+	// Clearing a label with no origin must not conjure one.
+	if err := SetSourceOriginal(database, id, "pixiv", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if srcs, _ := SourcesForImage(database, id); len(srcs) != 1 {
+		t.Fatalf("sources = %+v, want no phantom origin", srcs)
+	}
+
+	// Setting an original on a fresh label adds an origin.
+	if err := SetSourceOriginal(database, id, "pixiv", "", "http://tksn.web.infoseek.co.jp/"); err != nil {
+		t.Fatal(err)
+	}
+	if srcs, _ := SourcesForImage(database, id); len(srcs) != 2 {
+		t.Fatalf("sources = %+v, want a new pixiv origin", srcs)
+	}
+}
+
 func TestSeedImageSourcesFromScalar(t *testing.T) {
 	database := newCollectionsTestDB(t)
 	// An image that predates image_sources: only the scalar is set.
@@ -178,6 +223,10 @@ func TestRenameSourceMembership_KeepsCommentaryAndRekeysAnnotations(t *testing.T
 		t.Fatal(err)
 	}
 
+	if err := SetSourceOriginal(database, id, "danbooru", "111", "https://pixiv/artworks/1"); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := RenameSourceMembership(database, id, "danbooru", "111", "gelbooru", "111", "https://g/111"); err != nil {
 		t.Fatal(err)
 	}
@@ -185,8 +234,8 @@ func TestRenameSourceMembership_KeepsCommentaryAndRekeysAnnotations(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(srcs) != 1 || srcs[0].Site != "gelbooru" || srcs[0].Commentary != "artist words" {
-		t.Fatalf("after rename: %+v, want gelbooru row keeping its commentary", srcs)
+	if len(srcs) != 1 || srcs[0].Site != "gelbooru" || srcs[0].Commentary != "artist words" || srcs[0].Original != "https://pixiv/artworks/1" {
+		t.Fatalf("after rename: %+v, want gelbooru row keeping its commentary and original", srcs)
 	}
 	anns, err := AnnotationsForImage(database, id)
 	if err != nil {
@@ -208,6 +257,9 @@ func TestRenameSourceMembership_MergesOntoExistingIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = AddSourceMembership(database, id, "gelbooru", "", "https://g/1")
+	if err := SetSourceOriginal(database, id, "gelbooru", "", "https://pixiv/artworks/1"); err != nil {
+		t.Fatal(err)
+	}
 
 	// Renaming gelbooru onto the existing danbooru identity merges the rows.
 	if err := RenameSourceMembership(database, id, "gelbooru", "", "danbooru", "", "https://g/1"); err != nil {
@@ -219,6 +271,9 @@ func TestRenameSourceMembership_MergesOntoExistingIdentity(t *testing.T) {
 	}
 	if len(srcs) != 1 || srcs[0].Site != "danbooru" || srcs[0].Commentary != "kept words" || srcs[0].URL != "https://g/1" {
 		t.Fatalf("after merge: %+v, want one danbooru row keeping its commentary with the submitted url", srcs)
+	}
+	if srcs[0].Original != "https://pixiv/artworks/1" {
+		t.Fatalf("original = %q, want the merged row to fill its empty original from the dropped one", srcs[0].Original)
 	}
 }
 
@@ -313,5 +368,38 @@ func TestSetPrimarySource_RefusesCollidingIdentity(t *testing.T) {
 	}
 	if len(srcs) != 2 || srcs[0].Site != "danbooru" || srcs[0].URL != "https://d/1" {
 		t.Fatalf("rows after refused relabel = %+v, want unchanged", srcs)
+	}
+}
+
+func TestMakeSourcePrimary_ReordersAndRebindsMirror(t *testing.T) {
+	database := newCollectionsTestDB(t)
+	id := insertImage(t, database, false)
+	_ = AddSourceMembership(database, id, "ptr", "", "")
+	_ = AddSourceMembership(database, id, "danbooru", "111", "https://d/111")
+
+	if err := MakeSourcePrimary(database, id, "danbooru", "111"); err != nil {
+		t.Fatal(err)
+	}
+	srcs, err := SourcesForImage(database, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(srcs) != 2 || srcs[0].Site != "danbooru" || srcs[1].Site != "ptr" {
+		t.Fatalf("sources = %+v, want danbooru promoted first", srcs)
+	}
+	if s, u := scalarSource(t, database, id); s != "danbooru" || u != "https://d/111" {
+		t.Errorf("mirror = (%q,%q), want the promoted danbooru row", s, u)
+	}
+
+	// Promoting the current primary keeps it primary.
+	if err := MakeSourcePrimary(database, id, "danbooru", "111"); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := scalarSource(t, database, id); s != "danbooru" {
+		t.Errorf("mirror after re-promoting = %q, want danbooru", s)
+	}
+
+	if err := MakeSourcePrimary(database, id, "nowhere", ""); err == nil {
+		t.Error("promoting a missing source should error")
 	}
 }

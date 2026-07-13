@@ -116,15 +116,17 @@ func (w *Watcher) Run(ctx context.Context) error {
 				return nil
 			}
 
-			// Drop events while a manual sync, move, delete, or tag job
-			// is running; each one already touches image_paths /
+			// Drop events while a manual sync, move, transfer, delete, or
+			// tag job is running; each one already touches image_paths /
 			// image_tags under its own transaction, so a concurrent
 			// watcher ingest would race on the UNIQUE constraint or
-			// trip markFileMissing on the source.
+			// trip markFileMissing on the source. A transfer writes into
+			// this gallery from another gallery's request, so the copy it
+			// lands must not be re-ingested by the watcher underneath it.
 			if w.jobs != nil {
 				if st := w.jobs.Get(); st != nil && st.Running {
 					switch st.JobType {
-					case "sync", "move", "delete", "tag":
+					case "sync", "move", "transfer", "delete", "tag":
 						continue
 					}
 				}
@@ -137,9 +139,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 				}
 
 				if info.IsDir() {
-					if addErr := w.fsw.Add(event.Name); addErr != nil {
-						logx.Warnf("fsnotify add new dir %q: %v", event.Name, addErr)
-					}
+					w.registerTree(event.Name)
 					continue
 				}
 
@@ -180,6 +180,27 @@ func (w *Watcher) eventPrefix() string {
 		return "watcher: "
 	}
 	return "watcher [" + w.galleryName + "]: "
+}
+
+// registerTree watches dir and every subdirectory beneath it, and schedules
+// ingest for any file already present. A mkdir + write burst can land files
+// inside a new directory before its Create event is handled, so entries that
+// predate the watch emit no further event and would otherwise wait for the
+// next manual sync.
+func (w *Watcher) registerTree(dir string) {
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if addErr := w.fsw.Add(path); addErr != nil {
+				logx.Warnf("fsnotify add new dir %q: %v", path, addErr)
+			}
+			return nil
+		}
+		w.debounce(path)
+		return nil
+	})
 }
 
 func (w *Watcher) cancelPendingTimers() {

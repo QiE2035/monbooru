@@ -189,7 +189,7 @@ func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 		byID[t.ID] = t
 	}
 
-	s.jobs.Update(0, total, fmt.Sprintf("deleting 0/%d…", total))
+	s.jobs.Update(0, total, "deleting…")
 	done := 0
 	affectedTags, processed, cancelled, err := s.tagSvc().ChunkedDeleteWithTagRecalc(
 		ctx, ids, "", nil,
@@ -210,7 +210,7 @@ func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 				}
 			}
 			done += len(chunk)
-			s.jobs.Update(done, total, fmt.Sprintf("deleting %d/%d…", done, total))
+			s.jobs.Update(done, total, "deleting…")
 		},
 	)
 	if err != nil {
@@ -267,7 +267,7 @@ func (s *Server) runBatchMove(ids []int64, targetFolder string) {
 	moved, failed := 0, 0
 	cancelled := false
 
-	s.jobs.Update(0, total, fmt.Sprintf("moving 0/%d…", total))
+	s.jobs.Update(0, total, "moving…")
 
 	for i, id := range ids {
 		if ctx.Err() != nil {
@@ -281,7 +281,7 @@ func (s *Server) runBatchMove(ids []int64, targetFolder string) {
 		}
 		moved++
 		if (i+1)%25 == 0 || i == total-1 {
-			s.jobs.Update(i+1, total, fmt.Sprintf("moving %d/%d…", i+1, total))
+			s.jobs.Update(i+1, total, "moving…")
 		}
 	}
 
@@ -463,21 +463,29 @@ func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
 	}
 	mode := strings.TrimSpace(r.FormValue("mode"))
 	switch mode {
-	case "user", "auto", "all":
+	case "user", "auto", "all", "source", "source-all":
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "mode must be user, auto, or all")
+		writeInlineFlash(w, "err", "mode must be user, auto, all, source, or source-all")
 		return
 	}
-	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
-	if taggerName != "" && mode != "auto" {
-		// tagger_name only narrows mode=auto; user/all carry no tagger_name
-		// concept. Reject silently to keep the predicate composition simple.
-		taggerName = ""
+	// filterName narrows mode=auto to one tagger's output and mode=source to
+	// one site's tags; the bulk modes carry no name.
+	var filterName string
+	switch mode {
+	case "auto":
+		filterName = strings.TrimSpace(r.FormValue("tagger_name"))
+	case "source":
+		filterName = strings.TrimSpace(r.FormValue("source"))
+		if filterName == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			writeInlineFlash(w, "err", "pick a source")
+			return
+		}
 	}
 
 	s.startScopedJob(w, r, "batch-strip", models.JobTypeTag, func(ids []int64) {
-		s.runBatchStrip(ids, mode, taggerName)
+		s.runBatchStrip(ids, mode, filterName)
 	})
 }
 
@@ -486,26 +494,36 @@ func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
 // the DELETE so the post-pass RecalcIDs is scoped to the tags that
 // actually changed (mirrors runBulkDelete). modePredicate narrows the strip:
 //
-//	user → AND is_auto = 0
-//	auto → AND is_auto = 1                  (+ AND tagger_name = ? when scoped)
-//	all  → (no extra predicate)
-func (s *Server) runBatchStrip(ids []int64, mode, taggerName string) {
+//	user       → AND is_auto = 0 AND (tagger_name IS NULL OR '')
+//	auto       → AND is_auto = 1              (+ AND tagger_name = ? when scoped)
+//	source     → AND is_auto = 0 AND tagger_name = ?
+//	source-all → AND is_auto = 0 AND tagger_name <> '' AND tagger_name IS NOT NULL
+//	all        → (no extra predicate)
+func (s *Server) runBatchStrip(ids []int64, mode, filterName string) {
 	var modePredicate, label, summary string
 	var extraArgs []any
 	switch mode {
 	case "user":
-		modePredicate = ` AND is_auto = 0`
+		modePredicate = ` AND is_auto = 0 AND (tagger_name IS NULL OR tagger_name = '')`
 		label, summary = "removing user tags", "Removed user tags from"
 	case "auto":
 		modePredicate = ` AND is_auto = 1`
-		if taggerName != "" {
+		if filterName != "" {
 			modePredicate += ` AND tagger_name = ?`
-			extraArgs = append(extraArgs, taggerName)
-			label = fmt.Sprintf("removing %s auto-tags", taggerName)
-			summary = fmt.Sprintf("Removed %s auto-tags from", taggerName)
+			extraArgs = append(extraArgs, filterName)
+			label = fmt.Sprintf("removing %s auto-tags", filterName)
+			summary = fmt.Sprintf("Removed %s auto-tags from", filterName)
 		} else {
 			label, summary = "removing auto-tags", "Removed auto-tags from"
 		}
+	case "source":
+		modePredicate = ` AND is_auto = 0 AND tagger_name = ?`
+		extraArgs = append(extraArgs, filterName)
+		label = fmt.Sprintf("removing %s tags", filterName)
+		summary = fmt.Sprintf("Removed %s tags from", filterName)
+	case "source-all":
+		modePredicate = ` AND is_auto = 0 AND tagger_name <> '' AND tagger_name IS NOT NULL`
+		label, summary = "removing source tags", "Removed source tags from"
 	case "all":
 		modePredicate = ``
 		label, summary = "removing tags", "Removed all tags from"
@@ -513,7 +531,7 @@ func (s *Server) runBatchStrip(ids []int64, mode, taggerName string) {
 
 	ctx := s.jobs.Context()
 	total := len(ids)
-	s.jobs.Update(0, total, fmt.Sprintf("%s 0/%d…", label, total))
+	s.jobs.Update(0, total, fmt.Sprintf("%s…", label))
 	done := 0
 	affectedTags, processed, cancelled, err := s.tagSvc().ChunkedDeleteWithTagRecalc(
 		ctx, ids, modePredicate, extraArgs,
@@ -524,7 +542,7 @@ func (s *Server) runBatchStrip(ids []int64, mode, taggerName string) {
 		},
 		func(chunk []int64) {
 			done += len(chunk)
-			s.jobs.Update(done, total, fmt.Sprintf("%s %d/%d…", label, done, total))
+			s.jobs.Update(done, total, fmt.Sprintf("%s…", label))
 		},
 	)
 	if err != nil {
@@ -792,7 +810,7 @@ func (s *Server) runBatchSource(ids []int64, label, mode string) {
 				return err
 			}
 			if _, err := tx.Exec(
-				`DELETE FROM image_annotations WHERE site = ? AND image_id IN (`+placeholders+`)`,
+				`DELETE FROM image_annotations WHERE site = ? AND image_id IN (`+placeholders+`) AND manual = 0`,
 				labelArgs...,
 			); err != nil {
 				return err
@@ -849,44 +867,94 @@ func (s *Server) runBatchSource(ids []int64, label, mode string) {
 	s.jobs.Complete(fmt.Sprintf("Added source to %d image(s).", processed))
 }
 
-// batchSourceFetch enqueues a monloader metadata refetch for every image in
-// `scope=search` or `scope=selection` that carries a primary source url;
-// url-less images are skipped and counted. The action is hidden unless
-// monloader is paired.
-func (s *Server) batchSourceFetch(w http.ResponseWriter, r *http.Request) {
+// batchLookup fans a monloader tag lookup across `scope=search` or
+// `scope=selection`. mode=source re-fetches each image's primary source url;
+// mode=all enqueues a hash lookup per image (md5 hashed on demand plus the
+// stored sha256, monloader runs whichever backends it has enabled); mode=ptr
+// and mode=booru target one backend, so a large scope can stay on the free
+// local index or spare it. The action is hidden unless monloader is paired.
+func (s *Server) batchLookup(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
-	s.startScopedJob(w, r, "batch-source-fetch", models.JobTypeTag, s.runBatchSourceFetch)
+	mode := r.FormValue("mode")
+	if mode != "source" && mode != "all" && mode != "ptr" && mode != "booru" {
+		http.Error(w, "unknown lookup mode", http.StatusBadRequest)
+		return
+	}
+	s.startScopedJob(w, r, "batch-lookup", models.JobTypeTag, func(ids []int64) {
+		s.runBatchLookup(mode, ids)
+	})
 }
 
-// runBatchSourceFetch enqueues one metadata refetch per image with a url,
-// stopping early if monloader becomes unreachable (each fetch is a bounded
-// LAN call, so this stays a foreground-light background job).
-func (s *Server) runBatchSourceFetch(ids []int64) {
+// runBatchLookup enqueues one monloader job per image, stopping early if
+// monloader becomes unreachable (each enqueue is a bounded LAN call, so this
+// stays a foreground-light background job). Images without the needed key -
+// a source url, a readable file to md5 - are skipped and counted.
+func (s *Server) runBatchLookup(mode string, ids []int64) {
 	ctx := s.jobs.Context()
 	galleryName := s.activeName
 	enqueued, skipped := 0, 0
 	for _, id := range ids {
 		if ctx.Err() != nil {
-			s.jobs.Complete(fmt.Sprintf("Fetch cancelled after queueing %d.", enqueued))
+			s.jobs.Complete(fmt.Sprintf("Lookup cancelled after queueing %d.", enqueued))
 			return
 		}
-		var url string
-		if err := s.db().Read.QueryRow(`SELECT url FROM images WHERE id = ?`, id).Scan(&url); err != nil {
+		var url, source, canonPath, sha string
+		if err := s.db().Read.QueryRow(
+			`SELECT url, source, canonical_path, sha256 FROM images WHERE id = ?`, id,
+		).Scan(&url, &source, &canonPath, &sha); err != nil {
 			continue
 		}
-		if strings.TrimSpace(url) == "" {
-			skipped++
-			continue
+		var err error
+		switch mode {
+		case "source":
+			switch {
+			case strings.TrimSpace(url) != "":
+				err = s.EnqueueMetadataFetch(ctx, id, galleryName, url)
+			case strings.EqualFold(strings.TrimSpace(source), "ptr"):
+				// The url-less "ptr" primary is fetched by hash instead of a
+				// page refetch; a disabled PTR skips the row rather than
+				// killing the whole job.
+				if err = s.EnqueueHashLookup(ctx, id, galleryName, "ptr", "", sha); errors.Is(err, errPTRUnavailable) {
+					skipped++
+					continue
+				}
+			default:
+				skipped++
+				continue
+			}
+		case "ptr":
+			if err = s.EnqueueHashLookup(ctx, id, galleryName, "ptr", "", sha); errors.Is(err, errPTRUnavailable) {
+				skipped++
+				continue
+			}
+		default:
+			md5, hashErr := gallery.Md5File(canonPath)
+			if hashErr != nil {
+				skipped++
+				continue
+			}
+			backend := "all"
+			if mode == "booru" {
+				backend = "booru"
+			}
+			err = s.EnqueueHashLookup(ctx, id, galleryName, backend, md5, sha)
 		}
-		if err := s.EnqueueMetadataFetch(ctx, id, galleryName, url); err != nil {
+		if err != nil {
 			s.jobs.Fail("monloader unreachable: " + err.Error())
 			return
 		}
 		enqueued++
 	}
-	s.jobs.Complete(fmt.Sprintf("Queued %d source refetch(es) on monloader; skipped %d with no url.", enqueued, skipped))
+	switch mode {
+	case "source":
+		s.jobs.Complete(fmt.Sprintf("Queued %d source fetch(es) on monloader; skipped %d without a fetchable source.", enqueued, skipped))
+	case "ptr":
+		s.jobs.Complete(fmt.Sprintf("Queued %d PTR lookup(s) on monloader; skipped %d (PTR unavailable).", enqueued, skipped))
+	default:
+		s.jobs.Complete(fmt.Sprintf("Queued %d hash lookup(s) on monloader; skipped %d unreadable file(s).", enqueued, skipped))
+	}
 }
 
 func (s *Server) deleteFolderPost(w http.ResponseWriter, r *http.Request) {

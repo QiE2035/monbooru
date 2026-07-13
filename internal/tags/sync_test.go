@@ -40,7 +40,7 @@ func TestSyncSourceTags_ClonesSliceKeepingOtherTags(t *testing.T) {
 	if err := svc.AddTagsToImageFromTagger(imgID, []int64{gamma}, false, "gelbooru"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.SyncSourceTags(imgID, []int64{alpha, beta}, "danbooru"); err != nil {
+	if _, err := svc.SyncSourceTags(imgID, []int64{alpha, beta}, "danbooru", true); err != nil {
 		t.Fatal(err)
 	}
 	if got := imageTagTagger(t, database, imgID, alpha); got != "danbooru" {
@@ -49,7 +49,7 @@ func TestSyncSourceTags_ClonesSliceKeepingOtherTags(t *testing.T) {
 
 	// A second sync drops beta and re-lists gamma: gamma keeps gelbooru's
 	// attribution (OR IGNORE), and danbooru's own beta is pruned.
-	if _, err := svc.SyncSourceTags(imgID, []int64{alpha, gamma}, "danbooru"); err != nil {
+	if _, err := svc.SyncSourceTags(imgID, []int64{alpha, gamma}, "danbooru", true); err != nil {
 		t.Fatal(err)
 	}
 	if imageHasTag(t, database, imgID, beta) {
@@ -76,7 +76,7 @@ func TestSyncSourceTags_ProtectsExistingRating(t *testing.T) {
 	explicit, _ := svc.GetOrCreateTag("explicit", ratingCat)
 
 	// Unrated: the sync fills the rating.
-	r, err := svc.SyncSourceTags(imgID, []int64{plain.ID, general.ID}, "danbooru")
+	r, err := svc.SyncSourceTags(imgID, []int64{plain.ID, general.ID}, "danbooru", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestSyncSourceTags_ProtectsExistingRating(t *testing.T) {
 
 	// Already rated: a stronger incoming rating must neither replace the
 	// existing one nor be pruned when the source stops listing it.
-	if _, err := svc.SyncSourceTags(imgID, []int64{plain.ID, explicit.ID}, "danbooru"); err != nil {
+	if _, err := svc.SyncSourceTags(imgID, []int64{plain.ID, explicit.ID}, "danbooru", true); err != nil {
 		t.Fatal(err)
 	}
 	if imageHasTag(t, database, imgID, explicit.ID) {
@@ -129,7 +129,7 @@ func TestSyncSourceTags_NeverReownsAutoOrImpliedRows(t *testing.T) {
 	}
 
 	// The source lists tags that overlap the auto row and the implied row.
-	if _, err := svc.SyncSourceTags(imgID, []int64{autoTag, implied}, "danbooru"); err != nil {
+	if _, err := svc.SyncSourceTags(imgID, []int64{autoTag, implied}, "danbooru", true); err != nil {
 		t.Fatal(err)
 	}
 	if isAuto, _, confidence := rowState(autoTag); isAuto != 1 || confidence == nil {
@@ -141,7 +141,7 @@ func TestSyncSourceTags_NeverReownsAutoOrImpliedRows(t *testing.T) {
 
 	// A refetch that no longer lists them must not prune rows the source
 	// never owned.
-	if _, err := svc.SyncSourceTags(imgID, nil, "danbooru"); err != nil {
+	if _, err := svc.SyncSourceTags(imgID, nil, "danbooru", true); err != nil {
 		t.Fatal(err)
 	}
 	if !imageHasTag(t, database, imgID, autoTag) {

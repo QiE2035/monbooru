@@ -46,7 +46,7 @@ func chunkedJob(ctx context.Context, mgr *jobs.Manager, ids []int64, chunkSize i
 ) (processed int, cancelled bool, err error) {
 	total := len(ids)
 	if mgr != nil {
-		mgr.Update(0, total, fmt.Sprintf("%s 0/%d…", noun, total))
+		mgr.Update(0, total, fmt.Sprintf("%s…", noun))
 	}
 	for start := 0; start < total; start += chunkSize {
 		if ctx.Err() != nil {
@@ -59,7 +59,7 @@ func chunkedJob(ctx context.Context, mgr *jobs.Manager, ids []int64, chunkSize i
 		}
 		processed = end
 		if mgr != nil {
-			mgr.Update(processed, total, fmt.Sprintf("%s %d/%d…", noun, processed, total))
+			mgr.Update(processed, total, fmt.Sprintf("%s…", noun))
 		}
 	}
 	return processed, false, nil

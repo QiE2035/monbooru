@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"testing"
 )
@@ -370,5 +371,104 @@ func TestShrinkMemory(t *testing.T) {
 	var n int
 	if err := db.Read.QueryRow(`SELECT COUNT(*) FROM tag_categories`).Scan(&n); err != nil {
 		t.Errorf("read after shrink: %v", err)
+	}
+}
+
+func TestBootstrapTagOriginBackfill(t *testing.T) {
+	db := openTestDB(t)
+	// Stand up pre-feature tags / image_tags tables (no origin, no
+	// last_used_at) so the fresh-column backfill fires and can be
+	// asserted against every derivation branch.
+	if _, err := db.Write.Exec(`
+		CREATE TABLE tags (
+		    id               INTEGER PRIMARY KEY,
+		    name             TEXT    NOT NULL,
+		    category_id      INTEGER NOT NULL,
+		    usage_count      INTEGER NOT NULL DEFAULT 0,
+		    is_alias         INTEGER NOT NULL DEFAULT 0,
+		    canonical_tag_id INTEGER,
+		    created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+		    UNIQUE(name, category_id)
+		)`); err != nil {
+		t.Fatalf("seed pre-feature tags table: %v", err)
+	}
+	if _, err := db.Write.Exec(`
+		CREATE TABLE image_tags (
+		    image_id    INTEGER NOT NULL,
+		    tag_id      INTEGER NOT NULL,
+		    is_auto     INTEGER NOT NULL DEFAULT 0,
+		    is_implied  INTEGER NOT NULL DEFAULT 0,
+		    confidence  REAL,
+		    tagger_name TEXT,
+		    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+		    PRIMARY KEY (image_id, tag_id)
+		)`); err != nil {
+		t.Fatalf("seed pre-feature image_tags table: %v", err)
+	}
+	type usageRow struct {
+		img     int64
+		isAuto  int
+		tagger  string
+		created string
+	}
+	seed := []struct {
+		id   int64
+		name string
+		rows []usageRow
+	}{
+		{1, "unanimous_site", []usageRow{{1, 0, "danbooru", "2026-01-01T00:00:00Z"}, {2, 0, "danbooru", "2026-02-01T00:00:00Z"}}},
+		{2, "mixed_manual", []usageRow{{1, 0, "", "2026-01-01T00:00:00Z"}, {2, 0, "danbooru", "2026-01-02T00:00:00Z"}}},
+		{3, "auto_two_models", []usageRow{{1, 1, "wd-swinv2", "2026-01-01T00:00:00Z"}, {2, 1, "joytag", "2026-01-02T00:00:00Z"}}},
+		{4, "labelled_manual_plus_auto", []usageRow{{1, 0, "api", "2026-01-01T00:00:00Z"}, {2, 1, "wd-swinv2", "2026-01-02T00:00:00Z"}}},
+		{5, "zero_usage", nil},
+	}
+	for _, s := range seed {
+		if _, err := db.Write.Exec(
+			`INSERT INTO tags (id, name, category_id, usage_count) VALUES (?, ?, 1, ?)`,
+			s.id, s.name, len(s.rows),
+		); err != nil {
+			t.Fatalf("seed tag %s: %v", s.name, err)
+		}
+		for _, r := range s.rows {
+			tagger := any(r.tagger)
+			if r.tagger == "" {
+				tagger = nil
+			}
+			if _, err := db.Write.Exec(
+				`INSERT INTO image_tags (image_id, tag_id, is_auto, tagger_name, created_at) VALUES (?, ?, ?, ?, ?)`,
+				r.img, s.id, r.isAuto, tagger, r.created,
+			); err != nil {
+				t.Fatalf("seed image_tag for %s: %v", s.name, err)
+			}
+		}
+	}
+
+	if err := Bootstrap(db); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	wantOrigin := map[int64]string{1: "danbooru", 2: "user", 3: "auto", 4: "api", 5: ""}
+	for id, want := range wantOrigin {
+		var got string
+		if err := db.Read.QueryRow(`SELECT origin FROM tags WHERE id = ?`, id).Scan(&got); err != nil {
+			t.Fatalf("read origin for tag %d: %v", id, err)
+		}
+		if got != want {
+			t.Errorf("tag %d origin = %q, want %q", id, got, want)
+		}
+	}
+	var lastUsed string
+	if err := db.Read.QueryRow(`SELECT last_used_at FROM tags WHERE id = 1`).Scan(&lastUsed); err != nil {
+		t.Fatalf("read last_used_at: %v", err)
+	}
+	if lastUsed != "2026-02-01T00:00:00Z" {
+		t.Errorf("tag 1 last_used_at = %q, want newest row's created_at", lastUsed)
+	}
+	var nullLastUsed sql.NullString
+	if err := db.Read.QueryRow(`SELECT last_used_at FROM tags WHERE id = 5`).Scan(&nullLastUsed); err != nil {
+		t.Fatalf("read zero-usage last_used_at: %v", err)
+	}
+	if nullLastUsed.Valid {
+		t.Errorf("zero-usage tag last_used_at = %q, want NULL", nullLastUsed.String)
 	}
 }

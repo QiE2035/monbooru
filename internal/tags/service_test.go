@@ -941,133 +941,152 @@ func TestRecalc_CountsOnlyNonMissing(t *testing.T) {
 	}
 }
 
-func TestListTags_IsAutoOnly(t *testing.T) {
-	database, svc := setupTestDB(t)
-	catID := generalCategoryID(t, svc)
-
-	imgID := insertTestImage(t, database, "isauto_img")
-	userTag, _ := svc.GetOrCreateTag("user_only", catID)
-	autoTag, _ := svc.GetOrCreateTag("auto_only", catID)
-	if err := svc.AddTagToImage(imgID, userTag.ID, false, nil); err != nil {
-		t.Fatal(err)
-	}
-	conf := 0.9
-	if err := svc.AddTagToImage(imgID, autoTag.ID, true, &conf); err != nil {
-		t.Fatal(err)
-	}
-
-	tags, _, err := svc.ListTags(TagFilter{Prefix: "user_only", Limit: 100})
-	if err != nil || len(tags) != 1 {
-		t.Fatalf("user_only lookup failed: %v %+v", err, tags)
-	}
-	if tags[0].IsAutoOnly {
-		t.Errorf("user_only tag should not be IsAutoOnly")
-	}
-
-	tags, _, err = svc.ListTags(TagFilter{Prefix: "auto_only", Limit: 100})
-	if err != nil || len(tags) != 1 {
-		t.Fatalf("auto_only lookup failed: %v %+v", err, tags)
-	}
-	if !tags[0].IsAutoOnly {
-		t.Errorf("auto_only tag should be IsAutoOnly")
-	}
-	_ = database
-}
-
-func TestListTags_IsAutoOnly_ZeroUsageNotFlagged(t *testing.T) {
+func TestListTags_OriginFilterMatchesStoredLabel(t *testing.T) {
 	_, svc := setupTestDB(t)
 	catID := generalCategoryID(t, svc)
 
-	// A tag declared but never applied (usage=0) has no image_tag rows
-	// at all; the origin "auto" badge would mislabel it. The flag must
-	// stay false so the /tags row renders the no-origin sentinel.
-	if _, err := svc.GetOrCreateTag("declared_only", catID); err != nil {
+	if _, err := svc.GetOrCreateTag("from_ui", catID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTagFrom("from_danbooru", catID, "danbooru"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTagFrom("from_ptr", catID, "ptr"); err != nil {
 		t.Fatal(err)
 	}
 
-	tags, _, err := svc.ListTags(TagFilter{Prefix: "declared_only", Limit: 100, ShowZero: true})
-	if err != nil || len(tags) != 1 {
-		t.Fatalf("declared_only lookup failed: %v %+v", err, tags)
-	}
-	if tags[0].UsageCount != 0 {
-		t.Fatalf("declared_only UsageCount = %d, want 0", tags[0].UsageCount)
-	}
-	if tags[0].IsAutoOnly {
-		t.Errorf("zero-usage tag should not be flagged IsAutoOnly")
-	}
-}
-
-func TestListTags_APIOrigin(t *testing.T) {
-	database, svc := setupTestDB(t)
-	catID := generalCategoryID(t, svc)
-
-	img1 := insertTestImage(t, database, "apiorigin_1")
-	img2 := insertTestImage(t, database, "apiorigin_2")
-	conf := 0.9
-
-	userTag, _ := svc.GetOrCreateTag("anon_user", catID)
-	apiTag, _ := svc.GetOrCreateTag("api_sourced", catID)
-	autoTag, _ := svc.GetOrCreateTag("auto_machine", catID)
-	mixedTag, _ := svc.GetOrCreateTag("anon_plus_api", catID)
-
-	// Anonymous UI add => user; a manual add carrying a source label =>
-	// api; an auto-tagged row => auto; an anon row on one image plus a
-	// labelled row on another => user (a human touched it).
-	if err := svc.AddTagToImage(img1, userTag.ID, false, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.AddTagsToImageFromTagger(img1, []int64{apiTag.ID}, false, "scraper"); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.AddTagToImage(img1, autoTag.ID, true, &conf); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.AddTagToImage(img1, mixedTag.ID, false, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.AddTagsToImageFromTagger(img2, []int64{mixedTag.ID}, false, "scraper"); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, tc := range []struct {
-		prefix            string
-		wantAuto, wantAPI bool
-	}{
-		{"anon_user", false, false},
-		{"api_sourced", false, true},
-		{"auto_machine", true, false},
-		{"anon_plus_api", false, false},
-	} {
-		tags, _, err := svc.ListTags(TagFilter{Prefix: tc.prefix, Limit: 100})
-		if err != nil || len(tags) != 1 {
-			t.Fatalf("%s lookup: %v %+v", tc.prefix, err, tags)
-		}
-		if tags[0].IsAutoOnly != tc.wantAuto || tags[0].IsAPIOnly != tc.wantAPI {
-			t.Errorf("%s: IsAutoOnly=%v IsAPIOnly=%v, want %v/%v",
-				tc.prefix, tags[0].IsAutoOnly, tags[0].IsAPIOnly, tc.wantAuto, tc.wantAPI)
-		}
-	}
-
-	// The Origin filter buckets the same way (ListTags returns name-asc).
-	names := func(origin string) []string {
-		tags, _, err := svc.ListTags(TagFilter{Origin: origin, Limit: 100})
+	names := func(f TagFilter) []string {
+		f.Limit = 100
+		f.ShowZero = true
+		f.Sort = "name"
+		list, _, err := svc.ListTags(f)
 		if err != nil {
-			t.Fatalf("filter %q: %v", origin, err)
+			t.Fatalf("ListTags %+v: %v", f, err)
 		}
 		out := []string{}
-		for _, tg := range tags {
+		for _, tg := range list {
 			out = append(out, tg.Name)
 		}
 		return out
 	}
-	if got := names("api"); !reflect.DeepEqual(got, []string{"api_sourced"}) {
-		t.Errorf("origin=api => %v, want [api_sourced]", got)
+
+	if got := names(TagFilter{Origin: "danbooru"}); !reflect.DeepEqual(got, []string{"from_danbooru"}) {
+		t.Errorf("origin=danbooru => %v, want [from_danbooru]", got)
 	}
-	if got := names("user"); !reflect.DeepEqual(got, []string{"anon_plus_api", "anon_user"}) {
-		t.Errorf("origin=user => %v, want [anon_plus_api anon_user]", got)
+	if got := names(TagFilter{Origin: "user"}); !reflect.DeepEqual(got, []string{"from_ui"}) {
+		t.Errorf("origin=user => %v, want [from_ui]", got)
 	}
-	if got := names("auto"); !reflect.DeepEqual(got, []string{"auto_machine"}) {
-		t.Errorf("origin=auto => %v, want [auto_machine]", got)
+	if got := names(TagFilter{Origin: "ptr"}); !reflect.DeepEqual(got, []string{"from_ptr"}) {
+		t.Errorf("origin=ptr => %v, want [from_ptr]", got)
+	}
+
+	counts, err := svc.OriginCounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, oc := range counts {
+		got[oc.Label] = oc.Count
+	}
+	// The rating category seeds four canonical rows with no origin, so
+	// only the three stamped labels surface.
+	if got["danbooru"] != 1 || got["ptr"] != 1 || got["user"] != 1 {
+		t.Errorf("OriginCounts = %v, want danbooru/ptr/user at 1 each", got)
+	}
+	if _, ok := got[""]; ok {
+		t.Errorf("OriginCounts surfaced the empty label: %v", got)
+	}
+}
+
+func TestListTags_TypeFilterAndLegacyAliasOrigin(t *testing.T) {
+	_, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	canon, err := svc.GetOrCreateTag("type_canon", catID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateAliasFrom("type_alias", catID, canon.ID, "ptr"); err != nil {
+		t.Fatal(err)
+	}
+
+	names := func(f TagFilter) []string {
+		f.Limit = 100
+		f.ShowZero = true
+		f.Sort = "name"
+		f.Prefix = "type_"
+		list, _, err := svc.ListTags(f)
+		if err != nil {
+			t.Fatalf("ListTags %+v: %v", f, err)
+		}
+		out := []string{}
+		for _, tg := range list {
+			out = append(out, tg.Name)
+		}
+		return out
+	}
+
+	if got := names(TagFilter{Type: "alias"}); !reflect.DeepEqual(got, []string{"type_alias"}) {
+		t.Errorf("type=alias => %v, want [type_alias]", got)
+	}
+	if got := names(TagFilter{Type: "tag"}); !reflect.DeepEqual(got, []string{"type_canon"}) {
+		t.Errorf("type=tag => %v, want [type_canon]", got)
+	}
+	// The legacy origin=alias spelling keeps resolving structurally.
+	if got := names(TagFilter{Origin: "alias"}); !reflect.DeepEqual(got, []string{"type_alias"}) {
+		t.Errorf("origin=alias => %v, want [type_alias]", got)
+	}
+	// Type composes with origin: a ptr-created alias is both.
+	if got := names(TagFilter{Type: "alias", Origin: "ptr"}); !reflect.DeepEqual(got, []string{"type_alias"}) {
+		t.Errorf("type=alias origin=ptr => %v, want [type_alias]", got)
+	}
+}
+
+func TestListTags_CreatedAfterAndDateSorts(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	older, err := svc.GetOrCreateTag("dated_old", catID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Write.Exec(
+		`UPDATE tags SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?`, older.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetOrCreateTag("dated_new", catID); err != nil {
+		t.Fatal(err)
+	}
+
+	list, _, err := svc.ListTags(TagFilter{Prefix: "dated_", CreatedAfter: "2025-01-01T00:00:00Z", ShowZero: true, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Name != "dated_new" {
+		t.Errorf("CreatedAfter => %+v, want only dated_new", list)
+	}
+
+	list, _, err = svc.ListTags(TagFilter{Prefix: "dated_", Sort: "created", ShowZero: true, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].Name != "dated_new" {
+		t.Errorf("sort=created => %+v, want dated_new first", list)
+	}
+
+	// last_used sorts applied tags first (DESC default); never-applied
+	// rows carry NULL, which SQLite sorts last on DESC.
+	imgID := insertTestImage(t, database, "dated_img")
+	if err := svc.AddTagToImage(imgID, older.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	list, _, err = svc.ListTags(TagFilter{Prefix: "dated_", Sort: "last_used", ShowZero: true, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].Name != "dated_old" {
+		t.Errorf("sort=last_used => %+v, want dated_old (applied) first", list)
 	}
 }
 
@@ -1127,6 +1146,49 @@ func TestRemoveAllTagsFromImage(t *testing.T) {
 		if got.UsageCount != 0 {
 			t.Errorf("tag %d UsageCount = %d, want 0", id, got.UsageCount)
 		}
+	}
+}
+
+func TestRemoveSourceTagsFromImage(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	imgID := insertTestImage(t, database, "rem_source")
+
+	manual, _ := svc.GetOrCreateTag("man", catID)
+	danb, _ := svc.GetOrCreateTag("dan", catID)
+	gelb, _ := svc.GetOrCreateTag("gel", catID)
+	if err := svc.AddTagToImage(imgID, manual.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagsToImageFromTagger(imgID, []int64{danb.ID}, false, "danbooru"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagsToImageFromTagger(imgID, []int64{gelb.ID}, false, "gelbooru"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.RemoveSourceTagsFromImage(imgID, []string{"danbooru"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, imgTags, _ := svc.GetImageTags(imgID)
+	got := map[string]bool{}
+	for _, it := range imgTags {
+		got[it.TagName] = true
+	}
+	if got["dan"] {
+		t.Error("danbooru's tag should be removed")
+	}
+	if !got["man"] || !got["gel"] {
+		t.Errorf("manual and gelbooru tags must survive, got %+v", imgTags)
+	}
+
+	// An empty source list is a no-op.
+	if err := svc.RemoveSourceTagsFromImage(imgID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, after, _ := svc.GetImageTags(imgID); len(after) != 2 {
+		t.Errorf("empty sources should be a no-op, got %d tags", len(after))
 	}
 }
 
@@ -2028,6 +2090,75 @@ func TestDeleteTag_SweepsImpliedClosureOnCarrierImages(t *testing.T) {
 	}
 }
 
+// The alias sweep in deleteTagsTx must survive alias -> alias references.
+// Current write paths refuse to create them, but raw DB imports and older
+// versions can carry them, and a one-level sweep then trips the
+// canonical_tag_id FK: a chain leaves a grandchild dangling, a cycle
+// leaves the deleted tag's own pointer dangling.
+func TestDeleteTag_AliasChainAndCycle(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	insertAlias := func(name string, canonical any) int64 {
+		t.Helper()
+		var id int64
+		err := database.Write.QueryRow(
+			`INSERT INTO tags (name, category_id, is_alias, canonical_tag_id, usage_count, origin)
+			 VALUES (?, ?, 1, ?, 0, 'user') RETURNING id`,
+			name, catID, canonical,
+		).Scan(&id)
+		if err != nil {
+			t.Fatalf("insert alias %s: %v", name, err)
+		}
+		return id
+	}
+	tagCount := func(name string) int {
+		t.Helper()
+		var n int
+		if err := database.Read.QueryRow(`SELECT COUNT(*) FROM tags WHERE name = ?`, name).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// Chain: chain_d -> chain_b -> chain_a -> chain_canon.
+	canon, _ := svc.GetOrCreateTag("chain_canon", catID)
+	aliasA, err := svc.CreateAlias("chain_a", catID, canon.ID)
+	if err != nil {
+		t.Fatalf("CreateAlias: %v", err)
+	}
+	bID := insertAlias("chain_b", aliasA.ID)
+	insertAlias("chain_d", bID)
+
+	if err := svc.DeleteTag(aliasA.ID); err != nil {
+		t.Fatalf("DeleteTag on the chained alias: %v", err)
+	}
+	for _, name := range []string{"chain_a", "chain_b", "chain_d"} {
+		if n := tagCount(name); n != 0 {
+			t.Errorf("%s still present after delete", name)
+		}
+	}
+	if n := tagCount("chain_canon"); n != 1 {
+		t.Errorf("chain_canon count = %d, want 1", n)
+	}
+
+	// Cycle: cycle_a <-> cycle_b.
+	cycleA := insertAlias("cycle_a", nil)
+	cycleB := insertAlias("cycle_b", cycleA)
+	if _, err := database.Write.Exec(`UPDATE tags SET canonical_tag_id = ? WHERE id = ?`, cycleB, cycleA); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.DeleteTag(cycleA); err != nil {
+		t.Fatalf("DeleteTag on the alias cycle: %v", err)
+	}
+	for _, name := range []string{"cycle_a", "cycle_b"} {
+		if n := tagCount(name); n != 0 {
+			t.Errorf("%s still present after delete", name)
+		}
+	}
+}
+
 // CreateAlias's upgrade-in-place branch (zero-usage tag becomes an alias)
 // must move tag_implications off the existing row for the same reason
 // MergeTags does: AddImplication refuses aliases, so any dangling
@@ -2436,5 +2567,171 @@ func TestAddNonRating_DoesNotTriggerPrune(t *testing.T) {
 	}
 	if ratingCount != 2 {
 		t.Errorf("rating rows after non-rating add = %d, want 2 (legacy multi-rating left untouched)", ratingCount)
+	}
+}
+
+func TestGetOrCreateTagFrom_StampsOriginOnInsertOnly(t *testing.T) {
+	_, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+
+	created, err := svc.GetOrCreateTagFrom("provenance_tag", catID, "danbooru")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Origin != "danbooru" {
+		t.Errorf("fresh tag origin = %q, want danbooru", created.Origin)
+	}
+
+	// A later get through another creator must not relabel the row.
+	again, err := svc.GetOrCreateTagFrom("provenance_tag", catID, "ptr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := svc.GetTag(again.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.Origin != "danbooru" {
+		t.Errorf("origin after second get = %q, want danbooru", full.Origin)
+	}
+
+	plain, err := svc.GetOrCreateTag("ui_tag", catID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err = svc.GetTag(plain.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.Origin != "user" {
+		t.Errorf("GetOrCreateTag origin = %q, want user", full.Origin)
+	}
+}
+
+func TestCreateAliasFrom_StampsFreshInsertKeepsUpgrade(t *testing.T) {
+	_, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	canon, err := svc.GetOrCreateTag("alias_canon", catID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, err := svc.CreateAliasFrom("swept_alias", catID, canon.ID, "ptr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Origin != "ptr" {
+		t.Errorf("fresh alias origin = %q, want ptr", fresh.Origin)
+	}
+
+	// Upgrading an existing zero-usage tag in place keeps its creator.
+	if _, err := svc.GetOrCreateTag("upgraded_alias", catID); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := svc.CreateAliasFrom("upgraded_alias", catID, canon.ID, "ptr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upgraded.Origin != "user" {
+		t.Errorf("upgraded alias origin = %q, want user (creator preserved)", upgraded.Origin)
+	}
+}
+
+func TestAddImplicationFrom_StampsEdgeOrigin(t *testing.T) {
+	_, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	parent, err := svc.GetOrCreateTag("imp_parent", catID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	implied, err := svc.GetOrCreateTag("imp_child", catID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AddImplicationFrom(parent.ID, implied.ID, "ptr"); err != nil {
+		t.Fatal(err)
+	}
+	imps, err := svc.ListImplications(parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imps) != 1 || imps[0].Origin != "ptr" {
+		t.Errorf("implication origin = %+v, want one edge with origin ptr", imps)
+	}
+}
+
+func TestRenameTagKeepAlias(t *testing.T) {
+	database, svc := setupTestDB(t)
+	catID := generalCategoryID(t, svc)
+	imgID := insertTestImage(t, database, "renamekeep1")
+	tag, err := svc.GetOrCreateTagFrom("old_spelling", catID, "danbooru")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddTagToImage(imgID, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.RenameTagKeepAlias(tag.ID, "new_spelling"); err != nil {
+		t.Fatal(err)
+	}
+	renamed, err := svc.GetTag(tag.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Name != "new_spelling" || renamed.Origin != "danbooru" {
+		t.Errorf("renamed tag = %+v, want new_spelling with its origin kept", renamed)
+	}
+	// The old spelling resolves to the renamed row on the next add.
+	resolved, err := svc.GetOrCreateTag("old_spelling", catID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.ID != tag.ID {
+		t.Errorf("old spelling resolves to %d, want the renamed row %d", resolved.ID, tag.ID)
+	}
+	var aliasOrigin string
+	var isAlias int
+	if err := database.Read.QueryRow(
+		`SELECT is_alias, origin FROM tags WHERE name = 'old_spelling'`,
+	).Scan(&isAlias, &aliasOrigin); err != nil {
+		t.Fatal(err)
+	}
+	if isAlias != 1 || aliasOrigin != "user" {
+		t.Errorf("leftover row is_alias=%d origin=%q, want a user-origin alias", isAlias, aliasOrigin)
+	}
+
+	// An alias row refuses the keep (its leftover would chain aliases).
+	var aliasID int64
+	_ = database.Read.QueryRow(`SELECT id FROM tags WHERE name = 'old_spelling'`).Scan(&aliasID)
+	if err := svc.RenameTagKeepAlias(aliasID, "third_spelling"); err == nil {
+		t.Error("RenameTagKeepAlias on an alias row should refuse")
+	}
+}
+
+func TestAddTagToImage_SetsLastUsedAt(t *testing.T) {
+	database, svc := setupTestDB(t)
+	imageID := insertTestImage(t, database, "lastused1")
+	catID := generalCategoryID(t, svc)
+	tag, err := svc.GetOrCreateTag("recently_used", catID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := svc.GetTag(tag.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !full.LastUsedAt.IsZero() {
+		t.Errorf("never-applied tag LastUsedAt = %v, want zero", full.LastUsedAt)
+	}
+	if err := svc.AddTagToImage(imageID, tag.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	full, err = svc.GetTag(tag.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.LastUsedAt.IsZero() {
+		t.Error("LastUsedAt still zero after applying the tag to an image")
 	}
 }

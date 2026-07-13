@@ -32,17 +32,19 @@ import (
 // empty-string / NULL defaults already cover the unset case, so a bare
 // create touches nothing. Validation has already run, so a failure here
 // is a DB-level error.
-func applyCreateProvenance(g Gallery, imageID int64, source, url, md5, collection, commentary string, order *int) error {
+func applyCreateProvenance(g Gallery, imageID int64, source, postID, url, md5, parentURL, collection, commentary, original string, order *int) error {
 	if source != "" || url != "" {
-		if err := gallery.AddSourceMembership(g.DB, imageID, source, "", url); err != nil {
-			return err
-		}
-		if err := gallery.SetSourceMD5(g.DB, imageID, source, "", md5); err != nil {
+		if err := writeSourceProvenance(g, imageID, source, postID, url, md5, parentURL); err != nil {
 			return err
 		}
 	}
 	if source != "" && commentary != "" {
-		if err := gallery.SetSourceCommentary(g.DB, imageID, source, "", commentary); err != nil {
+		if err := gallery.SetSourceCommentary(g.DB, imageID, source, postID, commentary); err != nil {
+			return err
+		}
+	}
+	if source != "" && original != "" {
+		if err := gallery.SetSourceOriginal(g.DB, imageID, source, postID, original); err != nil {
 			return err
 		}
 	}
@@ -50,6 +52,54 @@ func applyCreateProvenance(g Gallery, imageID int64, source, url, md5, collectio
 		return gallery.SetHomeCollection(g.DB, imageID, collection, order)
 	}
 	return nil
+}
+
+// writeSourceProvenance records one origin row: membership plus its md5
+// and parent-URL columns, keyed by (source, postID).
+func writeSourceProvenance(g Gallery, imageID int64, source, postID, url, md5, parentURL string) error {
+	if err := gallery.AddSourceMembership(g.DB, imageID, source, postID, url); err != nil {
+		return err
+	}
+	if err := gallery.SetSourceMD5(g.DB, imageID, source, postID, md5); err != nil {
+		return err
+	}
+	return gallery.SetSourceParentURL(g.DB, imageID, source, postID, parentURL)
+}
+
+// linkParentRelations turns a booru parent/child declaration into derivative
+// edges once both sides are in the gallery: a pushed post links under the
+// image already holding its declared parent URL, and images whose origins
+// declare the pushed post's URL as parent link under it. Conflicts (an
+// existing relation on the pair, a derivative that already has a source, a
+// not-related mark) are standing operator decisions, so they are skipped
+// quietly; linking is best-effort and never fails the push.
+func linkParentRelations(g Gallery, imageID int64, url, parentURL string) {
+	if g.RelationsSvc == nil {
+		return
+	}
+	if parentURL != "" {
+		if parentID, ok := gallery.ImageIDBySourceURL(g.DB, parentURL); ok && parentID != imageID {
+			if err := g.RelationsSvc.AddDerivativeEdge(parentID, imageID); err != nil {
+				logx.Debugf("api: parent link %d -> %d skipped: %v", parentID, imageID, err)
+			}
+		}
+	}
+	if url == "" {
+		return
+	}
+	children, err := gallery.ChildIDsByParentURL(g.DB, url)
+	if err != nil {
+		logx.Warnf("api: child lookup for %q: %v", url, err)
+		return
+	}
+	for _, child := range children {
+		if child == imageID {
+			continue
+		}
+		if err := g.RelationsSvc.AddDerivativeEdge(imageID, child); err != nil {
+			logx.Debugf("api: child link %d -> %d skipped: %v", imageID, child, err)
+		}
+	}
 }
 
 // mergeSummary reports what a duplicate-merge folded into an existing image.
@@ -66,22 +116,40 @@ type mergeSummary struct {
 // rating protected. Attribution is the source label so each source owns a
 // prunable slice. A push with no source label leaves tags untouched. The
 // second return carries unresolvable-tag warnings for the response envelope.
-func (h *Handler) mergeSource(g Gallery, imageID int64, source, url, md5 string, rawTags []string) (mergeSummary, []string, error) {
+// A booru origin arriving while the primary is the url-less "ptr" row takes
+// the primary over: a lookup that hits both backends should lead with the
+// booru post, whatever order monloader's enrich calls landed in.
+func (h *Handler) mergeSource(g Gallery, imageID int64, source, postID, url, md5, parentURL string, rawTags []string) (mergeSummary, []string, error) {
 	var sum mergeSummary
 	if source != "" || url != "" {
-		if err := gallery.AddSourceMembership(g.DB, imageID, source, "", url); err != nil {
+		if err := writeSourceProvenance(g, imageID, source, postID, url, md5, parentURL); err != nil {
 			return sum, nil, err
 		}
-		if err := gallery.SetSourceMD5(g.DB, imageID, source, "", md5); err != nil {
-			return sum, nil, err
+		if source != "" && !strings.EqualFold(source, "ptr") {
+			var primary string
+			if err := g.DB.Read.QueryRow(`SELECT source FROM images WHERE id = ?`, imageID).Scan(&primary); err == nil &&
+				strings.EqualFold(strings.TrimSpace(primary), "ptr") {
+				if err := gallery.MakeSourcePrimary(g.DB, imageID, source, postID); err != nil {
+					return sum, nil, err
+				}
+			}
 		}
 		sum.SourceAdded = true
 	}
 	var warnings []string
 	if source != "" && len(rawTags) > 0 {
-		tagIDs, warns := h.resolveTagNames(g, rawTags)
+		tagIDs, warns := h.resolveTagNames(g, rawTags, source)
 		warnings = warns
-		r, err := g.TagSvc.SyncSourceTags(imageID, tagIDs, source)
+		// The per-site tag slice is shared by every post of that site on the
+		// image, so the reconcile prune only runs while this origin is the
+		// site's sole one; alongside a sibling post the merge is add-only.
+		var origins int
+		if err := g.DB.Read.QueryRow(
+			`SELECT COUNT(*) FROM image_sources WHERE image_id = ? AND site = ?`, imageID, source,
+		).Scan(&origins); err != nil {
+			return sum, warnings, err
+		}
+		r, err := g.TagSvc.SyncSourceTags(imageID, tagIDs, source, origins <= 1)
 		if err != nil {
 			return sum, warnings, err
 		}
@@ -115,21 +183,42 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Tags       []string         `json:"tags"`
 		Source     string           `json:"source"`
+		PostID     string           `json:"post_id"`
 		URL        string           `json:"url"`
 		SourceMD5  string           `json:"source_md5"`
+		ParentURL  string           `json:"parent_url"`
 		Verify     bool             `json:"verify"`
+		Similarity float64          `json:"similarity"`
 		Commentary string           `json:"commentary"`
+		Original   string           `json:"original"`
 		Notes      []annotationJSON `json:"notes"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	if err := validateMaxLen("commentary", strings.TrimSpace(body.Commentary), maxImageCommentaryLen); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	if err := validateMaxLen("commentary", strings.TrimSpace(body.Commentary), maxImageCommentaryLen); badRequest(w, err) {
 		return
 	}
-	if err := validateMaxLen("source_md5", strings.TrimSpace(body.SourceMD5), maxSourceMD5Len); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	if err := validateMaxLen("original", strings.TrimSpace(body.Original), maxImageOriginalLen); badRequest(w, err) {
+		return
+	}
+	if err := validateMaxLen("source_md5", strings.TrimSpace(body.SourceMD5), maxSourceMD5Len); badRequest(w, err) {
+		return
+	}
+	postID := strings.TrimSpace(body.PostID)
+	if err := validateMaxLen("post_id", postID, maxSourcePostIDLen); badRequest(w, err) {
+		return
+	}
+	parentURL := strings.TrimSpace(body.ParentURL)
+	if err := validateImageURL(parentURL); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "parent_url: "+err.Error())
+		return
+	}
+	source := strings.TrimSpace(body.Source)
+	if err := validateImageSource(source); badRequest(w, err) {
+		return
+	}
+	if err := validateImageURL(strings.TrimSpace(body.URL)); badRequest(w, err) {
 		return
 	}
 	verified := true
@@ -144,16 +233,30 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if !strings.EqualFold(got, body.SourceMD5) {
-				g.recordFetch(id, "mismatch", "the source no longer serves this file (hash mismatch); no tags applied")
-				apiError(w, http.StatusConflict, "hash_mismatch", "the source no longer serves this file")
-				return
+				// A similarity-matched origin serves a different file by
+				// design, so its mismatch is expected rather than a repointed
+				// post; apply the fetch and report it unverified. The flag may
+				// still sit on a (site, "") row the merge below has not adopted
+				// yet, so both keys are checked.
+				if body.Similarity <= 0 && !gallery.SourceSimilarityMatched(g.DB, id, source, postID) &&
+					!gallery.SourceSimilarityMatched(g.DB, id, source, "") {
+					g.recordFetch(id, "mismatch", "the source no longer serves this file (hash mismatch); no tags applied")
+					apiError(w, http.StatusConflict, "hash_mismatch", "the source no longer serves this file")
+					return
+				}
+				verified = false
 			}
 		}
 	}
-	source := strings.TrimSpace(body.Source)
-	sum, tagWarnings, err := h.mergeSource(g, id, source, strings.TrimSpace(body.URL), strings.TrimSpace(body.SourceMD5), body.Tags)
+	sum, tagWarnings, err := h.mergeSource(g, id, source, postID, strings.TrimSpace(body.URL), strings.TrimSpace(body.SourceMD5), parentURL, body.Tags)
 	if err != nil {
 		g.recordFetch(id, "error", "fetch failed while applying tags")
+		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	linkParentRelations(g, id, strings.TrimSpace(body.URL), parentURL)
+	if err := gallery.SetSourceSimilarity(g.DB, id, source, postID, body.Similarity); err != nil {
+		g.recordFetch(id, "error", "fetch failed while recording the match score")
 		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
@@ -162,14 +265,21 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 	// the source last carried; an empty payload leaves the stored value be.
 	if source != "" {
 		if commentary := strings.TrimSpace(body.Commentary); commentary != "" {
-			if err := gallery.SetSourceCommentary(g.DB, id, source, "", commentary); err != nil {
+			if err := gallery.SetSourceCommentary(g.DB, id, source, postID, commentary); err != nil {
 				g.recordFetch(id, "error", "fetch failed while applying commentary")
 				apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 				return
 			}
 		}
+		if original := strings.TrimSpace(body.Original); original != "" {
+			if err := gallery.SetSourceOriginal(g.DB, id, source, postID, original); err != nil {
+				g.recordFetch(id, "error", "fetch failed while applying the original source")
+				apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+				return
+			}
+		}
 		if notes := annotationsFromInput(body.Notes); len(notes) > 0 {
-			if err := gallery.ReplaceSourceAnnotations(g.DB, id, source, "", notes); err != nil {
+			if err := gallery.ReplaceSourceAnnotations(g.DB, id, source, postID, notes); err != nil {
 				g.recordFetch(id, "error", "fetch failed while applying notes")
 				apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 				return
@@ -177,7 +287,7 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	g.invalidate()
-	g.recordFetch(id, "ok", fetchSummary(sum))
+	g.recordFetch(id, "ok", fetchSummary(sum, len(body.Tags)))
 	resp := map[string]any{"merge": sum, "verified": verified}
 	if len(tagWarnings) > 0 {
 		resp["tag_warnings"] = tagWarnings
@@ -186,9 +296,13 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 }
 
 // fetchSummary is the operator-facing confirmation a source refetch surfaces
-// once the enrich lands; it names the tag delta when the fetch changed anything.
-func fetchSummary(sum mergeSummary) string {
+// once the enrich lands; it names the tag delta when the fetch changed
+// anything. A tagless enrich that recorded a source (monloader's source-only
+// similarity match) must not claim tags were fetched.
+func fetchSummary(sum mergeSummary, tagsSent int) string {
 	switch {
+	case tagsSent == 0 && sum.SourceAdded:
+		return "Recorded the source; no tags were fetched."
 	case sum.TagsAdded > 0 && sum.TagsRemoved > 0:
 		return fmt.Sprintf("Fetched tags from the source (+%d, -%d).", sum.TagsAdded, sum.TagsRemoved)
 	case sum.TagsAdded > 0:
@@ -250,19 +364,17 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 	var ingestedAt string
 
 	var pageCount, seriesOrder *int
-	var durationSec *float64
 	var phash *int64
 	err := g.DB.Read.QueryRow(`
 		SELECT id, sha256, canonical_path, file_type, width, height, file_size,
-		       is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, note, page_count, duration_seconds, series, series_order, phash, ingested_at
+		       is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, note, original_source, page_count, series, series_order, phash, ingested_at
 		FROM images WHERE id = ?`, imageID,
 	).Scan(&img.ID, &img.SHA256, &img.CanonicalPath, &img.FileType, &img.Width, &img.Height,
-		&img.FileSize, &isMissing, &isFavorited, &isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &img.Note, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt)
+		&img.FileSize, &isMissing, &isFavorited, &isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &img.Note, &img.OriginalSource, &pageCount, &img.Series, &seriesOrder, &phash, &ingestedAt)
 	if err != nil {
 		return nil, err
 	}
 	img.PageCount = pageCount
-	img.DurationSec = durationSec
 	img.SeriesOrder = seriesOrder
 	img.Phash = phash
 	img.IsMissing = isMissing == 1
@@ -299,7 +411,7 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 		logx.Warnf("buildImageResponse sources: %v", err)
 	} else {
 		for _, s := range srcs {
-			resp.Sources = append(resp.Sources, sourceJSON{Site: s.Site, PostID: s.PostID, URL: s.URL, Commentary: s.Commentary})
+			resp.Sources = append(resp.Sources, sourceJSON{Site: s.Site, PostID: s.PostID, URL: s.URL, Commentary: s.Commentary, Original: s.Original, Similarity: s.Similarity})
 		}
 	}
 	if anns, err := gallery.AnnotationsForImage(g.DB, imageID); err != nil {
@@ -366,22 +478,19 @@ func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
 	setSrc := false
 	var srcSite, srcURL string
 	if body.Source != nil || body.URL != nil {
-		if err := g.DB.Read.QueryRow(`SELECT source, url FROM images WHERE id = ?`, id).Scan(&srcSite, &srcURL); err != nil {
-			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		if err := g.DB.Read.QueryRow(`SELECT source, url FROM images WHERE id = ?`, id).Scan(&srcSite, &srcURL); serverError(w, err) {
 			return
 		}
 		if body.Source != nil {
 			s := strings.TrimSpace(*body.Source)
-			if err := validateImageSource(s); err != nil {
-				apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			if err := validateImageSource(s); badRequest(w, err) {
 				return
 			}
 			srcSite = s
 		}
 		if body.URL != nil {
 			u := strings.TrimSpace(*body.URL)
-			if err := validateImageURL(u); err != nil {
-				apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			if err := validateImageURL(u); badRequest(w, err) {
 				return
 			}
 			srcURL = u
@@ -399,15 +508,13 @@ func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
 	if body.Collection != nil || body.CollectionOrder != nil {
 		var curSeries string
 		var curOrder sql.NullInt64
-		if err := g.DB.Read.QueryRow(`SELECT series, series_order FROM images WHERE id = ?`, id).Scan(&curSeries, &curOrder); err != nil {
-			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		if err := g.DB.Read.QueryRow(`SELECT series, series_order FROM images WHERE id = ?`, id).Scan(&curSeries, &curOrder); serverError(w, err) {
 			return
 		}
 		homeName = curSeries
 		if body.Collection != nil {
 			c := strings.TrimSpace(*body.Collection)
-			if err := validateImageCollection(c); err != nil {
-				apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			if err := validateImageCollection(c); badRequest(w, err) {
 				return
 			}
 			homeName = c
@@ -447,14 +554,12 @@ func (h *Handler) patchImage(w http.ResponseWriter, r *http.Request) {
 
 	if len(updates) > 0 {
 		args = append(args, id)
-		if _, err := g.DB.Write.Exec(`UPDATE images SET `+strings.Join(updates, ", ")+` WHERE id = ?`, args...); err != nil {
-			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		if _, err := g.DB.Write.Exec(`UPDATE images SET `+strings.Join(updates, ", ")+` WHERE id = ?`, args...); serverError(w, err) {
 			return
 		}
 	}
 	if setHome {
-		if err := gallery.SetHomeCollection(g.DB, id, homeName, homeOrder); err != nil {
-			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		if err := gallery.SetHomeCollection(g.DB, id, homeName, homeOrder); serverError(w, err) {
 			return
 		}
 	}
@@ -493,9 +598,12 @@ type createInput struct {
 	taggerName      string
 	via             string              // caller-supplied label; stored on images.origin and inherited by initial tags
 	source          string              // operator-edited provenance label; set on the new row when non-empty
+	postID          string              // the source's post id, keying the origin row apart from other posts on the same site
 	url             string              // canonical web URL; set on the new row when non-empty
 	md5             string              // md5 the source claimed; recorded on the origin row as the audit trail
+	parentURL       string              // canonical URL of the post's declared parent; recorded on the origin row and linked as a derivative edge when present
 	commentary      string              // artist commentary for the pushed source; folded in on create/merge
+	original        string              // upstream artist source the post declared; folded in on create/merge
 	notes           []models.Annotation // positional note boxes for the pushed source
 	collection      string              // collection label (images.series); set on the new row when non-empty
 	collectionOrder *int                // 1-based position within collection; nil = unset
@@ -509,7 +617,13 @@ type createInput struct {
 func (h *Handler) parseCreateMultipart(w http.ResponseWriter, r *http.Request, g Gallery) (createInput, bool) {
 	var in createInput
 	maxBytes := int64(h.cfg.Gallery.MaxFileSizeMB) * 1024 * 1024
-	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+4096)
+	// MaxFileSizeMB <= 0 disables the per-file cap (the watcher, Sync and the
+	// web upload treat it the same); skip MaxBytesReader so a bare 4 KiB body
+	// cap doesn't reject every push. createImage enforces the real limit when
+	// one is set.
+	if maxBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes+4096)
+	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		apiError(w, http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds max size")
 		return in, false
@@ -530,9 +644,12 @@ func (h *Handler) parseCreateMultipart(w http.ResponseWriter, r *http.Request, g
 		return in, false
 	}
 	in.source = strings.TrimSpace(r.FormValue("source"))
+	in.postID = strings.TrimSpace(r.FormValue("post_id"))
 	in.url = strings.TrimSpace(r.FormValue("url"))
 	in.md5 = strings.TrimSpace(r.FormValue("md5"))
+	in.parentURL = strings.TrimSpace(r.FormValue("parent_url"))
 	in.commentary = strings.TrimSpace(r.FormValue("commentary"))
+	in.original = strings.TrimSpace(r.FormValue("original"))
 	in.notes = parseNotesField(r.FormValue("notes"))
 	in.collection = strings.TrimSpace(r.FormValue("collection"))
 	if raw := strings.TrimSpace(r.FormValue("collection_order")); raw != "" {
@@ -543,7 +660,7 @@ func (h *Handler) parseCreateMultipart(w http.ResponseWriter, r *http.Request, g
 		}
 		in.collectionOrder = &n
 	}
-	if err := validateCreateProvenance(in.source, in.url, in.md5, in.collection, in.commentary, in.collectionOrder); err != nil {
+	if err := validateCreateProvenance(in.source, in.postID, in.url, in.md5, in.parentURL, in.collection, in.commentary, in.original, in.collectionOrder); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return in, false
 	}
@@ -596,9 +713,12 @@ func (h *Handler) parseCreateJSON(w http.ResponseWriter, r *http.Request, g Gall
 		TaggerName      string           `json:"tagger_name"`
 		Via             string           `json:"via"`
 		Source          string           `json:"source"`
+		PostID          string           `json:"post_id"`
 		URL             string           `json:"url"`
 		MD5             string           `json:"md5"`
+		ParentURL       string           `json:"parent_url"`
 		Commentary      string           `json:"commentary"`
+		Original        string           `json:"original"`
 		Notes           []annotationJSON `json:"notes"`
 		Collection      string           `json:"collection"`
 		CollectionOrder *int             `json:"collection_order"`
@@ -621,13 +741,16 @@ func (h *Handler) parseCreateJSON(w http.ResponseWriter, r *http.Request, g Gall
 		return in, false
 	}
 	in.source = strings.TrimSpace(body.Source)
+	in.postID = strings.TrimSpace(body.PostID)
 	in.url = strings.TrimSpace(body.URL)
 	in.md5 = strings.TrimSpace(body.MD5)
+	in.parentURL = strings.TrimSpace(body.ParentURL)
 	in.commentary = strings.TrimSpace(body.Commentary)
+	in.original = strings.TrimSpace(body.Original)
 	in.notes = annotationsFromInput(body.Notes)
 	in.collection = strings.TrimSpace(body.Collection)
 	in.collectionOrder = body.CollectionOrder
-	if err := validateCreateProvenance(in.source, in.url, in.md5, in.collection, in.commentary, in.collectionOrder); err != nil {
+	if err := validateCreateProvenance(in.source, in.postID, in.url, in.md5, in.parentURL, in.collection, in.commentary, in.original, in.collectionOrder); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return in, false
 	}
@@ -685,7 +808,8 @@ func (h *Handler) parseCreateJSON(w http.ResponseWriter, r *http.Request, g Gall
 // optional provenance fields `source`, `url`, `collection`, and
 // `collection_order` are written onto the new row; a duplicate-SHA
 // insert instead merges the pushed source, tags, commentary and notes
-// into the existing row (collection fields are ignored there).
+// into the existing row and adds the collection as a membership that
+// never displaces an existing home.
 func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 	g, ok := h.resolveGallery(w, r)
 	if !ok {
@@ -789,22 +913,39 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 				logx.Warnf("api createImage remove duplicate upload %q: %v", in.imgPath, rmErr)
 			}
 		}
-		sum, tagWarnings, mergeErr := h.mergeSource(g, img.ID, in.source, in.url, in.md5, in.initialTags)
+		sum, tagWarnings, mergeErr := h.mergeSource(g, img.ID, in.source, in.postID, in.url, in.md5, in.parentURL, in.initialTags)
 		if mergeErr != nil {
 			logx.Warnf("api createImage merge: %v", mergeErr)
 			apiError(w, http.StatusInternalServerError, "internal_error", "duplicate detected but the merge failed: "+mergeErr.Error())
 			return
 		}
+		linkParentRelations(g, img.ID, in.url, in.parentURL)
 		if in.source != "" && in.commentary != "" {
-			if err := gallery.SetSourceCommentary(g.DB, img.ID, in.source, "", in.commentary); err != nil {
+			if err := gallery.SetSourceCommentary(g.DB, img.ID, in.source, in.postID, in.commentary); err != nil {
 				logx.Warnf("api createImage commentary: %v", err)
 				apiError(w, http.StatusInternalServerError, "internal_error", "duplicate detected but the merge failed: "+err.Error())
 				return
 			}
 		}
+		if in.source != "" && in.original != "" {
+			if err := gallery.SetSourceOriginal(g.DB, img.ID, in.source, in.postID, in.original); err != nil {
+				logx.Warnf("api createImage original: %v", err)
+				apiError(w, http.StatusInternalServerError, "internal_error", "duplicate detected but the merge failed: "+err.Error())
+				return
+			}
+		}
 		if in.source != "" && len(in.notes) > 0 {
-			if err := gallery.ReplaceSourceAnnotations(g.DB, img.ID, in.source, "", in.notes); err != nil {
+			if err := gallery.ReplaceSourceAnnotations(g.DB, img.ID, in.source, in.postID, in.notes); err != nil {
 				logx.Warnf("api createImage annotations: %v", err)
+				apiError(w, http.StatusInternalServerError, "internal_error", "duplicate detected but the merge failed: "+err.Error())
+				return
+			}
+		}
+		if in.collection != "" {
+			// Additive: a pool push whose page the gallery already holds still
+			// files that image into the pool, without displacing an existing home.
+			if err := gallery.AddCollectionMembership(g.DB, img.ID, in.collection, in.collectionOrder); err != nil {
+				logx.Warnf("api createImage collection: %v", err)
 				apiError(w, http.StatusInternalServerError, "internal_error", "duplicate detected but the merge failed: "+err.Error())
 				return
 			}
@@ -829,13 +970,14 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 
 	// A freshly-created row records its provenance directly; the duplicate
 	// path above merges instead.
-	if err := applyCreateProvenance(g, img.ID, in.source, in.url, in.md5, in.collection, in.commentary, in.collectionOrder); err != nil {
+	if err := applyCreateProvenance(g, img.ID, in.source, in.postID, in.url, in.md5, in.parentURL, in.collection, in.commentary, in.original, in.collectionOrder); err != nil {
 		logx.Warnf("api createImage provenance: %v", err)
 		apiError(w, http.StatusInternalServerError, "internal_error", "failed to set provenance fields")
 		return
 	}
+	linkParentRelations(g, img.ID, in.url, in.parentURL)
 	if in.source != "" && len(in.notes) > 0 {
-		if err := gallery.ReplaceSourceAnnotations(g.DB, img.ID, in.source, "", in.notes); err != nil {
+		if err := gallery.ReplaceSourceAnnotations(g.DB, img.ID, in.source, in.postID, in.notes); err != nil {
 			logx.Warnf("api createImage annotations: %v", err)
 		}
 	}
@@ -1023,8 +1165,7 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := search.Execute(g.DB, sq)
-	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	if serverError(w, err) {
 		return
 	}
 
@@ -1169,8 +1310,7 @@ func (h *Handler) addImageTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	via := strings.TrimSpace(body.Via)
-	if err := validateVia(via); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	if err := validateVia(via); badRequest(w, err) {
 		return
 	}
 
@@ -1223,7 +1363,7 @@ func (h *Handler) applyInitialTags(g Gallery, imgID int64, rawTags []string, via
 	if via == "" {
 		via = "api"
 	}
-	tagIDs, warnings := h.resolveTagNames(g, rawTags)
+	tagIDs, warnings := h.resolveTagNames(g, rawTags, via)
 	if len(tagIDs) > 0 {
 		if _, err := g.TagSvc.AddTagsToOneImage(imgID, tagIDs, via); err != nil {
 			warnings = append(warnings, "apply tags: "+err.Error())
@@ -1233,9 +1373,10 @@ func (h *Handler) applyInitialTags(g Gallery, imgID int64, rawTags []string, via
 }
 
 // resolveTagNames turns raw `bare` / `category:bare` tokens into tag ids,
-// creating missing rows. Per-token failures land in warnings without
-// aborting the batch.
-func (h *Handler) resolveTagNames(g Gallery, rawTags []string) ([]int64, []string) {
+// creating missing rows stamped with origin (the pushing site or the
+// caller's via). Per-token failures land in warnings without aborting
+// the batch.
+func (h *Handler) resolveTagNames(g Gallery, rawTags []string, origin string) ([]int64, []string) {
 	var warnings []string
 	tagIDs := make([]int64, 0, len(rawTags))
 	for _, tagName := range rawTags {
@@ -1244,7 +1385,7 @@ func (h *Handler) resolveTagNames(g Gallery, rawTags []string) ([]int64, []strin
 			warnings = append(warnings, "tag "+tagName+": "+err.Error())
 			continue
 		}
-		tag, err := g.TagSvc.GetOrCreateTag(bareName, catID)
+		tag, err := g.TagSvc.GetOrCreateTagFrom(bareName, catID, origin)
 		if err != nil {
 			warnings = append(warnings, "tag "+tagName+": "+err.Error())
 			continue
@@ -1263,17 +1404,12 @@ func (h *Handler) resolveCategoryTag(g Gallery, input string) (int64, string, er
 	catName := "general"
 	tagName := input
 	if idx := strings.Index(input, ":"); idx > 0 {
-		var catID int64
-		if err := g.DB.Read.QueryRow(
-			`SELECT id FROM tag_categories WHERE name = ?`, input[:idx],
-		).Scan(&catID); err == nil {
+		if catID, ok := categoryIDByName(g, input[:idx]); ok {
 			return catID, input[idx+1:], nil
 		}
 	}
-	var catID int64
-	if err := g.DB.Read.QueryRow(
-		`SELECT id FROM tag_categories WHERE name = ?`, catName,
-	).Scan(&catID); err != nil {
+	catID, ok := categoryIDByName(g, catName)
+	if !ok {
 		return 0, "", fmt.Errorf("unknown category %q", catName)
 	}
 	return catID, tagName, nil
@@ -1343,10 +1479,7 @@ func (h *Handler) resolveImageTagID(g Gallery, imageID int64, tagName string) (i
 	tagName = strings.TrimSpace(tagName)
 	if idx := strings.Index(tagName, ":"); idx > 0 {
 		catName := tagName[:idx]
-		var catID int64
-		if g.DB.Read.QueryRow(
-			`SELECT id FROM tag_categories WHERE name = ?`, catName,
-		).Scan(&catID) == nil {
+		if _, ok := categoryIDByName(g, catName); ok {
 			bareName := tagName[idx+1:]
 			var tagID int64
 			if err := g.DB.Read.QueryRow(

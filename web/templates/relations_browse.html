@@ -19,8 +19,8 @@
 <div id="relations-browse-page" data-esc-back="/relations">
   <div class="detail-topbar">
     <div class="detail-nav-group">
-      <a href="/relations" class="back-link">← Back to Relations</a>
-      <span class="detail-nav-sep">·</span>
+      <a href="/relations" class="back-link">‹ Relations</a>
+      <span class="detail-nav-sep">/</span>
       <strong class="walker-page-title">Browse relations</strong>
     </div>
   </div>
@@ -52,6 +52,8 @@
   {{end}}
   {{else}}
   <div class="merge-toolbar" id="merge-toolbar">
+    <button type="button" class="btn-sm" id="merge-select-all-btn">Select all</button>
+    <button type="button" class="btn-sm" id="merge-clear-btn">Cancel</button>
     <span class="merge-toolbar-count"><span id="merge-selected-count">0</span> selected</span>
     {{if or (eq .Kind "duplicate") (eq .Kind "alternate")}}
     <button type="button" class="btn-sm btn-purple" id="merge-selected-btn" disabled>Merge selected</button>
@@ -224,7 +226,31 @@
   document.querySelectorAll('.merge-checkbox').forEach(function(cb) {
     cb.addEventListener('change', refresh);
   });
+  var selectAllBtn = document.getElementById('merge-select-all-btn');
+  if (selectAllBtn) selectAllBtn.addEventListener('click', function() {
+    document.querySelectorAll('.merge-checkbox').forEach(function(cb) { cb.checked = true; });
+    refresh();
+  });
+  var clearBtn = document.getElementById('merge-clear-btn');
+  if (clearBtn) clearBtn.addEventListener('click', function() {
+    document.querySelectorAll('.merge-checkbox').forEach(function(cb) { cb.checked = false; });
+    refresh();
+  });
   refresh();
+  // While a selection is active, a plain click on a card's background
+  // toggles it, like the gallery's batch-mode thumbnails.
+  document.addEventListener('click', function(e) {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+    if (!e.target.closest) return;
+    if (!selectedCheckboxes().length) return;
+    if (e.target.closest('a, button, form, label, input, summary, details')) return;
+    var card = e.target.closest('.relations-card');
+    if (!card) return;
+    var cb = card.querySelector('.merge-checkbox');
+    if (!cb) return;
+    cb.checked = !cb.checked;
+    refresh();
+  });
   // Remove-selected: per-kind confirmation copy, then a single POST to
   // the bulk dissolve endpoint. Each kind names its id field after the
   // existing per-row dissolve form (group_id for dup/alt, root_id for

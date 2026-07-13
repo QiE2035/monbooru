@@ -690,10 +690,7 @@ func TestExtractSDFromWebP_ParsesA1111UserComment(t *testing.T) {
 		t.Run(fmt.Sprintf("magic=%v", includeMagic), func(t *testing.T) {
 			t.Parallel()
 			path := makeWebPWithExifChunk(t, includeMagic, params)
-			sd, err := extractSDFromWebP(path)
-			if err != nil {
-				t.Fatal(err)
-			}
+			sd := extractSDFromWebP(path)
 			if sd == nil {
 				t.Fatal("WebP A1111 EXIF must parse")
 			}

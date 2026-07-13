@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leqwin/monbooru/internal/config"
 )
@@ -114,6 +115,47 @@ func TestMonloaderFooterLink(t *testing.T) {
 	srv.cfg.Monloader.APIURL = ""
 	if out := poll(); strings.Contains(out, "<a ") {
 		t.Errorf("footer word should be plain when no monloader url is set, got %q", out)
+	}
+}
+
+// The footer-light probe also reads monloader's PTR capability, so the
+// PTR-backed lookup controls can gate on the cached flag without a poll of
+// their own.
+func TestMonloaderProbeReadsPTRCapability(t *testing.T) {
+	enabled := false
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"version":"v1"}`))
+		case "/api/v1/ptr/status":
+			if enabled {
+				_, _ = w.Write([]byte(`{"enabled":true,"state":"ready"}`))
+			} else {
+				_, _ = w.Write([]byte(`{"enabled":false,"state":"disabled"}`))
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer stub.Close()
+
+	srv := newTestServer(t)
+	tok, _ := config.GenerateToken("monloader (paired)", config.AllScopes)
+	tok.Paired = "monloader"
+	srv.cfg.Auth.Tokens = []config.Token{tok}
+	srv.cfg.Monloader.APIURL = stub.URL
+	srv.cfg.Monloader.APIToken = "peer-secret"
+
+	srv.monloaderStatusHandler(httptest.NewRecorder(), httptest.NewRequest("GET", "/internal/monloader-status", nil))
+	if _, _, ptr, _ := srv.monloaderStatusSeed(); ptr {
+		t.Error("disabled PTR must seed false")
+	}
+
+	enabled = true
+	srv.monloaderCheckedAt = time.Time{} // expire the cache so the next poll re-probes
+	srv.monloaderStatusHandler(httptest.NewRecorder(), httptest.NewRequest("GET", "/internal/monloader-status", nil))
+	if _, _, ptr, _ := srv.monloaderStatusSeed(); !ptr {
+		t.Error("enabled PTR must seed true after the poll re-probes")
 	}
 }
 

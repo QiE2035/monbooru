@@ -134,15 +134,6 @@ func AdjacencyCacheSet(key string, ids []int64) {
 	}
 }
 
-// AdjacencyCacheClear drops every entry. Tests use this to start with a
-// clean slate; runtime callers pay the TTL.
-func AdjacencyCacheClear() {
-	adjCacheMu.Lock()
-	defer adjCacheMu.Unlock()
-	adjCacheEntries = make(map[string]adjacencyCacheEntry)
-	adjCacheOrder = nil
-}
-
 // AdjacencyCacheDropForGallery drops every entry whose key starts with
 // the given gallery name. Called from a gallery's InvalidateCaches so a
 // cached match-id list can't survive a write that changed result-set

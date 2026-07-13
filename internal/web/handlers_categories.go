@@ -71,11 +71,7 @@ func (s *Server) createCategoryPost(w http.ResponseWriter, r *http.Request) {
 		color = "#888888"
 	}
 	if _, err := s.tagSvc().CreateCategory(name, color); err != nil {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", err.Error())
-			return
-		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		externalErr(w, r, err.Error(), http.StatusBadRequest)
 		return
 	}
 	hxDone(w, r, "Category "+name+" created.", "/categories", "/categories")
@@ -134,19 +130,11 @@ func (s *Server) renameCategoryPost(w http.ResponseWriter, r *http.Request) {
 	}
 	newName := strings.TrimSpace(r.FormValue("name"))
 	if newName == "" {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", "Name required.")
-			return
-		}
-		http.Error(w, "name required", http.StatusBadRequest)
+		externalErr(w, r, "Name required.", http.StatusBadRequest)
 		return
 	}
 	if err := s.tagSvc().RenameCategory(id, newName); err != nil {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", err.Error())
-			return
-		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		externalErr(w, r, err.Error(), http.StatusBadRequest)
 		return
 	}
 	hxDone(w, r, "Category renamed to "+newName+".", "/categories", "/categories")

@@ -37,7 +37,7 @@ type Config struct {
 
 // RelationsConfig drives the relations feature's runtime knobs.
 // default_distance is the Hamming-distance default for find-pairs and
-// the bare phash:<hex>~ form; default_session_order picks which mode
+// the on-ingest incremental probe; default_session_order picks which mode
 // the Start-session CTA preselects; incremental_on_ingest toggles the
 // on-ingest BK-tree probe that fans new pairs into the queue.
 type RelationsConfig struct {
@@ -121,8 +121,8 @@ type TaggerConfig struct {
 // must score above the pre-floor on to survive the per-row merge.
 // Resolves to min_hits = clamp(ceil(MinHitFraction * frame_count), 2, 10),
 // degrading to 1 when frame_count == 1 (single image). MinHitFraction
-// = 0 reverts to the legacy max-only behaviour (one hit is enough,
-// stored confidence is the peak score).
+// = 0 sets min_hits = 1 (a single hit is enough); the stored
+// confidence is always the mean over the frames the label hit.
 type TaggerAggregationCfg struct {
 	MinHitFraction float64 `toml:"min_hit_fraction"`
 }

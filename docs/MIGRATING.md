@@ -1,8 +1,8 @@
 # Migrating to Monbooru
 
 Monbooru's import dialog (Settings → Galleries → Import) accepts two
-foreign-format archives in addition to its own .db / .json / .zip
-exports:
+foreign-format archives in addition to its own .db / .sqlite / .json /
+.zip exports:
 
 - A **Hydrus Network** export zipped on disk.
 - A **Blombooru** full-backup zip downloaded from the Blombooru admin
@@ -57,12 +57,14 @@ What lands in Monbooru:
   | `medium:` | `medium` category |
   | `person:` | `person` category |
   | `year:` | `year` category |
+  | any prefix naming a Monbooru category (a built-in above, or one you created) | that category |
   | bare token | `general` category |
-  | any other prefix (`species:`, `title:`, `photoset:`, …) | literal `prefix:name` tag in `general` |
+  | any prefix that names no category (`species:`, `title:`, `photoset:`, …) | the subtag in `general` (the prefix is dropped) |
 
-What is not preserved: Hydrus URLs, ratings, notes, file relationships,
-and any per-tag namespace that Monbooru doesn't have a category for
-(those are kept verbatim as `general` tokens, so search still finds them).
+What is not preserved: Hydrus URLs, its native rating service, notes, file relationships,
+and any per-tag namespace that Monbooru doesn't have a category for (the
+namespace is dropped and the subtag lands in `general`, so the same tag
+lands identically whether it arrives from Hydrus or a booru pull).
 
 ---
 

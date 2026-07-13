@@ -120,25 +120,21 @@ func Md5File(path string) (string, error) {
 // DetectFileType returns the file type constant for the given path,
 // trying extension matching first and falling back to magic bytes.
 func DetectFileType(path string) (string, error) {
-	dot := strings.LastIndex(path, ".")
-	if dot >= 0 {
-		ext := strings.ToLower(path[dot:])
-		switch ext {
-		case ".jpg", ".jpeg":
-			return models.FileTypeJPEG, nil
-		case ".png":
-			return models.FileTypePNG, nil
-		case ".webp":
-			return models.FileTypeWEBP, nil
-		case ".gif":
-			return models.FileTypeGIF, nil
-		case ".mp4":
-			return models.FileTypeMP4, nil
-		case ".webm":
-			return models.FileTypeWEBM, nil
-		case ".cbz", ".zip":
-			return models.FileTypeCBZ, nil
-		}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		return models.FileTypeJPEG, nil
+	case ".png":
+		return models.FileTypePNG, nil
+	case ".webp":
+		return models.FileTypeWEBP, nil
+	case ".gif":
+		return models.FileTypeGIF, nil
+	case ".mp4":
+		return models.FileTypeMP4, nil
+	case ".webm":
+		return models.FileTypeWEBM, nil
+	case ".cbz", ".zip":
+		return models.FileTypeCBZ, nil
 	}
 
 	f, err := os.Open(path)

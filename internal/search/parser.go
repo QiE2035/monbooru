@@ -171,13 +171,11 @@ func (p *parser) peek() *token {
 	return &p.tokens[p.pos]
 }
 
-func (p *parser) next() *token {
+func (p *parser) next() {
 	if p.pos >= len(p.tokens) {
-		return nil
+		return
 	}
-	t := &p.tokens[p.pos]
 	p.pos++
-	return t
 }
 
 func (p *parser) parseAll() []Expr {

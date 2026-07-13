@@ -10,6 +10,7 @@ import (
 
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/searchkw"
+	"github.com/leqwin/monbooru/internal/tags"
 )
 
 // isPureTagExpr reports whether expr's data SELECT should pin
@@ -902,19 +903,6 @@ func (b *whereBuilder) buildTagExpr(e TagExpr) string {
 	return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(canonical_tag_id, id) FROM tags WHERE `+pred+`)`, false)
 }
 
-// ratingLevels is the canonical rating vocabulary, ordered low to high.
-// Highest-wins resolution and the cookie ceiling rely on this order.
-var ratingLevels = []string{"general", "sensitive", "questionable", "explicit"}
-
-func ratingRank(name string) int {
-	for i, l := range ratingLevels {
-		if l == name {
-			return i
-		}
-	}
-	return -1
-}
-
 // scalarComp emits template with op spliced in and n bound. ok=false
 // collapses to "1=0" so each scalar filter case stays one expression.
 func (b *whereBuilder) scalarComp(template, op string, n any, ok bool) string {
@@ -1397,7 +1385,7 @@ func (b *whereBuilder) buildGeneratedFilter(e FilterExpr) string {
 // idx_image_tags_image directly.
 func (b *whereBuilder) buildRatingFilter(e FilterExpr) string {
 	val := strings.ToLower(e.Val)
-	rank := ratingRank(val)
+	rank := tags.RatingRank(val)
 	if rank < 0 {
 		return "1=0"
 	}
@@ -1415,8 +1403,8 @@ func (b *whereBuilder) buildRatingFilter(e FilterExpr) string {
 	}
 	b.args = append(b.args, selfID)
 	parts := []string{b.imageTagsPredicate("it.tag_id = ?", false)}
-	for i := rank + 1; i < len(ratingLevels); i++ {
-		higherID, ok := b.ratingIDs[ratingLevels[i]]
+	for i := rank + 1; i < len(tags.RatingLevels); i++ {
+		higherID, ok := b.ratingIDs[tags.RatingLevels[i]]
 		if !ok {
 			continue
 		}

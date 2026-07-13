@@ -30,11 +30,7 @@ func (s *Server) createSavedSearch(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	query := strings.TrimSpace(r.FormValue("query"))
 	if name == "" || query == "" {
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", "Name and query required.")
-			return
-		}
-		http.Error(w, "name and query required", http.StatusBadRequest)
+		externalErr(w, r, "Name and query required.", http.StatusBadRequest)
 		return
 	}
 	// Capture sort + order + seed so a `random` save reopens at the same
@@ -55,11 +51,7 @@ func (s *Server) createSavedSearch(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(msg, "UNIQUE") {
 			msg = "A saved search named " + name + " already exists. Delete it first or pick another name."
 		}
-		if isHTMXRequest(r) {
-			writeInlineFlash(w, "err", msg)
-			return
-		}
-		http.Error(w, msg, http.StatusBadRequest)
+		externalErr(w, r, msg, http.StatusBadRequest)
 		return
 	}
 	s.Active().InvalidateCaches()

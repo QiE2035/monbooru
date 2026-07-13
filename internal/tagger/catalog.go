@@ -60,7 +60,7 @@ type catalogDoc struct {
 }
 
 // LoadCatalog returns the merged tagger catalog. The embedded default
-// catalog (two suggested taggers - WD14 SwinV2 and JoyTag) is the base; an
+// catalog (three suggested taggers - WD14 SwinV2, JoyTag, Camie v2) is the base; an
 // optional <modelPath>/models.json override is applied on top so users can
 // add or replace entries without rebuilding. Same-name entries in the
 // override replace the default; new names append.

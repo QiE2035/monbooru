@@ -45,7 +45,7 @@ func (s *Server) validateCSRF(sessionID, token string) bool {
 // inline, everything else gets a plain http.Error.
 func parseFormOK(w http.ResponseWriter, r *http.Request) bool {
 	if err := r.ParseForm(); err != nil {
-		flashErr(w, r, http.StatusBadRequest, "Bad form data: "+err.Error())
+		flashErr(w, r, "Bad form data: "+err.Error())
 		return false
 	}
 	return true

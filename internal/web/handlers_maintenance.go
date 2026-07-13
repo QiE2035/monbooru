@@ -48,7 +48,7 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 	go func() {
 		ctx := s.jobs.Context()
 		total := len(ids)
-		s.jobs.Update(0, total, fmt.Sprintf("pruning 0/%d…", total))
+		s.jobs.Update(0, total, "pruning…")
 		done := 0
 		removed := 0
 		affectedTags, processed, cancelled, err := tagSvc.ChunkedDeleteWithTagRecalc(
@@ -70,7 +70,7 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 					gallery.RemoveMangaCache(thumbnailsPath, id)
 				}
 				done += len(chunk)
-				s.jobs.Update(done, total, fmt.Sprintf("pruning %d/%d…", done, total))
+				s.jobs.Update(done, total, "pruning…")
 			},
 		)
 		if err == nil {
@@ -127,6 +127,34 @@ func (s *Server) recalcTagsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeInlineFlash(w, "ok", fmt.Sprintf("Recalculated %d tag count(s).", updated))
+}
+
+// tagCategoryConflictsPost counts tags whose name occupies more than one
+// category and points the operator at the Tags page's Conflicts filter,
+// where the fix tools live (inline category select with merge-on-collision,
+// the batch bar). The split is legal - a tag's unique key is
+// (name, category_id) - but usually means two sources disagreed. Read-only.
+func (s *Server) tagCategoryConflictsPost(w http.ResponseWriter, r *http.Request) {
+	n, err := s.tagSvc().ConflictsCount()
+	if err != nil {
+		writeInlineFlash(w, "err", "Error: "+err.Error())
+		return
+	}
+	if n == 0 {
+		writeInlineFlash(w, "ok", "No tags share a name across categories.")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = fmt.Fprintf(w,
+		`<div class="flash flash-ok"><strong>%d</strong> tag name%s span multiple categories - <a href="/tags?conflicts=1">review them on the Tags page</a>.</div>`,
+		n, plural(n))
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func (s *Server) duplicatesListHandler(w http.ResponseWriter, r *http.Request) {
@@ -423,7 +451,7 @@ func (s *Server) startRebuildThumbsJob(cx *galleryCtx) error {
 				s.jobs.Complete(fmt.Sprintf("[%s] rebuild cancelled (%d/%d rebuilt)", galleryName, processed, total))
 				return
 			}
-			s.jobs.Update(processed, total, fmt.Sprintf("[%s] rebuilding %d/%d", galleryName, processed, total))
+			s.jobs.Update(processed, total, fmt.Sprintf("[%s] rebuilding…", galleryName))
 			if err := gallery.Generate(img.Path, thumbnailsPath, img.ID, img.FileType); err != nil {
 				logx.Warnf("rebuild thumbnail for %d: %v", img.ID, err)
 			}
@@ -452,8 +480,7 @@ func (s *Server) startRebuildThumbsJob(cx *galleryCtx) error {
 // hash is currently NULL. Wires the canonical compute path to the
 // Maintenance section button.
 func (s *Server) computePhashesPost(w http.ResponseWriter, r *http.Request) {
-	if err := s.jobs.Start(models.JobTypePhash); err != nil {
-		writeInlineFlash(w, "err", "A job is already running.")
+	if !s.startJob(w, models.JobTypePhash) {
 		return
 	}
 	database := s.db()
@@ -463,7 +490,7 @@ func (s *Server) computePhashesPost(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx := s.jobs.Context()
 		processed, updated, err := relations.BackfillPhashes(ctx, database, thumbnailsPath, func(p, total int, _ string) {
-			s.jobs.Update(p, total, fmt.Sprintf("Computing %d/%d…", p, total))
+			s.jobs.Update(p, total, "Computing…")
 		})
 		// Drop the in-memory tree so the next find-pairs / phash: query
 		// rebuilds against the now-fully-phashed DB instead of replaying
@@ -493,8 +520,7 @@ func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
 	// scheduler / a concurrent user-triggered job is refused with the
 	// usual "a job is already running" message instead of silently
 	// queueing behind the writer.
-	if err := s.jobs.Start(models.JobTypeVacuum); err != nil {
-		writeInlineFlash(w, "err", "A job is already running.")
+	if !s.startJob(w, models.JobTypeVacuum) {
 		return
 	}
 	// Run the (long) VACUUM + checkpoint sequence in a goroutine so the
@@ -631,8 +657,7 @@ func (s *Server) reExtractMetadataPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.jobs.Start(models.JobTypeReExtract); err != nil {
-		writeInlineFlash(w, "err", "A job is already running.")
+	if !s.startJob(w, models.JobTypeReExtract) {
 		return
 	}
 
@@ -649,7 +674,7 @@ func (s *Server) reExtractMetadataPost(w http.ResponseWriter, r *http.Request) {
 				s.jobs.Complete(fmt.Sprintf("re-extraction cancelled (%d/%d processed, %d updated)", processed, total, updated))
 				return
 			}
-			s.jobs.Update(processed, total, fmt.Sprintf("Processing %d/%d…", processed, total))
+			s.jobs.Update(processed, total, "Processing…")
 			// Recompute phash from the on-disk thumbnail. A decode
 			// failure (missing thumbnail, corrupt jpg) leaves the
 			// previous value in place; the operator can rebuild

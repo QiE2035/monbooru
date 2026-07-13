@@ -192,13 +192,7 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 		}
 	}
 
-	parallel := cfg.Tagger.Parallel
-	if parallel < 1 {
-		parallel = 1
-	}
-	if parallel > len(ids) {
-		parallel = len(ids)
-	}
+	parallel := min(max(1, cfg.Tagger.Parallel), len(ids))
 
 	// jobs.Manager carries a single status string; parallel workers
 	// writing into it would each clobber the others' progress, making
@@ -423,7 +417,7 @@ func storeResults(
 		).Scan(&tagID, &isAlias, &canonicalID)
 		if err == sql.ErrNoRows {
 			res, err2 := tx.ExecContext(ctx,
-				`INSERT INTO tags (name, category_id, usage_count) VALUES (?, ?, 0)`, k.Name, k.CatID)
+				`INSERT INTO tags (name, category_id, usage_count, origin) VALUES (?, ?, 0, ?)`, k.Name, k.CatID, s.TaggerName)
 			if err2 != nil {
 				return fmt.Errorf("insert tag %q (cat=%d): %w", k.Name, k.CatID, err2)
 			}
@@ -527,7 +521,7 @@ func storeResults(
 		if n, _ := res.RowsAffected(); n == 0 {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?`, tid); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE tags SET usage_count = usage_count + 1, last_used_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, tid); err != nil {
 			return fmt.Errorf("increment usage for tag %d: %w", tid, err)
 		}
 		if err := tags.ApplyImpliedFanoutTx(tx, imageID, tid, ratingCatID, true); err != nil {

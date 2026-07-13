@@ -176,14 +176,8 @@ func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, useCU
 	// pin inter-op to 1 so the per-Run scheduler doesn't fan out again.
 	// CUDA ignores these for kernel work but cuDNN still honours them
 	// for host-side helpers.
-	parallel := cfg.Tagger.Parallel
-	if parallel < 1 {
-		parallel = 1
-	}
-	intra := runtime.NumCPU() / parallel
-	if intra < 1 {
-		intra = 1
-	}
+	parallel := max(1, cfg.Tagger.Parallel)
+	intra := max(1, runtime.NumCPU()/parallel)
 	if err := opts.SetIntraOpNumThreads(intra); err != nil {
 		b.teardownLocked()
 		return fmt.Errorf("set intra-op threads: %w", err)
@@ -460,13 +454,7 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 		lt.candidates = cands
 	}
 
-	parallel := req.Parallel
-	if parallel < 1 {
-		parallel = 1
-	}
-	if parallel > len(req.Images) {
-		parallel = len(req.Images)
-	}
+	parallel := min(max(1, req.Parallel), len(req.Images))
 
 	results := make([]BackendImageResult, len(req.Images))
 	for i, im := range req.Images {
@@ -491,6 +479,7 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 			return
 		}
 		merged := map[TagKey]Scored{}
+		anyInferred := false
 		minHits := ResolveMinHits(req.MinHitFraction, len(im.FramePaths))
 		for tIdx, lt := range loaded {
 			if ctx.Err() != nil {
@@ -514,6 +503,7 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 						im.ID, lt.cfg.Name, fIdx+1, len(im.FramePaths), fp, err)
 					continue
 				}
+				anyInferred = true
 				perFrame = append(perFrame, scores)
 			}
 
@@ -530,6 +520,13 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 					merged[mk] = Scored{Score: c.Score, TaggerName: lt.cfg.Name}
 				}
 			}
+		}
+		// Every frame failed to decode or infer. Report an error rather
+		// than an empty map: the store loop reconciles an empty result by
+		// deleting the image's existing auto-tags.
+		if !anyInferred {
+			results[idx].Err = "all frames failed"
+			return
 		}
 		results[idx].Tags = merged
 	}

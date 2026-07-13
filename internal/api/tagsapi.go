@@ -13,6 +13,8 @@ type tagResponse struct {
 	Color      string `json:"color"`
 	UsageCount int    `json:"usage_count"`
 	IsAlias    bool   `json:"is_alias"`
+	Origin     string `json:"origin"`
+	LastUsedAt string `json:"last_used_at,omitempty"`
 }
 
 // listTags handles GET /api/v1/tags.
@@ -37,6 +39,7 @@ func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {
 		PageIndex: offset / limit,
 		Limit:     limit,
 		Origin:    q.Get("origin"),
+		Type:      q.Get("type"),
 		// Tri-state with the /tags page: empty / anything but "0" → Show
 		// (default so freshly-declared tags surface without a flag flip);
 		// "0" → Hide. The UI also exposes "only" but the API has no use
@@ -45,17 +48,13 @@ func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if catName != "" {
-		var catID int64
-		if err := g.DB.Read.QueryRow(
-			`SELECT id FROM tag_categories WHERE name = ?`, catName,
-		).Scan(&catID); err == nil {
+		if catID, ok := categoryIDByName(g, catName); ok {
 			filter.CategoryID = &catID
 		}
 	}
 
 	tagList, total, err := g.TagSvc.ListTags(filter)
-	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	if serverError(w, err) {
 		return
 	}
 

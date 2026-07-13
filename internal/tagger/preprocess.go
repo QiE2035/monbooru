@@ -70,9 +70,7 @@ func padAndResize(src image.Image, size int, profile Profile) *image.RGBA {
 // padWhiteSquare resizes src preserving aspect ratio so the long side is
 // `size`, centres it on a `size×size` white canvas, then forces fully-
 // transparent pixels (e.g. PNG corners) to opaque white so the tensor
-// sees the same background regardless of source alpha. Resize-first keeps
-// peak transient allocation bounded by `size²` so a parallel inference
-// burst on multi-megapixel sources stays inside small container caps.
+// sees the same background regardless of source alpha.
 //
 // image.NewRGBA returns a zero-initialised buffer (alpha=0 everywhere),
 // so draw.Src into the scaled sub-rect leaves the padding region with
@@ -80,27 +78,10 @@ func padAndResize(src image.Image, size int, profile Profile) *image.RGBA {
 // region and any transparent source pixel land on the same "fill white"
 // branch in a single pass instead of two.
 func padWhiteSquare(src image.Image, size int) *image.RGBA {
-	b := src.Bounds()
-	w, h := b.Max.X-b.Min.X, b.Max.Y-b.Min.Y
-	scaleW, scaleH := size, size
-	if w >= h {
-		scaleH = h * size / w
-		if scaleH == 0 {
-			scaleH = 1
-		}
-	} else {
-		scaleW = w * size / h
-		if scaleW == 0 {
-			scaleW = 1
-		}
-	}
-	scaled := image.NewRGBA(image.Rect(0, 0, scaleW, scaleH))
-	draw.ApproxBiLinear.Scale(scaled, scaled.Bounds(), src, b, draw.Src, nil)
+	scaled, offX, offY := resizeAspect(src, size)
 
 	dst := image.NewRGBA(image.Rect(0, 0, size, size))
-	offX := (size - scaleW) / 2
-	offY := (size - scaleH) / 2
-	draw.Draw(dst, image.Rect(offX, offY, offX+scaleW, offY+scaleH), scaled, image.Point{}, draw.Src)
+	draw.Draw(dst, scaled.Bounds().Add(image.Pt(offX, offY)), scaled, image.Point{}, draw.Src)
 	for i := 3; i < len(dst.Pix); i += 4 {
 		if dst.Pix[i] == 0 {
 			dst.Pix[i-3] = 0xFF
@@ -120,22 +101,7 @@ func padMeanColorAspect(src image.Image, size int, fill [3]uint8) *image.RGBA {
 	if fill == ([3]uint8{}) {
 		fill = camieDefaultFill
 	}
-	b := src.Bounds()
-	w, h := b.Max.X-b.Min.X, b.Max.Y-b.Min.Y
-	scaleW, scaleH := size, size
-	if w >= h {
-		scaleH = h * size / w
-		if scaleH == 0 {
-			scaleH = 1
-		}
-	} else {
-		scaleW = w * size / h
-		if scaleW == 0 {
-			scaleW = 1
-		}
-	}
-	scaled := image.NewRGBA(image.Rect(0, 0, scaleW, scaleH))
-	draw.ApproxBiLinear.Scale(scaled, scaled.Bounds(), src, b, draw.Src, nil)
+	scaled, offX, offY := resizeAspect(src, size)
 
 	dst := image.NewRGBA(image.Rect(0, 0, size, size))
 	for i := 0; i < len(dst.Pix); i += 4 {
@@ -144,10 +110,27 @@ func padMeanColorAspect(src image.Image, size int, fill [3]uint8) *image.RGBA {
 		dst.Pix[i+2] = fill[2]
 		dst.Pix[i+3] = 0xFF
 	}
-	offX := (size - scaleW) / 2
-	offY := (size - scaleH) / 2
-	draw.Draw(dst, image.Rect(offX, offY, offX+scaleW, offY+scaleH), scaled, image.Point{}, draw.Src)
+	draw.Draw(dst, scaled.Bounds().Add(image.Pt(offX, offY)), scaled, image.Point{}, draw.Src)
 	return dst
+}
+
+// resizeAspect scales src so its long side is size, preserving aspect
+// (short side clamped to >= 1 px), and returns the centring offsets on a
+// size x size canvas. Resize-first keeps peak transient allocation
+// bounded by size^2 so a parallel inference burst on multi-megapixel
+// sources stays inside small container caps.
+func resizeAspect(src image.Image, size int) (scaled *image.RGBA, offX, offY int) {
+	b := src.Bounds()
+	w, h := b.Max.X-b.Min.X, b.Max.Y-b.Min.Y
+	scaleW, scaleH := size, size
+	if w >= h {
+		scaleH = max(1, h*size/w)
+	} else {
+		scaleW = max(1, w*size/h)
+	}
+	scaled = image.NewRGBA(image.Rect(0, 0, scaleW, scaleH))
+	draw.ApproxBiLinear.Scale(scaled, scaled.Bounds(), src, b, draw.Src, nil)
+	return scaled, (size - scaleW) / 2, (size - scaleH) / 2
 }
 
 // buildTensor fills the supplied ORT input buffer from the resized RGBA

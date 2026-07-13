@@ -263,6 +263,25 @@ func apiError(w http.ResponseWriter, status int, code, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg, "code": code})
 }
 
+// serverError writes the standard internal_error envelope when err is
+// non-nil, reporting whether it did; callers use it as a return guard.
+func serverError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	return true
+}
+
+// badRequest is serverError's invalid_request twin.
+func badRequest(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	return true
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

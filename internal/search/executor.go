@@ -44,7 +44,7 @@ type Query struct {
 // the image row shape.
 const imageRowColumns = `i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
 	        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
-	        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.note, i.page_count, i.duration_seconds, i.series, i.series_order, i.phash, i.ingested_at, i.upload_batch`
+	        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.note, i.original_source, i.page_count, i.duration_seconds, i.series, i.series_order, i.phash, i.ingested_at, i.upload_batch`
 
 // scanImageRow reads one row in the imageRowColumns shape and folds the
 // int-as-bool flags + RFC3339 timestamps back onto the typed Image
@@ -60,7 +60,7 @@ func scanImageRow(rows *sql.Rows) (models.Image, error) {
 	if err := rows.Scan(
 		&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
 		&width, &height, &img.FileSize, &isMissing, &isFav,
-		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &img.Note, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt, &img.UploadBatch,
+		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &img.Note, &img.OriginalSource, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt, &img.UploadBatch,
 	); err != nil {
 		return models.Image{}, err
 	}

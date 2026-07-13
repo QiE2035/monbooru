@@ -30,6 +30,11 @@ var (
 	// like `>_<`, `=3`, `<3`, `^_^`, and `nani?` round-trip end-to-end.
 	tagNameRe = regexp.MustCompile(`^[a-z0-9_()!@#$.~+:?<>=^\-]+$`)
 
+	// Inverse of tagNameRe's class: runs of these collapse to a single `_`
+	// when normalizing an externally-sourced tag name (hydrus stores spaces,
+	// slashes, and apostrophes monbooru rejects).
+	disallowedTagCharsRe = regexp.MustCompile(`[^a-z0-9_()!@#$.~+:?<>=^\-]+`)
+
 	// #rgb or #rrggbb. Anything else gets ZgotmplZ'd in the template's
 	// CSS context, so reject it up front with a useful error.
 	categoryColorRe = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
@@ -89,20 +94,12 @@ var (
 	// RatingLevels is the canonical rating vocabulary, ordered low to high.
 	// Highest-wins resolution and the cookie ceiling both rely on this order.
 	RatingLevels = []string{"general", "sensitive", "questionable", "explicit"}
-
-	ratingCanonicalSet = map[string]struct{}{
-		"general":      {},
-		"sensitive":    {},
-		"questionable": {},
-		"explicit":     {},
-	}
 )
 
 // IsCanonicalRating reports whether name is one of the four allowed
 // rating tag names. The rating category refuses any other name.
 func IsCanonicalRating(name string) bool {
-	_, ok := ratingCanonicalSet[name]
-	return ok
+	return RatingRank(name) >= 0
 }
 
 func isReservedCategoryName(name string) bool {
@@ -125,13 +122,25 @@ func reservedCategoryHint() string {
 type TagFilter struct {
 	CategoryID *int64
 	Prefix     string
-	Sort       string // "name" | "usage"
+	Sort       string // "name" | "usage" | "created" | "last_used"
 	Order      string // "asc" | "desc" - flips the primary sort direction
 	// PageIndex is 0-based - callers supply the requested page number minus
 	// one. ListTags multiplies by Limit to derive the SQL OFFSET.
 	PageIndex int
 	Limit     int
-	Origin    string // "" | "user" | "auto" | "api" | "alias"
+	// Origin matches the stored creation label (tags.origin). The legacy
+	// "alias" spelling still resolves as a structural narrowing so pre-Type
+	// URLs and API callers keep working; alias-ness itself lives in Type.
+	Origin string
+	// Type narrows structurally: "alias" = alias rows only, "tag" =
+	// non-alias rows only, "" = both.
+	Type string
+	// CreatedAfter keeps rows whose created_at is >= it (ISO 8601).
+	CreatedAfter string
+	// ConflictsOnly narrows to non-alias tags whose name occupies more
+	// than one category. ListTags forces name order so the colliding
+	// rows sit adjacent.
+	ConflictsOnly bool
 	// ShowZero opts in to surfacing non-alias tags whose usage_count is 0.
 	// Default behaviour hides them so the listing reflects what is actually
 	// applied to images; alias rows always render regardless because their

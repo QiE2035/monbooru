@@ -782,29 +782,6 @@ func TestFolderTree_RecursiveCount(t *testing.T) {
 	}
 }
 
-func TestCountSlashes(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		s    string
-		want int
-	}{
-		{"empty", "", 0},
-		{"one slash", "a/b", 1},
-		{"two slashes", "a/b/c", 2},
-		{"no slashes", "no_slashes", 0},
-	}
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := countSlashes(tt.s); got != tt.want {
-				t.Errorf("countSlashes(%q) = %d, want %d", tt.s, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestSync_ContextCanceled(t *testing.T) {
 	database, env, galleryDir := setupSyncTest(t)
 	// Seed enough files that Phase 2's per-file loop notices the cancelled

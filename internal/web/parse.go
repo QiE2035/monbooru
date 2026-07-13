@@ -23,8 +23,8 @@ func pathInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool
 
 // pathTaggerName trims the named path segment and validates it through
 // tagger.ValidateTaggerName, writing a 400 plain-text error on failure.
-func pathTaggerName(w http.ResponseWriter, r *http.Request, name string) (string, bool) {
-	v := strings.TrimSpace(r.PathValue(name))
+func pathTaggerName(w http.ResponseWriter, r *http.Request) (string, bool) {
+	v := strings.TrimSpace(r.PathValue("name"))
 	if err := tagger.ValidateTaggerName(v); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return "", false

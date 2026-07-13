@@ -36,8 +36,7 @@ func (h *Handler) relationsForImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rels, err := relations.LoadImageRelations(g.DB, id)
-	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	if serverError(w, err) {
 		return
 	}
 	resp := relationsResponse{

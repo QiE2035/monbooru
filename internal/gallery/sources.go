@@ -3,23 +3,35 @@ package gallery
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/leqwin/monbooru/internal/db"
 	"github.com/leqwin/monbooru/internal/models"
 )
 
-// images.source / images.url mirror the "primary" origin - the oldest row in
-// image_sources - so the search executor, the image response, and gallery
-// export keep riding the scalar columns. The invariant: they are non-empty
-// iff the image has at least one origin, and when set they equal the primary
-// row. The helpers below maintain it, the same way the collections helpers
-// maintain images.series.
+// updateSourceField writes one column on an existing origin row, keyed by
+// site+post_id, never creating one. Callers guard the no-op case (empty
+// string / zero score) first; col is a trusted constant, never caller input.
+func updateSourceField(database *db.DB, imageID int64, site, postID, col string, val any) error {
+	_, err := database.Write.Exec(
+		fmt.Sprintf(`UPDATE image_sources SET %s = ? WHERE image_id = ? AND site = ? AND post_id = ?`, col),
+		val, imageID, strings.TrimSpace(site), strings.TrimSpace(postID))
+	return err
+}
 
-// SourcesForImage returns every origin of imageID, primary (oldest) first.
+// images.source / images.url mirror the "primary" origin - the lowest-rowid
+// row in image_sources (the oldest, until MakeSourcePrimary reorders) - so
+// the search executor, the image response, and gallery export keep riding
+// the scalar columns. The invariant: they are non-empty iff the image has at
+// least one origin, and when set they equal the primary row. The helpers
+// below maintain it, the same way the collections helpers maintain
+// images.series.
+
+// SourcesForImage returns every origin of imageID, primary first.
 func SourcesForImage(database *db.DB, imageID int64) ([]models.ImageSource, error) {
 	rows, err := database.Read.Query(
-		`SELECT site, post_id, url, commentary FROM image_sources WHERE image_id = ? ORDER BY rowid`, imageID)
+		`SELECT site, post_id, url, commentary, original, similarity FROM image_sources WHERE image_id = ? ORDER BY rowid`, imageID)
 	if err != nil {
 		return nil, err
 	}
@@ -27,7 +39,7 @@ func SourcesForImage(database *db.DB, imageID int64) ([]models.ImageSource, erro
 	var out []models.ImageSource
 	for rows.Next() {
 		var s models.ImageSource
-		if err := rows.Scan(&s.Site, &s.PostID, &s.URL, &s.Commentary); err != nil {
+		if err := rows.Scan(&s.Site, &s.PostID, &s.URL, &s.Commentary, &s.Original, &s.Similarity); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -52,6 +64,17 @@ func AddSourceMembership(database *db.DB, imageID int64, site, postID, url strin
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if postID != "" && url != "" {
+		// Rows written before pushes and enriches carried post ids are keyed
+		// (site, ""); adopt one matching by url so a refetch updates it in
+		// place instead of leaving a twin row for the same post.
+		if _, err := tx.Exec(
+			`UPDATE OR IGNORE image_sources SET post_id = ?
+			 WHERE image_id = ? AND site = ? AND post_id = '' AND url = ?`,
+			postID, imageID, site, url); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.Exec(
 		`INSERT INTO image_sources (image_id, site, post_id, url) VALUES (?, ?, ?, ?)
 		 ON CONFLICT(image_id, site, post_id) DO UPDATE SET
@@ -72,18 +95,78 @@ func SetSourceMD5(database *db.DB, imageID int64, site, postID, md5 string) erro
 	if md5 == "" {
 		return nil
 	}
-	_, err := database.Write.Exec(
-		`UPDATE image_sources SET md5 = ? WHERE image_id = ? AND site = ? AND post_id = ?`,
-		md5, imageID, strings.TrimSpace(site), strings.TrimSpace(postID))
-	return err
+	return updateSourceField(database, imageID, site, postID, "md5", md5)
+}
+
+// SetSourceParentURL records the canonical URL of the post one origin
+// declared as its parent (booru parent/child). An empty incoming value keeps
+// the stored one, so a parentless re-push never clears it.
+func SetSourceParentURL(database *db.DB, imageID int64, site, postID, parentURL string) error {
+	parentURL = strings.TrimSpace(parentURL)
+	if parentURL == "" {
+		return nil
+	}
+	return updateSourceField(database, imageID, site, postID, "parent_url", parentURL)
+}
+
+// ImageIDBySourceURL returns the image holding an origin with the given URL -
+// the parent-side probe of the derivative-edge linking. When several images
+// claim the same origin the lowest id wins, for a stable pick.
+func ImageIDBySourceURL(database *db.DB, url string) (int64, bool) {
+	var id int64
+	err := database.Read.QueryRow(
+		`SELECT image_id FROM image_sources WHERE url = ? ORDER BY image_id LIMIT 1`, url).Scan(&id)
+	return id, err == nil
+}
+
+// ChildIDsByParentURL returns the images whose origin rows declare the given
+// URL as their parent - the child-side probe of the derivative-edge linking.
+func ChildIDsByParentURL(database *db.DB, url string) ([]int64, error) {
+	rows, err := database.Read.Query(
+		`SELECT DISTINCT image_id FROM image_sources WHERE parent_url = ? ORDER BY image_id`, url)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// SetSourceSimilarity records the score a similarity lookup matched one
+// origin with - the mark that lets later refetches of that origin skip the
+// md5 verify (its file differs from the stored one by design). A zero
+// incoming score keeps the stored one, so a plain refetch never clears it.
+func SetSourceSimilarity(database *db.DB, imageID int64, site, postID string, score float64) error {
+	if score <= 0 {
+		return nil
+	}
+	return updateSourceField(database, imageID, site, postID, "similarity", score)
+}
+
+// SourceSimilarityMatched reports whether one origin was recorded by a
+// similarity lookup.
+func SourceSimilarityMatched(database *db.DB, imageID int64, site, postID string) bool {
+	var matched bool
+	err := database.Read.QueryRow(
+		`SELECT similarity > 0 FROM image_sources WHERE image_id = ? AND site = ? AND post_id = ?`,
+		imageID, strings.TrimSpace(site), strings.TrimSpace(postID)).Scan(&matched)
+	return err == nil && matched
 }
 
 // RenameSourceMembership relabels one origin in place, keeping its
-// commentary / md5 / fetched_at and its age (a relabelled primary stays
-// primary), and re-keys the origin's annotations so they follow the new
+// commentary / original / md5 / fetched_at and its age (a relabelled primary
+// stays primary), and re-keys the origin's annotations so they follow the new
 // identity. When the new identity already exists on the image the two rows
-// merge: the target keeps its own commentary unless it has none, and the
-// old row is dropped. A missing prev identity falls back to a plain upsert.
+// merge: the target keeps its own commentary and original unless it has none,
+// and the old row is dropped. A missing prev identity falls back to a plain
+// upsert.
 func RenameSourceMembership(database *db.DB, imageID int64, prevSite, prevPost, site, postID, url string) error {
 	prevSite = strings.TrimSpace(prevSite)
 	prevPost = strings.TrimSpace(prevPost)
@@ -127,9 +210,10 @@ func RenameSourceMembership(database *db.DB, imageID int64, prevSite, prevPost, 
 		default:
 			if _, err := tx.Exec(
 				`UPDATE image_sources SET url = ?,
-				        commentary = CASE WHEN commentary = '' THEN (SELECT commentary FROM image_sources WHERE rowid = ?) ELSE commentary END
+				        commentary = CASE WHEN commentary = '' THEN (SELECT commentary FROM image_sources WHERE rowid = ?) ELSE commentary END,
+				        original = CASE WHEN original = '' THEN (SELECT original FROM image_sources WHERE rowid = ?) ELSE original END
 				 WHERE rowid = ?`,
-				url, prevRid, targetRid); err != nil {
+				url, prevRid, prevRid, targetRid); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(`DELETE FROM image_sources WHERE rowid = ?`, prevRid); err != nil {
@@ -137,7 +221,7 @@ func RenameSourceMembership(database *db.DB, imageID int64, prevSite, prevPost, 
 			}
 		}
 		if _, err := tx.Exec(
-			`UPDATE image_annotations SET site = ?, post_id = ? WHERE image_id = ? AND site = ? AND post_id = ?`,
+			`UPDATE image_annotations SET site = ?, post_id = ? WHERE image_id = ? AND site = ? AND post_id = ? AND manual = 0`,
 			site, postID, imageID, prevSite, prevPost); err != nil {
 			return err
 		}
@@ -163,7 +247,7 @@ func RemoveSourceMembership(database *db.DB, imageID int64, site, postID string)
 		imageID, site, postID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM image_annotations WHERE image_id = ? AND site = ? AND post_id = ?`,
+	if _, err := tx.Exec(`DELETE FROM image_annotations WHERE image_id = ? AND site = ? AND post_id = ? AND manual = 0`,
 		imageID, site, postID); err != nil {
 		return err
 	}
@@ -173,15 +257,16 @@ func RemoveSourceMembership(database *db.DB, imageID int64, site, postID string)
 	return tx.Commit()
 }
 
-// SetSourceCommentary sets the artist commentary attributed to one origin. A
-// non-empty body upserts the origin (creating it when absent, so commentary can
-// be added to a source the image does not list yet); an empty body only clears
-// an existing origin's commentary and never creates one. Rebinds the primary
-// mirror since an upsert can add the first origin.
-func SetSourceCommentary(database *db.DB, imageID int64, site, postID, commentary string) error {
+// setSourceTextField sets one text column (commentary or original, a trusted
+// constant) on an origin: a non-empty value upserts the origin (creating it
+// when absent, so the field can be added to a source the image does not list
+// yet), an empty value only clears an existing origin's field and never
+// creates one. Rebinds the primary mirror since an upsert can add the first
+// origin.
+func setSourceTextField(database *db.DB, imageID int64, site, postID, col, value string) error {
 	site = strings.TrimSpace(site)
 	postID = strings.TrimSpace(postID)
-	commentary = strings.TrimSpace(commentary)
+	value = strings.TrimSpace(value)
 	if site == "" {
 		return errors.New("source label required")
 	}
@@ -190,22 +275,34 @@ func SetSourceCommentary(database *db.DB, imageID int64, site, postID, commentar
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if commentary == "" {
+	if value == "" {
 		if _, err := tx.Exec(
-			`UPDATE image_sources SET commentary = '' WHERE image_id = ? AND site = ? AND post_id = ?`,
+			fmt.Sprintf(`UPDATE image_sources SET %s = '' WHERE image_id = ? AND site = ? AND post_id = ?`, col),
 			imageID, site, postID); err != nil {
 			return err
 		}
 	} else if _, err := tx.Exec(
-		`INSERT INTO image_sources (image_id, site, post_id, commentary) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(image_id, site, post_id) DO UPDATE SET commentary = excluded.commentary`,
-		imageID, site, postID, commentary); err != nil {
+		fmt.Sprintf(`INSERT INTO image_sources (image_id, site, post_id, %[1]s) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(image_id, site, post_id) DO UPDATE SET %[1]s = excluded.%[1]s`, col),
+		imageID, site, postID, value); err != nil {
 		return err
 	}
 	if err := rebindPrimarySourceTx(tx, imageID); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// SetSourceCommentary sets the artist commentary attributed to one origin. See
+// setSourceTextField for the upsert / clear semantics.
+func SetSourceCommentary(database *db.DB, imageID int64, site, postID, commentary string) error {
+	return setSourceTextField(database, imageID, site, postID, "commentary", commentary)
+}
+
+// SetSourceOriginal sets the upstream artist source the booru post declared for
+// one origin. See setSourceTextField for the upsert / clear semantics.
+func SetSourceOriginal(database *db.DB, imageID int64, site, postID, original string) error {
+	return setSourceTextField(database, imageID, site, postID, "original", original)
 }
 
 // ErrSourceIdentityExists reports a relabel that would collide with another
@@ -243,7 +340,7 @@ func SetPrimarySource(database *db.DB, imageID int64, site, url string) error {
 		if _, err := tx.Exec(`DELETE FROM image_sources WHERE rowid = ?`, rid); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`DELETE FROM image_annotations WHERE image_id = ? AND site = ? AND post_id = ?`,
+		if _, err := tx.Exec(`DELETE FROM image_annotations WHERE image_id = ? AND site = ? AND post_id = ? AND manual = 0`,
 			imageID, curSite, curPost); err != nil {
 			return err
 		}
@@ -268,8 +365,36 @@ func SetPrimarySource(database *db.DB, imageID int64, site, url string) error {
 	return tx.Commit()
 }
 
-// rebindPrimarySourceTx repoints images.source / images.url at the oldest
-// origin row (or clears them when none remain).
+// MakeSourcePrimary reorders one existing origin to primary by moving it
+// below every other rowid (the table-wide MIN keeps the new rowid unique)
+// and rebinds the mirror. Promoting the current primary is a harmless no-op
+// move.
+func MakeSourcePrimary(database *db.DB, imageID int64, site, postID string) error {
+	site = strings.TrimSpace(site)
+	postID = strings.TrimSpace(postID)
+	tx, err := database.Write.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(
+		`UPDATE image_sources SET rowid = (SELECT MIN(rowid) - 1 FROM image_sources)
+		 WHERE image_id = ? AND site = ? AND post_id = ?`,
+		imageID, site, postID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errors.New("source not found on this image")
+	}
+	if err := rebindPrimarySourceTx(tx, imageID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// rebindPrimarySourceTx repoints images.source / images.url at the lowest-
+// rowid origin row (or clears them when none remain).
 func rebindPrimarySourceTx(tx *sql.Tx, imageID int64) error {
 	var site, url string
 	err := tx.QueryRow(`SELECT site, url FROM image_sources WHERE image_id = ? ORDER BY rowid LIMIT 1`, imageID).Scan(&site, &url)

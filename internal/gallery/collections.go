@@ -3,6 +3,7 @@ package gallery
 import (
 	"database/sql"
 	"errors"
+	"sort"
 	"strings"
 
 	"github.com/leqwin/monbooru/internal/db"
@@ -217,11 +218,13 @@ type CollectionSummary struct {
 	Samples       []CollectionSample
 }
 
-// CollectionSample is one preview tile: the image id and its position
-// within the collection (nil when the membership is unordered).
+// CollectionSample is one preview tile: the image id, its position within the
+// collection (nil when the membership is unordered), and its filename for the
+// reorder dialog's filename mode / tooltip.
 type CollectionSample struct {
-	ID    int64
-	Order *int
+	ID       int64
+	Order    *int
+	Filename string
 }
 
 // collectionFilterWhere returns the substring-match fragment (and its
@@ -362,7 +365,7 @@ func collectionWalk(database *db.DB, name string, excludeIDs []int64, limit, off
 	args = append([]any{name}, args...)
 	args = append(args, limit, offset)
 	rows, err := database.Read.Query(
-		`SELECT c.image_id, c.position
+		`SELECT c.image_id, c.position, basename(i.canonical_path)
 		 FROM image_collections c JOIN images i ON i.id = c.image_id
 		 WHERE c.name = ? AND i.is_missing = 0`+exclude+`
 		 ORDER BY c.position IS NULL, c.position, c.image_id LIMIT ? OFFSET ?`, args...)
@@ -374,7 +377,7 @@ func collectionWalk(database *db.DB, name string, excludeIDs []int64, limit, off
 	for rows.Next() {
 		var s CollectionSample
 		var pos sql.NullInt64
-		if err := rows.Scan(&s.ID, &pos); err != nil {
+		if err := rows.Scan(&s.ID, &pos, &s.Filename); err != nil {
 			return out, err
 		}
 		if pos.Valid {
@@ -398,31 +401,136 @@ func CollectionMembers(database *db.DB, name string, excludeIDs []int64, limit, 
 // ReorderCollection rewrites name's ordering from ids: 1-based positions
 // in slice order, every other membership cleared to unordered. Ids not
 // filed under name are no-ops. The home mirror follows for rows homed on
-// the collection, the same resync shape the rename job uses.
+// the collection, the same resync shape the rename job uses. A list that
+// fits one chunk (the click-order path, capped at the 200 window) runs in a
+// single atomic transaction; a larger filename sort splits the position
+// writes into 500-id chunks so the write tx stays bounded.
 func ReorderCollection(database *db.DB, name string, ids []int64) error {
-	tx, err := database.Write.Begin()
-	if err != nil {
+	const chunkSize = 500
+	const clearAll = `UPDATE image_collections SET position = NULL WHERE name = ?`
+	const setPos = `UPDATE image_collections SET position = ? WHERE image_id = ? AND name = ?`
+	const resync = `UPDATE images SET series_order =
+		   (SELECT position FROM image_collections WHERE image_id = images.id AND name = ?)
+		 WHERE series = ? COLLATE NOCASE`
+
+	if len(ids) <= chunkSize {
+		tx, err := database.Write.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(clearAll, name); err != nil {
+			return err
+		}
+		for i, id := range ids {
+			if _, err := tx.Exec(setPos, i+1, id, name); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(resync, name, name); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
+	inTx := func(fn func(*sql.Tx) error) error {
+		tx, err := database.Write.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if err := fn(tx); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if err := inTx(func(tx *sql.Tx) error { _, e := tx.Exec(clearAll, name); return e }); err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(
-		`UPDATE image_collections SET position = NULL WHERE name = ?`, name); err != nil {
-		return err
-	}
-	for i, id := range ids {
-		if _, err := tx.Exec(
-			`UPDATE image_collections SET position = ? WHERE image_id = ? AND name = ?`,
-			i+1, id, name); err != nil {
+	for start := 0; start < len(ids); start += chunkSize {
+		end := min(start+chunkSize, len(ids))
+		lo, hi := start, end
+		if err := inTx(func(tx *sql.Tx) error {
+			for i := lo; i < hi; i++ {
+				if _, err := tx.Exec(setPos, i+1, ids[i], name); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.Exec(
-		`UPDATE images SET series_order =
-		   (SELECT position FROM image_collections WHERE image_id = images.id AND name = ?)
-		 WHERE series = ? COLLATE NOCASE`, name, name); err != nil {
+	return inTx(func(tx *sql.Tx) error { _, e := tx.Exec(resync, name, name); return e })
+}
+
+// SortCollectionByFilename orders every non-missing member of name by filename
+// (natural order over the basename), ceiling-blind over the whole collection
+// rather than just the reorder window, and applies the result through
+// ReorderCollection.
+func SortCollectionByFilename(database *db.DB, name string) error {
+	rows, err := database.Read.Query(
+		`SELECT c.image_id, basename(i.canonical_path)
+		 FROM image_collections c JOIN images i ON i.id = c.image_id
+		 WHERE c.name = ? AND i.is_missing = 0`, name)
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	type member struct {
+		id       int64
+		filename string
+	}
+	var members []member
+	for rows.Next() {
+		var m member
+		if err := rows.Scan(&m.id, &m.filename); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		members = append(members, m)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	sort.SliceStable(members, func(i, j int) bool {
+		return naturalLess(strings.ToLower(members[i].filename), strings.ToLower(members[j].filename))
+	})
+	ids := make([]int64, len(members))
+	for i, m := range members {
+		ids[i] = m.id
+	}
+	return ReorderCollection(database, name, ids)
+}
+
+// CollectionCeilingHidden returns how many of name's visible members the rating
+// ceiling (excludeIDs) hides: the ceiling-blind visible count minus the
+// ceiling-filtered count. Zero when no ceiling is active or none are hidden.
+func CollectionCeilingHidden(database *db.DB, name string, excludeIDs []int64) (int, error) {
+	if len(excludeIDs) == 0 {
+		return 0, nil
+	}
+	var blind int
+	err := database.Read.QueryRow(
+		`SELECT COALESCE(visible_count, 0) FROM collection_counts WHERE name = ?`, name).Scan(&blind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	exclude, exArgs := excludeNotExists("c.image_id", excludeIDs)
+	var filtered int
+	if err := database.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_collections c
+		 WHERE c.name = ? AND EXISTS (SELECT 1 FROM images i WHERE i.id = c.image_id AND i.is_missing = 0)`+exclude,
+		append([]any{name}, exArgs...)...).Scan(&filtered); err != nil {
+		return 0, err
+	}
+	if blind < filtered {
+		return 0, nil
+	}
+	return blind - filtered, nil
 }
 
 // CollectionMemberIDs returns every image id filed under name (case-

@@ -73,14 +73,6 @@ func NewBKTree() *BKTree {
 	return &BKTree{idIndex: make(map[int64]int64)}
 }
 
-// Size returns the number of (image_id, phash) entries currently in
-// the tree.
-func (t *BKTree) Size() int {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return len(t.idIndex)
-}
-
 // Built reports whether BuildFromDB has been called at least once on
 // this tree. Useful for "is this gallery ready for relations queries"
 // gating in handlers that want to avoid showing a partial result while

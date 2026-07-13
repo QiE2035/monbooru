@@ -1,6 +1,8 @@
 package web
 
 import (
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -248,5 +250,32 @@ func TestSearchWarning(t *testing.T) {
 		if got := searchWarning(expr); got != c.want {
 			t.Errorf("%s: searchWarning(%q) = %q, want %q", c.name, c.query, got, c.want)
 		}
+	}
+}
+
+// Inbox cluster headers display in time.Local, but the RangeLink date:
+// bounds must stay UTC to string-match the UTC-stored ingested_at column.
+// Not parallel: it mutates the process-global time.Local.
+func TestBuildInboxCluster_LabelsLocalBoundsUTC(t *testing.T) {
+	orig := time.Local
+	time.Local = time.FixedZone("TEST-3", -3*60*60)
+	defer func() { time.Local = orig }()
+
+	// 01:30Z is 22:30 the previous day at UTC-3: the label rolls back to
+	// local while the query bound stays on the stored UTC instant.
+	imgs := []models.Image{{ID: 1, IngestedAt: time.Date(2026, 5, 22, 1, 30, 0, 0, time.UTC)}}
+	got := computeInboxClusters(imgs, "")
+	if len(got) != 1 || got[0] == nil {
+		t.Fatalf("got %v, want one cluster", got)
+	}
+	if got[0].DateLabel != "2026-05-21" || got[0].RangeLabel != "22:30" {
+		t.Errorf("labels = %q / %q, want 2026-05-21 / 22:30", got[0].DateLabel, got[0].RangeLabel)
+	}
+	u, err := url.Parse(got[0].RangeLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := u.Query().Get("q"); !strings.Contains(q, "date:2026-05-22T01:30..2026-05-22T01:30") {
+		t.Errorf("RangeLink q = %q, want UTC date bounds", q)
 	}
 }

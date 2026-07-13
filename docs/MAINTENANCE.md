@@ -5,7 +5,7 @@
 Settings → Maintenance has the manual tools:
 
 - **Prune missing images** - delete DB rows for files no longer on
-  disk.
+  disk, and remove their thumbnails and cached pages.
 - **Prune orphaned thumbnails** - delete thumbnail files whose image
   row is gone.
 - **Rebuild thumbnails** - regenerate every thumbnail. Useful after
@@ -22,13 +22,19 @@ Settings → Maintenance has the manual tools:
   when you want them gone). The watcher and bulk paths should keep
   counts correct in real time, so you only need this if you see
   discrepancies in usage count.
+- **Category conflicts** - count tags whose name occupies more than one
+  category (e.g. `general:nintendo` and `copyright:nintendo`). The split
+  is legal but usually means two sources disagreed on a tag's category.
+  The count links to the Tags page's Conflicts filter, where both sides can be merged.
 - **Re-extract metadata** - re-runs SD/ComfyUI parameter extraction on
-  every image and re-probes video duration via ffprobe.
+  every image, re-probes video duration via ffprobe, and recomputes each
+  image's perceptual hash.
 - **Vacuum database** - `VACUUM` plus WAL checkpoint to release space.
 - **Free memory** - shrink SQLite caches, return the Go heap, release
   the auto-tagger from RAM/VRAM.
 
-Each action reports how many rows it affected.
+Most actions report how many rows they affected; Vacuum and Free memory
+report the space reclaimed instead.
 
 To find and remove byte-identical duplicate file paths, use the SHA-256
 duplicates walker under **Relations -> Duplicates**; see
@@ -53,16 +59,16 @@ Settings → Stats is a read-only diagnostic block:
 
 - **Process memory** - PSS broken into the Go heap, native heap
   (SQLite caches, CGO), and shared file-backed (DB pages, binary,
-  shared libs) on Linux. Falls back to `runtime.MemStats` on platforms
-  without `/proc/self/smaps_rollup`.
+  shared libs) on Linux, read from `/proc/self/smaps`. Falls back to
+  `runtime.MemStats` on non-Linux platforms.
 - **Auto-tagger** - current mode (CPU / CUDA), load status, idle
   timer, and (when the subprocess worker is alive) its PSS and
   ONNX/CGO breakdown.
 - **Database size per gallery** - one row per gallery, sum of
   `monbooru.db` plus its `-wal` / `-shm` sidecars.
 - **Filesystem free space** - one row per distinct mount that holds
-  the gallery / data / model directories. Mounts reporting the same
-  totals collapse into a single row.
+  the gallery / database / thumbnails directories. Mounts reporting the
+  same totals collapse into a single row.
 
 ## Troubleshooting
 
@@ -90,9 +96,10 @@ re-chowns supported files it has just hashed.
 `gallery.max_file_size_mb`, and that the extension is one of
 jpg/jpeg/png/webp/gif/mp4/webm/cbz/zip. Then run Sync.
 
-**Login locked out.** The login backoff caps at 30s and entries are
-swept every 10 minutes. Wait it out, or restart the process to clear
-all sessions.
+**Login locked out.** The login backoff caps at 30s; a sweeper runs
+every 10 minutes and clears entries idle for 5 minutes. Wait it out, or
+restart the process to clear all sessions.
 
-**API returns 503 `api_disabled`.** Generate a token in Settings →
-Authentication.
+**API returns 503 `api_disabled`.** No API token exists yet; generate
+one in Settings → Authentication. (The same status also surfaces when no
+gallery is active.)

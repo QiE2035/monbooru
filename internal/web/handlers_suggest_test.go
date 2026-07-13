@@ -13,6 +13,27 @@ import (
 	"github.com/leqwin/monbooru/internal/gallery"
 )
 
+func TestTagSuggest_TargetParam(t *testing.T) {
+	srv := newTestServer(t)
+	cx := srv.Active()
+	for _, name := range []string{"sword", "shield"} {
+		if _, err := cx.TagSvc.GetOrCreateTag(name, 1); err != nil {
+			t.Fatalf("create tag %q: %v", name, err)
+		}
+	}
+	// The batch-imply input submits its value under name="target".
+	req := httptest.NewRequest("GET", "/internal/tags/suggest?target=swo", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	body := w.Body.String()
+	if !strings.Contains(body, "sword") {
+		t.Errorf("target=swo did not surface \"sword\":\n%s", body)
+	}
+	if strings.Contains(body, "shield") {
+		t.Errorf("target=swo surfaced the non-matching \"shield\":\n%s", body)
+	}
+}
+
 func TestFoldersSuggest_CaseBoundary(t *testing.T) {
 	srv := newTestServer(t)
 	cx := srv.Active()
