@@ -507,8 +507,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /search/saved", s.createSavedSearch)
 	mux.HandleFunc("DELETE /search/saved/{id}", s.deleteSavedSearch)
 
-	mux.HandleFunc("GET /help", s.helpHandler)
-
 	mux.HandleFunc("GET /internal/job/status", s.jobStatusHandler)
 	mux.HandleFunc("GET /internal/monloader-status", s.monloaderStatusHandler)
 	mux.HandleFunc("POST /internal/job/dismiss", s.jobDismissPost)
@@ -638,6 +636,10 @@ var Version = "dev"
 // RepoURL is the canonical git repository URL, set at build time via -ldflags.
 var RepoURL = "https://github.com/leqwin/monbooru"
 
+// DocURL is the online documentation URL, set at build time via -ldflags from
+// DOC.md.
+var DocURL = "https://leqwin.github.io/mondocs/index.html"
+
 // Variant identifies the build flavour (e.g. "cuda") and is injected at
 // build time via -ldflags from the CUDA Dockerfile. Empty for the default
 // CPU build; rendered in parentheses in the footer when non-empty.
@@ -670,6 +672,7 @@ type baseData struct {
 	Degraded    bool
 	Version     string
 	RepoURL     string
+	DocURL      string
 	Variant     string
 	CustomCSS   bool
 	// BooruName is the operator's brand override (or "Monbooru" by
@@ -745,6 +748,7 @@ func (b baseData) AsMap() map[string]any {
 		"Degraded":            b.Degraded,
 		"Version":             b.Version,
 		"RepoURL":             b.RepoURL,
+		"DocURL":              b.DocURL,
 		"Variant":             b.Variant,
 		"CustomCSS":           b.CustomCSS,
 		"BooruName":           b.BooruName,
@@ -807,6 +811,7 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 		Degraded:            degraded,
 		Version:             Version,
 		RepoURL:             RepoURL,
+		DocURL:              DocURL,
 		Variant:             Variant,
 		CustomCSS:           s.cfg.Server.CustomCSS != "",
 		BooruName:           s.booruName(),

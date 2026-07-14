@@ -27,7 +27,6 @@
       <a href="/collections" {{if eq .ActiveNav "collections"}} class="active"{{end}}>Collections</a>
       <a href="/relations" {{if eq .ActiveNav "relations"}} class="active"{{end}}>Relations</a>
       <a href="/settings"{{if eq .ActiveNav "settings"}}class="active"{{end}}>Settings</a>
-      <a href="/help"    {{if eq .ActiveNav "help"}}    class="active"{{end}}>Help</a>
     </nav>
     <div id="topbar-right">
       <div id="job-status"
@@ -97,7 +96,7 @@
       <span id="footer-hidden" class="footer-hidden">{{with .HiddenByCeiling}}<span class="footer-sep-strong">::</span>{{.}} hidden {{plural . "image" "images"}} in the current search{{end}}</span>
     </div>
     <div id="footer-right">
-      {{if .MonloaderPaired}}{{template "partials/monloader_light.html" .}} · {{end}}page loaded in <span id="page-load-ms">{{pageLoadMs .RequestStart}}</span> ms · <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="/api/v1/docs" target="_blank" rel="noopener">API</a>
+      {{if .MonloaderPaired}}{{template "partials/monloader_light.html" .}} · {{end}}page loaded in <span id="page-load-ms">{{pageLoadMs .RequestStart}}</span> ms · <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="{{.DocURL}}" target="_blank" rel="noopener">help</a> · <a href="/api/v1/docs" target="_blank" rel="noopener">API</a>
     </div>
   </footer>
   <dialog id="confirm-dialog">
@@ -124,7 +123,6 @@
             <tr><td><kbd>g c o</kbd></td><td>Collections</td></tr>
             <tr><td><kbd>g t</kbd></td><td>Tags</td></tr>
             <tr><td><kbd>g s</kbd></td><td>Settings</td></tr>
-            <tr><td><kbd>g h</kbd></td><td>Help</td></tr>
             <tr><td><kbd>Y</kbd></td><td>Sync gallery</td></tr>
             <tr><td><kbd>,</kbd> / <kbd>.</kbd></td><td>Rating ceiling switch</td></tr>
             <tr><td><kbd>\</kbd></td><td>Switch gallery</td></tr>

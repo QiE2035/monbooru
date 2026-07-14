@@ -25,7 +25,6 @@ var chordMap = {
     },
     t: '/tags',
     s: '/settings',
-    h: '/help',
   },
   e: {
     s: function () { var b = document.querySelector('.btn-add-source'); if (b) b.click(); },
@@ -2763,9 +2762,24 @@ function initInboxUpload() {
     appendFiles(e.dataTransfer.files);
   });
 
+  // htmx fires htmx:xhr:progress for the request upload and the response
+  // download alike; latch at 100% so the tiny response's own progress
+  // events don't rewind the counter the operator is watching.
+  var uploadDone = false;
   form.addEventListener('htmx:beforeRequest', function() {
+    uploadDone = false;
     if (submitBtn) submitBtn.disabled = true;
     if (result) result.innerHTML = '<div class="field-hint">Uploading...</div>';
+  });
+  form.addEventListener('htmx:xhr:progress', function(e) {
+    if (uploadDone || !result || !e.detail || !e.detail.lengthComputable || !e.detail.total) return;
+    var pct = Math.round((e.detail.loaded / e.detail.total) * 100);
+    if (pct >= 100) {
+      uploadDone = true;
+      result.innerHTML = '<div class="field-hint">Processing...</div>';
+      return;
+    }
+    result.innerHTML = '<div class="field-hint">Uploading... ' + pct + '%</div>';
   });
   form.addEventListener('htmx:afterRequest', function(e) {
     if (submitBtn) submitBtn.disabled = false;

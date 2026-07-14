@@ -138,8 +138,24 @@ func TestMangaCacheReclaimer_StartStop(t *testing.T) {
 	r.Stop() // idempotent
 }
 
-// Generate on a cbz writes the cover plus a per-page _thumb.jpg for
-// every entry, so the first /pages render is a static-file serve.
+// waitForPageThumb waits for a background-pregenerated page thumbnail to
+// land. Generate hands the per-page loop to a worker, so the file appears
+// shortly after Generate returns rather than before it.
+func waitForPageThumb(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("page thumb %q not generated within %s", path, timeout)
+}
+
+// Generate on a cbz writes the cover before it returns (it is the phash
+// input) and pre-generates a per-page _thumb.jpg for every entry in the
+// background, so the first /pages render is a static-file serve.
 func TestGenerate_CBZ_PrecomputesEveryPageThumbnail(t *testing.T) {
 	dir := t.TempDir()
 	pic := solidPNG(t, 32, 32, [3]uint8{12, 34, 56})
@@ -155,9 +171,7 @@ func TestGenerate_CBZ_PrecomputesEveryPageThumbnail(t *testing.T) {
 	}
 	imgDir := MangaImageDir(thumbDir, 77)
 	for n := 1; n <= 3; n++ {
-		if _, err := os.Stat(MangaPageThumbPath(imgDir, n)); err != nil {
-			t.Errorf("page %d thumb missing: %v", n, err)
-		}
+		waitForPageThumb(t, MangaPageThumbPath(imgDir, n), 5*time.Second)
 	}
 }
 
@@ -179,6 +193,7 @@ func TestMangaCacheReclaimer_PreservesPageThumbnails(t *testing.T) {
 		t.Fatalf("ensure raw page: %v", err)
 	}
 	thumb := MangaPageThumbPath(MangaImageDir(thumbDir, 5), 1)
+	waitForPageThumb(t, thumb, 5*time.Second)
 	old := time.Now().Add(-2 * MangaPageCacheTTL)
 	if err := os.Chtimes(rawPage, old, old); err != nil {
 		t.Fatal(err)

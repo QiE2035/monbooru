@@ -55,7 +55,7 @@
       <div class="settings-cols">
         <div class="settings-sub">
           <h4>Files</h4>
-          {{template "partials/range_field.html" dict "Name" "max_file_size_mb" "Label" "Max file size (MB)" "Min" 1 "Max" 1024 "Value" $cfg.Gallery.MaxFileSizeMB "Ticks" (list 1 128 256 512 768 1024) "Hint" "Files larger than this are skipped during sync."}}
+          {{template "partials/range_field.html" dict "Name" "max_file_size_mb" "Label" "Max file size (MB)" "Min" 1 "Max" 5120 "Value" $cfg.Gallery.MaxFileSizeMB "Ticks" (list 512 1024 2048 3072 4096 5120) "Hint" "Files larger than this are skipped on upload and during sync."}}
           <div class="field">
             <label for="default_upload_folder">Default upload folder</label>
             <input type="text" name="default_upload_folder" id="default_upload_folder" value="{{$cfg.Gallery.DefaultUploadFolder}}" placeholder="(gallery root)">

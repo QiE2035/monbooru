@@ -1,5 +1,21 @@
 # Changelog
 
+## [v1.14.1] - 2026-07-14
+### Added
+- Uploads show a progress percentage while the files are sent. ([#54](https://github.com/leqwin/monbooru/issues/54))
+
+### Changed
+- Max file size defaults to 2 GB and can be raised to 5 GB in Settings. ([#54](https://github.com/leqwin/monbooru/issues/54))
+
+### Fixed
+- The auto-tagger no longer files copyright and meta tags under the wrong category.
+- Auto-tagged tags no longer land in the wrong category after switching galleries. ([#57](https://github.com/leqwin/monbooru/issues/57))
+- Adding a cbz no longer blocks while every page thumbnail is generated. ([#53](https://github.com/leqwin/monbooru/issues/53))
+- Uploading a file already in the gallery no longer leaves a second copy on disk.
+
+### Removed
+- Moved the help page to the online documentation.
+
 ## [v1.14.0] - 2026-07-13
 Please update monloader to >=v1.4.0.
 

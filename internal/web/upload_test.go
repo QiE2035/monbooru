@@ -239,6 +239,20 @@ func TestUploadPost_SameShaReturnsDuplicate(t *testing.T) {
 	if !strings.Contains(body, want) {
 		t.Errorf("expected duplicate link %s, got: %s", want, body)
 	}
+	// The redundant copy is dropped rather than parked in the gallery as
+	// an alias: same bytes, no second file, no extra image_paths row.
+	if _, err := os.Stat(filepath.Join(srv.Active().GalleryPath, "y.png")); !os.IsNotExist(err) {
+		t.Errorf("duplicate upload left its copy on disk (err=%v)", err)
+	}
+	var paths int
+	if err := srv.Active().DB.Read.QueryRow(
+		`SELECT COUNT(*) FROM image_paths WHERE image_id = ?`, id,
+	).Scan(&paths); err != nil {
+		t.Fatalf("count image_paths: %v", err)
+	}
+	if paths != 1 {
+		t.Errorf("image_paths rows = %d, want 1 (canonical only)", paths)
+	}
 }
 
 func TestUploadPost_RejectsAbsoluteFolder(t *testing.T) {

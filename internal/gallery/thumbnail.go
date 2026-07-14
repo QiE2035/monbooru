@@ -91,13 +91,14 @@ func Generate(srcPath, dstDir string, imageID int64, fileType string) error {
 	return nil
 }
 
-// generateMangaThumbnails opens the archive once and writes the cover
-// thumbnail (`<dstDir>/<id>.jpg`) plus a per-page thumbnail
-// (`MangaImageDir/page_NNNN_thumb.jpg`) for every entry. Pre-generating
-// the per-page set turns the first /pages render into a static-file
-// serve. Page-thumb failures are logged at warn but do not fail the
-// ingest: a missing entry falls back to the lazy EnsureMangaPageThumb
-// path on next access.
+// generateMangaThumbnails writes the cover thumbnail (`<dstDir>/<id>.jpg`)
+// and hands the per-page set (`MangaImageDir/page_NNNN_thumb.jpg`) to a
+// bounded background worker. The cover is the phash input, so it stays on
+// the ingest path; pre-generating every page turns the first /pages render
+// into a static-file serve but takes minutes on a large archive, which
+// would hold the caller's phash write and cache invalidation behind it. A
+// page whose thumbnail is not ready yet falls back to the lazy
+// EnsureMangaPageThumb path on access.
 func generateMangaThumbnails(srcPath, dstDir string, imageID int64) error {
 	archive, err := OpenManga(srcPath)
 	if err != nil {
@@ -117,14 +118,47 @@ func generateMangaThumbnails(srcPath, dstDir string, imageID int64) error {
 	if err := os.MkdirAll(imageDir, 0o755); err != nil {
 		return fmt.Errorf("create manga thumb dir: %w", err)
 	}
+	go pregenerateMangaPageThumbs(srcPath, imageDir)
+	return nil
+}
+
+// mangaThumbWorkers caps how many archives decode their pages at once.
+// The work is background-only, so it stays well under the core count to
+// leave the foreground request path room on a modest host.
+const mangaThumbWorkers = 2
+
+var mangaThumbSem = make(chan struct{}, mangaThumbWorkers)
+
+// pregenerateMangaPageThumbs writes a thumbnail for every page of the
+// archive at srcPath into imageDir. It reopens the archive rather than
+// borrowing the caller's so no file handle is held while it waits for a
+// worker slot. Every page is best-effort: a failure logs and leaves the
+// lazy path to regenerate it on access.
+func pregenerateMangaPageThumbs(srcPath, imageDir string) {
+	mangaThumbSem <- struct{}{}
+	defer func() { <-mangaThumbSem }()
+
+	archive, err := OpenManga(srcPath)
+	if err != nil {
+		logx.Warnf("manga page thumbs for %q: %v", srcPath, err)
+		return
+	}
+	defer func() { _ = archive.Close() }()
+
 	for i := range archive.Pages {
+		// RemoveMangaCache drops this directory when the image is deleted
+		// or its bytes are replaced. Both can land mid-loop, and grinding
+		// on through a long archive would burn the worker and log a
+		// failure per page for a row that no longer wants them.
+		if _, err := os.Stat(imageDir); err != nil {
+			return
+		}
 		pageNum := i + 1
 		thumbPath := MangaPageThumbPath(imageDir, pageNum)
 		if err := generateOneMangaPageThumb(archive, i, thumbPath); err != nil {
 			logx.Warnf("manga page thumb %d for %q: %v", pageNum, srcPath, err)
 		}
 	}
-	return nil
 }
 
 // generateOneMangaPageThumb decodes one page directly from the archive

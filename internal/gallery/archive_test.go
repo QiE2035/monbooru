@@ -103,8 +103,8 @@ func TestOpenManga_FilterMacOSX(t *testing.T) {
 	path := writeTestZip(t, dir, "m.cbz", map[string][]byte{
 		"01.png":            pic,
 		"__MACOSX/._01.png": []byte("garbage"),
-		".DS_Store":         []byte{},
-		"Thumbs.db":         []byte{},
+		".DS_Store":         {},
+		"Thumbs.db":         {},
 		"chapter/02.png":    pic,
 	})
 	m, err := OpenManga(path)

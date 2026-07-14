@@ -131,6 +131,12 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		tagPairs, _ = s.parseTagInput(tagInput)
 	}
 
+	var totalBytes int64
+	for _, fh := range files {
+		totalBytes += fh.Size
+	}
+	logx.Infof("upload: ingesting %d file(s) (%s)", len(files), humanBytesFmt(totalBytes))
+
 	var addedIDs []int64
 	var dupeIDs []int64
 	var tagWarnings []string
@@ -182,6 +188,20 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if isDup {
+			// The bytes are already in the gallery under another path, so
+			// this copy is dead weight - a re-uploaded 1 GB archive would
+			// otherwise cost another 1 GB with no UI to reclaim it. Drop
+			// the file and the alias ingest just recorded; the API's
+			// multipart path does the same.
+			if _, delErr := s.db().Write.Exec(
+				`DELETE FROM image_paths WHERE image_id = ? AND path = ? AND is_canonical = 0`,
+				img.ID, dstPath,
+			); delErr != nil {
+				logx.Warnf("upload: drop duplicate alias for %q: %v", dstPath, delErr)
+			}
+			if rmErr := os.Remove(dstPath); rmErr != nil && !os.IsNotExist(rmErr) {
+				logx.Warnf("upload: remove duplicate copy %q: %v", dstPath, rmErr)
+			}
 			dupeIDs = append(dupeIDs, img.ID)
 			dupes++
 			continue

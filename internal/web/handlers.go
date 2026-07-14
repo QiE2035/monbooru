@@ -97,10 +97,6 @@ func writeFlashOOB(w http.ResponseWriter, id, kind, text string) {
 	_, _ = w.Write([]byte(`<div id="` + id + `" hx-swap-oob="true">` + body + `</div>`))
 }
 
-func (s *Server) helpHandler(w http.ResponseWriter, r *http.Request) {
-	s.renderTemplate(w, "help.html", s.base(r, "help", "Help - "+s.booruName()).AsMap())
-}
-
 // notFoundHandler renders a styled 404 for any unmatched GET path. The
 // mux's default behaviour is unstyled `404 page not found` text on a
 // white page; routing through the standard layout keeps the user inside

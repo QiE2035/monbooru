@@ -422,7 +422,7 @@ func TestMergeGallery_Zip_HydrusMultiWordTags(t *testing.T) {
 	want := map[string]string{
 		"hatsune_miku":            "character",
 		"neon_genesis_evangelion": "copyright", // series→copyright rewrite
-		"john_doe":                "artist",     // creator→artist rewrite
+		"john_doe":                "artist",    // creator→artist rewrite
 		"red_hair":                "general",
 	}
 	for n, wantCat := range want {

@@ -19,16 +19,29 @@ func TestResolveCategory_WD14Numeric(t *testing.T) {
 		t.Errorf("character label routed wrong: %+v", res)
 	}
 
+	res = resolveCategory(prof, tagLabel{name: "touhou", categoryID: 3}, catIDs, dispatch)
+	if res.catID != catIDs["copyright"] {
+		t.Errorf("copyright label routed wrong: %+v", res)
+	}
+
 	// Unknown WD14 category id falls to general.
 	res = resolveCategory(prof, tagLabel{name: "stray", categoryID: 99}, catIDs, dispatch)
 	if res.catID != catIDs["general"] {
 		t.Errorf("unknown category did not fall to general: %+v", res)
 	}
+
+	// A label declaring the rating category but not named like one of the
+	// four canonical ratings cannot legally join `rating`, so it lands in
+	// general instead of being forced somewhere arbitrary.
+	res = resolveCategory(prof, tagLabel{name: "rating_safe", categoryID: 9}, catIDs, dispatch)
+	if res.catID != catIDs["general"] {
+		t.Errorf("non-canonical category 9 did not fall to general: %+v", res)
+	}
 }
 
 func TestResolveCategory_RatingShortCircuits(t *testing.T) {
-	// WD14 ships rating labels in category 9 (copyright). The rating
-	// special case must beat the wd14_numeric routing.
+	// WD14 ships rating labels in category 9. The rating special case
+	// must beat the wd14_numeric routing.
 	catIDs := canonicalCatIDs
 	dispatch := &DispatchTable{rules: map[string]DispatchRule{}}
 	prof := wd14Profile

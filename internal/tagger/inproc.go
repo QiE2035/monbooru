@@ -47,7 +47,6 @@ type loadedSession struct {
 	labels    []tagLabel
 	profile   Profile
 	inputSize int
-	dispatch  *DispatchTable
 }
 
 // inprocBackend is the in-process implementation of Backend. It owns
@@ -122,10 +121,8 @@ func (b *inprocBackend) satisfies(modelPath string, taggers []TaggerStatus, useC
 
 // ensure populates the cache for (taggers, useCUDA). On signature
 // mismatch the existing cache is torn down first. Caller must hold
-// b.mu. catIDs feeds dispatch resolution at session-build time so a
-// dispatch rule pointing at a renamed/deleted category surfaces as a
-// debug log instead of mis-routing labels.
-func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, useCUDA bool, catIDs map[string]int64) error {
+// b.mu.
+func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, useCUDA bool) error {
 	if b.satisfies(cfg.Paths.ModelPath, taggers, useCUDA) {
 		logx.Infof("tagger: reusing warm cache (%d session(s))", len(b.sessions))
 		return nil
@@ -274,7 +271,6 @@ func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, useCU
 			labels:    labels,
 			profile:   profile,
 			inputSize: inputSize,
-			dispatch:  LoadDispatch(cfg.Paths.ModelPath, t.Name, catIDs),
 		}
 	}
 	logx.Infof("tagger: cache ready in %s", time.Since(loadStart).Round(10*time.Millisecond))
@@ -385,7 +381,7 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 	}
 
 	b.mu.Lock()
-	if err := b.ensure(req.Cfg, req.Taggers, req.UseCUDA, req.CatIDs); err != nil {
+	if err := b.ensure(req.Cfg, req.Taggers, req.UseCUDA); err != nil {
 		b.mu.Unlock()
 		return RunResponse{}, err
 	}
@@ -398,7 +394,7 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 			labels:    s.labels,
 			profile:   s.profile,
 			inputSize: s.inputSize,
-			dispatch:  s.dispatch,
+			dispatch:  LoadDispatch(req.Cfg.Paths.ModelPath, t.Name, req.CatIDs),
 		}
 	}
 	b.inUse = true

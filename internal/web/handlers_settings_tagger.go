@@ -197,11 +197,10 @@ func (s *Server) applyTaggerEnabled(w http.ResponseWriter, name string, enabled 
 }
 
 // settingsTaggerThresholdsGet renders the dialog body for one tagger's
-// thresholds: a global slot plus one row per emitted category, with a
-// "+ category" select listing the rest of tag_categories so an operator
-// can override a category the model wouldn't otherwise emit (a
-// dispatch rule could route something into it). HTMX lazy-loads the
-// body via hx-get on first dialog open.
+// thresholds: a global slot plus one row per category the tagger can
+// actually reach - its profile's emitted set, the categories its
+// dispatch rules route into, and any category already carrying an
+// override. HTMX lazy-loads the body via hx-get on first dialog open.
 func (s *Server) settingsTaggerThresholdsGet(w http.ResponseWriter, r *http.Request) {
 	name, ok := pathTaggerName(w, r)
 	if !ok {

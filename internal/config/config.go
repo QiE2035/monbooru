@@ -351,7 +351,7 @@ func Default() *Config {
 		},
 		Gallery: GalleryConfig{
 			WatchEnabled:  true,
-			MaxFileSizeMB: 512,
+			MaxFileSizeMB: 2048,
 		},
 		Tagger: TaggerConfig{
 			Parallel:                4,

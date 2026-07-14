@@ -6,8 +6,10 @@ RUN go mod download
 COPY . .
 # CGO_ENABLED=1 is required for the tagger build tag: the onnxruntime_go bindings use cgo.
 RUN VERSION=$(cat VERSION.md 2>/dev/null | tr -d '[:space:]') && \
+    REPO=$(cat REPOSITORY.md 2>/dev/null | tr -d '[:space:]') && \
+    DOC=$(cat DOC.md 2>/dev/null | tr -d '[:space:]') && \
     CGO_ENABLED=1 go build -tags tagger \
-    -ldflags="-s -w -X 'github.com/leqwin/monbooru/internal/web.Version=${VERSION}'" \
+    -ldflags="-s -w -X 'github.com/leqwin/monbooru/internal/web.Version=${VERSION}' -X 'github.com/leqwin/monbooru/internal/web.RepoURL=${REPO}' -X 'github.com/leqwin/monbooru/internal/web.DocURL=${DOC}'" \
     -o /monbooru ./cmd/monbooru
 
 # Stage 2: fetch runtime assets.

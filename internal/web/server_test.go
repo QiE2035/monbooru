@@ -212,7 +212,7 @@ func TestCustomCSS_LinkRenderedWhenConfigured(t *testing.T) {
 	srv := newTestServer(t)
 	srv.cfg.Server.CustomCSS = "/some/path/custom.css"
 
-	pages := []string{"/", "/tags", "/categories", "/settings", "/help"}
+	pages := []string{"/", "/tags", "/categories", "/settings"}
 	for _, page := range pages {
 		req := httptest.NewRequest("GET", page, nil)
 		w := httptest.NewRecorder()
@@ -305,7 +305,7 @@ func TestGatherStats_MountLabelsAreCompact(t *testing.T) {
 func TestPageLoadIndicator_RenderedOnFullLayoutPages(t *testing.T) {
 	srv := newTestServer(t)
 
-	pages := []string{"/", "/tags", "/categories", "/settings", "/help"}
+	pages := []string{"/", "/tags", "/categories", "/settings"}
 	for _, page := range pages {
 		req := httptest.NewRequest("GET", page, nil)
 		w := httptest.NewRecorder()
@@ -397,7 +397,7 @@ func TestBooruLogo_LinkRoutedToOverrideWhenConfigured(t *testing.T) {
 	srv := newTestServer(t)
 	srv.cfg.Server.BooruLogo = "/some/path/logo.png"
 
-	pages := []string{"/", "/tags", "/categories", "/settings", "/help", "/login"}
+	pages := []string{"/", "/tags", "/categories", "/settings", "/login"}
 	for _, page := range pages {
 		req := httptest.NewRequest("GET", page, nil)
 		w := httptest.NewRecorder()
@@ -420,7 +420,7 @@ func TestBooruLogo_LinkRoutedToOverrideWhenConfigured(t *testing.T) {
 func TestBooruLogo_DefaultsToBundledFavicon(t *testing.T) {
 	srv := newTestServer(t)
 
-	pages := []string{"/", "/tags", "/categories", "/settings", "/help", "/login"}
+	pages := []string{"/", "/tags", "/categories", "/settings", "/login"}
 	for _, page := range pages {
 		req := httptest.NewRequest("GET", page, nil)
 		w := httptest.NewRecorder()
@@ -512,7 +512,6 @@ func TestBooruName_DefaultsToMonbooru(t *testing.T) {
 		{"/tags", "Tags - Monbooru"},
 		{"/categories", "Categories - Monbooru"},
 		{"/settings", "Settings - Monbooru"},
-		{"/help", "Help - Monbooru"},
 		{"/login", "Login - Monbooru"},
 	}
 	for _, tc := range cases {
@@ -556,7 +555,6 @@ func TestBooruName_OverridesTitleAndWordmark(t *testing.T) {
 		{"/tags", "Tags - Privbooru"},
 		{"/categories", "Categories - Privbooru"},
 		{"/settings", "Settings - Privbooru"},
-		{"/help", "Help - Privbooru"},
 		{"/login", "Login - Privbooru"},
 	}
 	for _, tc := range cases {
@@ -755,7 +753,7 @@ func TestAllPagesReturn200(t *testing.T) {
 	srv := newTestServer(t)
 	h := srv.Handler()
 
-	pages := []string{"/", "/tags", "/categories", "/settings", "/help"}
+	pages := []string{"/", "/tags", "/categories", "/settings"}
 	for _, page := range pages {
 		req := httptest.NewRequest("GET", page, nil)
 		w := httptest.NewRecorder()

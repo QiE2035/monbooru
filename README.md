@@ -64,13 +64,9 @@ flowchart LR
     web -->|paste URL| loader
     loader -->|push images, tags, source| booru
 
-    booru -.->|lookup by hash + TODO: PTR contribution| loader
+    booru -.->|lookup by hash| loader
     loader -.->|reverse lookup: md5 + similarity| web
-    ptr -.->|sync: sha256 tags + aliases + implications| loader
-
-    loader -.->|TODO: upload adds + removal petitions| ptr
-
-    linkStyle 7 stroke:#d9a441,color:#d9a441,stroke-width:2px,stroke-dasharray:5 4;
+    ptr <-.->|"sync: sha256 tags + aliases + implications<br/>contribute back (planned)"| loader
 
     classDef hub  fill:#9d2235,stroke:#ef8f99,stroke-width:3px,color:#ffffff;
     classDef tool fill:#1a1818,stroke:#9d2235,stroke-width:1.5px,color:#e8e4e2;
@@ -91,7 +87,7 @@ flowchart LR
 
 Edit the volume paths in [`docker/docker-compose.yml`](docker/docker-compose.yml), then `docker compose up -d`. The app is available at `http://localhost:8080`.
 
-See [docs/README.md](docs/README.md) for installing, configuration, auto-tagger setup, environment variables, REST API, building from source, and other operational notes. Check the in-app help to see how to use the application (search syntax, tag input, keyboard shortcuts, ...).
+See the [monbooru documentation](https://leqwin.github.io/mondocs/index.html) for help. In-app, type `system:` in the search bar for the syntax cheat-sheet and press `?` for the keyboard shortcuts; the footer's `help` link opens the documentation.
 
 ---
 

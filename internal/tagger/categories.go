@@ -3,13 +3,21 @@
 package tagger
 
 // wd14Category maps WD14 numeric category IDs to Monbooru built-in
-// category names. Other category schemes (single_general, name_string)
+// category names, following the danbooru numbering the label sets are
+// derived from. Other category schemes (single_general, name_string)
 // don't go through this table.
+//
+// Category 9 - where WD14 files the rating family - is absent on
+// purpose: the four canonical rating labels are intercepted by name
+// before this lookup, and the rating category accepts only those, so
+// anything else declaring category 9 falls through to general rather
+// than being forced into a category it cannot legally join.
 var wd14Category = map[int]string{
 	0: "general",
 	1: "artist",
+	3: "copyright",
 	4: "character",
-	9: "copyright",
+	5: "meta",
 }
 
 // wd14RatingTags are WD14 rating labels routed to the rating category.
@@ -37,7 +45,7 @@ type categoryResolution struct {
 //  1. dispatch hit - operator overrides the source label entirely.
 //  2. WD14 rating tag - the four canonical rating labels go to `rating`
 //     regardless of what the model declared (WD14 prints them in
-//     category 9; that would otherwise fall under copyright).
+//     category 9, which wd14Category deliberately leaves unmapped).
 //  3. profile.CategoryScheme:
 //     - wd14_numeric  : look label.categoryID up in wd14Category;
 //     unknown ids fall to general.
