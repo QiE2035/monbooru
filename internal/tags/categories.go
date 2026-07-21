@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // Tag-category vocabulary: listing, create/rename/recolor, and the

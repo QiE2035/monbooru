@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 type tagDetailData struct {
@@ -19,11 +21,18 @@ type tagDetailData struct {
 	// Canonical is the resolve target on alias rows; nil otherwise.
 	Canonical *models.Tag
 	// Aliases are the rows pointing at this tag (fan-in).
-	Aliases        []models.Tag
-	Implications   []models.Implication
-	ImpliedBy      []models.Implication
-	RecentImageIDs []int64
-	OriginKinds    map[string]string
+	Aliases          []models.Tag
+	Implications     []models.Implication
+	ImpliedBy        []models.Implication
+	RecentImageIDs   []int64
+	OriginKinds      map[string]string
+	MonloaderContrib bool
+	// BackURL points the crumb at the listing view the visitor came
+	// from; PrevURL/NextURL step through that view's tag order. All
+	// empty on a direct visit with no `back` context.
+	BackURL string
+	PrevURL string
+	NextURL string
 }
 
 func (s *Server) tagDetailHandler(w http.ResponseWriter, r *http.Request) {
@@ -43,10 +52,28 @@ func (s *Server) tagDetailHandler(w http.ResponseWriter, r *http.Request) {
 	cats, _ := s.tagSvc().ListCategories()
 
 	data := tagDetailData{
-		baseData:   s.base(r, "tags", tag.Name+" - "+s.booruName()),
-		Tag:        tag,
-		Categories: cats,
-		IsRating:   tag.CategoryName == "rating",
+		baseData:         s.base(r, "tags", tag.Name+" - "+s.booruName()),
+		Tag:              tag,
+		Categories:       cats,
+		IsRating:         tag.CategoryName == "rating",
+		MonloaderContrib: s.contribGateOpen(),
+	}
+	if backRaw := r.URL.Query().Get("back"); backRaw != "" {
+		if bq, err := url.ParseQuery(backRaw); err == nil {
+			p := tagListingParamsFrom(bq)
+			enc := p.backQS()
+			data.BackURL = "/tags?" + enc
+			prevID, nextID, err := s.tagSvc().AdjacentTags(s.tagListingFilter(p), id)
+			if err != nil {
+				logx.Warnf("adjacent tags: %v", err)
+			}
+			if prevID != nil {
+				data.PrevURL = fmt.Sprintf("/tags/%d?back=%s", *prevID, url.QueryEscape(enc))
+			}
+			if nextID != nil {
+				data.NextURL = fmt.Sprintf("/tags/%d?back=%s", *nextID, url.QueryEscape(enc))
+			}
+		}
 	}
 	labels := []string{tag.Origin}
 
@@ -72,11 +99,13 @@ func (s *Server) tagDetailHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Newest carriers by image id: ids are allocation-ordered, and the
+		// Newest carriers by image id: ids are allocation-ordered, so the
 		// id ordering streams straight off idx_image_tags_tag_image where a
 		// created_at order would temp-sort a popular tag's whole row set.
-		recentQ := `SELECT it.image_id FROM image_tags it
-			 JOIN images i ON i.id = it.image_id
+		// CROSS JOIN pins image_tags as the outer table; otherwise the
+		// planner drives from images on is_missing and temp-sorts anyway.
+		recentQ := `SELECT it.image_id FROM image_tags it INDEXED BY idx_image_tags_tag_image
+			 CROSS JOIN images i ON i.id = it.image_id
 			 WHERE it.tag_id = ? AND i.is_missing = 0`
 		recentArgs := []any{id}
 		if where, wargs := resolveCeiling(r, s.Active()).WhereOne("i.id"); where != "" {

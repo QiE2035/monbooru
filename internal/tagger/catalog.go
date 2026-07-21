@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 //go:embed catalog_default.json

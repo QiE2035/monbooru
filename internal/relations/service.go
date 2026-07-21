@@ -14,7 +14,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/db"
 )
 
 var (
@@ -35,6 +35,11 @@ var (
 	// ErrDerivativeExists is returned when adding a derivative edge
 	// would assign a derivative a second source.
 	ErrDerivativeExists = errors.New("relations: derivative already has a source")
+
+	// ErrChainTooDeep is returned when adding a version or derivative
+	// edge would make the chain / tree deeper than MaxVersionChainDepth,
+	// the horizon every capped walker (dissolve, render) trusts.
+	ErrChainTooDeep = errors.New("relations: chain would exceed the depth limit")
 
 	// ErrNotInGroup is returned by PromoteToOriginal when the named
 	// image isn't currently a member of the target dup group.
@@ -63,6 +68,8 @@ func FriendlyErrorFor(err error) *FriendlyError {
 		return &FriendlyError{Status: 409, Code: "conflict", Message: "One of the images already has a version edge; remove it first."}
 	case errors.Is(err, ErrDerivativeExists):
 		return &FriendlyError{Status: 409, Code: "conflict", Message: "The chosen derivative already has a source; remove it first."}
+	case errors.Is(err, ErrChainTooDeep):
+		return &FriendlyError{Status: 409, Code: "conflict", Message: "The chain is already at its maximum depth."}
 	case errors.Is(err, ErrNotInGroup):
 		return &FriendlyError{Status: 400, Code: "invalid_request", Message: "Image isn't a member of that group."}
 	}
@@ -150,9 +157,11 @@ func (s *Service) AddAlternate(a, b int64) error {
 	})
 }
 
-// MaxVersionChainDepth caps how far AddVersionEdge walks the existing
-// chain when checking for a cycle. Mirrors the implications walker's
-// depth budget so a pathological chain can't loop indefinitely.
+// MaxVersionChainDepth is the maximum edge depth of a version chain or
+// derivative tree, enforced by Add*Edge, and the walk budget of every
+// depth-capped traversal here and in the web renderers. Enforcing it at
+// add time is what lets those walkers trust that a capped walk covers
+// the whole component. Mirrors the implications walker's depth budget.
 const MaxVersionChainDepth = 16
 
 // chainReachesTx walks the single-parent chain in table upward from start
@@ -175,6 +184,55 @@ func chainReachesTx(tx *sql.Tx, table, parentCol, childCol string, start, target
 		cur = ancestor
 	}
 	return false, nil
+}
+
+// chainDepthTx counts the edges in table on one side of start: selecting
+// parentCol via childCol counts ancestors, the reverse counts
+// descendants. Capped at MaxVersionChainDepth like the other walks; the
+// callers only need to know whether the joined chain would exceed it.
+func chainDepthTx(tx *sql.Tx, table, selectCol, whereCol string, start int64) (int, error) {
+	cur := start
+	for i := 0; i < MaxVersionChainDepth; i++ {
+		var next int64
+		err := tx.QueryRow(`SELECT `+selectCol+` FROM `+table+` WHERE `+whereCol+` = ?`, cur).Scan(&next)
+		if errors.Is(err, sql.ErrNoRows) {
+			return i, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+		cur = next
+	}
+	return MaxVersionChainDepth, nil
+}
+
+// derivativeHeightTx returns the number of edge levels beneath start in
+// the derivative tree, capped at MaxVersionChainDepth like the chain
+// walks.
+func derivativeHeightTx(tx *sql.Tx, start int64) (int, error) {
+	frontier := []int64{start}
+	height := 0
+	for level := 0; level < MaxVersionChainDepth && len(frontier) > 0; level++ {
+		var next []int64
+		for _, parent := range frontier {
+			rows, err := tx.Query(`SELECT derivative_image_id FROM derivative_edges WHERE source_image_id = ?`, parent)
+			if err != nil {
+				return 0, err
+			}
+			ids, scanErr := db.ScanIDs(rows)
+			_ = rows.Close()
+			if scanErr != nil {
+				return 0, scanErr
+			}
+			next = append(next, ids...)
+		}
+		if len(next) == 0 {
+			break
+		}
+		height++
+		frontier = next
+	}
+	return height, nil
 }
 
 // walkToRootTx follows the single-parent chain in table upward from start
@@ -243,7 +301,20 @@ func (s *Service) AddVersionEdge(parent, child int64) error {
 		} else if reaches {
 			return ErrVersionExists
 		}
-		_, err := tx.Exec(
+		// The new edge joins parent's chain above and child's chain below;
+		// the combined depth must stay within the walkers' horizon.
+		up, err := chainDepthTx(tx, "version_edges", "parent_image_id", "child_image_id", parent)
+		if err != nil {
+			return err
+		}
+		down, err := chainDepthTx(tx, "version_edges", "child_image_id", "parent_image_id", child)
+		if err != nil {
+			return err
+		}
+		if up+down+1 > MaxVersionChainDepth {
+			return ErrChainTooDeep
+		}
+		_, err = tx.Exec(
 			`INSERT INTO version_edges (child_image_id, parent_image_id, created_at) VALUES (?, ?, ?)`,
 			child, parent, nowISO(),
 		)
@@ -294,7 +365,20 @@ func (s *Service) AddDerivativeEdge(source, derivative int64) error {
 		} else if reaches {
 			return ErrDerivativeExists
 		}
-		_, err := tx.Exec(
+		// The new edge hangs derivative's subtree under source; the joined
+		// depth must stay within the walkers' horizon.
+		up, err := chainDepthTx(tx, "derivative_edges", "source_image_id", "derivative_image_id", source)
+		if err != nil {
+			return err
+		}
+		height, err := derivativeHeightTx(tx, derivative)
+		if err != nil {
+			return err
+		}
+		if up+height+1 > MaxVersionChainDepth {
+			return ErrChainTooDeep
+		}
+		_, err = tx.Exec(
 			`INSERT INTO derivative_edges (derivative_image_id, source_image_id, created_at) VALUES (?, ?, ?)`,
 			derivative, source, nowISO(),
 		)
@@ -925,6 +1009,21 @@ func (s *Service) CopyTagsFromDuplicatesToOriginal(groupID int64) (int, error) {
 			return err
 		}
 		added, _ = res.RowsAffected()
+		// Recount usage_count for the copied tags from non-missing images,
+		// the same convention RecalcDB uses; the INSERT above doesn't touch it.
+		if _, err := tx.Exec(`
+			UPDATE tags SET usage_count = (
+				SELECT COUNT(*) FROM image_tags it
+				JOIN images i ON i.id = it.image_id
+				WHERE it.tag_id = tags.id AND i.is_missing = 0
+			) WHERE id IN (
+				SELECT it.tag_id FROM image_tags it
+				JOIN dup_group_members m ON m.image_id = it.image_id
+				WHERE m.group_id = ? AND m.image_id != ?
+			)`, groupID, original,
+		); err != nil {
+			return err
+		}
 		return nil
 	})
 	return int(added), err

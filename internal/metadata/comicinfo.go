@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // ComicInfoMaxRawXML caps the raw XML body persisted on

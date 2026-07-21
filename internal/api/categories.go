@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 type categoryResponse struct {

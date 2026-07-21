@@ -12,7 +12,7 @@ RUN VERSION=$(cat VERSION.md 2>/dev/null | tr -d '[:space:]') && \
     REPO=$(cat REPOSITORY.md 2>/dev/null | tr -d '[:space:]') && \
     DOC=$(cat DOC.md 2>/dev/null | tr -d '[:space:]') && \
     CGO_ENABLED=1 go build -tags tagger \
-    -ldflags="-s -w -X 'github.com/leqwin/monbooru/internal/web.Version=${VERSION}' -X 'github.com/leqwin/monbooru/internal/web.RepoURL=${REPO}' -X 'github.com/leqwin/monbooru/internal/web.DocURL=${DOC}' -X 'github.com/leqwin/monbooru/internal/web.Variant=cuda'" \
+    -ldflags="-s -w -X 'github.com/monbooru/monbooru/internal/web.Version=${VERSION}' -X 'github.com/monbooru/monbooru/internal/web.RepoURL=${REPO}' -X 'github.com/monbooru/monbooru/internal/web.DocURL=${DOC}' -X 'github.com/monbooru/monbooru/internal/web.Variant=cuda'" \
     -o /monbooru ./cmd/monbooru
 
 # Stage 2: runtime -- NVIDIA CUDA 12.6 + cuDNN 9 runtime (x86_64 only).

@@ -4,9 +4,9 @@ import (
 	"database/sql"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/searchkw"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/searchkw"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // fastTagTotal returns a visible-image count for an Expr by reading

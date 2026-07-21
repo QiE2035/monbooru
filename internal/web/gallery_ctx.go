@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
-	"github.com/leqwin/monbooru/internal/config"
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/gallery"
-	"github.com/leqwin/monbooru/internal/jobs"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/relations"
-	"github.com/leqwin/monbooru/internal/search"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/config"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/gallery"
+	"github.com/monbooru/monbooru/internal/jobs"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/relations"
+	"github.com/monbooru/monbooru/internal/search"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // galleryCtx holds everything per-gallery: paths, DB, tag service, degraded

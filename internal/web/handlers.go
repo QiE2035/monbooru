@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/logx"
-	meta "github.com/leqwin/monbooru/internal/metadata"
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
+	meta "github.com/monbooru/monbooru/internal/metadata"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // setFlashHeader merges a `monbooru:flash` HX-Trigger event into the

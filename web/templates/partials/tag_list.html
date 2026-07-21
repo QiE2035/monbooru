@@ -7,8 +7,14 @@
   {{$implied := impliedFromImageTags .ImageTags}}
   {{if $groups}}
     {{range $groups}}
-    <div class="tag-source-group" data-source="{{.Source}}">
+    {{$extra := sourceExtraTags . $.ImageTags $.TagSources}}
+    <div class="tag-source-group{{if .Stale}} tag-source-stale{{end}}" data-source="{{.Source}}">
+      {{if $extra}}
+      <h4 class="tag-source-title tag-source-toggle" onclick="toggleSourceExtra(this)"
+          title="Show every tag {{.Title}} covers, including ones listed under another source">{{.Title}} <span class="tag-source-extra-count">+{{len $extra}}</span></h4>
+      {{else}}
       <h4 class="tag-source-title">{{.Title}}</h4>
+      {{end}}
       <ul class="tag-list" data-source="{{.Source}}">
         {{range .Tags}}
         <li class="tag-item" data-tag-id="{{.TagID}}" data-source="{{if .IsAuto}}auto{{else}}user{{end}}" style="color:{{.Color}}">
@@ -23,6 +29,15 @@
         </li>
         {{end}}
       </ul>
+      {{if $extra}}
+      <ul class="tag-list tag-source-extra" data-source="{{.Source}}" hidden>
+        {{range $extra}}
+        <li class="tag-item tag-source-extra-entry" data-tag-id="{{.TagID}}" style="color:{{.Color}}">
+          <a href="/?q={{.Category}}:{{.TagName}}" class="tag-chip-name">{{.TagName}}</a>
+        </li>
+        {{end}}
+      </ul>
+      {{end}}
     </div>
     {{end}}
   {{else}}
@@ -64,6 +79,6 @@
 </div>
 {{end}}
 {{if .DangerZone}}
-{{template "partials/detail_danger_zone.html" (dict "ImageID" .ImageID "ImageTags" .ImageTags "HasUserTags" .HasUserTags "ImageTaggers" .ImageTaggers "ImageSources" .ImageSources "CanTransfer" .CanTransfer "CSRFToken" .CSRFToken "BackQuery" .BackQuery "BackSort" .BackSort "BackOrder" .BackOrder "BackPage" .BackPage "BackSeed" .BackSeed "Ref" .Ref "CurrentFolder" .CurrentFolder "OOB" true)}}
+{{template "partials/detail_danger_zone.html" (dict "ImageID" .ImageID "ImageTags" .ImageTags "HasUserTags" .HasUserTags "HasStaleTags" .HasStaleTags "ImageTaggers" .ImageTaggers "ImageSources" .ImageSources "CanTransfer" .CanTransfer "CSRFToken" .CSRFToken "BackQuery" .BackQuery "BackSort" .BackSort "BackOrder" .BackOrder "BackPage" .BackPage "BackSeed" .BackSeed "Ref" .Ref "CurrentFolder" .CurrentFolder "Filename" .Filename "OOB" true)}}
 {{end}}
 {{end}}

@@ -8,7 +8,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 func init() {

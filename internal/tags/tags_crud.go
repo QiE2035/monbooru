@@ -5,59 +5,97 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // Tag rows themselves: name validation, get-or-create, listing and
 // filtering, alias lookups, per-image reads, and deletion.
 
-// ValidateTagName lowercases + trims name and checks it against the
-// documented allowlist. Returns the normalised name or an
-// ErrInvalidTagName-wrapped error. Exposed so non-UI sources (the
-// auto-tagger label loader, the JSON import path) apply the same rules.
-func ValidateTagName(name string) (string, error) {
-	name = strings.TrimSpace(name)
+// tagDecorationClass is the separator/decoration set. A name built only from
+// these is rejected as content-free ("---"); an emoticon like ">_<" passes
+// because it also carries runes outside the set.
+const tagDecorationClass = "_()!@#$.~+:-"
+
+// buildTagName is the shared tag-name normalizer: lowercase, drop
+// control/format/private-use runes, trim surrounding whitespace, and fold each
+// internal whitespace run to a single `_`. Existing underscores are left alone.
+// When foldReserved is set the grammar-reserved `"` and `*` fold like
+// whitespace; the strict validator leaves them in place so it can reject them.
+func buildTagName(name string, foldReserved bool) string {
 	name = strings.ToLower(name)
-
-	if len(name) == 0 || len(name) > 200 {
-		return "", fmt.Errorf("%w: length must be 1-200 characters", ErrInvalidTagName)
-	}
-
-	if !tagNameRe.MatchString(name) {
-		return "", fmt.Errorf("%w: contains invalid characters (allowed: a-z 0-9 _ ( ) ! @ # $ . ~ + - : ? < > = ^)", ErrInvalidTagName)
-	}
-
-	// Reject names made entirely of separator-class punctuation (e.g. "---")
-	// while still admitting emoticon-only tags like ">_<", "^_^", "<3".
-	hasContent := false
+	var b strings.Builder
+	b.Grow(len(name))
+	pendingFold := false
 	for _, r := range name {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) ||
-			r == '?' || r == '<' || r == '>' || r == '=' || r == '^' {
-			hasContent = true
-			break
+		switch {
+		case unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Co):
+		case unicode.IsSpace(r) || (foldReserved && (r == '"' || r == '*')):
+			pendingFold = true
+		default:
+			if pendingFold && b.Len() > 0 {
+				b.WriteByte('_')
+			}
+			pendingFold = false
+			b.WriteRune(r)
 		}
 	}
-	if !hasContent {
+	return b.String()
+}
+
+// NormalizeTagName applies the shared normalization without folding the
+// reserved characters. The add path (via ValidateTagName), the search parser,
+// the filter-value resolvers, and the tag autocomplete all run input through it
+// so a typed query matches a stored name.
+func NormalizeTagName(name string) string { return buildTagName(name, false) }
+
+// HasTagContent reports whether name carries a rune outside the decoration
+// class, so pure separators are rejected while emoticons pass.
+func HasTagContent(name string) bool {
+	for _, r := range name {
+		if !strings.ContainsRune(tagDecorationClass, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateTagName normalizes name and checks the tag-name rules: 1-200 runes,
+// none of them the reserved `"` or `*`, and at least one content rune. Returns
+// the normalized name or an ErrInvalidTagName-wrapped error. Exposed so non-UI
+// sources (the auto-tagger label loader, the JSON import path) apply the same
+// rules.
+func ValidateTagName(name string) (string, error) {
+	name = NormalizeTagName(name)
+
+	if n := utf8.RuneCountInString(name); n == 0 || n > 200 {
+		return "", fmt.Errorf("%w: length must be 1-200 characters", ErrInvalidTagName)
+	}
+	for _, r := range name {
+		if r == '"' || r == '*' {
+			return "", fmt.Errorf(`%w: contains invalid characters (allowed: any character except whitespace, " and *)`, ErrInvalidTagName)
+		}
+	}
+	if !HasTagContent(name) {
 		return "", fmt.Errorf("%w: name must contain at least one letter, digit, or emoticon character", ErrInvalidTagName)
 	}
-
 	return name, nil
 }
 
 // NormalizeName folds an externally-sourced tag name into the stored form:
-// lowercased, disallowed-character runs collapsed to `_`, ends trimmed. Import
-// tokens pass through it so a hydrus tag like `hatsune miku` is stored as
-// `hatsune_miku` instead of being rejected by ValidateTagName. Returns "" when
-// nothing usable remains.
+// normalized like ValidateTagName but the reserved `"` / `*` fold to `_` rather
+// than being rejected, and leftover end underscores are trimmed. Import tokens
+// pass through it so a hydrus tag like `hatsune miku` is stored as
+// `hatsune_miku` instead of being rejected. Returns "" when nothing usable
+// remains.
 func NormalizeName(name string) string {
-	name = strings.ToLower(name)
-	name = disallowedTagCharsRe.ReplaceAllString(name, "_")
-	return strings.Trim(name, "_")
+	return strings.Trim(buildTagName(name, true), "_")
 }
 
 func (s *Service) GetOrCreateTag(name string, categoryID int64) (*models.Tag, error) {
@@ -119,16 +157,21 @@ func getOrCreateTagTx(tx *sql.Tx, name string, categoryID int64, origin string) 
 
 	// If this row is an alias, redirect to its canonical. MergeTags
 	// refuses to point an alias at another alias, so one hop is enough.
+	// A failed lookup (notably a dangling canonical_tag_id) must not
+	// fall through to the alias row itself - callers would key
+	// image_tags onto an alias id, which the resolver treats
+	// inconsistently.
 	if tag.IsAlias && canonicalID.Valid {
 		var canon models.Tag
 		var canonCreated string
 		if err := tx.QueryRow(
 			`SELECT id, name, category_id, usage_count, is_alias, created_at FROM tags WHERE id = ?`,
 			canonicalID.Int64,
-		).Scan(&canon.ID, &canon.Name, &canon.CategoryID, &canon.UsageCount, &canon.IsAlias, &canonCreated); err == nil {
-			canon.CreatedAt, _ = time.Parse(time.RFC3339, canonCreated)
-			return &canon, nil
+		).Scan(&canon.ID, &canon.Name, &canon.CategoryID, &canon.UsageCount, &canon.IsAlias, &canonCreated); err != nil {
+			return nil, fmt.Errorf("resolving canonical %d for alias %q: %w", canonicalID.Int64, tag.Name, err)
 		}
+		canon.CreatedAt, _ = time.Parse(time.RFC3339, canonCreated)
+		return &canon, nil
 	}
 
 	tag.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -174,6 +217,23 @@ func tagFilterWhere(filter TagFilter) (string, []any) {
 			SELECT name FROM tags WHERE is_alias = 0
 			GROUP BY name HAVING COUNT(DISTINCT category_id) >= 2)`
 	}
+	// The IN over the small stale slice bounds the scan to tags that have any
+	// stale row; the "full" count subquery then runs only for those. Implied
+	// rows never go stale, so a tag with live implied usage never reads as
+	// full - the conservative direction for a delete candidate.
+	switch filter.Stale {
+	case "has":
+		where += ` AND t.id IN (SELECT tag_id FROM image_tags WHERE stale = 1)`
+	case "full":
+		// usage_count is maintained over visible images only, so the stale
+		// count has to skip missing ones or the two sides never agree.
+		where += ` AND t.usage_count > 0 AND t.id IN (SELECT tag_id FROM image_tags WHERE stale = 1)
+			AND (SELECT COUNT(*) FROM image_tags it JOIN images mi ON mi.id = it.image_id AND mi.is_missing = 0
+			     WHERE it.tag_id = t.id AND it.stale = 1) = t.usage_count`
+	}
+	if filter.FoldedOnly {
+		where += ` AND t.id IN (SELECT old_id FROM folded_tag_pairs)`
+	}
 	switch {
 	case filter.ZeroOnly:
 		// Strictly zero-usage non-alias rows. Aliases are excluded because
@@ -188,9 +248,10 @@ func tagFilterWhere(filter TagFilter) (string, []any) {
 	return where, args
 }
 
-func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
-	where, args := tagFilterWhere(filter)
-
+// tagOrderBy builds the ORDER BY shared by ListTags and AdjacentTags.
+// The trailing id tiebreak keeps full ties deterministic so the detail
+// page's prev/next walk agrees with the rendered listing.
+func tagOrderBy(filter TagFilter) string {
 	dir := "ASC"
 	if strings.EqualFold(filter.Order, "desc") {
 		dir = "DESC"
@@ -212,13 +273,19 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 		case "usage":
 			orderBy = "t.usage_count " + dir + ", t.name ASC"
 		case "created":
-			orderBy = "t.created_at " + dir + ", t.id " + dir
+			return "t.created_at " + dir + ", t.id " + dir
 		case "last_used":
 			// SQLite sorts NULL smallest, so never-applied rows land last
 			// on the default DESC and first on ASC.
 			orderBy = "t.last_used_at " + dir + ", t.name ASC"
 		}
 	}
+	return orderBy + ", t.id ASC"
+}
+
+func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
+	where, args := tagFilterWhere(filter)
+	orderBy := tagOrderBy(filter)
 
 	var total int
 	if err := s.db.Read.QueryRow(
@@ -233,6 +300,13 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 	}
 	offset := filter.PageIndex * limit
 
+	// The folded-into subquery only runs on the folded-duplicates view; every
+	// other listing selects a constant NULL so the hot path pays nothing.
+	foldedCol := "NULL"
+	if filter.FoldedOnly {
+		foldedCol = `(SELECT t2.name FROM folded_tag_pairs fp JOIN tags t2 ON t2.id = fp.new_id WHERE fp.old_id = t.id AND fp.ambiguous = 0 LIMIT 1)`
+	}
+
 	// LEFT JOIN pulls the canonical name/category when t.is_alias = 1
 	// so the caller can render "alias -> canonical" without a second
 	// round trip.
@@ -240,13 +314,15 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 		`SELECT t.id, t.name, t.category_id, tc.name, tc.color,
 		        t.usage_count, t.is_alias, t.canonical_tag_id, t.created_at,
 		        t.origin, t.last_used_at,
+		        (SELECT COUNT(*) FROM image_tags it WHERE it.tag_id = t.id AND it.stale = 1),
+		        %s,
 		        c.name, cc.name, cc.color
 		 FROM tags t
 		 JOIN tag_categories tc ON tc.id = t.category_id
 		 LEFT JOIN tags c ON c.id = t.canonical_tag_id
 		 LEFT JOIN tag_categories cc ON cc.id = c.category_id
 		 WHERE %s ORDER BY %s LIMIT ? OFFSET ?`,
-		where, orderBy,
+		foldedCol, where, orderBy,
 	)
 	args = append(args, limit, offset)
 
@@ -263,14 +339,18 @@ func (s *Service) ListTags(filter TagFilter) ([]models.Tag, int, error) {
 		var canonicalID sql.NullInt64
 		var createdAt string
 		var lastUsed sql.NullString
+		var foldedInto sql.NullString
 		var canonName, canonCatName, canonCatColor sql.NullString
 		if err := rows.Scan(
 			&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.CategoryColor,
 			&t.UsageCount, &isAlias, &canonicalID, &createdAt,
-			&t.Origin, &lastUsed,
+			&t.Origin, &lastUsed, &t.StaleUsage, &foldedInto,
 			&canonName, &canonCatName, &canonCatColor,
 		); err != nil {
 			return nil, 0, err
+		}
+		if foldedInto.Valid {
+			t.FoldedInto = foldedInto.String
 		}
 		if lastUsed.Valid {
 			t.LastUsedAt, _ = time.Parse(time.RFC3339, lastUsed.String)
@@ -306,6 +386,14 @@ func (s *Service) ConflictsCount() (int, error) {
 	err := s.db.Read.QueryRow(`SELECT COUNT(*) FROM (
 		SELECT name FROM tags WHERE is_alias = 0
 		GROUP BY name HAVING COUNT(DISTINCT category_id) >= 2)`).Scan(&n)
+	return n, err
+}
+
+// StaleUsageCount reports how many tags carry at least one source-dropped
+// (stale) usage, for the /tags Stale filter badge.
+func (s *Service) StaleUsageCount() (int, error) {
+	var n int
+	err := s.db.Read.QueryRow(`SELECT COUNT(DISTINCT tag_id) FROM image_tags WHERE stale = 1`).Scan(&n)
 	return n, err
 }
 
@@ -395,6 +483,47 @@ func (s *Service) ListTagIDs(filter TagFilter) ([]int64, error) {
 	return db.ScanIDs(rows)
 }
 
+// AdjacentTags returns the ids neighbouring id in the filter's listing
+// order, ignoring pagination, so the tag detail page can step through
+// the same sequence the /tags table shows. A nil side means no
+// neighbour there (or id absent from the filtered set).
+func (s *Service) AdjacentTags(filter TagFilter, id int64) (prev, next *int64, err error) {
+	where, args := tagFilterWhere(filter)
+	rows, err := s.db.Read.Query(
+		`SELECT t.id FROM tags t WHERE `+where+` ORDER BY `+tagOrderBy(filter), args...,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var prevID int64
+	havePrev, found := false, false
+	for rows.Next() {
+		var cur int64
+		if err := rows.Scan(&cur); err != nil {
+			return nil, nil, err
+		}
+		if found {
+			next = &cur
+			break
+		}
+		if cur == id {
+			found = true
+			if havePrev {
+				p := prevID
+				prev = &p
+			}
+			continue
+		}
+		prevID, havePrev = cur, true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return prev, next, nil
+}
+
 func (s *Service) GetTag(id int64) (*models.Tag, error) {
 	var t models.Tag
 	var isAlias int
@@ -444,7 +573,7 @@ func (s *Service) AliasesForTagIDs(canonicalIDs []int64) (map[int64][]models.Tag
 		placeholders, args := db.InPlaceholders(batch)
 		rows, err := s.db.Read.Query(
 			`SELECT a.id, a.name, a.category_id, ac.name, ac.color,
-			        a.canonical_tag_id, a.origin,
+			        a.canonical_tag_id, a.origin, a.stale,
 			        c.name, cc.name, cc.color
 			 FROM tags a
 			 JOIN tag_categories ac ON ac.id = a.category_id
@@ -461,23 +590,85 @@ func (s *Service) AliasesForTagIDs(canonicalIDs []int64) (map[int64][]models.Tag
 		for rows.Next() {
 			var t models.Tag
 			var canonicalID int64
+			var stale int64
 			if err := rows.Scan(
 				&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.CategoryColor,
-				&canonicalID, &t.Origin,
+				&canonicalID, &t.Origin, &stale,
 				&t.CanonicalName, &t.CanonicalCategoryName, &t.CanonicalCategoryColor,
 			); err != nil {
 				return err
 			}
+			t.Stale = stale == 1
 			t.IsAlias = true
 			t.CanonicalTagID = &canonicalID
 			out[canonicalID] = append(out[canonicalID], t)
 		}
-		return nil
+		return rows.Err()
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// AliasKey identifies an alias row by category and name.
+type AliasKey struct {
+	CategoryID int64
+	Name       string
+}
+
+// SyncAliasStaleness reconciles the stale flag on a canonical tag's
+// origin-attributed alias rows against a refresh: rows absent from fresh are
+// flagged, rows listed again are cleared. The rows stay either way - the
+// operator decides what to remove. Returns how many rows were newly flagged.
+func (s *Service) SyncAliasStaleness(canonicalID int64, origin string, fresh map[AliasKey]bool) (int, error) {
+	flagged := 0
+	err := s.inWriteTx(func(tx *sql.Tx) error {
+		rows, err := tx.Query(
+			`SELECT id, category_id, name, stale FROM tags
+			 WHERE is_alias = 1 AND canonical_tag_id = ? AND origin = ?`, canonicalID, origin)
+		if err != nil {
+			return err
+		}
+		var flag, clear []int64
+		for rows.Next() {
+			var id, catID, stale int64
+			var name string
+			if err := rows.Scan(&id, &catID, &name, &stale); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			switch current := fresh[AliasKey{CategoryID: catID, Name: name}]; {
+			case !current && stale == 0:
+				flag = append(flag, id)
+			case current && stale == 1:
+				clear = append(clear, id)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		_ = rows.Close()
+		if err := setTagsStaleTx(tx, flag, 1); err != nil {
+			return err
+		}
+		if err := setTagsStaleTx(tx, clear, 0); err != nil {
+			return err
+		}
+		flagged = len(flag)
+		return nil
+	})
+	return flagged, err
+}
+
+func setTagsStaleTx(tx *sql.Tx, ids []int64, stale int) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders, args := db.InPlaceholders(ids)
+	_, err := tx.Exec(`UPDATE tags SET stale = `+strconv.Itoa(stale)+` WHERE id IN (`+placeholders+`)`, args...)
+	return err
 }
 
 // AppliedByCount is one attribution group over a tag's image_tags rows:
@@ -557,7 +748,7 @@ func (s *Service) GetImageTags(imageID int64) (string, []models.ImageTag, error)
 	rows, err := s.db.Read.Query(
 		`SELECT i.folder_path,
 		        it.image_id, it.tag_id, t.name, tc.name, tc.color, t.usage_count,
-		        it.is_auto, it.is_implied, it.confidence, it.tagger_name, it.created_at
+		        it.is_auto, it.is_implied, it.confidence, it.tagger_name, it.stale, it.created_at
 		 FROM images i
 		 LEFT JOIN image_tags it ON it.image_id = i.id
 		 LEFT JOIN tags t ON t.id = it.tag_id
@@ -585,12 +776,13 @@ func (s *Service) GetImageTags(imageID int64) (string, []models.ImageTag, error)
 			isImplied  sql.NullInt64
 			conf       sql.NullFloat64
 			tagger     sql.NullString
+			stale      sql.NullInt64
 			createdAt  sql.NullString
 		)
 		if err := rows.Scan(
 			&folderPath,
 			&imgID, &tagID, &tagName, &category, &color, &usage,
-			&isAuto, &isImplied, &conf, &tagger, &createdAt,
+			&isAuto, &isImplied, &conf, &tagger, &stale, &createdAt,
 		); err != nil {
 			return "", nil, err
 		}
@@ -611,6 +803,7 @@ func (s *Service) GetImageTags(imageID int64) (string, []models.ImageTag, error)
 			UsageCount: int(usage.Int64),
 			IsAuto:     isAuto.Int64 == 1,
 			IsImplied:  isImplied.Int64 == 1,
+			Stale:      stale.Int64 == 1,
 		}
 		if conf.Valid {
 			it.Confidence = &conf.Float64

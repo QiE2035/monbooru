@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 // MangaPageCacheTTL is the per-page idle reclaim window. Pages whose

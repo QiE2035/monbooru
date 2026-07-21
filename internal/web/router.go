@@ -17,15 +17,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/api"
-	"github.com/leqwin/monbooru/internal/config"
-	"github.com/leqwin/monbooru/internal/gallery"
-	"github.com/leqwin/monbooru/internal/jobs"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/search"
-	"github.com/leqwin/monbooru/internal/tagger"
-	webFS "github.com/leqwin/monbooru/web"
+	"github.com/monbooru/monbooru/internal/api"
+	"github.com/monbooru/monbooru/internal/config"
+	"github.com/monbooru/monbooru/internal/gallery"
+	"github.com/monbooru/monbooru/internal/jobs"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/search"
+	"github.com/monbooru/monbooru/internal/tagger"
+	webFS "github.com/monbooru/monbooru/web"
 )
 
 // groupOrdered buckets items by key in first-appearance order. skip drops
@@ -72,6 +72,7 @@ type imageTagGroup struct {
 type imageTagSourceGroup struct {
 	Source string // "user" or tagger name
 	Title  string
+	Stale  bool // the source's latest fetch no longer carried these tags
 	Tags   []models.ImageTag
 }
 
@@ -113,12 +114,15 @@ type Server struct {
 	// known state at once instead of flickering back to "checking" (and
 	// re-probing monloader) on every navigation; the poll refreshes it at
 	// most once per monloaderStatusTTL.
-	monloaderStatusMu   sync.Mutex
-	monloaderConn       string
-	monloaderVersion    string
-	monloaderPTR        bool
-	monloaderPTRSyncing bool
-	monloaderCheckedAt  time.Time
+	monloaderStatusMu      sync.Mutex
+	monloaderConn          string
+	monloaderVersion       string
+	monloaderPTR           bool
+	monloaderPTRSyncing    bool
+	monloaderContrib       bool
+	monloaderContribBanned bool
+	monloaderContribFailed int
+	monloaderCheckedAt     time.Time
 
 	// fetchStatusMu guards fetchStatus, the last-known outcome of each image's
 	// source metadata fetch. monloader runs the fetch asynchronously and calls
@@ -305,15 +309,18 @@ func contextMiddlewareBypass(path string) bool {
 		// read lock.
 		return true
 	}
-	if path == "/internal/monloader-status" || strings.HasPrefix(path, "/settings/monloader/pair") {
+	if path == "/internal/monloader-status" || path == "/internal/monloader/disconnect" || path == "/internal/monloader/reconnect" || strings.HasPrefix(path, "/settings/monloader/pair") {
 		// These poll / probe monloader over HTTP and touch no gallery context;
 		// holding the read lock across the outbound call would stall a switch.
 		return true
 	}
-	if strings.HasPrefix(path, "/images/") &&
-		(strings.HasSuffix(path, "/sources/fetch") || strings.HasSuffix(path, "/lookup")) {
-		// Same reason: the enqueue is an outbound monloader call. The handler
-		// snapshots the active gallery name under its own short lock.
+	if (strings.HasPrefix(path, "/images/") || strings.HasPrefix(path, "/tags/")) &&
+		(strings.HasSuffix(path, "/sources/fetch") || strings.HasSuffix(path, "/lookup") ||
+			strings.HasSuffix(path, "/ptr-contrib-panel") || strings.HasSuffix(path, "/ptr-contrib-dialog") ||
+			strings.HasSuffix(path, "/ptr-contrib")) {
+		// These proxy to monloader over HTTP; holding the request read lock
+		// across the outbound call would stall a gallery switch. The handlers
+		// read their rows under their own short locks.
 		return true
 	}
 	return strings.HasPrefix(path, "/static/") ||
@@ -386,6 +393,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /images/{id}/user-tags", s.removeUserTagsFromImageHandler)
 	mux.HandleFunc("DELETE /images/{id}/auto-tags", s.removeAutoTagsFromImageHandler)
 	mux.HandleFunc("DELETE /images/{id}/source-tags", s.removeSourceTagsFromImageHandler)
+	mux.HandleFunc("DELETE /images/{id}/stale-tags", s.removeStaleTagsFromImageHandler)
 	mux.HandleFunc("DELETE /images/{id}/tags/{tagID}", s.removeTagFromImage)
 	mux.HandleFunc("POST /images/{id}/favorite", s.toggleFavorite)
 	mux.HandleFunc("POST /images/{id}/inbox", s.toggleInbox)
@@ -398,6 +406,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /images/{id}/annotations/remove", s.removeAnnotation)
 	mux.HandleFunc("POST /images/{id}/sources/fetch", s.fetchSource)
 	mux.HandleFunc("POST /images/{id}/lookup", s.lookupImage)
+	mux.HandleFunc("GET /images/{id}/ptr-contrib-panel", s.ptrContribPanel)
+	mux.HandleFunc("GET /images/{id}/ptr-contrib-dialog", s.ptrContribDialog)
+	mux.HandleFunc("POST /images/{id}/ptr-contrib", s.ptrContribSend)
 	mux.HandleFunc("POST /images/{id}/note", s.setNote)
 	mux.HandleFunc("POST /images/{id}/original-source", s.setImageOriginalSource)
 	mux.HandleFunc("POST /images/{id}/commentary/set", s.setSourceCommentary)
@@ -407,6 +418,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /images/{id}/collections/set", s.setCollection)
 	mux.HandleFunc("POST /images/{id}/collections/remove", s.removeCollection)
 	mux.HandleFunc("POST /images/{id}/move", s.moveImage)
+	mux.HandleFunc("POST /images/{id}/rename", s.renameImage)
 	mux.HandleFunc("POST /images/{id}/transfer", s.transferImage)
 	mux.HandleFunc("DELETE /images/{id}/aliases/{pathID}", s.deleteAlias)
 
@@ -415,6 +427,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /tags/{id}/usage", s.tagUsagePanelHandler)
 	mux.HandleFunc("POST /tags/batch-category", s.batchTagCategoryPost)
 	mux.HandleFunc("POST /tags/batch-alias", s.batchTagAliasPost)
+	mux.HandleFunc("POST /tags/merge-folded", s.batchMergeFoldedPost)
 	mux.HandleFunc("POST /tags/batch-imply", s.batchTagImplyPost)
 	mux.HandleFunc("POST /tags/new", s.createTagPost)
 	mux.HandleFunc("POST /tags/aliases", s.createAliasPost)
@@ -423,6 +436,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /tags/{id}/category", s.changeTagCategory)
 	mux.HandleFunc("GET /tags/{id}/implications", s.implicationsDialogHandler)
 	mux.HandleFunc("POST /tags/{id}/implications", s.addImplicationPost)
+	mux.HandleFunc("POST /tags/{id}/implied-by", s.addImpliedByPost)
+	mux.HandleFunc("POST /tags/{id}/aliases", s.addTagAliasPost)
 	mux.HandleFunc("DELETE /tags/{id}/implications/{impliedID}", s.removeImplicationDelete)
 	mux.HandleFunc("POST /tags/categories", s.createCategoryPost)
 	mux.HandleFunc("POST /tags/categories/{id}/rename", s.renameCategoryPost)
@@ -454,6 +469,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/maintenance/prune-orphaned-thumbnails", s.pruneOrphanedThumbnailsPost)
 	mux.HandleFunc("POST /settings/maintenance/recalc-tags", s.recalcTagsPost)
 	mux.HandleFunc("POST /settings/maintenance/tag-conflicts", s.tagCategoryConflictsPost)
+	mux.HandleFunc("POST /settings/maintenance/find-folded-duplicates", s.findFoldedDuplicatesPost)
 	// Relocated to /relations/file-duplicates/* in v1.8; old routes
 	// stay alive as 301 redirects for one release so bookmarks survive.
 	mux.HandleFunc("GET /settings/maintenance/duplicates-list", func(w http.ResponseWriter, r *http.Request) {
@@ -515,17 +531,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /internal/autotag", s.autotagTrigger)
 	mux.HandleFunc("POST /internal/batch-delete", s.batchDelete)
 	mux.HandleFunc("POST /internal/batch-move", s.batchMove)
+	mux.HandleFunc("POST /internal/batch-rename", s.batchRename)
 	mux.HandleFunc("POST /internal/batch-transfer", s.batchTransfer)
 	mux.HandleFunc("POST /internal/batch-tag", s.batchTag)
 	mux.HandleFunc("POST /internal/batch-strip", s.batchStrip)
 	mux.HandleFunc("POST /internal/batch-inbox", s.batchInbox)
 	mux.HandleFunc("POST /internal/batch-favorite", s.batchFavorite)
 	mux.HandleFunc("POST /internal/batch-collection", s.batchCollection)
-	mux.HandleFunc("POST /internal/batch-source", s.batchSource)
 	mux.HandleFunc("POST /internal/batch-lookup", s.batchLookup)
 	mux.HandleFunc("POST /internal/delete-search", s.deleteSearchPost)
 	mux.HandleFunc("POST /tags/delete-search", s.deleteTagsSearchPost)
 	mux.HandleFunc("POST /tags/ptr-lookup-search", s.ptrLookupSearchPost)
+	mux.HandleFunc("GET /tags/{id}/ptr-contrib-panel", s.tagPtrContribPanel)
+	mux.HandleFunc("GET /tags/{id}/ptr-contrib-dialog", s.tagPtrContribDialog)
+	mux.HandleFunc("POST /tags/{id}/ptr-contrib", s.tagPtrContribSend)
 	mux.HandleFunc("POST /tags/{id}/ptr-lookup", s.ptrLookupTagPost)
 	mux.HandleFunc("POST /internal/delete-folder", s.deleteFolderPost)
 	mux.HandleFunc("GET /internal/tags/suggest", s.tagSuggest)
@@ -554,6 +573,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/monloader/pair/{id}/approve", s.monloaderPairApprove)
 	mux.HandleFunc("POST /settings/monloader/pair/{id}/deny", s.monloaderPairDeny)
 	mux.HandleFunc("POST /settings/monloader/pair/remove", s.monloaderPairRemove)
+	mux.HandleFunc("POST /internal/monloader/disconnect", s.monloaderLightDisconnect)
+	mux.HandleFunc("POST /internal/monloader/reconnect", s.monloaderLightReconnect)
 
 	api.New(s.cfg, &s.cfgMu, s.jobs, s.apiResolver, Version).Mount(mux)
 
@@ -634,7 +655,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 var Version = "dev"
 
 // RepoURL is the canonical git repository URL, set at build time via -ldflags.
-var RepoURL = "https://github.com/leqwin/monbooru"
+var RepoURL = "https://github.com/monbooru/monbooru"
 
 // DocURL is the online documentation URL, set at build time via -ldflags from
 // DOC.md.
@@ -721,6 +742,10 @@ type baseData struct {
 	// MonloaderPaired gates the footer "connected to monloader" light:
 	// it renders (and starts polling) only while a monloader pairing exists.
 	MonloaderPaired bool
+	// MonloaderUsable gates the monloader-backed actions (online lookup, find
+	// tags, source refetch): paired and the link is neither paused nor a probe
+	// found it unreachable / rejecting.
+	MonloaderUsable bool
 	// MonloaderConn / MonloaderVersion seed the light on the initial render;
 	// the poller swaps in live values. They live here so the partial resolves
 	// on every page struct, not just the poll handler's map.
@@ -730,6 +755,13 @@ type baseData struct {
 	// cached probe saw monloader report its PTR index enabled. Stale reads
 	// are fine - monloader answers 409 and the UI degrades in place.
 	MonloaderPTR bool
+	// MonloaderContrib gates every PTR contribution surface: true when the
+	// last cached probe saw monloader report a usable personal account
+	// (contrib.account && !contrib.banned). An absent contrib field on an
+	// older monloader reads as false, so contribution UI never renders
+	// against a monloader that can't serve it. Stale reads degrade in
+	// place on the 409, like the lookup gating.
+	MonloaderContrib bool
 	// MonloaderPTRSyncing caveats the lookup backend dialog while the PTR
 	// index is still building: it answers on partial data by design.
 	MonloaderPTRSyncing bool
@@ -756,10 +788,12 @@ func (b baseData) AsMap() map[string]any {
 		"BooruFavicon":        b.BooruFavicon,
 		"MonloaderURL":        b.MonloaderURL,
 		"MonloaderPaired":     b.MonloaderPaired,
+		"MonloaderUsable":     b.MonloaderUsable,
 		"MonloaderConn":       b.MonloaderConn,
 		"MonloaderVersion":    b.MonloaderVersion,
 		"MonloaderPTR":        b.MonloaderPTR,
 		"MonloaderPTRSyncing": b.MonloaderPTRSyncing,
+		"MonloaderContrib":    b.MonloaderContrib,
 		"ActiveGallery":       b.ActiveGallery,
 		"Galleries":           b.Galleries,
 		"VisibleCount":        b.VisibleCount,
@@ -802,7 +836,18 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 	if active == "" {
 		active = "explicit"
 	}
-	conn, connVer, ptrEnabled, ptrSyncing := s.monloaderStatusSeed()
+	conn, connVer, ptrEnabled, ptrSyncing, ptrContrib := s.monloaderStatusSeed()
+	if s.monloaderPaused() {
+		// A paused link renders as paused everywhere and hides the
+		// PTR-gated surfaces, regardless of the last probe's cache.
+		conn, connVer, ptrEnabled, ptrSyncing, ptrContrib = "paused", "", false, false, false
+	}
+	paired := s.pairedWith("monloader")
+	// The monloader-backed actions only make sense when the link is actually
+	// up: hide them while paused or when a probe found monloader unreachable
+	// or rejecting. A cold cache ("") stays optimistic so a fresh boot does
+	// not blank the buttons before the first status poll lands.
+	monloaderUsable := paired && conn != "paused" && conn != "down" && conn != "rejected"
 	return baseData{
 		Title:               title,
 		ActiveNav:           nav,
@@ -818,11 +863,13 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 		BooruLogo:           s.booruLogoURL(),
 		BooruFavicon:        s.booruFaviconURL(),
 		MonloaderURL:        s.monloaderWebBase(),
-		MonloaderPaired:     s.pairedWith("monloader"),
+		MonloaderPaired:     paired,
+		MonloaderUsable:     monloaderUsable,
 		MonloaderConn:       conn,
 		MonloaderVersion:    connVer,
 		MonloaderPTR:        ptrEnabled,
 		MonloaderPTRSyncing: ptrSyncing,
+		MonloaderContrib:    ptrContrib,
 		ActiveGallery:       s.activeName,
 		Galleries:           galleries,
 		VisibleCount:        visible,

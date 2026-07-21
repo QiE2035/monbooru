@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // The image DTO surface: validation caps for the operator-editable
@@ -154,6 +154,10 @@ type imageResponse struct {
 	IngestedAt     time.Time        `json:"ingested_at"`
 	ThumbnailURL   string           `json:"thumbnail_url"`
 	Tags           []imageTagJSON   `json:"tags"`
+	// TagSources is the per-tag source ledger, keyed by tag name in
+	// category:name form (bare for general). Populated on the single
+	// image GET only.
+	TagSources map[string][]string `json:"tag_sources,omitempty"`
 }
 
 // collectionJSON is one membership in imageResponse.Collections. The

@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/config"
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/relations"
-	"github.com/leqwin/monbooru/internal/tagger"
+	"github.com/monbooru/monbooru/internal/config"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/relations"
+	"github.com/monbooru/monbooru/internal/tagger"
 )
 
 // runScheduler is a background goroutine that fires once per day at

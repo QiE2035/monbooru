@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/config"
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/relations"
+	"github.com/monbooru/monbooru/internal/config"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/relations"
 )
 
 // maxPhashDistance is the documented upper bound on the Find-pairs

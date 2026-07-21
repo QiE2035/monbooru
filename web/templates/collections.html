@@ -170,6 +170,7 @@ function applyOrderMode() {
   if (fi) fi.hidden = _orderMode !== 'filename';
   var grid = document.querySelector('#collection-order-body .collection-order-grid');
   if (grid) {
+    grid.classList.toggle('filename-preview', _orderMode === 'filename');
     var tiles = Array.prototype.slice.call(grid.querySelectorAll('.collection-order-tile'));
     if (_orderMode === 'filename') {
       tiles.sort(function(a, b) {
@@ -211,7 +212,66 @@ function openCollectionOrder(btn) {
   dlg.showModal();
 }
 
+// startTileRename swaps a tile's filename overlay for an input; Enter
+// posts the rename and writes back the final name (a collision may have
+// suffixed it), Escape or leaving the field cancels.
+function startTileRename(span) {
+  if (span.querySelector('input')) return;
+  var tile = span.closest('.collection-order-tile');
+  var full = tile.dataset.filename || '';
+  var dot = full.lastIndexOf('.');
+  var stem = dot > 0 ? full.slice(0, dot) : full;
+  var input = document.createElement('input');
+  input.type = 'text';
+  input.value = stem;
+  span.textContent = '';
+  span.appendChild(input);
+  input.focus();
+  input.select();
+  var busy = false, done = false;
+  function finish(name) {
+    if (done) return;
+    done = true;
+    span.textContent = name || full;
+  }
+  input.addEventListener('keydown', function(ev) {
+    ev.stopPropagation();
+    if (ev.key === 'Escape') { ev.preventDefault(); finish(); return; }
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    var name = input.value.trim();
+    if (!name || name === stem) { finish(); return; }
+    busy = true;
+    input.disabled = true;
+    var body = new URLSearchParams();
+    body.set('name', name);
+    body.set('inline', '1');
+    fetch('/images/' + tile.dataset.id + '/rename', {
+      method: 'POST',
+      headers: {'X-CSRF-Token': getCSRFToken(), 'Content-Type': 'application/x-www-form-urlencoded'},
+      body: body
+    }).then(function(r) {
+      if (!r.ok) {
+        setFlashText(document.getElementById('collection-order-error'), 'err', 'Rename failed.');
+        finish();
+        return;
+      }
+      r.text().then(function(newName) {
+        tile.dataset.filename = newName;
+        tile.title = newName;
+        finish(newName);
+      });
+    }).catch(function() { finish(); });
+  });
+  input.addEventListener('blur', function() { if (!busy) finish(); });
+}
+
 document.getElementById('collection-order-body').addEventListener('click', function(e) {
+  var fname = e.target.closest('.collection-order-fname');
+  if (fname) {
+    if (e.target.tagName !== 'INPUT') startTileRename(fname);
+    return;
+  }
   var modeBtn = e.target.closest('[data-order-mode]');
   if (modeBtn) {
     _orderMode = modeBtn.dataset.orderMode;

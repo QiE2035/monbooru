@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // ErrJobRunning is returned when a job is already running.

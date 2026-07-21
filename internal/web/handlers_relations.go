@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/gallery"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/relations"
+	"github.com/monbooru/monbooru/internal/gallery"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/relations"
 )
 
 // relatedTile is the small struct the relations partial reads from.
@@ -627,6 +627,7 @@ func (s *Server) addRelationPost(w http.ResponseWriter, r *http.Request) {
 		writeRelationError(w, err)
 		return
 	}
+	cx.InvalidateCaches()
 	setFlashHeader(w, "Relation added.", "ok", nil)
 	writeInlineFlash(w, "ok", "Relation added.")
 }
@@ -769,6 +770,7 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", "Unknown relation type.")
 		return
 	}
+	cx.InvalidateCaches()
 	setFlashHeader(w, msg, "ok", nil)
 	writeInlineFlash(w, "ok", msg)
 }
@@ -875,6 +877,7 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) {
 		writeRelationError(w, err)
 		return
 	}
+	cx.InvalidateCaches()
 	dest := "/relations/session?a=" + strconv.FormatInt(lo, 10) + "&b=" + strconv.FormatInt(hi, 10)
 	if isHTMXRequest(r) {
 		w.Header().Set("HX-Redirect", dest)
@@ -1020,6 +1023,7 @@ func (s *Server) reverseRelationPost(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", "Unknown relation type.")
 		return
 	}
+	cx.InvalidateCaches()
 	writeInlineFlash(w, "ok", "Edge reversed.")
 }
 
@@ -1085,6 +1089,7 @@ func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	cx.InvalidateCaches()
 	redirectKind := "duplicate"
 	if kind == "alt" {
 		redirectKind = "alternate"
@@ -1171,6 +1176,7 @@ func (s *Server) dissolveGroupsPost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	cx.InvalidateCaches()
 	target := "/relations/browse?kind=" + kind
 	if isHTMXRequest(r) {
 		w.Header().Set("HX-Redirect", target)

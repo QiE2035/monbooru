@@ -25,6 +25,7 @@ var Keywords = []string{
 	"missing",
 	"tagged",
 	"autotagged",
+	"stale",
 	"folder",
 	"folderonly",
 	"generated",
@@ -76,12 +77,14 @@ var Expansions = map[string][]string{
 	"fav":        {"true", "false"},
 	"inbox":      {"true", "false"},
 	"ai":         {"a1111", "comfyui", "none", "any", "sd"},
+	"source":     {"none", "any"},
 	"width":      {">=", "<=", ">", "<", "=", ".."},
 	"height":     {">=", "<=", ">", "<", "=", ".."},
 	"date":       {">", "<", ">=", "<=", "=", ".."},
 	"missing":    {"true", "false"},
 	"tagged":     {"true", "false"},
 	"autotagged": {"true", "false"},
+	"stale":      {"any", "none"},
 	"rating":     {"general", "sensitive", "questionable", "explicit"},
 	"type":       {"image", "archive", "animated"},
 	"pages":      {">=", "<=", ">", "<", "=", ".."},
@@ -94,11 +97,15 @@ var Expansions = map[string][]string{
 	"relation":   {"duplicate", "original", "alternate", "version", "derivative", "source", "collection", "any", "none"},
 }
 
-// rangeKeys accept operator / numeric input, so their Expansions rows are
-// comparison operators rather than a closed value set to validate against.
+// rangeKeys are excluded from closed-vocabulary validation: their Expansions
+// rows are hints (comparison operators for the numeric filters, the any/none
+// shortcuts for stale and source) rather than the full set of accepted
+// values. stale: also takes an open tag name and source: an open site label,
+// so their values are never flagged as unrecognised.
 var rangeKeys = map[string]bool{
 	"width": true, "height": true, "date": true, "size": true,
 	"ratio": true, "tagcount": true, "duration": true, "pages": true,
+	"stale": true, "source": true,
 }
 
 // closedVocab is the membership-test view of Expansions for the keys
@@ -157,6 +164,7 @@ var Descriptions = map[string]string{
 	"missing":    "files gone from disk",
 	"tagged":     "has any tag",
 	"autotagged": "has auto-tag",
+	"stale":      "tags a source dropped",
 	"folder":     "folder (recursive)",
 	"folderonly": "folder (exact)",
 	"generated":  "generation recipe",
@@ -265,5 +273,9 @@ var ExpansionDescriptions = map[string]map[string]string{
 	"via": {
 		"ingest": "watcher or sync",
 		"upload": "web upload form",
+	},
+	"source": {
+		"none": "no source at all",
+		"any":  "any source",
 	},
 }

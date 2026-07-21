@@ -3,6 +3,8 @@ package search
 
 import (
 	"strings"
+
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // Expr is the interface for AST nodes.
@@ -260,15 +262,18 @@ func (p *parser) parseTerm() Expr {
 		return FilterExpr{Key: key, Val: val}
 
 	case tokTag:
-		tag := strings.ToLower(t.val)
+		tag := t.val
 		// Bare quoted tokens like `"red hair"` and `"red_hair"` are the
 		// documented multi-word tag-input form. Strip the wrapping
-		// quotes and collapse internal whitespace to underscores so
-		// they compose with `-` and `NOT` like any other tag literal.
+		// quotes so the normalizer folds the internal whitespace like
+		// any other tag literal.
 		if len(tag) >= 2 && tag[0] == '"' && tag[len(tag)-1] == '"' {
 			tag = unescapeQuoted(tag[1 : len(tag)-1])
-			tag = strings.Join(strings.Fields(tag), "_")
 		}
+		// Normalize to the stored form (lowercase, whitespace folded to
+		// `_`, control runes dropped); the reserved `*` survives so the
+		// wildcard checks below still see it.
+		tag = tags.NormalizeTagName(tag)
 		// All-asterisks tokens (`*`, `**`, `***`...) would otherwise
 		// build a `LIKE '%' ESCAPE '\'` and match every tag - a
 		// "select all" alias the documented syntax doesn't expose.

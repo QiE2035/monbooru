@@ -13,9 +13,9 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/jobs"
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/jobs"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 // Watcher watches the gallery directory for new files and ingests them.
@@ -30,8 +30,20 @@ type Watcher struct {
 	OnEvent        func(msg string) // callback for status notifications (may be nil)
 	OnChange       func()           // callback fired after any image add/remove (may be nil)
 
-	mu     sync.Mutex
-	timers map[string]*time.Timer
+	mu      sync.Mutex
+	closing bool
+	timers  map[string]*debounceTimer
+	wg      sync.WaitGroup // in-flight ingests from fired timers
+}
+
+const debounceDelay = 500 * time.Millisecond
+
+// debounceTimer pairs a pending timer with the deadline of its latest
+// arm, so a callback that fired just before a Reset can tell the re-arm
+// happened and yield to the later fire.
+type debounceTimer struct {
+	t        *time.Timer
+	deadline time.Time
 }
 
 // NewWatcher creates and initializes a filesystem watcher for one gallery.
@@ -51,7 +63,7 @@ func NewWatcher(galleryName, galleryPath, thumbnailsPath string, maxFileSizeMB i
 		maxFileSizeMB:  maxFileSizeMB,
 		db:             database,
 		jobs:           jobManager,
-		timers:         map[string]*time.Timer{},
+		timers:         map[string]*debounceTimer{},
 	}
 
 	if addErr := fsw.Add(galleryPath); addErr != nil {
@@ -107,8 +119,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			w.cancelPendingTimers()
-			_ = w.fsw.Close()
+			w.shutdown()
 			return nil
 
 		case event, ok := <-w.fsw.Events:
@@ -116,20 +127,8 @@ func (w *Watcher) Run(ctx context.Context) error {
 				return nil
 			}
 
-			// Drop events while a manual sync, move, transfer, delete, or
-			// tag job is running; each one already touches image_paths /
-			// image_tags under its own transaction, so a concurrent
-			// watcher ingest would race on the UNIQUE constraint or
-			// trip markFileMissing on the source. A transfer writes into
-			// this gallery from another gallery's request, so the copy it
-			// lands must not be re-ingested by the watcher underneath it.
-			if w.jobs != nil {
-				if st := w.jobs.Get(); st != nil && st.Running {
-					switch st.JobType {
-					case "sync", "move", "transfer", "delete", "tag":
-						continue
-					}
-				}
+			if w.jobSuppressesIngest() {
+				continue
 			}
 
 			if event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) {
@@ -203,34 +202,86 @@ func (w *Watcher) registerTree(dir string) {
 	})
 }
 
-func (w *Watcher) cancelPendingTimers() {
+// jobSuppressesIngest reports whether a running manual sync, move,
+// transfer, delete, or tag job owns the image_paths / image_tags surface
+// right now; each one already mutates them under its own transaction, so
+// a concurrent watcher ingest would race on the UNIQUE constraint or
+// trip markFileMissing on the source. A transfer writes into this
+// gallery from another gallery's request, so the copy it lands must not
+// be re-ingested by the watcher underneath it. Checked in the event loop
+// and again when a debounce timer fires, since a timer scheduled just
+// before the job started would otherwise ingest concurrently with it.
+func (w *Watcher) jobSuppressesIngest() bool {
+	if w.jobs == nil {
+		return false
+	}
+	st := w.jobs.Get()
+	if st == nil || !st.Running {
+		return false
+	}
+	switch st.JobType {
+	case "sync", "move", "transfer", "delete", "tag":
+		return true
+	}
+	return false
+}
+
+// shutdown stops pending timers and waits for any ingest whose timer
+// already fired, so the caller can close the DB the moment Run returns.
+func (w *Watcher) shutdown() {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	for path, t := range w.timers {
-		t.Stop()
+	w.closing = true
+	for path, e := range w.timers {
+		e.t.Stop()
 		delete(w.timers, path)
 	}
+	w.mu.Unlock()
+	w.wg.Wait()
+	_ = w.fsw.Close()
 }
 
 func (w *Watcher) debounce(path string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if t, ok := w.timers[path]; ok {
-		t.Reset(500 * time.Millisecond)
+	if w.closing {
+		return
+	}
+	if e, ok := w.timers[path]; ok {
+		e.deadline = time.Now().Add(debounceDelay)
+		e.t.Reset(debounceDelay)
 		return
 	}
 
-	w.timers[path] = time.AfterFunc(500*time.Millisecond, func() {
-		w.mu.Lock()
-		delete(w.timers, path)
-		w.mu.Unlock()
+	e := &debounceTimer{deadline: time.Now().Add(debounceDelay)}
+	e.t = time.AfterFunc(debounceDelay, func() { w.onDebounceFired(path, e) })
+	w.timers[path] = e
+}
 
-		w.ingestFile(path)
-	})
+// onDebounceFired runs when a debounce timer expires. A Reset that won
+// the race against this callback pushed the deadline forward - that
+// re-armed fire ingests the settled bytes, so this one yields instead of
+// ingesting a file still being written. The WaitGroup registration
+// happens under the lock so shutdown's wait can't miss an ingest that
+// already passed the closing check.
+func (w *Watcher) onDebounceFired(path string, e *debounceTimer) {
+	w.mu.Lock()
+	if w.closing || w.timers[path] != e || time.Now().Before(e.deadline) {
+		w.mu.Unlock()
+		return
+	}
+	delete(w.timers, path)
+	w.wg.Add(1)
+	w.mu.Unlock()
+	defer w.wg.Done()
+
+	w.ingestFile(path)
 }
 
 func (w *Watcher) ingestFile(path string) {
+	if w.jobSuppressesIngest() {
+		return
+	}
 	ft, err := DetectFileType(path)
 	if err != nil {
 		return

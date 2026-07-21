@@ -198,14 +198,36 @@ function detailBack() {
   else window.location.href = '/';
 }
 
-// Detail-page prev/next image. Falls through when no nav arrow is present.
-function navDetailImage(direction) {
-  var sel = direction === 'prev'
-    ? '.nav-arrow[title^="Previous image"]'
-    : '.nav-arrow[title^="Next image"]';
-  var a = document.querySelector(sel);
+// Detail-page prev/next, image or tag depending on noun. Falls through
+// when no nav arrow is present.
+function navDetailArrow(direction, noun) {
+  var word = direction === 'prev' ? 'Previous' : 'Next';
+  var a = document.querySelector('.nav-arrow[title^="' + word + ' ' + noun + '"]');
   if (a && a.href) { window.location.href = a.href; return true; }
   return false;
+}
+
+// Reveal or hide a source group's cross-attributed tags (ones this source
+// also applied but that list under another group).
+function toggleSourceExtra(header) {
+  var extra = header.parentElement.querySelector('.tag-source-extra');
+  if (!extra) return;
+  extra.hidden = !extra.hidden;
+  header.classList.toggle('tag-source-open', !extra.hidden);
+}
+
+// Remove a relation row and, when it empties its origin subgroup, drop the
+// now-empty list and its "added by" subheading too.
+function pruneRelationRow(btn) {
+  var li = btn.closest('li');
+  if (!li) return;
+  var ul = li.parentElement;
+  li.remove();
+  if (ul && ul.classList.contains('tag-list') && !ul.querySelector('li')) {
+    var sub = ul.previousElementSibling;
+    if (sub && sub.classList.contains('relation-origin-sub')) sub.remove();
+    ul.remove();
+  }
 }
 
 // Cycle the rating ceiling level. delta=+1 picks a stricter level (less
@@ -276,6 +298,7 @@ function focusFirstSelector(selectors) {
 // Surface helpers; keep the keydown router readable.
 function isGalleryPage()    { return !!document.querySelector('.thumb-grid, #gallery-grid'); }
 function isDetailPage()     { return !!document.getElementById('detail-page'); }
+function isTagDetailPage()  { return !!document.getElementById('tag-detail-page'); }
 function isTagsPage()       { return !!document.getElementById('tags-page'); }
 function isCategoriesPage() { return !!document.getElementById('categories-page'); }
 function isSettingsPage()   { return !!document.getElementById('settings-page'); }
@@ -873,8 +896,8 @@ document.addEventListener('keydown', function(e) {
   }
 
   // 'L' → monloader lookup: batch dialog on a selection, or the detail
-  // page's Lookup button (which opens the backend pop-in when the PTR is
-  // enabled). Both gate on the paired-only control being rendered.
+  // page's Find-tags-online button (which confirms, then runs the online
+  // lookup). Both gate on the paired-only control being rendered.
   if (e.key === 'L') {
     if (batchBarVisible()) {
       if (document.querySelector('#batch-bar .monloader-accent')) {
@@ -943,6 +966,12 @@ document.addEventListener('keydown', function(e) {
     detailBack();
     return;
   }
+  if (e.key === 'Backspace' && isTagDetailPage()) {
+    var tdBack = document.getElementById('tag-detail-page');
+    e.preventDefault();
+    window.location.href = (tdBack && tdBack.dataset.escBack) || '/tags';
+    return;
+  }
 
   // o → open focused card (gallery) or open original in new tab (detail).
   if (e.key === 'o') {
@@ -966,7 +995,10 @@ document.addEventListener('keydown', function(e) {
     }
     if (isDetailPage()) {
       var dir = (e.key === 'l' || e.key === 'j') ? 'next' : 'prev';
-      if (navDetailImage(dir)) { e.preventDefault(); return; }
+      if (navDetailArrow(dir, 'image')) { e.preventDefault(); return; }
+    } else if (isTagDetailPage()) {
+      var tdir = (e.key === 'l' || e.key === 'j') ? 'next' : 'prev';
+      if (navDetailArrow(tdir, 'tag')) { e.preventDefault(); return; }
     } else if (isGalleryPage()) {
       var dx = 0, dy = 0;
       if (e.key === 'h') dx = -1;
@@ -985,8 +1017,13 @@ document.addEventListener('keydown', function(e) {
       return;
     }
     if (isDetailPage()) {
-      if (e.key === 'ArrowLeft') { if (navDetailImage('prev')) { e.preventDefault(); } return; }
-      if (e.key === 'ArrowRight') { if (navDetailImage('next')) { e.preventDefault(); } return; }
+      if (e.key === 'ArrowLeft') { if (navDetailArrow('prev', 'image')) { e.preventDefault(); } return; }
+      if (e.key === 'ArrowRight') { if (navDetailArrow('next', 'image')) { e.preventDefault(); } return; }
+      return;
+    }
+    if (isTagDetailPage()) {
+      if (e.key === 'ArrowLeft') { if (navDetailArrow('prev', 'tag')) { e.preventDefault(); } return; }
+      if (e.key === 'ArrowRight') { if (navDetailArrow('next', 'tag')) { e.preventDefault(); } return; }
       return;
     }
     if (isGalleryPage()) {
@@ -1057,6 +1094,83 @@ function closeDialogFromSaveEvent(e) {
 }
 document.body.addEventListener('tagger-saved', closeDialogFromSaveEvent);
 document.body.addEventListener('token-saved', closeDialogFromSaveEvent);
+
+// PTR contribute dialogs (image tags and tag relations). The dialog is
+// injected fresh on every open, so all wiring is delegated. Both dialogs
+// share the same skeleton; the form's data-verb/data-noun carry the only
+// wording difference, and each hunk's optional [data-reason] field
+// reveals while that hunk has ticked rows.
+function ptrContribRefresh(form) {
+  var counts = [];
+  form.querySelectorAll('.ptr-hunk-wrap').forEach(function(w) {
+    var boxes = w.querySelectorAll('.ptr-row input[type="checkbox"]');
+    var n = w.querySelectorAll('.ptr-row input[type="checkbox"]:checked').length;
+    counts.push(n);
+    var live = w.querySelector('.ptr-live');
+    if (live) live.textContent = n + '/' + boxes.length;
+    var box = w.querySelector('[data-reason]');
+    if (box) {
+      var was = box.hidden;
+      box.hidden = n === 0;
+      var input = box.querySelector('input');
+      if (input) input.required = n > 0;
+      if (n > 0 && was && input) input.focus();
+    }
+  });
+  var adds = counts[0] || 0, pets = counts[1] || 0;
+  var noun = form.dataset.noun, parts = [];
+  if (adds) parts.push(form.dataset.verb + ' ' + adds + ' ' + noun + (adds > 1 ? 's' : ''));
+  if (pets) parts.push('petition the removal of ' + pets + ' ' + noun + (pets > 1 ? 's' : ''));
+  var summary = form.querySelector('#ptr-contrib-summary');
+  if (summary) summary.textContent = parts.length ? 'asks to ' + parts.join(' and ') + '.' : 'nothing selected yet.';
+  var send = form.querySelector('#ptr-contrib-send');
+  if (send) send.disabled = (adds + pets) === 0;
+}
+
+document.body.addEventListener('change', function(e) {
+  var form = e.target.closest && e.target.closest('#ptr-contrib-form');
+  if (form) ptrContribRefresh(form);
+});
+
+document.addEventListener('click', function(e) {
+  if (!e.target.closest) return;
+  var form = e.target.closest('#ptr-contrib-form');
+  if (!form) return;
+  var bulk = e.target.closest('[data-bulk]');
+  if (bulk) {
+    bulk.closest('.ptr-hunk-wrap').querySelectorAll('label.ptr-row input[type="checkbox"]').forEach(function(c) {
+      c.checked = bulk.dataset.bulk === 'all';
+    });
+    ptrContribRefresh(form);
+    return;
+  }
+  // Shift-click paints the contiguous range with the anchor row's state.
+  // The handler keys on the label because the activation click a label
+  // forwards to its control drops the modifier flags.
+  var row = e.target.closest('label.ptr-row');
+  if (!row) return;
+  var wrap = row.closest('.ptr-hunk-wrap');
+  var rows = Array.prototype.slice.call(wrap.querySelectorAll('label.ptr-row'));
+  var i = rows.indexOf(row);
+  var last = wrap.ptrContribAnchor;
+  if (e.shiftKey && last !== undefined && last !== i) {
+    e.preventDefault();
+    var state = rows[last].querySelector('input[type="checkbox"]').checked;
+    var from = Math.min(last, i), to = Math.max(last, i);
+    for (var k = from; k <= to; k++) {
+      rows[k].querySelector('input[type="checkbox"]').checked = state;
+    }
+    ptrContribRefresh(form);
+  }
+  wrap.ptrContribAnchor = i;
+});
+
+// Closing the contribute dialog re-fetches the panel behind it, so a
+// summary the send just outdated never lingers. Captured because the
+// dialog close event does not bubble.
+document.addEventListener('close', function(e) {
+  if (e.target.id === 'ptr-contrib-dialog') htmx.trigger(document.body, 'ptr-contrib-closed');
+}, true);
 
 // Per-tagger Galleries dialog helpers. taggerGalAllToggle disables and
 // force-checks the per-gallery boxes when "All galleries" is on so the
@@ -2183,7 +2297,7 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
     if (finishedAt) _lastReloadedFinishedAt = finishedAt;
     if (document.getElementById('gallery-grid') || document.getElementById('tags-page') || document.getElementById('tag-detail-page') || document.getElementById('collections-page')) {
       var pendingDone = el.querySelector('.job-done');
-      if (pendingDone) stashActionFlash(pendingDone.textContent || '', 'ok');
+      if (pendingDone) stashActionFlash(escapeHTML(pendingDone.textContent || ''), 'ok');
       window.location.reload();
       return;
     }
@@ -2211,7 +2325,7 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
     var grid = document.getElementById('gallery-grid');
     if (grid) {
       var doneEl = el.querySelector('.job-done');
-      if (doneEl) showActionFlash(doneEl.textContent || '', 'ok');
+      if (doneEl) showActionFlash(escapeHTML(doneEl.textContent || ''), 'ok');
       refreshGalleryGrid();
     }
 
@@ -2541,7 +2655,6 @@ initSuggestDismiss('source-suggest', 'source-site-input');
 initSuggestDismiss('batch-series-search-suggest', 'batch-series-search-input');
 initSuggestDismiss('batch-series-selected-suggest', 'batch-series-selected-input');
 initSuggestDismiss('batch-collection-suggest', 'batch-collection-input');
-initSuggestDismiss('batch-source-suggest', 'batch-source-input');
 initSuggestDismiss('collection-suggest', 'collection-name-input');
 initSuggestDismiss('collection-rename-suggest', 'collection-rename-input');
 initSuggestDismiss('alias-create-suggest', 'alias-create-canon');

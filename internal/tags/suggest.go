@@ -4,8 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // Tag suggestion and the related-images panel.
@@ -135,7 +135,7 @@ func SuggestUsageRanked(database *db.DB, prefix, categoryName string, requireUsa
 // categoryName, when non-empty, scopes both passes to that category;
 // requireUsage adds `usage_count > 0`.
 func suggestUsageRanked(database *db.DB, prefix, categoryName string, requireUsage bool, limit int) ([]models.Tag, error) {
-	prefix = db.EscapeLike(prefix)
+	prefix = db.EscapeLike(NormalizeTagName(prefix))
 	baseSQL := `SELECT t.id, t.name, tc.name, tc.color, t.usage_count
 	            FROM tags t
 	            JOIN tag_categories tc ON tc.id = t.category_id
@@ -212,7 +212,7 @@ func (s *Service) SuggestTagsInCategory(prefix, categoryName string, limit int) 
 		 WHERE tc.name = ? AND t.name LIKE ? ESCAPE '\' AND t.is_alias = 0
 		 ORDER BY t.usage_count DESC
 		 LIMIT ?`,
-		categoryName, db.EscapeLike(prefix)+"%", limit,
+		categoryName, db.EscapeLike(NormalizeTagName(prefix))+"%", limit,
 	)
 	if err != nil {
 		return nil, err

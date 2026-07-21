@@ -4,10 +4,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // MaxImplicationDepth bounds transitive closure walks. Real-world booru
@@ -27,7 +28,7 @@ func (s *Service) ListImplications(parentID int64) ([]models.Implication, error)
 		`SELECT ti.parent_tag_id, ti.implied_tag_id,
 		        p.name, pc.name, pc.color,
 		        i.name, ic.name, ic.color,
-		        ti.created_at, ti.origin
+		        ti.created_at, ti.origin, ti.stale
 		 FROM tag_implications ti
 		 JOIN tags p ON p.id = ti.parent_tag_id
 		 JOIN tag_categories pc ON pc.id = p.category_id
@@ -44,15 +45,17 @@ func (s *Service) ListImplications(parentID int64) ([]models.Implication, error)
 	for rows.Next() {
 		var im models.Implication
 		var created string
+		var stale int64
 		if err := rows.Scan(
 			&im.ParentID, &im.ImpliedID,
 			&im.ParentName, &im.ParentCategoryName, &im.ParentCategoryColor,
 			&im.ImpliedName, &im.ImpliedCategoryName, &im.ImpliedCategoryColor,
-			&created, &im.Origin,
+			&created, &im.Origin, &stale,
 		); err != nil {
 			return nil, err
 		}
 		im.CreatedAt, _ = time.Parse(time.RFC3339, created)
+		im.Stale = stale == 1
 		out = append(out, im)
 	}
 	return out, rows.Err()
@@ -64,7 +67,7 @@ func (s *Service) ImpliedBy(tagID int64) ([]models.Implication, error) {
 	rows, err := s.db.Read.Query(
 		`SELECT ti.parent_tag_id, ti.implied_tag_id,
 		        p.name, pc.name, pc.color,
-		        ti.created_at, ti.origin
+		        ti.created_at, ti.origin, ti.stale
 		 FROM tag_implications ti
 		 JOIN tags p ON p.id = ti.parent_tag_id
 		 JOIN tag_categories pc ON pc.id = p.category_id
@@ -79,17 +82,75 @@ func (s *Service) ImpliedBy(tagID int64) ([]models.Implication, error) {
 	for rows.Next() {
 		var im models.Implication
 		var created string
+		var stale int64
 		if err := rows.Scan(
 			&im.ParentID, &im.ImpliedID,
 			&im.ParentName, &im.ParentCategoryName, &im.ParentCategoryColor,
-			&created, &im.Origin,
+			&created, &im.Origin, &stale,
 		); err != nil {
 			return nil, err
 		}
 		im.CreatedAt, _ = time.Parse(time.RFC3339, created)
+		im.Stale = stale == 1
 		out = append(out, im)
 	}
 	return out, rows.Err()
+}
+
+// SyncImplicationStaleness mirrors SyncAliasStaleness for a parent's
+// origin-attributed implication edges, keyed by implied tag id: edges
+// absent from fresh are flagged stale, edges listed again are cleared.
+// Returns how many edges were newly flagged.
+func (s *Service) SyncImplicationStaleness(parentID int64, origin string, fresh map[int64]bool) (int, error) {
+	flagged := 0
+	err := s.inWriteTx(func(tx *sql.Tx) error {
+		rows, err := tx.Query(
+			`SELECT implied_tag_id, stale FROM tag_implications
+			 WHERE parent_tag_id = ? AND origin = ?`, parentID, origin)
+		if err != nil {
+			return err
+		}
+		var flag, clear []int64
+		for rows.Next() {
+			var impliedID, stale int64
+			if err := rows.Scan(&impliedID, &stale); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			switch current := fresh[impliedID]; {
+			case !current && stale == 0:
+				flag = append(flag, impliedID)
+			case current && stale == 1:
+				clear = append(clear, impliedID)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		_ = rows.Close()
+		if err := setImplicationsStaleTx(tx, parentID, flag, 1); err != nil {
+			return err
+		}
+		if err := setImplicationsStaleTx(tx, parentID, clear, 0); err != nil {
+			return err
+		}
+		flagged = len(flag)
+		return nil
+	})
+	return flagged, err
+}
+
+func setImplicationsStaleTx(tx *sql.Tx, parentID int64, impliedIDs []int64, stale int) error {
+	if len(impliedIDs) == 0 {
+		return nil
+	}
+	placeholders, args := db.InPlaceholders(impliedIDs)
+	_, err := tx.Exec(
+		`UPDATE tag_implications SET stale = `+strconv.Itoa(stale)+
+			` WHERE parent_tag_id = `+strconv.FormatInt(parentID, 10)+` AND implied_tag_id IN (`+placeholders+`)`,
+		args...)
+	return err
 }
 
 // ImplicationsForParents returns the direct implications keyed by
@@ -127,7 +188,7 @@ func (s *Service) ImplicationsForParents(parentIDs []int64) (map[int64][]models.
 			}
 			out[im.ParentID] = append(out[im.ParentID], im)
 		}
-		return nil
+		return rows.Err()
 	})
 	if err != nil {
 		return nil, err

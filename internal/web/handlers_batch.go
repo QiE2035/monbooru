@@ -1,20 +1,22 @@
 package web
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/gallery"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/search"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/gallery"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/search"
 )
 
 // resolveBatchScope returns the image-id slice the caller's batch
@@ -299,6 +301,73 @@ func (s *Server) runBatchMove(ids []int64, targetFolder string) {
 	s.jobs.Complete(summary)
 }
 
+// batchRename kicks off a background `move` job that renames the selected
+// image files to a numbered sequence off the given base name. It rides the
+// move job type for the same watcher suppression as batchMove.
+func (s *Server) batchRename(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	base := strings.TrimSpace(r.FormValue("name"))
+	if base == "" || base != filepath.Base(base) || base == "." || base == ".." {
+		w.WriteHeader(http.StatusBadRequest)
+		writeInlineFlash(w, "err", "Base name required (no path separators).")
+		return
+	}
+
+	s.startScopedJob(w, r, "batch-rename", models.JobTypeMove, func(ids []int64) {
+		s.runBatchRename(ids, base)
+	})
+}
+
+// runBatchRename renames the scope one image at a time to base + a
+// zero-padded position (base01.ext, base02.ext, ...), padding to the
+// scope's width with a two-digit floor. Collisions still auto-suffix
+// inside RenameImage; per-image failures are logged and counted like
+// batch moves.
+func (s *Server) runBatchRename(ids []int64, base string) {
+	ctx := s.jobs.Context()
+	total := len(ids)
+	renamed, failed := 0, 0
+	cancelled := false
+	width := len(strconv.Itoa(total))
+	if width < 2 {
+		width = 2
+	}
+
+	s.jobs.Update(0, total, "renaming…")
+
+	for i, id := range ids {
+		if ctx.Err() != nil {
+			cancelled = true
+			break
+		}
+		name := fmt.Sprintf("%s%0*d", base, width, i+1)
+		if _, err := gallery.RenameImage(s.db(), s.galleryPath(), id, name); err != nil {
+			logx.Warnf("batch rename %d: %v", id, err)
+			failed++
+			continue
+		}
+		renamed++
+		if (i+1)%25 == 0 || i == total-1 {
+			s.jobs.Update(i+1, total, "renaming…")
+		}
+	}
+
+	if renamed > 0 {
+		s.Active().InvalidateCaches()
+	}
+	if cancelled {
+		s.jobs.Complete(fmt.Sprintf("rename cancelled (%d/%d renamed)", renamed, total))
+		return
+	}
+	summary := fmt.Sprintf("Renamed %d image(s).", renamed)
+	if failed > 0 {
+		summary = fmt.Sprintf("Renamed %d image(s), %d failed.", renamed, failed)
+	}
+	s.jobs.Complete(summary)
+}
+
 // batchTag kicks off a background `tag` job that adds (op=add) or removes
 // (op=remove) a tag set across either every image in the current search
 // (scope=search) or just the checked ids (scope=selection). The dialogs in
@@ -463,10 +532,10 @@ func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
 	}
 	mode := strings.TrimSpace(r.FormValue("mode"))
 	switch mode {
-	case "user", "auto", "all", "source", "source-all":
+	case "user", "auto", "all", "source", "source-all", "stale":
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "mode must be user, auto, all, source, or source-all")
+		writeInlineFlash(w, "err", "mode must be user, auto, all, source, source-all, or stale")
 		return
 	}
 	// filterName narrows mode=auto to one tagger's output and mode=source to
@@ -494,17 +563,18 @@ func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
 // the DELETE so the post-pass RecalcIDs is scoped to the tags that
 // actually changed (mirrors runBulkDelete). modePredicate narrows the strip:
 //
-//	user       → AND is_auto = 0 AND (tagger_name IS NULL OR '')
+//	user       → AND is_auto = 0 AND is_implied = 0 AND (tagger_name IS NULL OR '')
 //	auto       → AND is_auto = 1              (+ AND tagger_name = ? when scoped)
 //	source     → AND is_auto = 0 AND tagger_name = ?
 //	source-all → AND is_auto = 0 AND tagger_name <> '' AND tagger_name IS NOT NULL
+//	stale      → AND stale = 1
 //	all        → (no extra predicate)
 func (s *Server) runBatchStrip(ids []int64, mode, filterName string) {
 	var modePredicate, label, summary string
 	var extraArgs []any
 	switch mode {
 	case "user":
-		modePredicate = ` AND is_auto = 0 AND (tagger_name IS NULL OR tagger_name = '')`
+		modePredicate = ` AND is_auto = 0 AND is_implied = 0 AND (tagger_name IS NULL OR tagger_name = '')`
 		label, summary = "removing user tags", "Removed user tags from"
 	case "auto":
 		modePredicate = ` AND is_auto = 1`
@@ -524,6 +594,9 @@ func (s *Server) runBatchStrip(ids []int64, mode, filterName string) {
 	case "source-all":
 		modePredicate = ` AND is_auto = 0 AND tagger_name <> '' AND tagger_name IS NOT NULL`
 		label, summary = "removing source tags", "Removed source tags from"
+	case "stale":
+		modePredicate = ` AND stale = 1`
+		label, summary = "removing stale tags", "Removed stale tags from"
 	case "all":
 		modePredicate = ``
 		label, summary = "removing tags", "Removed all tags from"
@@ -533,11 +606,17 @@ func (s *Server) runBatchStrip(ids []int64, mode, filterName string) {
 	total := len(ids)
 	s.jobs.Update(0, total, fmt.Sprintf("%s…", label))
 	done := 0
+	removed := int64(0)
 	affectedTags, processed, cancelled, err := s.tagSvc().ChunkedDeleteWithTagRecalc(
 		ctx, ids, modePredicate, extraArgs,
 		func(tx *sql.Tx, placeholders string, args []any) error {
-			_, err := tx.Exec(
+			res, err := tx.Exec(
 				`DELETE FROM image_tags WHERE image_id IN (`+placeholders+`)`+modePredicate, args...)
+			if err != nil {
+				return err
+			}
+			n, err := res.RowsAffected()
+			removed += n
 			return err
 		},
 		func(chunk []int64) {
@@ -558,7 +637,8 @@ func (s *Server) runBatchStrip(ids []int64, mode, filterName string) {
 	}
 	s.Active().InvalidateCaches()
 
-	s.finishJob(nil, cancelled, fmt.Sprintf("%s cancelled (%d/%d processed)", label, processed, total), fmt.Sprintf("%s %d image(s).", summary, processed))
+	s.finishJob(nil, cancelled, fmt.Sprintf("%s cancelled (%d/%d processed)", label, processed, total),
+		fmt.Sprintf("%s %d image(s) (%d row change(s)).", summary, processed, removed))
 }
 
 // batchInbox kicks off a background `tag` job that flips is_inbox across
@@ -752,127 +832,13 @@ func (s *Server) runBatchCollection(ids []int64, label, mode string) {
 	s.jobs.Complete(fmt.Sprintf("Added %d image(s) to collection.", processed))
 }
 
-// batchSource adds or removes a source label across every image in
-// `scope=search` (q + sort + order) or every checked id in
-// `scope=selection`. `mode=add` (default) files each image under the label as
-// an extra origin (its url left blank, editable per-image); `mode=remove`
-// drops it. One indexed write per 500-row chunk, mirroring batchCollection.
-func (s *Server) batchSource(w http.ResponseWriter, r *http.Request) {
-	if !parseFormOK(w, r) {
-		return
-	}
-	siteVal := strings.TrimSpace(r.FormValue("site"))
-	if siteVal == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Source label required.")
-		return
-	}
-	if len(siteVal) > maxExternalSourceLen {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Source label too long.")
-		return
-	}
-	mode := r.FormValue("mode")
-	if mode != "remove" {
-		mode = "add"
-	}
-
-	s.startScopedJob(w, r, "batch-source", models.JobTypeTag, func(ids []int64) {
-		s.runBatchSource(ids, siteVal, mode)
-	})
-}
-
-// runBatchSource adds or removes the site label across the id list in chunks,
-// keeping images.source / url pointed at each row's primary (oldest) origin.
-func (s *Server) runBatchSource(ids []int64, label, mode string) {
-	ctx := s.jobs.Context()
-	const chunkSize = 500
-	total := len(ids)
-	remove := mode == "remove"
-	verb := "adding source"
-	if remove {
-		verb = "removing source"
-	}
-
-	processed, cancelled, err := chunkedJob(ctx, s.jobs, ids, chunkSize, verb, func(chunk []int64) error {
-		placeholders, chunkArgs := db.InPlaceholders(chunk)
-		labelArgs := append([]any{label}, chunkArgs...)
-		tx, err := s.db().Write.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if remove {
-			if _, err := tx.Exec(
-				`DELETE FROM image_sources WHERE site = ? AND image_id IN (`+placeholders+`)`,
-				labelArgs...,
-			); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(
-				`DELETE FROM image_annotations WHERE site = ? AND image_id IN (`+placeholders+`) AND manual = 0`,
-				labelArgs...,
-			); err != nil {
-				return err
-			}
-			// Rebind the mirror for rows whose primary was the removed label.
-			if _, err := tx.Exec(
-				`UPDATE images SET
-				   source = COALESCE((SELECT site FROM image_sources s WHERE s.image_id = images.id ORDER BY s.rowid LIMIT 1), ''),
-				   url    = COALESCE((SELECT url FROM image_sources s WHERE s.image_id = images.id ORDER BY s.rowid LIMIT 1), '')
-				 WHERE source = ? COLLATE NOCASE AND id IN (`+placeholders+`)`,
-				labelArgs...,
-			); err != nil {
-				return err
-			}
-			return tx.Commit()
-		}
-		if _, err := tx.Exec(
-			`INSERT INTO image_sources (image_id, site, post_id, url)
-			 SELECT id, ?, '', '' FROM images WHERE id IN (`+placeholders+`)
-			 ON CONFLICT(image_id, site, post_id) DO NOTHING`,
-			labelArgs...,
-		); err != nil {
-			return err
-		}
-		// Rebind the mirror to each row's oldest origin, exactly like the
-		// remove branch: a blanket source-column fill could pair the new
-		// label with an older unlabeled row's url.
-		if _, err := tx.Exec(
-			`UPDATE images SET
-			   source = COALESCE((SELECT site FROM image_sources s WHERE s.image_id = images.id ORDER BY s.rowid LIMIT 1), ''),
-			   url    = COALESCE((SELECT url FROM image_sources s WHERE s.image_id = images.id ORDER BY s.rowid LIMIT 1), '')
-			 WHERE id IN (`+placeholders+`)`,
-			chunkArgs...,
-		); err != nil {
-			return err
-		}
-		return tx.Commit()
-	})
-	if err != nil {
-		s.jobs.Fail(err.Error())
-		return
-	}
-
-	s.Active().InvalidateCaches()
-
-	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("source cancelled (%d/%d processed)", processed, total))
-		return
-	}
-	if remove {
-		s.jobs.Complete(fmt.Sprintf("Removed source from %d image(s).", processed))
-		return
-	}
-	s.jobs.Complete(fmt.Sprintf("Added source to %d image(s).", processed))
-}
-
 // batchLookup fans a monloader tag lookup across `scope=search` or
-// `scope=selection`. mode=source re-fetches each image's primary source url;
-// mode=all enqueues a hash lookup per image (md5 hashed on demand plus the
-// stored sha256, monloader runs whichever backends it has enabled); mode=ptr
-// and mode=booru target one backend, so a large scope can stay on the free
-// local index or spare it. The action is hidden unless monloader is paired.
+// `scope=selection`. mode=source re-fetches every declared source of each
+// image; mode=all enqueues a hash lookup per image (md5 hashed on demand plus
+// the stored sha256, monloader runs whichever backends it has enabled);
+// mode=ptr and mode=booru target one backend, so a large scope can stay on the
+// free local index or spare it. The action is hidden unless monloader is
+// paired.
 func (s *Server) batchLookup(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
@@ -893,37 +859,44 @@ func (s *Server) batchLookup(w http.ResponseWriter, r *http.Request) {
 // a source url, a readable file to md5 - are skipped and counted.
 func (s *Server) runBatchLookup(mode string, ids []int64) {
 	ctx := s.jobs.Context()
-	galleryName := s.activeName
+	// Snapshot the gallery once so every row read and enqueue in this job
+	// stays consistent even if a switch is attempted concurrently.
+	cx := s.Active()
+	if cx == nil {
+		s.jobs.Fail("no active gallery")
+		return
+	}
+	galleryName := cx.Name
 	enqueued, skipped := 0, 0
 	for _, id := range ids {
 		if ctx.Err() != nil {
 			s.jobs.Complete(fmt.Sprintf("Lookup cancelled after queueing %d.", enqueued))
 			return
 		}
-		var url, source, canonPath, sha string
-		if err := s.db().Read.QueryRow(
-			`SELECT url, source, canonical_path, sha256 FROM images WHERE id = ?`, id,
-		).Scan(&url, &source, &canonPath, &sha); err != nil {
+		var canonPath, sha string
+		if err := cx.DB.Read.QueryRow(
+			`SELECT canonical_path, sha256 FROM images WHERE id = ?`, id,
+		).Scan(&canonPath, &sha); err != nil {
 			continue
 		}
 		var err error
 		switch mode {
 		case "source":
-			switch {
-			case strings.TrimSpace(url) != "":
-				err = s.EnqueueMetadataFetch(ctx, id, galleryName, url)
-			case strings.EqualFold(strings.TrimSpace(source), "ptr"):
-				// The url-less "ptr" primary is fetched by hash instead of a
-				// page refetch; a disabled PTR skips the row rather than
-				// killing the whole job.
-				if err = s.EnqueueHashLookup(ctx, id, galleryName, "ptr", "", sha); errors.Is(err, errPTRUnavailable) {
+			queued, qErr := s.enqueueSourceFetches(ctx, cx, id, sha)
+			if qErr != nil {
+				if isMonloaderStatusErr(qErr) {
 					skipped++
 					continue
 				}
-			default:
-				skipped++
-				continue
+				s.jobs.Fail("monloader unreachable: " + qErr.Error())
+				return
 			}
+			if queued == 0 {
+				skipped++
+			} else {
+				enqueued += queued
+			}
+			continue
 		case "ptr":
 			if err = s.EnqueueHashLookup(ctx, id, galleryName, "ptr", "", sha); errors.Is(err, errPTRUnavailable) {
 				skipped++
@@ -942,6 +915,12 @@ func (s *Server) runBatchLookup(mode string, ids []int64) {
 			err = s.EnqueueHashLookup(ctx, id, galleryName, backend, md5, sha)
 		}
 		if err != nil {
+			// A per-request refusal (a bad hash) skips the row; only a
+			// transport failure means monloader is truly unreachable.
+			if isMonloaderStatusErr(err) {
+				skipped++
+				continue
+			}
 			s.jobs.Fail("monloader unreachable: " + err.Error())
 			return
 		}
@@ -955,6 +934,60 @@ func (s *Server) runBatchLookup(mode string, ids []int64) {
 	default:
 		s.jobs.Complete(fmt.Sprintf("Queued %d hash lookup(s) on monloader; skipped %d unreadable file(s).", enqueued, skipped))
 	}
+}
+
+// enqueueSourceFetches queues one metadata refetch per declared origin url of
+// the image, plus a PTR hash lookup for a url-less "ptr" origin. Duplicate
+// urls collapse to one fetch; a PTR-unavailable answer skips that origin
+// rather than failing the batch. Returns how many jobs were queued.
+func (s *Server) enqueueSourceFetches(ctx context.Context, cx *galleryCtx, id int64, sha string) (int, error) {
+	galleryName := cx.Name
+	rows, err := cx.DB.Read.Query(
+		`SELECT site, url FROM image_sources WHERE image_id = ? ORDER BY rowid`, id)
+	if err != nil {
+		return 0, nil
+	}
+	type origin struct{ site, url string }
+	var origins []origin
+	for rows.Next() {
+		var o origin
+		if rows.Scan(&o.site, &o.url) == nil {
+			origins = append(origins, o)
+		}
+	}
+	_ = rows.Close()
+
+	queued := 0
+	seenURL := map[string]bool{}
+	ptrDone := false
+	for _, o := range origins {
+		switch {
+		case strings.TrimSpace(o.url) != "":
+			u := strings.TrimSpace(o.url)
+			if seenURL[u] {
+				continue
+			}
+			seenURL[u] = true
+			if err := s.EnqueueMetadataFetch(ctx, id, galleryName, u); err != nil {
+				return queued, err
+			}
+		case strings.EqualFold(strings.TrimSpace(o.site), "ptr"):
+			if ptrDone {
+				continue
+			}
+			ptrDone = true
+			if err := s.EnqueueHashLookup(ctx, id, galleryName, "ptr", "", sha); err != nil {
+				if errors.Is(err, errPTRUnavailable) {
+					continue
+				}
+				return queued, err
+			}
+		default:
+			continue
+		}
+		queued++
+	}
+	return queued, nil
 }
 
 func (s *Server) deleteFolderPost(w http.ResponseWriter, r *http.Request) {

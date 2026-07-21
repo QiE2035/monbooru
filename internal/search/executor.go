@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // Query holds a parsed query and pagination parameters.
@@ -122,6 +122,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	// Order=asc is excluded because the bound is the recent end of the
 	// id range; under ASC the user wants the oldest matches, whose ids
 	// sit below the bound and would be filtered out entirely.
+	idBounded := false
 	if len(driverLegs) >= 2 &&
 		(q.Sort == "" || q.Sort == "newest") &&
 		q.Order != "asc" &&
@@ -141,6 +142,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 					for i := range driverLegs {
 						driverLegs[i].idBound = bound
 					}
+					idBounded = true
 				}
 				// ErrNoRows: library smaller than offset; full INTERSECT
 				// is already cheap, no bound needed.
@@ -240,6 +242,11 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	// the page-1 wall, capped at adjacencyCacheMaxIDs and read off the
 	// read pool. Pages > 1 still skip the fan because the cache either
 	// settled on page 1's request or the operator jumped past it.
+	//
+	// The recent-id bound is deliberately not fanned: it holds only for
+	// the rows this page needs, so the fan would cache the recent slice
+	// as if it were the whole match set and every later page would serve
+	// off a truncated list with a shrunken Total.
 	if q.CacheKey != "" && total > 0 && total <= adjacencyCacheMaxIDs {
 		if len(images) == total {
 			ids := make([]int64, len(images))
@@ -247,7 +254,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 				ids[i] = img.ID
 			}
 			AdjacencyCacheSet(q.CacheKey, ids)
-		} else if page == 1 && AdjacencyCacheTryAcquireFan(q.CacheKey) {
+		} else if page == 1 && !idBounded && AdjacencyCacheTryAcquireFan(q.CacheKey) {
 			defer AdjacencyCacheReleaseFan(q.CacheKey)
 			ids := fetchSortedMatchIDs(database, indexHint, where, args, orderClause, orderArgs, total)
 			if len(ids) > 0 {
@@ -620,11 +627,11 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		bucketHi = bucketLo + randomAdjacencyBucketSize - 1
 		bucketed = true
 	case (q.Sort == "" || q.Sort == "newest" || q.Sort == "filesize") &&
-		len(collectAndedTags(q.Expr)) >= 3:
-		// Sparse multi-AND adjacency: bound the cursor's outer walk to a
-		// fixed id window so a sparse intersection late in the result
-		// set can't force a multi-second scan. prev/next stops at the
-		// bucket boundary when the bound has neighbours to give; the
+		expensiveAdjacencyTags(q.Expr):
+		// Wildcard or multi-AND adjacency: bound the cursor's outer walk
+		// to a fixed id window so a broad or sparse match set can't force
+		// a multi-second temp-sort. prev/next stops at the bucket
+		// boundary when the bound has neighbours to give; the
 		// smallCandidate gate above lifts the cap when matches are
 		// scattered too thin to bucket usefully.
 		bucketLo = (currentID / andAdjacencyBucketSize) * andAdjacencyBucketSize
@@ -915,6 +922,7 @@ const suggestContextCap = 1000
 // suggested tag), not the global one. categoryName, when set, restricts
 // suggestions to that category.
 func SuggestTagsWithFilter(database *db.DB, expr Expr, prefix, categoryName string, limit int) ([]models.Tag, error) {
+	prefix = tags.NormalizeTagName(prefix)
 	// No preceding context: the combination count collapses to the tag's
 	// global usage count, so skip the image_tags ⋈ images join entirely.
 	if expr == nil {
@@ -928,8 +936,8 @@ func SuggestTagsWithFilter(database *db.DB, expr Expr, prefix, categoryName stri
 	// substring matches until limit is hit. Each pass first picks up to
 	// suggestCandidateCap tags by global usage_count, then computes the
 	// combination count only for that bounded set.
-	prefixPat := prefix + "%"
-	substrPat := "%" + prefix + "%"
+	prefixPat := db.EscapeLike(prefix) + "%"
+	substrPat := "%" + db.EscapeLike(prefix) + "%"
 
 	// ctx materialises the context-image set once via the same WHERE
 	// clause Execute uses; each candidate then probes image_tags filtered
@@ -947,7 +955,7 @@ func SuggestTagsWithFilter(database *db.DB, expr Expr, prefix, categoryName stri
 	                SELECT id, category_id, usage_count
 	                FROM tags
 	                WHERE is_alias = 0
-	                  AND name LIKE ?
+	                  AND name LIKE ? ESCAPE '\'
 	                  %s
 	                ORDER BY usage_count DESC
 	                LIMIT ?
@@ -978,7 +986,7 @@ func SuggestTagsWithFilter(database *db.DB, expr Expr, prefix, categoryName stri
 		qargs = append(qargs, pat)
 		qargs = append(qargs, catArgs...)
 		if nameNotLike != "" {
-			extra = extra + " AND name NOT LIKE ?"
+			extra = extra + ` AND name NOT LIKE ? ESCAPE '\'`
 			qargs = append(qargs, nameNotLike)
 		}
 		qargs = append(qargs, suggestCandidateCap)

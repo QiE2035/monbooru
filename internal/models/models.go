@@ -155,6 +155,9 @@ type Tag struct {
 	CreatedAt              time.Time
 	Origin                 string    // creation provenance label; "" on rows predating the column
 	LastUsedAt             time.Time // zero when never applied to an image
+	Stale                  bool      // alias rows: the PTR's latest refresh no longer listed this spelling
+	StaleUsage             int       // count of this tag's image_tags rows a source dropped (stale=1)
+	FoldedInto             string    // corrected spelling on the folded-duplicates view; "" otherwise
 }
 
 type TagCategory struct {
@@ -175,6 +178,7 @@ type ImageTag struct {
 	IsImplied  bool // row was fanned out from a parent tag's implication graph
 	Confidence *float64
 	TaggerName string // source auto-tagger when IsAuto; empty for manual tags
+	Stale      bool   // the attributed source's latest fetch no longer carried this tag
 	CreatedAt  time.Time
 }
 
@@ -191,6 +195,7 @@ type Implication struct {
 	ImpliedCategoryColor string
 	CreatedAt            time.Time
 	Origin               string // creation provenance label; "" on edges predating the column
+	Stale                bool   // the PTR's latest refresh no longer carried the edge
 }
 
 // SDParam is a single parsed key-value pair from A1111 generation parameters.
@@ -285,6 +290,7 @@ const (
 	JobTypeFreeMemory    = "free-memory"
 	JobTypePhash         = "phash"
 	JobTypeRelations     = "relations"
+	JobTypeFold          = "fold"
 )
 
 type JobState struct {

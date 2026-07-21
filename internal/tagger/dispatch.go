@@ -3,7 +3,7 @@
 package tagger
 
 import (
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 // DispatchTable maps a model's emitted source label to a runtime decision

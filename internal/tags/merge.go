@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // ErrAliasNameInUse is returned when CreateAlias is asked to bind a name
@@ -108,6 +108,14 @@ func (s *Service) CreateAliasFrom(name string, categoryID, canonicalID int64, or
 		if err := repointImplicationsToCanonicalTx(tx, existingID, canonicalID); err != nil {
 			return err
 		}
+		// Repoint aliases that pointed at existingID so they don't dead-end
+		// on it now that it resolves onward to canonicalID.
+		if _, err := tx.Exec(
+			`UPDATE tags SET canonical_tag_id = ? WHERE canonical_tag_id = ?`,
+			canonicalID, existingID,
+		); err != nil {
+			return err
+		}
 		resultID = existingID
 		return nil
 	})
@@ -191,6 +199,15 @@ func (s *Service) MergeTags(aliasID, canonicalID int64) error {
 		); err != nil {
 			return fmt.Errorf("merge promote canonical rows: %w", err)
 		}
+		// Carry the alias rows' source ledger onto the canonical before
+		// step 3's delete fires the ledger-cleanup trigger on them.
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO image_tag_sources (image_id, tag_id, source, created_at)
+			 SELECT image_id, ?, source, created_at FROM image_tag_sources WHERE tag_id = ?`,
+			canonicalID, aliasID,
+		); err != nil {
+			return fmt.Errorf("merge move tag sources: %w", err)
+		}
 		// Step 3: drop every alias-keyed row.
 		if _, err := tx.Exec(
 			`DELETE FROM image_tags WHERE tag_id = ?`, aliasID,
@@ -201,6 +218,15 @@ func (s *Service) MergeTags(aliasID, canonicalID int64) error {
 		// (b) Mark aliasID as an alias of canonicalID.
 		if _, err := tx.Exec(
 			`UPDATE tags SET is_alias = 1, canonical_tag_id = ?, usage_count = 0 WHERE id = ?`,
+			canonicalID, aliasID,
+		); err != nil {
+			return err
+		}
+
+		// Aliases that pointed at aliasID would now dead-end on it (the
+		// resolver only follows one hop); repoint them onto canonicalID.
+		if _, err := tx.Exec(
+			`UPDATE tags SET canonical_tag_id = ? WHERE canonical_tag_id = ?`,
 			canonicalID, aliasID,
 		); err != nil {
 			return err

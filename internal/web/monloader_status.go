@@ -13,7 +13,12 @@ import (
 
 // monloaderClient is the only outbound HTTP client monbooru uses, and it is
 // only ever pointed at the configured monloader (SPECIFICATIONS.md 14.5).
-var monloaderClient = &http.Client{Timeout: 4 * time.Second}
+// Per-call deadlines belong to the request contexts (probes 4-5 s,
+// contribution previews 8 s, sends 10 s); the client timeout is only a
+// backstop for the callers that pass an unbounded context, and must stay
+// above the largest per-call deadline or it aborts a send monloader may
+// still commit.
+var monloaderClient = &http.Client{Timeout: 15 * time.Second}
 
 // notifyMonloaderTeardown asks monloader to drop its side of the pairing and
 // returns an error when it could not be reached, so the caller can tell the
@@ -36,7 +41,7 @@ func (s *Server) notifyMonloaderTeardown(baseURL, token string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("monloader returned %s", resp.Status)
+		return monloaderStatusError{resp.Status}
 	}
 	return nil
 }
@@ -66,7 +71,7 @@ func (s *Server) EnqueueMetadataFetch(ctx context.Context, imageID int64, galler
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("monloader returned %s", resp.Status)
+		return monloaderStatusError{resp.Status}
 	}
 	return nil
 }
@@ -74,6 +79,19 @@ func (s *Server) EnqueueMetadataFetch(ctx context.Context, imageID int64, galler
 // errPTRUnavailable marks a lookup monloader refused because its PTR backend
 // is off - a stale capability read, not a connectivity failure.
 var errPTRUnavailable = errors.New("the PTR lookup is unavailable on monloader")
+
+// monloaderStatusError is a non-2xx reply to one request (a bad url, a
+// malformed hash) - the request was refused, not a sign monloader is down, so
+// a batch can skip the row instead of aborting.
+type monloaderStatusError struct{ status string }
+
+func (e monloaderStatusError) Error() string { return "monloader returned " + e.status }
+
+// isMonloaderStatusErr reports whether err is a per-request status refusal.
+func isMonloaderStatusErr(err error) bool {
+	var se monloaderStatusError
+	return errors.As(err, &se)
+}
 
 // EnqueueHashLookup asks monloader to find tags for image imageID by file
 // hash - backend "booru" walks the opted-in sites' md5 search, backend "ptr"
@@ -105,7 +123,7 @@ func (s *Server) EnqueueHashLookup(ctx context.Context, imageID int64, gallery, 
 		return errPTRUnavailable
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("monloader returned %s", resp.Status)
+		return monloaderStatusError{resp.Status}
 	}
 	return nil
 }
@@ -117,6 +135,10 @@ type ptrTagInfo struct {
 	Ideal        string   `json:"ideal"`
 	Aliases      []string `json:"aliases"`
 	Implications []string `json:"implications"`
+	// ImpliedBy arrives only from monloaders that serve the reverse
+	// implication edge; older ones leave it empty and the dialog simply
+	// offers no implied-by petitions.
+	ImpliedBy []string `json:"implied_by"`
 }
 
 // ptrTagLookup asks monloader's PTR index for the alias / implication graph
@@ -158,10 +180,15 @@ func (s *Server) ptrTagLookup(ctx context.Context, names []string) (map[string]p
 
 // monloaderAPIBase is the address monbooru calls monloader at: the operator's
 // configured override when set, otherwise the address discovered during pairing
-// (the source the request came from, stored on the paired token).
+// (the source the request came from, stored on the paired token). A paused
+// pairing reports no base, so every outbound call short-circuits as if
+// unconfigured while the credentials stay on disk.
 func (s *Server) monloaderAPIBase() string {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
+	if s.cfg.Monloader.Paused {
+		return ""
+	}
 	if u := strings.TrimSpace(s.cfg.Monloader.APIURL); u != "" {
 		return u
 	}
@@ -173,26 +200,35 @@ func (s *Server) monloaderAPIBase() string {
 	return ""
 }
 
+// monloaderPaused reports whether the operator has suspended the monloader
+// link from the footer light. Read directly from config so the light can tell
+// a paused pairing apart from an unconfigured or unreachable one.
+func (s *Server) monloaderPaused() bool {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg.Monloader.Paused
+}
+
 // checkMonloader probes the configured monloader for the footer light: /health
 // for up/down + version, then one authed read to surface a revoked token. The
 // PTR capability rides the same probe: the lookup buttons only need a
 // fresh-ish answer, and monloader 409s a lookup sent on a stale "enabled".
-func (s *Server) checkMonloader(ctx context.Context) (status, version string, ptrEnabled, ptrSyncing bool) {
+func (s *Server) checkMonloader(ctx context.Context) (status, version string, ptrEnabled, ptrSyncing, ptrContrib bool, contribFailed int, contribBanned bool) {
 	base := strings.TrimRight(s.monloaderAPIBase(), "/")
 	if base == "" {
-		return "", "", false, false
+		return "", "", false, false, false, 0, false
 	}
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/health", nil)
 	if err != nil {
-		return "down", "", false, false
+		return "down", "", false, false, false, 0, false
 	}
 	hresp, err := monloaderClient.Do(hreq)
 	if err != nil {
-		return "down", "", false, false
+		return "down", "", false, false, false, 0, false
 	}
 	defer func() { _ = hresp.Body.Close() }()
 	if hresp.StatusCode != http.StatusOK {
-		return "down", "", false, false
+		return "down", "", false, false, false, 0, false
 	}
 	var h struct {
 		Version string `json:"version"`
@@ -207,7 +243,7 @@ func (s *Server) checkMonloader(ctx context.Context) (status, version string, pt
 		if qresp, qerr := monloaderClient.Do(qreq); qerr == nil {
 			defer func() { _ = qresp.Body.Close() }()
 			if qresp.StatusCode == http.StatusUnauthorized || qresp.StatusCode == http.StatusForbidden {
-				return "rejected", h.Version, false, false
+				return "rejected", h.Version, false, false, false, 0, false
 			}
 		}
 		preq, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/ptr/status", nil)
@@ -216,14 +252,28 @@ func (s *Server) checkMonloader(ctx context.Context) (status, version string, pt
 			var p struct {
 				Enabled bool   `json:"enabled"`
 				State   string `json:"state"`
+				Contrib *struct {
+					Account bool `json:"account"`
+					Banned  bool `json:"banned"`
+					Failed  int  `json:"failed"`
+				} `json:"contrib"`
 			}
 			_ = json.NewDecoder(presp.Body).Decode(&p)
 			_ = presp.Body.Close()
 			ptrEnabled = presp.StatusCode == http.StatusOK && p.Enabled
 			ptrSyncing = ptrEnabled && p.State == "syncing"
+			// An absent contrib field (older monloader) leaves this
+			// false, so contribution UI stays off against it. Gated on a
+			// fully-synced index so nothing is contributed against a
+			// stale copy.
+			ptrContrib = ptrEnabled && p.State == "ready" && p.Contrib != nil && p.Contrib.Account && !p.Contrib.Banned
+			contribBanned = ptrEnabled && p.Contrib != nil && p.Contrib.Banned
+			if p.Contrib != nil {
+				contribFailed = p.Contrib.Failed
+			}
 		}
 	}
-	return "ok", h.Version, ptrEnabled, ptrSyncing
+	return "ok", h.Version, ptrEnabled, ptrSyncing, ptrContrib, contribFailed, contribBanned
 }
 
 // monloaderReachable reports whether monloader answers a health probe at base.
@@ -257,10 +307,27 @@ const monloaderStatusTTL = 10 * time.Second
 // than "checking". A cold cache yields "", which the partial renders as
 // "checking monloader". The PTR flag seeds the lookup buttons the same way: a
 // cold cache hides them until the light's first poll lands.
-func (s *Server) monloaderStatusSeed() (status, version string, ptrEnabled, ptrSyncing bool) {
+func (s *Server) monloaderStatusSeed() (status, version string, ptrEnabled, ptrSyncing, ptrContrib bool) {
 	s.monloaderStatusMu.Lock()
 	defer s.monloaderStatusMu.Unlock()
-	return s.monloaderConn, s.monloaderVersion, s.monloaderPTR, s.monloaderPTRSyncing
+	return s.monloaderConn, s.monloaderVersion, s.monloaderPTR, s.monloaderPTRSyncing, s.monloaderContrib
+}
+
+// monloaderContribBannedSeed reports whether the paired account is banned, so
+// the panel hint can say so rather than telling the operator to make an
+// account (which a ban forbids).
+func (s *Server) monloaderContribBannedSeed() bool {
+	s.monloaderStatusMu.Lock()
+	defer s.monloaderStatusMu.Unlock()
+	return s.monloaderContribBanned
+}
+
+// monloaderContribFailedSeed is the cached count of contribution uploads
+// stuck failed on monloader, for the panels' warning line.
+func (s *Server) monloaderContribFailedSeed() int {
+	s.monloaderStatusMu.Lock()
+	defer s.monloaderStatusMu.Unlock()
+	return s.monloaderContribFailed
 }
 
 // monloaderStatusCached probes monloader at most once per monloaderStatusTTL and
@@ -276,10 +343,10 @@ func (s *Server) monloaderStatusCached(ctx context.Context) (status, version str
 	}
 	s.monloaderStatusMu.Unlock()
 
-	status, version, ptrEnabled, ptrSyncing := s.checkMonloader(ctx)
+	status, version, ptrEnabled, ptrSyncing, ptrContrib, contribFailed, contribBanned := s.checkMonloader(ctx)
 
 	s.monloaderStatusMu.Lock()
-	s.monloaderConn, s.monloaderVersion, s.monloaderPTR, s.monloaderPTRSyncing, s.monloaderCheckedAt = status, version, ptrEnabled, ptrSyncing, time.Now()
+	s.monloaderConn, s.monloaderVersion, s.monloaderPTR, s.monloaderPTRSyncing, s.monloaderContrib, s.monloaderContribFailed, s.monloaderContribBanned, s.monloaderCheckedAt = status, version, ptrEnabled, ptrSyncing, ptrContrib, contribFailed, contribBanned, time.Now()
 	s.monloaderStatusMu.Unlock()
 	return status, version
 }
@@ -290,12 +357,28 @@ func (s *Server) monloaderStatusHandler(w http.ResponseWriter, r *http.Request) 
 		_, _ = w.Write([]byte(`<span id="monloader-light"></span>`))
 		return
 	}
+	if s.monloaderPaused() {
+		// Paused: keep the light and its poll alive so the operator can
+		// resume, but never probe.
+		s.renderMonloaderLight(w, r, "paused", "")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	_, _, ptrBefore, syncBefore, contribBefore := s.monloaderStatusSeed()
+	failedBefore := s.monloaderContribFailedSeed()
 	status, version := s.monloaderStatusCached(ctx)
+	// A flag flip re-mounts the surfaces that seeded from the stale
+	// value - a fresh session's contribution panels render empty until
+	// this first poll lands, and they listen for the change.
+	_, _, ptrAfter, syncAfter, contribAfter := s.monloaderStatusSeed()
+	if ptrBefore != ptrAfter || syncBefore != syncAfter || contribBefore != contribAfter || failedBefore != s.monloaderContribFailedSeed() {
+		w.Header().Set("HX-Trigger", "monloader-status-changed")
+	}
 	s.renderTemplate(w, "partials/monloader_light.html", map[string]any{
 		"MonloaderConn":    status,
 		"MonloaderVersion": version,
 		"MonloaderURL":     s.monloaderWebBase(),
+		"CSRFToken":        s.csrfToken(sessionFromContext(r.Context())),
 	})
 }

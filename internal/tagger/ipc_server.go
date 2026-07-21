@@ -10,7 +10,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 // RunWorkerServer dials the parent's Unix-domain socket and

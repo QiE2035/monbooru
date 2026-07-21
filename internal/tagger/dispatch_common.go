@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 // dispatchSchemaVersion is the only schema version the dispatch loader

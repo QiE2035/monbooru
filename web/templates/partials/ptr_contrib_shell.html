@@ -1,0 +1,104 @@
+{{/* Shared chrome for the two PTR contribute dialogs. The wrappers in
+     ptr_contrib_dialog.html / tag_ptr_contrib_dialog.html pass the
+     per-surface config; Pairs selects the row rendering (single tag vs
+     A -> B relation). main.js drives both through the same delegated
+     handlers, keyed on the ids and data attributes emitted here. */}}
+
+{{/* Row name: a single colored tag, or an A -> B / A => B pair. */}}
+{{define "ptr_contrib_name"}}{{if .Pairs}}<span class="ptr-name"><span{{if .Row.AColor}} style="color:{{.Row.AColor}}"{{end}}>{{.Row.A}}</span> {{if eq .Row.Kind "sibling"}}-&gt;{{else}}=&gt;{{end}} <span{{if .Row.BColor}} style="color:{{.Row.BColor}}"{{end}}>{{.Row.B}}</span></span>{{else}}<span class="ptr-name"{{if .Row.Color}} style="color:{{.Row.Color}}"{{end}}>{{.Row.Tag}}</span>{{end}}{{end}}
+
+{{/* Context row: a fixed Note, else the row's own note (only the
+     ineligible lists reach that branch, and their row types carry a
+     Note field). */}}
+{{define "ptr_contrib_ctx_row"}}<div class="ptr-row ptr-row-ctx"><span class="ptr-gut"></span><span class="ptr-mark"></span>{{template "ptr_contrib_name" (dict "Pairs" .Pairs "Row" .Row)}}<span class="ptr-note">{{if .Note}}{{.Note}}{{else if .Row.Note}}{{.Row.Note}}{{else}}not eligible{{end}}</span></div>{{end}}
+
+{{define "ptr_contrib_shell"}}
+<dialog id="ptr-contrib-dialog" class="ptr-contrib-dialog">
+  <form id="ptr-contrib-form" data-verb="{{.Verb}}" data-noun="{{.Noun}}"
+        hx-post="{{.PostURL}}"
+        hx-target="#ptr-contrib-flash" hx-swap="innerHTML"
+        hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'>
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    {{if .SHA256}}<input type="hidden" name="sha256" value="{{.SHA256}}">{{end}}
+    <header class="ptr-contrib-dialog-head">
+      <strong>contribute to the Public Tag Repository</strong>
+      <span class="mono-small">{{.HeadNote}}</span>
+    </header>
+    {{if .Provisional}}<p class="field-hint">the PTR copy is still syncing; the diff may overstate what is new.</p>{{end}}
+
+    <div class="ptr-hunk-wrap">
+      <div class="ptr-hunk-scroll">
+        <div class="ptr-hunk"><span>@@ {{.Verb}} &#183; <span class="ptr-live">0/{{len .Actionable}}</span> @@</span><span class="ptr-hunk-note">{{.ActionNote}}</span>
+          <span class="ptr-hunk-tools">
+            <button type="button" class="btn-link-accent" data-bulk="all">[all]</button>
+            <button type="button" class="btn-link-accent" data-bulk="none">[none]</button>
+          </span>
+        </div>
+        {{range .Actionable}}
+        <label class="ptr-row ptr-row-add">
+          <input type="checkbox" name="{{$.PickName}}" value="{{if $.Pairs}}{{.Value}}{{else}}{{.Tag}}{{end}}"><span class="ptr-gut"></span><span class="ptr-mark"></span>{{template "ptr_contrib_name" (dict "Pairs" $.Pairs "Row" .)}}<span class="ptr-note{{if not $.Pairs}}{{if .PTRDiffers}} ptr-note-under{{end}}{{end}}">{{if $.Pairs}}{{.Rel}}{{else if .PTRDiffers}}PTR spelling: {{.PTR}}{{end}}</span>
+        </label>
+        {{end}}
+        {{if not .Actionable}}<p class="field-hint">nothing new to {{.Verb}}.</p>{{end}}
+      </div>
+      {{if .HandledCount}}
+      <details class="ptr-fold">
+        <summary>{{.HandledCount}} {{.Noun}}{{if gt .HandledCount 1}}s{{end}} already handled</summary>
+        <div class="ptr-fold-scroll">
+          {{range .HandledGroups}}{{$note := .Note}}{{range .Rows}}{{template "ptr_contrib_ctx_row" (dict "Pairs" $.Pairs "Row" . "Note" $note)}}{{end}}{{end}}
+        </div>
+      </details>
+      {{end}}
+      {{if .Ineligible}}
+      <details class="ptr-fold">
+        <summary>{{len .Ineligible}} can't be contributed</summary>
+        <div class="ptr-fold-scroll">
+          {{range .Ineligible}}{{template "ptr_contrib_ctx_row" (dict "Pairs" $.Pairs "Row" . "Note" "")}}{{end}}
+        </div>
+      </details>
+      {{end}}
+      {{if .Pairs}}
+      <div class="field ptr-suggest-reason" data-reason hidden>
+        <label>reason - applies to every ticked suggestion (required)</label>
+        <input type="text" name="suggest_reason" list="ptr-suggest-reasons" placeholder="canonical relation">
+        <datalist id="ptr-suggest-reasons">
+          <option value="misspelling"><option value="alternate spelling"><option value="canonical relation"><option value="character to series">
+        </datalist>
+      </div>
+      {{end}}
+    </div>
+
+    <div class="ptr-hunk-wrap">
+      <div class="ptr-hunk-scroll ptr-hunk-short">
+        <div class="ptr-hunk"><span>@@ petition removal &#183; <span class="ptr-live">0/{{len .Petitionable}}</span> @@</span><span class="ptr-hunk-note">needs a janitor</span>
+          <span class="ptr-hunk-tools">
+            <button type="button" class="btn-link-accent" data-bulk="none">[none]</button>
+          </span>
+        </div>
+        {{range .Petitionable}}
+        <label class="ptr-row ptr-row-pet">
+          <input type="checkbox" name="{{$.PetitionName}}" value="{{if $.Pairs}}{{.Value}}{{else}}{{.Tag}}{{end}}"><span class="ptr-gut"></span><span class="ptr-mark"></span>{{template "ptr_contrib_name" (dict "Pairs" $.Pairs "Row" .)}}<span class="ptr-note">{{if $.Pairs}}{{.Rel}}{{end}}</span>
+        </label>
+        {{end}}
+        {{range .Petitioned}}{{template "ptr_contrib_ctx_row" (dict "Pairs" $.Pairs "Row" . "Note" "already petitioned")}}{{end}}
+        {{if and (not .Petitionable) (not .Petitioned)}}<p class="field-hint">the PTR has nothing extra for this {{.Subject}}.</p>{{end}}
+      </div>
+      <p class="field-hint">tick only what is factually wrong; sent petition cannot be withdrawn.</p>
+      <div class="field ptr-petition-reason" data-reason hidden>
+        <label>reason - applies to every ticked petition (required)</label>
+        <input type="text" name="petition_reason" list="ptr-petition-reasons" placeholder="{{.PetitionPlaceholder}}">
+        <datalist id="ptr-petition-reasons">
+          {{range .PetitionOptions}}<option value="{{.}}">{{end}}
+        </datalist>
+      </div>
+    </div>
+
+    <div id="ptr-contrib-flash"></div>
+    <div class="dialog-actions">
+      <p id="ptr-contrib-summary" class="ptr-contrib-summary">nothing selected yet.</p>
+      <button type="button" onclick="document.getElementById('ptr-contrib-dialog').close()">cancel</button>
+      <button type="submit" id="ptr-contrib-send" disabled>send to PTR</button>
+    </div>
+  </form>
+</dialog>
+{{end}}

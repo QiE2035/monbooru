@@ -1,0 +1,38 @@
+{{define "partials/ptr_contrib_panel.html"}}
+<div class="ptr-contrib-card monloader-accent">
+  <div class="ptr-contrib-head">
+    <span class="ptr-contrib-title">Public Tag Repository</span>
+  </div>
+  {{if .Provisional}}<p class="field-hint">the repository copy is still syncing, so this diff may overstate what is new.</p>{{end}}
+  {{if .FailedUploads}}<p class="ptr-contrib-failed">{{.FailedUploads}} contribution{{if gt .FailedUploads 1}}s{{end}} failed to upload - {{if .Monloader}}<a href="{{.Monloader}}/ptr" target="_blank" rel="noopener">contribution history</a>{{else}}see monloader's contribution history{{end}}.</p>{{end}}
+  <div class="ptr-contrib-row">
+    <div class="ptr-contrib-lines">
+      {{if and (gt .NewCount 0) (gt .PetitionCount 0)}}
+      <ul>
+        <li><span class="ptr-contrib-plus">++</span> <span class="ptr-count" title="{{.NewTip}}">{{.NewCount}}</span> of this image's tags {{if eq .NewCount 1}}is{{else}}are{{end}} new to the Public Tag Repository.</li>
+        <li><span class="ptr-contrib-minus">--</span> the Public Tag Repository holds <span class="ptr-count" title="{{.PetitionTip}}">{{.PetitionCount}}</span> tag{{if gt .PetitionCount 1}}s{{end}} this image does not carry.</li>
+      </ul>
+      {{else if gt .NewCount 0}}<p><span class="ptr-contrib-plus">++</span> <span class="ptr-count" title="{{.NewTip}}">{{.NewCount}}</span> of this image's tags {{if eq .NewCount 1}}is{{else}}are{{end}} new to the Public Tag Repository.</p>
+      {{else if gt .PetitionCount 0}}<p><span class="ptr-contrib-minus">--</span> the Public Tag Repository holds <span class="ptr-count" title="{{.PetitionTip}}">{{.PetitionCount}}</span> tag{{if gt .PetitionCount 1}}s{{end}} this image does not carry.</p>
+      {{else if .AllKnown}}<p class="field-hint">this image's tags are all already on the Public Tag Repository.</p>
+      {{else}}<p class="field-hint">nothing to contribute for this image.</p>{{end}}
+    </div>
+    <div class="ptr-contrib-actions">
+      {{if gt .PetitionCount 0}}
+      <button type="button" class="btn-ptr-pull monloader-accent"
+              hx-post="/images/{{.ImageID}}/lookup" hx-vals='{"backend":"ptr"}'
+              hx-target="#fetch-pending" hx-swap="innerHTML"
+              hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
+              hx-confirm="Pull this file's tags from the Public Tag Repository?"
+              data-confirm-ok="Pull tags">Pull tags</button>
+      {{end}}
+      <button type="button" class="btn-ptr-contribute"
+              {{if and .CanContribute (or (gt .NewCount 0) (gt .PetitionCount 0))}}
+              hx-get="/images/{{.ImageID}}/ptr-contrib-dialog"
+              hx-target="#ptr-contrib-dialog-host" hx-swap="innerHTML"
+              hx-on::after-request="var d=document.getElementById('ptr-contrib-dialog'); if(d) d.showModal(); else htmx.trigger(document.body,'ptr-contrib-closed');"
+              {{else}}disabled{{if .ContribHint}} title="{{.ContribHint}}"{{end}}{{end}}>Contribute...</button>
+    </div>
+  </div>
+</div>
+{{end}}

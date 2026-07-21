@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // catTag pairs a resolved category ID with a tag name for creation/application.
@@ -206,6 +207,7 @@ func (s *Server) addTagToImage(w http.ResponseWriter, r *http.Request) {
 
 	if mutated {
 		s.Active().InvalidateCaches()
+		w.Header().Set("HX-Trigger", "tags-changed")
 	}
 
 	// Distinguish "everything went in" from "some tokens failed" so a
@@ -318,21 +320,36 @@ func (s *Server) aliasesForImageTags(imageTags []models.ImageTag) []models.Tag {
 // orange, green); clearInput resets the add-tag input.
 func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request, id int64, errMsg, warnMsg, okMsg string, clearInput bool) {
 	folderPath, imageTags, _ := s.tagSvc().GetImageTags(id)
+	tagSources, _ := s.tagSvc().TagSourcesForImage(id)
 	hasUserTags := false
+	hasStaleTags := false
 	for _, t := range imageTags {
 		if !t.IsAuto && t.TaggerName == "" {
 			hasUserTags = true
+		}
+		if t.Stale {
+			hasStaleTags = true
+		}
+		if hasUserTags && hasStaleTags {
 			break
 		}
 	}
 	back := parseBackContext(r)
+	var canonicalPath string
+	_ = s.db().Read.QueryRow(`SELECT canonical_path FROM images WHERE id = ?`, id).Scan(&canonicalPath)
+	filename := ""
+	if canonicalPath != "" {
+		filename = filepath.Base(canonicalPath)
+	}
 	s.renderTemplate(w, "partials/tag_list.html", map[string]any{
 		"ImageID":       id,
 		"ImageTags":     imageTags,
+		"TagSources":    tagSources,
 		"Aliases":       s.aliasesForImageTags(imageTags),
 		"SidebarTags":   true,
 		"DangerZone":    true,
 		"HasUserTags":   hasUserTags,
+		"HasStaleTags":  hasStaleTags,
 		"ImageTaggers":  distinctTaggerNames(imageTags, true),
 		"ImageSources":  distinctTaggerNames(imageTags, false),
 		"CanTransfer":   len(s.galleryList()) > 1,
@@ -348,6 +365,7 @@ func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request
 		"OkMsg":         okMsg,
 		"ClearInput":    clearInput,
 		"CurrentFolder": folderPath,
+		"Filename":      filename,
 	})
 }
 
@@ -371,6 +389,7 @@ func (s *Server) removeAutoTagsFromImageHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 	s.Active().InvalidateCaches()
+	w.Header().Set("HX-Trigger", "tags-changed")
 	s.renderTagListWithSidebar(w, r, id, "", "", "", false)
 }
 
@@ -394,6 +413,7 @@ func (s *Server) removeSourceTagsFromImageHandler(w http.ResponseWriter, r *http
 		return
 	}
 	s.Active().InvalidateCaches()
+	w.Header().Set("HX-Trigger", "tags-changed")
 	s.renderTagListWithSidebar(w, r, id, "", "", "", false)
 }
 
@@ -403,6 +423,10 @@ func (s *Server) removeUserTagsFromImageHandler(w http.ResponseWriter, r *http.R
 
 func (s *Server) removeAllTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
 	s.removeImageTagsHandler(w, r, s.tagSvc().RemoveAllTagsFromImage)
+}
+
+func (s *Server) removeStaleTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
+	s.removeImageTagsHandler(w, r, s.tagSvc().RemoveStaleTagsFromImage)
 }
 
 // removeImageTagsHandler is the parse-id / call-remove / refresh body
@@ -418,6 +442,7 @@ func (s *Server) removeImageTagsHandler(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	s.Active().InvalidateCaches()
+	w.Header().Set("HX-Trigger", "tags-changed")
 	s.renderTagListWithSidebar(w, r, id, "", "", "", false)
 }
 
@@ -436,6 +461,7 @@ func (s *Server) removeTagFromImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Active().InvalidateCaches()
+	w.Header().Set("HX-Trigger", "tags-changed")
 	s.renderTagListWithSidebar(w, r, id, "", "", "", false)
 }
 

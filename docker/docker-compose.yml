@@ -3,7 +3,7 @@ services:
     container_name: monbooru
 
     # you can use monbooru:latest-cuda if you have a CUDA compatible GPU for faster auto-tagging
-    image: ghcr.io/leqwin/monbooru:latest
+    image: ghcr.io/monbooru/monbooru:latest
 
     # if using CUDA, pass the GPU to the container
     #deploy:
@@ -47,9 +47,9 @@ services:
 
   ## monloader is an optional online boorus and galleries downloader
   ## it allows you to download images and their tags directly into monbooru
-  ## see https://github.com/leqwin/monloader for more details
+  ## see https://github.com/monbooru/monloader for more details
   monloader:
-    image: ghcr.io/leqwin/monloader:latest
+    image: ghcr.io/monbooru/monloader:latest
     container_name: monloader
     user: "1000:1000"
     ports:

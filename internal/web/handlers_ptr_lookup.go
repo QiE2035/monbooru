@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // ptrLookupBatch caps names per monloader graph query (its request limit).
@@ -25,12 +25,7 @@ func (s *Server) ptrLookupSearchPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
-	ids, ok := s.startTagScopeJob(w, r)
-	if !ok {
-		return
-	}
-	go s.runPTRTagLookup(ids)
-	w.WriteHeader(http.StatusAccepted)
+	s.startTagScopeRun(w, r, s.runPTRTagLookup)
 }
 
 // ptrLookupTagPost runs the same sweep for one tag row.
@@ -96,8 +91,16 @@ func (s *Server) runPTRTagLookup(ids []int64) {
 		return
 	}
 
+	// Implied-by parents are pulled only for the requested tags, never for tags
+	// minted mid-sweep: a series' implied-by is every character that carries it,
+	// so recursing would cascade the whole graph in.
+	seed := make(map[int64]bool, len(cands))
+	for _, c := range cands {
+		seed[c.id] = true
+	}
+
 	total := len(cands)
-	aliases, implications, unknown, processed := 0, 0, 0, 0
+	aliases, implications, unknown, processed, dropped, aliased, retired := 0, 0, 0, 0, 0, 0, 0
 	cancelled := false
 	unavailable := false
 	impliedTouched := map[int64]struct{}{}
@@ -132,15 +135,24 @@ func (s *Server) runPTRTagLookup(ids []int64) {
 				swept[c.id] = struct{}{}
 				info := results[c.name]
 				if !info.Known {
+					// A tag the PTR no longer knows has no fresh state left, so
+					// every relation it pulled earlier is flagged.
 					unknown++
+					retired += s.syncPTRStaleness(c.id, nil, nil)
 				} else {
-					a, i := s.applyPTRTagInfo(c.id, info, impliedTouched, fanOutParents, createdTags)
+					a, i, d, al, r := s.applyPTRTagInfo(c.id, info, impliedTouched, fanOutParents, createdTags, seed[c.id])
 					aliases += a
 					implications += i
+					dropped += d
+					aliased += al
+					retired += r
 				}
 				processed++
 			}
 			s.jobs.Update(processed, total, "PTR lookup…")
+		}
+		if cancelled || unavailable {
+			break
 		}
 		var next []int64
 		for id := range createdTags {
@@ -183,6 +195,15 @@ func (s *Server) runPTRTagLookup(ids []int64) {
 	if unknown > 0 {
 		msg += fmt.Sprintf("; %d unknown to the PTR", unknown)
 	}
+	if dropped > 0 {
+		msg += fmt.Sprintf("; %d spelling(s) not representable", dropped)
+	}
+	if aliased > 0 {
+		msg += fmt.Sprintf("; %d relation(s) skipped, an alias here points elsewhere", aliased)
+	}
+	if retired > 0 {
+		msg += fmt.Sprintf("; %d relation(s) no longer on the PTR", retired)
+	}
 	msg += "."
 	if unavailable && !cancelled {
 		s.jobs.Complete(fmt.Sprintf("PTR lookup stopped at %d/%d: the PTR became unavailable on monloader. %s", processed, total, msg))
@@ -197,21 +218,33 @@ func (s *Server) runPTRTagLookup(ids []int64) {
 // Implication edges rely on AddImplication's cycle and alias guards and are
 // logged and skipped on failure so one bad edge can't abort the sweep; any
 // tag GetOrCreateTag had to create lands in createdTags for the caller to
-// sweep too.
-func (s *Server) applyPTRTagInfo(tagID int64, info ptrTagInfo, impliedTouched, fanOutParents, createdTags map[int64]struct{}) (aliases, implications int) {
+// sweep too. The names the answer carried form the fresh state the tag's
+// earlier PTR pulls are reconciled against: relations no longer listed are
+// flagged stale, not removed. When pullImpliedBy is set the reverse edges
+// (parents that imply this tag) are declared too, but those parents are only
+// created and linked, never swept - their own relations stay for a pull from
+// their page, so one tag's pull cannot cascade the whole cluster in.
+func (s *Server) applyPTRTagInfo(tagID int64, info ptrTagInfo, impliedTouched, fanOutParents, createdTags map[int64]struct{}, pullImpliedBy bool) (aliases, implications, dropped, aliased, retired int) {
+	freshAliases := map[tags.AliasKey]bool{}
+	freshImplied := map[int64]bool{}
 	for _, name := range info.Aliases {
 		catID, bare, ok := s.splitCategoryTag(name)
 		if !ok {
+			dropped++
 			continue
 		}
 		normalized, err := tags.ValidateTagName(bare)
 		if err != nil {
+			dropped++
 			continue
 		}
-		var exists int
-		if err := s.db().Read.QueryRow(
-			`SELECT COUNT(*) FROM tags WHERE name = ? AND category_id = ?`, normalized, catID,
-		).Scan(&exists); err != nil || exists > 0 {
+		freshAliases[tags.AliasKey{CategoryID: catID, Name: normalized}] = true
+		exists, err := s.tagNameExists(catID, normalized)
+		if err != nil {
+			logx.Warnf("ptr alias %q: %v", name, err)
+			continue
+		}
+		if exists {
 			continue
 		}
 		if _, err := s.tagSvc().CreateAliasFrom(normalized, catID, tagID, "ptr"); err != nil {
@@ -230,10 +263,8 @@ func (s *Server) applyPTRTagInfo(tagID int64, info ptrTagInfo, impliedTouched, f
 			logx.Warnf("ptr implication %q: %v", name, err)
 			continue
 		}
-		var exists int
-		if err := s.db().Read.QueryRow(
-			`SELECT COUNT(*) FROM tags WHERE name = ? AND category_id = ?`, normalized, catID,
-		).Scan(&exists); err != nil {
+		exists, err := s.tagNameExists(catID, normalized)
+		if err != nil {
 			continue
 		}
 		implied, err := s.tagSvc().GetOrCreateTagFrom(normalized, catID, "ptr")
@@ -241,7 +272,12 @@ func (s *Server) applyPTRTagInfo(tagID int64, info ptrTagInfo, impliedTouched, f
 			logx.Warnf("ptr implication %q: %v", name, err)
 			continue
 		}
-		if exists == 0 {
+		if redirected(implied, normalized, catID) {
+			aliased++
+			continue
+		}
+		freshImplied[implied.ID] = true
+		if !exists {
 			createdTags[implied.ID] = struct{}{}
 		}
 		isNew, err := s.tagSvc().AddImplicationFrom(tagID, implied.ID, "ptr")
@@ -255,7 +291,84 @@ func (s *Server) applyPTRTagInfo(tagID int64, info ptrTagInfo, impliedTouched, f
 			fanOutParents[tagID] = struct{}{}
 		}
 	}
-	return aliases, implications
+	if pullImpliedBy {
+		for _, name := range info.ImpliedBy {
+			catID, bare, ok := s.splitCategoryTag(name)
+			if !ok {
+				continue
+			}
+			normalized, err := tags.ValidateTagName(bare)
+			if err != nil {
+				logx.Warnf("ptr implied-by %q: %v", name, err)
+				continue
+			}
+			// A reverse-edge parent is linked but never swept: its own
+			// implications point at siblings of this tag (solo_futanari implies
+			// futanari), and following them would drag the whole surrounding
+			// cluster into the catalog. Pull the parent's graph from its page.
+			parent, err := s.tagSvc().GetOrCreateTagFrom(normalized, catID, "ptr")
+			if err != nil {
+				logx.Warnf("ptr implied-by %q: %v", name, err)
+				continue
+			}
+			if redirected(parent, normalized, catID) {
+				aliased++
+				continue
+			}
+			isNew, err := s.tagSvc().AddImplicationFrom(parent.ID, tagID, "ptr")
+			if err != nil {
+				logx.Warnf("ptr implied-by %q: %v", name, err)
+				continue
+			}
+			if isNew {
+				implications++
+				impliedTouched[tagID] = struct{}{}
+				fanOutParents[parent.ID] = struct{}{}
+			}
+		}
+	}
+	retired = s.syncPTRStaleness(tagID, freshAliases, freshImplied)
+	return aliases, implications, dropped, aliased, retired
+}
+
+// redirected reports that GetOrCreateTag handed back a different tag than the
+// name asked for, because that name is an alias here. The catalog says the two
+// are the same tag; the PTR only ever spoke about the aliased spelling. Storing
+// the relation against the canonical would assert an edge neither source
+// declares - and the contribution dialog would then keep offering that edge
+// back to the PTR as new.
+func redirected(got *models.Tag, name string, categoryID int64) bool {
+	return got.Name != name || got.CategoryID != categoryID
+}
+
+// syncPTRStaleness reconciles a tag's pulled relations against the fresh
+// answer (nil maps mean the PTR listed nothing), returning how many were
+// newly flagged. Errors are logged and skipped like the apply loops - a
+// failed flag pass must not abort the sweep.
+func (s *Server) syncPTRStaleness(tagID int64, freshAliases map[tags.AliasKey]bool, freshImplied map[int64]bool) int {
+	retired := 0
+	n, err := s.tagSvc().SyncAliasStaleness(tagID, "ptr", freshAliases)
+	if err != nil {
+		logx.Warnf("ptr alias staleness for tag %d: %v", tagID, err)
+	}
+	retired += n
+	n, err = s.tagSvc().SyncImplicationStaleness(tagID, "ptr", freshImplied)
+	if err != nil {
+		logx.Warnf("ptr implication staleness for tag %d: %v", tagID, err)
+	}
+	return retired + n
+}
+
+// tagNameExists reports whether a (category, name) tag row exists,
+// alias rows included.
+func (s *Server) tagNameExists(catID int64, name string) (bool, error) {
+	var n int
+	if err := s.db().Read.QueryRow(
+		`SELECT COUNT(*) FROM tags WHERE name = ? AND category_id = ?`, name, catID,
+	).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // splitCategoryTag resolves a monbooru-form name ("bare" or "category:name")

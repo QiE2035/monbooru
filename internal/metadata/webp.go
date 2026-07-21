@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/models"
 	"github.com/rwcarlsen/goexif/exif"
 )
 

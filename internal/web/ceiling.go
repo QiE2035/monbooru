@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/search"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/search"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // ratingCeilingCookieName is the single point of truth for the cookie

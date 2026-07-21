@@ -11,12 +11,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/gallery"
-	"github.com/leqwin/monbooru/internal/logx"
-	meta "github.com/leqwin/monbooru/internal/metadata"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/search"
-	"github.com/leqwin/monbooru/internal/tagger"
+	"github.com/monbooru/monbooru/internal/gallery"
+	"github.com/monbooru/monbooru/internal/logx"
+	meta "github.com/monbooru/monbooru/internal/metadata"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/search"
+	"github.com/monbooru/monbooru/internal/tagger"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // annotationView is one positional note ready for the overlay: the box
@@ -117,11 +118,13 @@ type detailData struct {
 	// `&` separators when the fragment is interpolated after `?page=N`.
 	BackQS         template.URL
 	BackKVQS       template.URL
-	EnabledTaggers []tagger.TaggerStatus // enabled+available taggers offered in the auto-tag control
-	ImageTaggers   []string              // distinct tagger names currently on this image's auto-tags
-	ImageSources   []string              // distinct source labels currently carrying tags on this image (is_auto=0 with a tagger_name)
-	HasUserTags    bool                  // true when at least one operator-added manual tag is on this image
-	Aliases        []models.Tag          // alias rows pointing at any non-implied tag on this image, flattened for display
+	EnabledTaggers []tagger.TaggerStatus      // enabled+available taggers offered in the auto-tag control
+	ImageTaggers   []string                   // distinct tagger names currently on this image's auto-tags
+	ImageSources   []string                   // distinct source labels currently carrying tags on this image (is_auto=0 with a tagger_name)
+	HasUserTags    bool                       // true when at least one operator-added manual tag is on this image
+	HasStaleTags   bool                       // true when at least one tag on this image is stale (a source dropped it)
+	Aliases        []models.Tag               // alias rows pointing at any non-implied tag on this image, flattened for display
+	TagSources     map[int64][]tags.TagSource // source ledger per tag id; feeds each source group's +N reveal (sourceExtraTags)
 	// PhashDistance is the configured Find-pairs Hamming distance used by
 	// the phash row's [search near-duplicates] link. Pulled live from
 	// Config.Relations.DefaultDistance so a settings tweak is honoured
@@ -281,13 +284,18 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		collections []models.Collection
 		sources     []models.ImageSource
 		annotations []models.Annotation
+		tagSources  map[int64][]tags.TagSource
 		prevID      *int64
 		nextID      *int64
 	)
 	isManga := img.FileType == models.FileTypeCBZ
 	var wg sync.WaitGroup
 	wg.Add(8)
-	go func() { defer wg.Done(); _, imageTags, _ = s.tagSvc().GetImageTags(id) }()
+	go func() {
+		defer wg.Done()
+		_, imageTags, _ = s.tagSvc().GetImageTags(id)
+		tagSources, _ = s.tagSvc().TagSourcesForImage(id)
+	}()
 	go func() { defer wg.Done(); sdMeta = loadSDMeta(ctx, s.db(), id) }()
 	go func() { defer wg.Done(); comfyMeta = loadComfyMeta(ctx, s.db(), id) }()
 	go func() { defer wg.Done(); imagePaths = loadImagePaths(ctx, s.db(), id) }()
@@ -330,9 +338,15 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 	imageTaggers := distinctTaggerNames(imageTags, true)
 	imageSources := distinctTaggerNames(imageTags, false)
 	hasUserTags := false
+	hasStaleTags := false
 	for _, t := range imageTags {
 		if !t.IsAuto && t.TaggerName == "" {
 			hasUserTags = true
+		}
+		if t.Stale {
+			hasStaleTags = true
+		}
+		if hasUserTags && hasStaleTags {
 			break
 		}
 	}
@@ -398,7 +412,9 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		ImageTaggers:      imageTaggers,
 		ImageSources:      imageSources,
 		HasUserTags:       hasUserTags,
+		HasStaleTags:      hasStaleTags,
 		Aliases:           s.aliasesForImageTags(imageTags),
+		TagSources:        tagSources,
 		PhashDistance:     s.findPairsDistance(),
 	}
 	s.renderTemplate(w, "detail.html", data)

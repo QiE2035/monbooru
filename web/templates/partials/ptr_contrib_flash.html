@@ -1,0 +1,32 @@
+{{define "partials/ptr_contrib_flash.html"}}
+{{if .Err}}
+<div class="flash flash-err">{{.Err}}</div>
+{{else}}
+<div class="flash flash-ok" id="ptr-contrib-result" data-job-id="{{.JobID}}">
+  handed {{.Sent}} to monloader for upload{{if .Refused}} ({{.Refused}} not sent){{end}}.
+  {{if .Monloader}}<a href="{{.Monloader}}/ptr" target="_blank" rel="noopener">contribution history</a>{{end}}
+</div>
+{{range .RefusedRows}}
+<div class="ptr-row ptr-row-refused"><span class="ptr-gut"></span><span class="ptr-mark"></span><span class="ptr-name">{{.Label}}</span><span class="ptr-note">{{.Note}}</span></div>
+{{end}}
+{{if .StagedAdds}}
+<details class="ptr-fold" open>
+  <summary>{{len .StagedAdds}} staged</summary>
+  <div class="ptr-fold-scroll">
+    {{range .StagedAdds}}<div class="ptr-row ptr-row-staged"><span class="ptr-gut"></span><span class="ptr-mark"></span><span class="ptr-name">{{.Label}}</span><span class="ptr-note">staged</span></div>{{end}}
+  </div>
+</details>
+{{end}}
+{{if .StagedPetitions}}
+<details class="ptr-fold" open>
+  <summary>{{len .StagedPetitions}} staged petition{{if gt (len .StagedPetitions) 1}}s{{end}}</summary>
+  <div class="ptr-fold-scroll">
+    {{range .StagedPetitions}}<div class="ptr-row ptr-row-staged-pet"><span class="ptr-gut"></span><span class="ptr-mark"></span><span class="ptr-name">{{.Label}}</span><span class="ptr-note">petition staged</span></div>{{end}}
+  </div>
+</details>
+{{end}}
+<div class="dialog-actions">
+  <button type="button" onclick="document.getElementById('ptr-contrib-dialog').close()">close</button>
+</div>
+{{end}}
+{{end}}

@@ -7,9 +7,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/config"
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/jobs"
+	"github.com/monbooru/monbooru/internal/config"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/jobs"
 )
 
 // CheckCUDAAvailable always errors here; inference is compiled out.

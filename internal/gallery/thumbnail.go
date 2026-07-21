@@ -10,11 +10,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 const thumbMaxDim = 300
@@ -118,7 +119,7 @@ func generateMangaThumbnails(srcPath, dstDir string, imageID int64) error {
 	if err := os.MkdirAll(imageDir, 0o755); err != nil {
 		return fmt.Errorf("create manga thumb dir: %w", err)
 	}
-	go pregenerateMangaPageThumbs(srcPath, imageDir)
+	queueMangaPageThumbs(srcPath, imageDir)
 	return nil
 }
 
@@ -127,17 +128,40 @@ func generateMangaThumbnails(srcPath, dstDir string, imageID int64) error {
 // leave the foreground request path room on a modest host.
 const mangaThumbWorkers = 2
 
-var mangaThumbSem = make(chan struct{}, mangaThumbWorkers)
+type mangaThumbJob struct{ srcPath, imageDir string }
+
+// mangaThumbQueue feeds the pregeneration workers. Bounded so a bulk
+// ingest of thousands of archives queues small jobs instead of parking
+// one goroutine per archive; an overflow skips the archive and leaves
+// the lazy EnsureMangaPageThumb path to cover its pages on access.
+var mangaThumbQueue = make(chan mangaThumbJob, 256)
+
+var mangaThumbOnce sync.Once
+
+// queueMangaPageThumbs hands the archive to the worker pool, starting
+// the workers on first use. Never blocks the ingest path.
+func queueMangaPageThumbs(srcPath, imageDir string) {
+	mangaThumbOnce.Do(func() {
+		for i := 0; i < mangaThumbWorkers; i++ {
+			go func() {
+				for job := range mangaThumbQueue {
+					pregenerateMangaPageThumbs(job.srcPath, job.imageDir)
+				}
+			}()
+		}
+	})
+	select {
+	case mangaThumbQueue <- mangaThumbJob{srcPath: srcPath, imageDir: imageDir}:
+	default:
+	}
+}
 
 // pregenerateMangaPageThumbs writes a thumbnail for every page of the
 // archive at srcPath into imageDir. It reopens the archive rather than
-// borrowing the caller's so no file handle is held while it waits for a
-// worker slot. Every page is best-effort: a failure logs and leaves the
+// borrowing the caller's so no file handle is held while it waits in
+// the queue. Every page is best-effort: a failure logs and leaves the
 // lazy path to regenerate it on access.
 func pregenerateMangaPageThumbs(srcPath, imageDir string) {
-	mangaThumbSem <- struct{}{}
-	defer func() { <-mangaThumbSem }()
-
 	archive, err := OpenManga(srcPath)
 	if err != nil {
 		logx.Warnf("manga page thumbs for %q: %v", srcPath, err)

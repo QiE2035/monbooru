@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 func (s *Server) jobDismissPost(w http.ResponseWriter, r *http.Request) {

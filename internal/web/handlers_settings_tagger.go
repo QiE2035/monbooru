@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/config"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/tagger"
+	"github.com/monbooru/monbooru/internal/config"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/tagger"
 )
 
 // taggerRow is the per-template render shape for one row of the

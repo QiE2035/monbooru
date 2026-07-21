@@ -1,16 +1,56 @@
 # Changelog
 
-## [v1.14.1] - 2026-07-14
+## [v1.15.0] - 2026-07-21
 ### Added
-- Uploads show a progress percentage while the files are sent. ([#54](https://github.com/leqwin/monbooru/issues/54))
+- Rename image files from the detail page, in batch, or on the collection order tiles.  ([#60](https://github.com/monbooru/monbooru/issues/60))
+- Find and merge tags whose spelling was folded before the tag charset widened. ([#64](https://github.com/monbooru/monbooru/issues/64))
+- Contribute tags, aliases, and implications to the Public Tag Repository, and pull what it holds.
+- Tags dropped by a source's last refresh are flagged stale, filterable and removable in bulk.
+- Prev/next arrows and keyboard navigation on the tag detail page.
+- Pause and resume the monloader link from the footer connection light.
+- Built-in `species` category so hydrus and e621 species tags land typed.
+- `source:none` and `source:any` match images with no source, or with any.
+- Expand a source group on the image detail to see every tag that source supplied.
+- The single-image API response lists every source that supplied each tag.
+- Tag detail groups aliases and implications by the source that declared them.
 
 ### Changed
-- Max file size defaults to 2 GB and can be raised to 5 GB in Settings. ([#54](https://github.com/leqwin/monbooru/issues/54))
+- Tag names accept accented, CJK, and punctuated spellings instead of folding to underscores. ([#64](https://github.com/monbooru/monbooru/issues/64))
+- Docker images are now `ghcr.io/monbooru/monbooru`.
+- The detail page's lookup button covers online boorus; PTR pulls moved to the contribution panel.
+- Batch source lookup refreshes every source on an image, not just the first.
+- Removing an alias or an implication asks for confirmation first.
+- Source, metadata, and wildcard searches are much faster on large libraries.
+
+### Fixed
+- `date:` searches match the displayed timezone instead of UTC. ([#61](https://github.com/monbooru/monbooru/issues/61))
+- A Tags-page batch with nothing selected no longer applies to every tag in the catalog.
+- `relation:` searches refresh after a relation is added or removed.
+- Tag autocomplete no longer treats `_` in the typed prefix as a wildcard.
+- Remove user tags no longer deletes tags implied by a source's tags.
+- An alias chain is flattened when its target becomes an alias itself.
+- Tag counts stay correct after a duplicate's tags are copied to the original.
+- One refused row no longer aborts a whole batch lookup.
+- The API rejects a malformed `tags` field instead of creating the image untagged.
+- Watched-folder ingestion no longer races with shutdown or a running job.
+
+### Removed
+- The batch "Set source" action.
+
+### Internal
+- Contributing to the Public Tag Repository requires monloader v1.5.0 or newer.
+
+## [v1.14.1] - 2026-07-14
+### Added
+- Uploads show a progress percentage while the files are sent. ([#54](https://github.com/monbooru/monbooru/issues/54))
+
+### Changed
+- Max file size defaults to 2 GB and can be raised to 5 GB in Settings. ([#54](https://github.com/monbooru/monbooru/issues/54))
 
 ### Fixed
 - The auto-tagger no longer files copyright and meta tags under the wrong category.
-- Auto-tagged tags no longer land in the wrong category after switching galleries. ([#57](https://github.com/leqwin/monbooru/issues/57))
-- Adding a cbz no longer blocks while every page thumbnail is generated. ([#53](https://github.com/leqwin/monbooru/issues/53))
+- Auto-tagged tags no longer land in the wrong category after switching galleries. ([#57](https://github.com/monbooru/monbooru/issues/57))
+- Adding a cbz no longer blocks while every page thumbnail is generated. ([#53](https://github.com/monbooru/monbooru/issues/53))
 - Uploading a file already in the gallery no longer leaves a second copy on disk.
 
 ### Removed
@@ -20,14 +60,14 @@
 Please update monloader to >=v1.4.0.
 
 ### Added
-- Sort a collection by filename order from the reorder dialog. ([#37](https://github.com/leqwin/monbooru/issues/37))
-- Transfer an image, or a whole search or selection, to another gallery. ([#45](https://github.com/leqwin/monbooru/issues/45))
-- Draw your own annotation boxes on an image from the detail page.  ([#48](https://github.com/leqwin/monbooru/issues/48))
-- Remove tags scoped to a specific source or auto-tagger.  ([#47](https://github.com/leqwin/monbooru/issues/47))
-- Per-image original-source field, plus per-source original artist links. ([#49](https://github.com/leqwin/monbooru/issues/49))
-- Per-tag detail page with a usage graph, alias and implication editing, and recent images. ([#52](https://github.com/leqwin/monbooru/issues/52))
-- Batch selection bar on the Tags page to tag, merge, or delete many tags at once. ([#52](https://github.com/leqwin/monbooru/issues/52))
-- Tags record their creation origin and last use, as sortable columns and filters. ([#52](https://github.com/leqwin/monbooru/issues/52))
+- Sort a collection by filename order from the reorder dialog. ([#37](https://github.com/monbooru/monbooru/issues/37))
+- Transfer an image, or a whole search or selection, to another gallery. ([#45](https://github.com/monbooru/monbooru/issues/45))
+- Draw your own annotation boxes on an image from the detail page.  ([#48](https://github.com/monbooru/monbooru/issues/48))
+- Remove tags scoped to a specific source or auto-tagger.  ([#47](https://github.com/monbooru/monbooru/issues/47))
+- Per-image original-source field, plus per-source original artist links. ([#49](https://github.com/monbooru/monbooru/issues/49))
+- Per-tag detail page with a usage graph, alias and implication editing, and recent images. ([#52](https://github.com/monbooru/monbooru/issues/52))
+- Batch selection bar on the Tags page to tag, merge, or delete many tags at once. ([#52](https://github.com/monbooru/monbooru/issues/52))
+- Tags record their creation origin and last use, as sortable columns and filters. ([#52](https://github.com/monbooru/monbooru/issues/52))
 - Look up an image against booru, similarity, and Public Tag Repository backends via monloader.
 - Public Tag Repository lookups also import tag aliases and implications.
 - Set which of an image's sources is the primary one. (used for batch refresh)
@@ -39,7 +79,7 @@ Please update monloader to >=v1.4.0.
 - Renaming a tag can keep the old name as an alias pointing to it.
 - Each source's commentary and annotations move into their own collapsible panel.
 - The per-source "Fetch tags" button is now "Refresh"; source lookups moved to Lookup.
-- Timestamps display in the operator's timezone (set `TZ`); stored times stay UTC. ([#50](https://github.com/leqwin/monbooru/issues/50))
+- Timestamps display in the operator's timezone (set `TZ`); stored times stay UTC. ([#50](https://github.com/monbooru/monbooru/issues/50))
 
 ### Fixed
 - Hydrus and Blombooru imports handle multi-word and namespaced tags correctly.
@@ -51,10 +91,10 @@ Please update monloader to >=v1.4.0.
 
 ## [v1.13.0] - 2026-07-04
 ### Added
-- Click-to-order dialog for arranging the images in a collection. ([#37](https://github.com/leqwin/monbooru/issues/37))
-- Per-collection find-relations switch to queue its images for the session. ([#39](https://github.com/leqwin/monbooru/issues/39))
-- Button to re-fetch a source's tags, commentary and notes from monloader. ([#42](https://github.com/leqwin/monbooru/issues/42))
-- Add support for commentaries and note boxes + a per-image own user's note. ([#43](https://github.com/leqwin/monbooru/issues/43))
+- Click-to-order dialog for arranging the images in a collection. ([#37](https://github.com/monbooru/monbooru/issues/37))
+- Per-collection find-relations switch to queue its images for the session. ([#39](https://github.com/monbooru/monbooru/issues/39))
+- Button to re-fetch a source's tags, commentary and notes from monloader. ([#42](https://github.com/monbooru/monbooru/issues/42))
+- Add support for commentaries and note boxes + a per-image own user's note. ([#43](https://github.com/monbooru/monbooru/issues/43))
 - Images can carry multiple sources, each with its own tags/commentary/notes.
 - `collection:any` search matches images in at least one collection.
 

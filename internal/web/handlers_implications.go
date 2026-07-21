@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // implicationsDialogHandler renders the body of the implications dialog
@@ -39,10 +39,15 @@ func (s *Server) implicationsDialogHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	labels := make([]string, 0, len(imps))
+	for _, im := range imps {
+		labels = append(labels, im.Origin)
+	}
 	data := map[string]any{
 		"Parent":       parent,
 		"Implications": imps,
 		"CSRFToken":    s.csrfToken(sessionFromContext(r.Context())),
+		"OriginKinds":  s.originKinds(labels),
 	}
 	s.renderTemplate(w, "partials/implications_dialog.html", data)
 }
@@ -115,6 +120,67 @@ func (s *Server) addImplicationPost(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// addImpliedByPost is the tag detail page's inline inverse editor: each
+// token in `parent_id` becomes a parent implying {id}. Same parse and
+// fan-out as addImplicationPost, with the edge direction flipped;
+// failures flash in place, success refreshes the page.
+func (s *Server) addImpliedByPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	impliedID, ok := pathInt64(w, r, "id")
+	if !ok {
+		return
+	}
+	rawInput := strings.TrimSpace(r.FormValue("parent_id"))
+	if rawInput == "" {
+		writeInlineFlash(w, "err", "Tag name is required.")
+		return
+	}
+	catTags, parseErrMsg := s.parseTagInput(rawInput)
+	if parseErrMsg != "" {
+		writeInlineFlash(w, "err", parseErrMsg)
+		return
+	}
+
+	added := 0
+	var failures []string
+	for _, ct := range catTags {
+		tag, err := s.tagSvc().GetOrCreateTag(ct.name, ct.catID)
+		if err != nil {
+			failures = append(failures, ct.name+": "+err.Error())
+			continue
+		}
+		isNew, err := s.tagSvc().AddImplication(tag.ID, impliedID)
+		if err != nil {
+			failures = append(failures, ct.name+": "+err.Error())
+			continue
+		}
+		if isNew {
+			added++
+			s.startImplicationPropagation(tag.ID, impliedID, "add")
+		}
+	}
+
+	if added > 0 {
+		s.Active().InvalidateCaches()
+	}
+	switch {
+	case len(failures) == 0 && added > 0:
+		noun := "implication"
+		if added != 1 {
+			noun = "implications"
+		}
+		hxDone(w, r, strconv.Itoa(added)+" "+noun+" added.", "", fmt.Sprintf("/tags/%d", impliedID))
+	case len(failures) == 0:
+		writeInlineFlash(w, "ok", "Already declared.")
+	case added > 0:
+		writeInlineFlash(w, "err", "Added "+strconv.Itoa(added)+". Failed: "+strings.Join(failures, "; "))
+	default:
+		writeInlineFlash(w, "err", strings.Join(failures, "; "))
+	}
+}
+
 func (s *Server) removeImplicationDelete(w http.ResponseWriter, r *http.Request) {
 	parentID, ok := pathInt64(w, r, "id")
 	if !ok {
@@ -131,7 +197,8 @@ func (s *Server) removeImplicationDelete(w http.ResponseWriter, r *http.Request)
 	s.startImplicationPropagation(parentID, impliedID, "remove")
 	// Seed the cross-navigation flash slot; the dialog stays open and the
 	// /tags reload on close surfaces this above the table.
-	setFlashHeader(w, "Implication removed.", "ok", nil)
+	setFlashHeader(w, "Implication removed.", "ok",
+		map[string]any{"tag-relations-changed": ""})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -167,17 +234,27 @@ func (s *Server) resolveRemoveClosure(tagID int64) ([]int64, error) {
 	return append([]int64{tagID}, closure...), nil
 }
 
+// imageIDsWithTag returns the ids of every image carrying tagID, in id
+// order.
+func (s *Server) imageIDsWithTag(ctx context.Context, tagID int64) ([]int64, error) {
+	rows, err := s.db().Read.QueryContext(ctx,
+		`SELECT image_id FROM image_tags WHERE tag_id = ? ORDER BY image_id`, tagID)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := db.ScanIDs(rows)
+	_ = rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 // chunkImageTagsByParent runs perImage for every image carrying
 // parentID, in id order, committing 500-image write transactions and
 // bailing between chunks when ctx is cancelled.
 func (s *Server) chunkImageTagsByParent(ctx context.Context, parentID int64, perImage func(*sql.Tx, int64) error) error {
-	rows, err := s.db().Read.QueryContext(ctx,
-		`SELECT image_id FROM image_tags WHERE tag_id = ? ORDER BY image_id`, parentID)
-	if err != nil {
-		return err
-	}
-	ids, err := db.ScanIDs(rows)
-	_ = rows.Close()
+	ids, err := s.imageIDsWithTag(ctx, parentID)
 	if err != nil {
 		return err
 	}
@@ -207,15 +284,7 @@ func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string)
 	ctx := s.jobs.Context()
 	const chunkSize = 500
 
-	rows, err := s.db().Read.QueryContext(ctx,
-		`SELECT image_id FROM image_tags WHERE tag_id = ? ORDER BY image_id`, parentID,
-	)
-	if err != nil {
-		s.jobs.Fail(err.Error())
-		return
-	}
-	ids, err := db.ScanIDs(rows)
-	_ = rows.Close()
+	ids, err := s.imageIDsWithTag(ctx, parentID)
 	if err != nil {
 		s.jobs.Fail(err.Error())
 		return

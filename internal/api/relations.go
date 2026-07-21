@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/leqwin/monbooru/internal/relations"
+	"github.com/monbooru/monbooru/internal/relations"
 )
 
 // relationsResponse mirrors relations.ImageRelations in JSON shape.
@@ -119,6 +119,7 @@ func (h *Handler) addRelation(w http.ResponseWriter, r *http.Request) {
 		writeRelationError(w, err)
 		return
 	}
+	g.invalidate()
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -204,6 +205,7 @@ func (h *Handler) removeRelation(w http.ResponseWriter, r *http.Request) {
 		writeRelationError(w, err)
 		return
 	}
+	g.invalidate()
 	w.WriteHeader(http.StatusNoContent)
 }
 

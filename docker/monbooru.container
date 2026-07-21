@@ -1,7 +1,7 @@
 [Container]
 ContainerName=monbooru
 # you can use monbooru:latest-cuda if you have a CUDA compatible GPU for faster auto-tagging
-Image=ghcr.io/leqwin/monbooru:latest
+Image=ghcr.io/monbooru/monbooru:latest
 # if using CUDA, pass the GPU to the container (needs the NVIDIA container toolkit).
 #AddDevice=nvidia.com/gpu=all
 
@@ -31,5 +31,5 @@ HealthStartPeriod=10s
 HealthTimeout=5s
 HealthOnFailure=kill
 
-# To install monloader, check https://github.com/leqwin/monloader
+# To install monloader, check https://github.com/monbooru/monloader
 # install it alongside this unit to pull from supported booru sites.

@@ -8,9 +8,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/searchkw"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/searchkw"
 )
 
 var (
@@ -22,18 +22,6 @@ var (
 	ErrReservedCategoryName = errors.New("this name is used by a search filter (e.g. " + reservedCategoryHint() + ")")
 	ErrNonCanonicalRating   = errors.New("rating category accepts only general, sensitive, questionable, explicit")
 	ErrRatingTagImmutable   = errors.New("rating category tags cannot be renamed, merged, deleted, or moved")
-
-	// Allowed tag name characters. The colon is kept despite doubling
-	// as the category:tag separator; the parser falls back to a literal
-	// tag when the prefix is neither a filter keyword nor a known
-	// category. The emoticon-set (?, <, >, =, ^) is permitted so names
-	// like `>_<`, `=3`, `<3`, `^_^`, and `nani?` round-trip end-to-end.
-	tagNameRe = regexp.MustCompile(`^[a-z0-9_()!@#$.~+:?<>=^\-]+$`)
-
-	// Inverse of tagNameRe's class: runs of these collapse to a single `_`
-	// when normalizing an externally-sourced tag name (hydrus stores spaces,
-	// slashes, and apostrophes monbooru rejects).
-	disallowedTagCharsRe = regexp.MustCompile(`[^a-z0-9_()!@#$.~+:?<>=^\-]+`)
 
 	// #rgb or #rrggbb. Anything else gets ZgotmplZ'd in the template's
 	// CSS context, so reject it up front with a useful error.
@@ -150,6 +138,13 @@ type TagFilter struct {
 	// Implies ShowZero. Used by the /tags Zero-usage Only filter to find
 	// declared-but-unused tags for triage.
 	ZeroOnly bool
+	// Stale narrows to tags with source-dropped usage: "has" = at least one
+	// stale image_tags row, "full" = every usage stale (the safe-to-remove
+	// set). Empty means no stale filter.
+	Stale string
+	// FoldedOnly narrows to the folded originals recorded by the last
+	// folded-duplicate scan (folded_tag_pairs.old_id).
+	FoldedOnly bool
 }
 
 // Service provides tag and category CRUD with usage_count and co-occurrence maintenance.

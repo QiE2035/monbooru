@@ -17,12 +17,13 @@ INSERT OR IGNORE INTO tag_categories (name, color, is_builtin) VALUES
     ('rating',    '#996666', 1),
     ('medium',    '#7d4fbf', 1),
     ('person',    '#b85c9e', 1),
-    ('year',      '#4a8fa8', 1);
+    ('year',      '#4a8fa8', 1),
+    ('species',   '#ed5d1f', 1);
 
--- Promote any pre-existing user-created medium/person/year category to
--- built-in so a library that already had one of these as a custom row
+-- Promote any pre-existing user-created medium/person/year/species category
+-- to built-in so a library that already had one of these as a custom row
 -- stops being deletable once the seed catches up.
-UPDATE tag_categories SET is_builtin = 1 WHERE name IN ('medium', 'person', 'year');
+UPDATE tag_categories SET is_builtin = 1 WHERE name IN ('medium', 'person', 'year', 'species');
 
 CREATE TABLE IF NOT EXISTS tags (
     id               INTEGER PRIMARY KEY,
@@ -37,6 +38,9 @@ CREATE TABLE IF NOT EXISTS tags (
     origin           TEXT    NOT NULL DEFAULT '',
     -- Most recent application to an image; NULL = never applied.
     last_used_at     TEXT,
+    -- On PTR alias rows: the latest refresh no longer listed this
+    -- spelling. The row stays until the operator acts.
+    stale            INTEGER NOT NULL DEFAULT 0,
     UNIQUE(name, category_id)
 );
 
@@ -117,6 +121,8 @@ CREATE TABLE IF NOT EXISTS image_tags (
     confidence  REAL,
     tagger_name TEXT,
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    -- The attributed source's latest fetch no longer carried this tag.
+    stale       INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (image_id, tag_id)
 );
 
@@ -183,6 +189,8 @@ CREATE TABLE IF NOT EXISTS tag_implications (
     created_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     -- Same vocabulary as tags.origin; stamped when the edge is created.
     origin         TEXT    NOT NULL DEFAULT '',
+    -- On PTR edges: the latest refresh no longer carried the edge.
+    stale          INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (parent_tag_id, implied_tag_id)
 );
 
@@ -333,6 +341,17 @@ CREATE TABLE IF NOT EXISTS saved_searches (
     sort_order TEXT NOT NULL DEFAULT '',
     seed       TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- Folded-duplicate pairs: old_id (a pre-widening fold) -> new_id (the richer
+-- spelling that superseded it). Recomputed by the Find-folded-duplicates scan;
+-- ambiguous = 1 when old_id has more than one candidate new_id.
+CREATE TABLE IF NOT EXISTS folded_tag_pairs (
+    old_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    new_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    category_id INTEGER NOT NULL,
+    ambiguous   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (old_id, new_id)
 );
 
 -- Indexes

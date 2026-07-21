@@ -42,15 +42,8 @@ func fetchStatusKey(gallery string, id int64) string {
 func (s *Server) recordFetchStatus(gallery string, id int64, state, msg string) {
 	s.fetchStatusMu.Lock()
 	defer s.fetchStatusMu.Unlock()
-	if s.fetchStatus == nil {
-		s.fetchStatus = map[string]fetchStatusEntry{}
-	}
 	now := time.Now()
-	for k, e := range s.fetchStatus {
-		if now.Sub(e.At) > fetchStatusTTL {
-			delete(s.fetchStatus, k)
-		}
-	}
+	s.pruneFetchStatusLocked(now)
 	key := fetchStatusKey(gallery, id)
 	entry := fetchStatusEntry{State: state, Msg: msg, At: now}
 	if prev, ok := s.fetchStatus[key]; ok && state != "pending" {
@@ -60,14 +53,28 @@ func (s *Server) recordFetchStatus(gallery string, id int64, state, msg string) 
 }
 
 // recordFetchLookup records the pending state for a hash lookup, remembering
-// the searched hashes so a not-found outcome can name them.
+// the searched hashes so a not-found outcome can name them. Set before the
+// enqueue so a fast local (PTR) callback can't be overwritten back to pending.
 func (s *Server) recordFetchLookup(gallery string, id int64, hashes string) {
-	s.recordFetchStatus(gallery, id, "pending", "")
 	s.fetchStatusMu.Lock()
 	defer s.fetchStatusMu.Unlock()
-	e := s.fetchStatus[fetchStatusKey(gallery, id)]
-	e.Hashes = hashes
-	s.fetchStatus[fetchStatusKey(gallery, id)] = e
+	now := time.Now()
+	s.pruneFetchStatusLocked(now)
+	s.fetchStatus[fetchStatusKey(gallery, id)] = fetchStatusEntry{State: "pending", At: now, Hashes: hashes}
+}
+
+// pruneFetchStatusLocked initialises the map and evicts entries past the TTL.
+// Callers hold fetchStatusMu.
+func (s *Server) pruneFetchStatusLocked(now time.Time) {
+	if s.fetchStatus == nil {
+		s.fetchStatus = map[string]fetchStatusEntry{}
+		return
+	}
+	for k, e := range s.fetchStatus {
+		if now.Sub(e.At) > fetchStatusTTL {
+			delete(s.fetchStatus, k)
+		}
+	}
 }
 
 func (s *Server) loadFetchStatus(gallery string, id int64) (fetchStatusEntry, bool) {

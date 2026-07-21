@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/config"
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/config"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 var errJobRunning = errors.New("a job is running; try again when it finishes")

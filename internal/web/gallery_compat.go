@@ -5,7 +5,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/leqwin/monbooru/internal/web/compatibility"
+	"github.com/monbooru/monbooru/internal/web/compatibility"
 )
 
 // Importing the compatibility package here runs its providers' init()

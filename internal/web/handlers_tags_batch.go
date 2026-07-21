@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // resolveTagScope resolves a tags-page batch POST's target set: an
@@ -17,7 +17,13 @@ import (
 // tag matching the posted filter fields.
 func (s *Server) resolveTagScope(r *http.Request) ([]int64, error) {
 	q := r.Form
-	if idsStr := strings.TrimSpace(q.Get("ids")); idsStr != "" {
+	// A present-but-empty `ids` is an empty selection; the whole-search
+	// escalation posts the filter fields with no `ids` field at all.
+	if q.Has("ids") {
+		idsStr := strings.TrimSpace(q.Get("ids"))
+		if idsStr == "" {
+			return nil, nil
+		}
 		var ids []int64
 		for _, part := range strings.Split(idsStr, ",") {
 			id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
@@ -42,6 +48,10 @@ func (s *Server) resolveTagScope(r *http.Request) ([]int64, error) {
 		q.Get("origin"), typeStr, q.Get("created_after"), showZero, zeroOnly, 1, 0,
 	)
 	filter.ConflictsOnly = q.Get("conflicts") == "1"
+	if s := q.Get("stale"); s == "has" || s == "full" {
+		filter.Stale = s
+	}
+	filter.FoldedOnly = q.Get("folded") == "1"
 	return s.tagSvc().ListTagIDs(filter)
 }
 
@@ -66,6 +76,18 @@ func (s *Server) startTagScopeJob(w http.ResponseWriter, r *http.Request) ([]int
 	return ids, true
 }
 
+// startTagScopeRun wraps the tail every tag-scope batch POST shares:
+// resolve the scope, launch run on it in the background, answer 202.
+// The response is already written when the resolve or job slot fails.
+func (s *Server) startTagScopeRun(w http.ResponseWriter, r *http.Request, run func(ids []int64)) {
+	ids, ok := s.startTagScopeJob(w, r)
+	if !ok {
+		return
+	}
+	go run(ids)
+	w.WriteHeader(http.StatusAccepted)
+}
+
 // batchTagCategoryPost moves every tag in scope to the posted category
 // as a background job. merge=1 resolves (name, target) collisions by
 // merging into the existing row; otherwise collisions are skipped and
@@ -81,12 +103,7 @@ func (s *Server) batchTagCategoryPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	merge := r.FormValue("merge") == "1"
-	ids, ok := s.startTagScopeJob(w, r)
-	if !ok {
-		return
-	}
-	go s.runBatchTagCategory(ids, catID, merge)
-	w.WriteHeader(http.StatusAccepted)
+	s.startTagScopeRun(w, r, func(ids []int64) { s.runBatchTagCategory(ids, catID, merge) })
 }
 
 func (s *Server) runBatchTagCategory(ids []int64, catID int64, merge bool) {
@@ -147,12 +164,7 @@ func (s *Server) batchTagAliasPost(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", msg)
 		return
 	}
-	ids, ok := s.startTagScopeJob(w, r)
-	if !ok {
-		return
-	}
-	go s.runBatchTagAlias(ids, canonID)
-	w.WriteHeader(http.StatusAccepted)
+	s.startTagScopeRun(w, r, func(ids []int64) { s.runBatchTagAlias(ids, canonID) })
 }
 
 func (s *Server) runBatchTagAlias(ids []int64, canonID int64) {
@@ -188,6 +200,31 @@ func (s *Server) runBatchTagAlias(ids []int64, canonID int64) {
 	s.finishJob(nil, cancelled, fmt.Sprintf("alias cancelled (%s)", summary), summary)
 }
 
+// batchMergeFoldedPost merges each folded original in scope into its corrected
+// spelling, resolving the target from folded_tag_pairs. Ambiguous originals and
+// any whose pair no longer holds are skipped.
+func (s *Server) batchMergeFoldedPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	s.startTagScopeRun(w, r, s.runMergeFolded)
+}
+
+func (s *Server) runMergeFolded(ids []int64) {
+	s.jobs.Update(0, len(ids), "merging folded tags…")
+	merged, skipped, cancelled, err := s.tagSvc().MergeFolded(s.jobs.Context(), ids)
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		return
+	}
+	s.Active().InvalidateCaches()
+	summary := fmt.Sprintf("merged %d folded tag(s)", merged)
+	if skipped > 0 {
+		summary += fmt.Sprintf(", skipped %d", skipped)
+	}
+	s.finishJob(nil, cancelled, fmt.Sprintf("folded merge cancelled (%s)", summary), summary)
+}
+
 // batchTagImplyPost declares (mode=add) or removes (mode=remove) the
 // "each tag in scope implies X" edge, with the image-side fan-out /
 // sweep run inline inside the held job slot, mirroring the PTR sweep.
@@ -202,12 +239,7 @@ func (s *Server) batchTagImplyPost(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", msg)
 		return
 	}
-	ids, ok := s.startTagScopeJob(w, r)
-	if !ok {
-		return
-	}
-	go s.runBatchTagImply(ids, targetID, remove)
-	w.WriteHeader(http.StatusAccepted)
+	s.startTagScopeRun(w, r, func(ids []int64) { s.runBatchTagImply(ids, targetID, remove) })
 }
 
 func (s *Server) runBatchTagImply(ids []int64, targetID int64, remove bool) {

@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 type tagResponse struct {

@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // sanitizeComfyJSON replaces Python-only JSON literals (NaN, Infinity,

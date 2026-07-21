@@ -12,10 +12,10 @@ import (
 	"time"
 	_ "time/tzdata"
 
-	"github.com/leqwin/monbooru/internal/config"
-	"github.com/leqwin/monbooru/internal/jobs"
-	"github.com/leqwin/monbooru/internal/logx"
-	internalweb "github.com/leqwin/monbooru/internal/web"
+	"github.com/monbooru/monbooru/internal/config"
+	"github.com/monbooru/monbooru/internal/jobs"
+	"github.com/monbooru/monbooru/internal/logx"
+	internalweb "github.com/monbooru/monbooru/internal/web"
 	"golang.org/x/crypto/bcrypt"
 )
 

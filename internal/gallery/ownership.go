@@ -4,7 +4,7 @@ package gallery
 import (
 	"os"
 
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 // ClaimOwnership chowns path to the current process UID/GID so later

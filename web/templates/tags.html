@@ -8,6 +8,8 @@
 {{$type := .Type}}
 {{$created := .CreatedAfter}}
 {{$conflicts := ""}}{{if .Conflicts}}{{$conflicts = "1"}}{{end}}
+{{$stale := .Stale}}
+{{$folded := ""}}{{if .Folded}}{{$folded = "1"}}{{end}}
 {{$zero := "0"}}{{if .ZeroOnly}}{{$zero = "only"}}{{else if .ShowZero}}{{$zero = "1"}}{{end}}
 <div id="sidebar-inner">
   <!-- Boosted filter links swap #tags-page in place and refresh this
@@ -37,6 +39,8 @@
       <input type="hidden" name="type"      value="{{$type}}">
       <input type="hidden" name="created_after" value="{{$created}}">
       <input type="hidden" name="conflicts" value="{{$conflicts}}">
+      <input type="hidden" name="stale"     value="{{$stale}}">
+      <input type="hidden" name="folded"    value="{{$folded}}">
       <input type="hidden" name="show_zero" value="{{$zero}}">
       <button type="submit">OK</button>
     </form>
@@ -44,60 +48,77 @@
     <div class="filter-group">
       <span class="filter-label">Category</span>
       <a class="filter-btn{{if eq $catID ""}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat=&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">All</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat=&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">All</a>
       {{range .Categories}}
       <a class="filter-btn{{if eq (printf "%d" .ID) $catID}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{.ID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">{{.Name}}</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{.ID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">{{.Name}}</a>
       {{end}}
     </div>
 
     <div class="filter-group">
       <span class="filter-label">Type</span>
       <a class="filter-btn{{if eq $type ""}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type=&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">All</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type=&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">All</a>
       <a class="filter-btn{{if eq $type "tag"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type=tag&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">Tags</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type=tag&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">Tags</a>
       <a class="filter-btn{{if eq $type "alias"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type=alias&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">Aliases</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type=alias&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">Aliases</a>
     </div>
 
     <div class="filter-group">
       <span class="filter-label">Origin</span>
       <a class="filter-btn{{if eq $origin ""}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin=&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">All</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin=&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">All</a>
       {{range .OriginCounts}}
       <a class="filter-btn{{if eq $origin .Label}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{.Label}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">{{.Label}} <span class="count-badge">{{.Count}}</span></a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{.Label}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">{{.Label}} <span class="count-badge">{{.Count}}</span></a>
       {{end}}
     </div>
 
     <div class="filter-group">
       <span class="filter-label">Created</span>
       <a class="filter-btn{{if eq $created ""}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after=&conflicts={{$conflicts}}&show_zero={{$zero}}">All</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after=&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">All</a>
       <a class="filter-btn{{if eq $created "24h"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after=24h&conflicts={{$conflicts}}&show_zero={{$zero}}">24h</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after=24h&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">24h</a>
       <a class="filter-btn{{if eq $created "7d"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after=7d&conflicts={{$conflicts}}&show_zero={{$zero}}">7d</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after=7d&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">7d</a>
       <a class="filter-btn{{if eq $created "30d"}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after=30d&conflicts={{$conflicts}}&show_zero={{$zero}}">30d</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after=30d&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">30d</a>
     </div>
 
     <div class="filter-group">
       <span class="filter-label">Zero-usage</span>
       <a class="filter-btn{{if and .ShowZero (not .ZeroOnly)}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero=1">Show</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero=1">Show</a>
       <a class="filter-btn{{if not .ShowZero}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero=0">Hide</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero=0">Hide</a>
       <a class="filter-btn{{if .ZeroOnly}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero=only">Only</a>
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero=only">Only</a>
     </div>
 
     <div class="filter-group">
       <span class="filter-label">Conflicts</span>
       <a class="filter-btn{{if .Conflicts}} active{{end}}"
-         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{if .Conflicts}}{{else}}1{{end}}&show_zero={{$zero}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{if .Conflicts}}{{else}}1{{end}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}"
          title="Tag names living in more than one category">Only conflicts <span class="count-badge">{{.ConflictsTotal}}</span></a>
+    </div>
+
+    <div class="filter-group">
+      <span class="filter-label">Stale</span>
+      <a class="filter-btn{{if eq $stale "has"}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{if eq $stale "has"}}{{else}}has{{end}}&folded={{$folded}}&show_zero={{$zero}}"
+         title="Tags with at least one usage a source dropped">Has stale <span class="count-badge">{{.StaleTotal}}</span></a>
+      <a class="filter-btn{{if eq $stale "full"}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{if eq $stale "full"}}{{else}}full{{end}}&folded={{$folded}}&show_zero={{$zero}}"
+         title="Tags whose every usage is stale (safe to remove)">Fully stale</a>
+    </div>
+
+    <div class="filter-group">
+      <span class="filter-label">Folded dup.</span>
+      <a class="filter-btn{{if .Folded}} active{{end}}"
+         href="/tags?q={{$prefix}}&sort={{$sort}}&order={{$order}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{if .Folded}}{{else}}1{{end}}&show_zero={{$zero}}"
+         title="Old folded spellings with a corrected counterpart present - merge them into the corrected tag">Only folded <span class="count-badge">{{.FoldedTotal}}</span></a>
     </div>
   </div>
 </div>
@@ -124,9 +145,10 @@
     <span class="tag-batch-spacer"></span>
     <button type="button" id="btn-batch-category" class="btn-sm">Change category…</button>
     <button type="button" id="btn-batch-merge" class="btn-sm">Merge…</button>
+    {{if .Folded}}<button type="button" id="btn-batch-merge-folded" class="btn-sm">Merge into corrected spelling</button>{{end}}
     <button type="button" id="btn-batch-alias" class="btn-sm">Alias to…</button>
     <button type="button" id="btn-batch-imply" class="btn-sm">Imply…</button>
-    {{if and .MonloaderPaired .MonloaderPTR}}<button type="button" id="btn-batch-ptr" class="btn-sm monloader-accent">PTR lookup</button>{{end}}
+    {{if and .MonloaderPaired .MonloaderPTR}}<button type="button" id="btn-batch-ptr" class="btn-sm monloader-accent">Find aliases and implications</button>{{end}}
     <button type="button" id="btn-batch-delete" class="btn-sm btn-danger">Delete</button>
   </div>
 
@@ -140,13 +162,13 @@
     <thead hx-boost="true" hx-target="#tags-page" hx-select="#tags-page" hx-swap="outerHTML" hx-select-oob="#sidebar-inner" hx-push-url="true">
       <tr>
         <th class="tag-select-col"><input type="checkbox" id="tag-select-page" aria-label="Select page"></th>
-        <th><a class="th-sort" href="/tags?q={{$prefix}}&sort=name&order={{$nameOrder}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">Name{{if eq $sort "name"}}<span class="sort-arrow">{{if eq $order "asc"}}▲{{else}}▼{{end}}</span>{{end}}</a></th>
+        <th><a class="th-sort" href="/tags?q={{$prefix}}&sort=name&order={{$nameOrder}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">Name{{if eq $sort "name"}}<span class="sort-arrow">{{if eq $order "asc"}}▲{{else}}▼{{end}}</span>{{end}}</a></th>
         <th>Implied</th>
         <th>Category</th>
-        <th><a class="th-sort" href="/tags?q={{$prefix}}&sort=usage&order={{$usageOrder}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">Usage{{if eq $sort "usage"}}<span class="sort-arrow">{{if eq $order "asc"}}▲{{else}}▼{{end}}</span>{{end}}</a></th>
+        <th><a class="th-sort" href="/tags?q={{$prefix}}&sort=usage&order={{$usageOrder}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">Usage{{if eq $sort "usage"}}<span class="sort-arrow">{{if eq $order "asc"}}▲{{else}}▼{{end}}</span>{{end}}</a></th>
         <th>Origin</th>
-        <th><a class="th-sort" href="/tags?q={{$prefix}}&sort=created&order={{$createdOrder}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">Created{{if eq $sort "created"}}<span class="sort-arrow">{{if eq $order "asc"}}▲{{else}}▼{{end}}</span>{{end}}</a></th>
-        <th><a class="th-sort" href="/tags?q={{$prefix}}&sort=last_used&order={{$lastOrder}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&show_zero={{$zero}}">Last used{{if eq $sort "last_used"}}<span class="sort-arrow">{{if eq $order "asc"}}▲{{else}}▼{{end}}</span>{{end}}</a></th>
+        <th><a class="th-sort" href="/tags?q={{$prefix}}&sort=created&order={{$createdOrder}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">Created{{if eq $sort "created"}}<span class="sort-arrow">{{if eq $order "asc"}}▲{{else}}▼{{end}}</span>{{end}}</a></th>
+        <th><a class="th-sort" href="/tags?q={{$prefix}}&sort=last_used&order={{$lastOrder}}&cat={{$catID}}&origin={{$origin}}&type={{$type}}&created_after={{$created}}&conflicts={{$conflicts}}&stale={{$stale}}&folded={{$folded}}&show_zero={{$zero}}">Last used{{if eq $sort "last_used"}}<span class="sort-arrow">{{if eq $order "asc"}}▲{{else}}▼{{end}}</span>{{end}}</a></th>
         <th>Action</th>
       </tr>
     </thead>
@@ -166,6 +188,7 @@
           <span class="alias-badge">alias</span>
           {{else}}
           <a href="/?q={{.CategoryName}}:{{.Name}}" style="color:{{.CategoryColor}}">{{.Name}}</a>
+          {{if .FoldedInto}}<span class="merge-arrow">→</span> <span class="field-hint">{{.FoldedInto}}</span>{{end}}
           {{if eq .CategoryName "rating"}}<span class="field-hint">(built-in)</span>{{end}}
           {{end}}
         </td>
@@ -197,7 +220,7 @@
           </select>
           {{end}}
         </td>
-        <td>{{.UsageCount}}</td>
+        <td>{{.UsageCount}}{{if .StaleUsage}} <span class="field-hint">({{.StaleUsage}} stale)</span>{{end}}</td>
         <td>
           {{if .Origin}}
           {{$kind := index $.OriginKinds .Origin}}
@@ -209,7 +232,7 @@
         <td class="tag-date">{{if .LastUsedAt.IsZero}}<span class="origin-none">—</span>{{else}}{{.LastUsedAt.Format "2006-01-02"}}{{end}}</td>
         <td>
           <div class="tag-actions">
-            <a class="btn-sm btn-see-detail" href="/tags/{{.ID}}" title="Tag details">See detail</a>
+            <a class="btn-sm btn-see-detail" href="/tags/{{.ID}}?back={{urlQ $.BackQS}}" title="Tag details">See detail</a>
             {{if ne .CategoryName "rating"}}
             <button class="btn-sm btn-rename-trigger"
                     title="Rename this tag"
@@ -230,7 +253,7 @@
   </table>
 
   {{$page := .Page}}
-  {{$tagsBase := printf "/tags?q=%s&sort=%s&order=%s&cat=%s&origin=%s&type=%s&created_after=%s&conflicts=%s&show_zero=%s&page=" .Prefix .Sort .Order .CategoryID .Origin .Type .CreatedAfter $conflicts $zero}}
+  {{$tagsBase := printf "/tags?q=%s&sort=%s&order=%s&cat=%s&origin=%s&type=%s&created_after=%s&conflicts=%s&stale=%s&folded=%s&show_zero=%s&page=" .Prefix .Sort .Order .CategoryID .Origin .Type .CreatedAfter $conflicts $stale $folded $zero}}
   <div hx-boost="true" hx-target="#tags-page" hx-select="#tags-page" hx-swap="outerHTML" hx-select-oob="#sidebar-inner" hx-push-url="true">
   {{template "partials/pagination.html" (dict "Base" $tagsBase "Page" $page "Total" .TotalPages)}}
   </div>
@@ -413,7 +436,7 @@
   <p style="color:var(--fg-dim);font-size:12px">Aliases and implications the Public Tag Repository declares are added to the catalog.</p>
   <div id="ptr-lookup-search-flash"></div>
   <div class="dialog-actions">
-    <button type="button" class="monloader-accent" onclick="confirmPTRLookupSearch()">Lookup</button>
+    <button type="button" class="monloader-accent" onclick="confirmPTRLookupSearch()">Find</button>
     <button type="button" onclick="document.getElementById('ptr-lookup-search-dialog').close()">Cancel</button>
   </div>
 </dialog>
@@ -606,8 +629,18 @@ document.addEventListener('click', function(e) {
   el = e.target.closest('#btn-batch-ptr');
   if (el) {
     clearSlots('ptr-lookup-search-flash');
-    document.getElementById('ptr-lookup-scope-line').textContent = 'Look up ' + tagScopeLabel() + ' on the Public Tag Repository?';
+    document.getElementById('ptr-lookup-scope-line').textContent = 'Find aliases and implications for ' + tagScopeLabel() + '?';
     document.getElementById('ptr-lookup-search-dialog').showModal();
+    return;
+  }
+  el = e.target.closest('#btn-batch-merge-folded');
+  if (el) {
+    postForm('/tags/merge-folded', tagScopeParams(), {
+      flashId: 'tag-flash',
+      failMsg: 'Merge failed.',
+      catchMsg: 'Merge request failed.',
+      onOK: tagBatchDone
+    });
     return;
   }
   el = e.target.closest('#btn-create-alias');

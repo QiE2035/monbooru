@@ -3,7 +3,7 @@ package web
 import (
 	"net/http"
 
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 	"golang.org/x/crypto/bcrypt"
 )
 

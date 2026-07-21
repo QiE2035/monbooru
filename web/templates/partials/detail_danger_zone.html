@@ -9,7 +9,8 @@
             onclick="openTransferImageDialog()">Transfer to another gallery</button>
     {{end}}
     <button type="button"{{if not .CanTransfer}} class="danger-zone-trailing"{{end}}
-            onclick="openMoveImageDialog()">Move image</button>
+            onclick="openRenameImageDialog()">Rename image</button>
+    <button type="button" onclick="openMoveImageDialog()">Move image</button>
     <button class="btn-danger"
             id="delete-image-btn"
             hx-delete="/images/{{.ImageID}}?back_q={{urlQ .BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}{{if .Ref}}&ref={{.Ref}}{{end}}"
@@ -42,6 +43,7 @@
         </div>
         {{end}}
         {{if .HasUserTags}}<label style="display:block"><input type="radio" name="mode" value="user"> All user tags</label>{{end}}
+        {{if .HasStaleTags}}<label style="display:block"><input type="radio" name="mode" value="stale"> Stale tags</label>{{end}}
         <label style="display:block"><input type="radio" name="mode" value="all"> All tags</label>
       </div>
       <div class="dialog-actions">
@@ -51,6 +53,25 @@
     </form>
   </dialog>
   {{end}}
+
+  <dialog id="rename-image-dialog" data-filename="{{.Filename}}">
+    <p>Rename this image's file:</p>
+    <p class="field-hint">The extension is kept; a name collision auto-suffixes.</p>
+    <form id="rename-image-form"
+          hx-post="/images/{{.ImageID}}/rename"
+          hx-swap="none"
+          hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'>
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <div class="field">
+        <input type="text" name="name" id="rename-image-name" class="upload-wide-input"
+               placeholder="New file name..." required autocomplete="off">
+      </div>
+      <div class="dialog-actions">
+        <button type="submit">Rename</button>
+        <button type="button" onclick="document.getElementById('rename-image-dialog').close()">Cancel</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="move-image-dialog" data-current-folder="{{.CurrentFolder}}">
     <p>Move this image to folder:</p>

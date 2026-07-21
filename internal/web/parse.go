@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/tagger"
+	"github.com/monbooru/monbooru/internal/tagger"
 )
 
 // pathInt64 parses a numeric path segment, writing 404 on failure.

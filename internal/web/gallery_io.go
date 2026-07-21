@@ -13,11 +13,11 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/config"
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/gallery"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/config"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/gallery"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // safeArchiveDest joins a relative archive path under root and returns the
@@ -1381,6 +1381,7 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 	// rest until commit.
 	for _, stmt := range []string{
 		`DELETE FROM image_tags`,
+		`DELETE FROM image_tag_sources`,
 		`DELETE FROM tag_implications`,
 		`DELETE FROM image_paths`,
 		`DELETE FROM image_collections`,
@@ -1508,6 +1509,16 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		); err != nil {
 			return fmt.Errorf("insert image_tag (%d,%d): %w", r.ImageID, r.TagID, err)
 		}
+	}
+	// The export format doesn't carry the source ledger; derive it the
+	// way the upgrade backfill does, so an imported library answers
+	// per-tag provenance the same as one that migrated in place.
+	if _, err := tx.Exec(
+		`INSERT OR IGNORE INTO image_tag_sources (image_id, tag_id, source, created_at)
+		 SELECT image_id, tag_id, COALESCE(NULLIF(tagger_name, ''), 'user'), created_at
+		 FROM image_tags WHERE is_implied = 0`,
+	); err != nil {
+		return fmt.Errorf("backfill image_tag_sources: %w", err)
 	}
 	for _, r := range exp.SDMetadata {
 		if _, err := tx.Exec(

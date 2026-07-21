@@ -579,7 +579,7 @@
       {{/* Tag editor */}}
       <div class="tag-editor-section">
         <h3>Tags</h3>
-        {{template "partials/tag_list.html" (dict "ImageID" .Image.ID "ImageTags" .ImageTags "Aliases" .Aliases "CSRFToken" .CSRFToken)}}
+        {{template "partials/tag_list.html" (dict "ImageID" .Image.ID "ImageTags" .ImageTags "TagSources" .TagSources "Aliases" .Aliases "CSRFToken" .CSRFToken)}}
         <form id="add-tag-form" class="add-tag-form"
               hx-post="/images/{{.Image.ID}}/tags"
               hx-target="#image-tags"
@@ -600,45 +600,29 @@
           <button type="button" class="btn-autotag" title="Auto-tag this image (t)"
                   onclick="document.getElementById('autotag-dialog').showModal()">Auto-tag</button>
           {{end}}
-          {{if .MonloaderPaired}}
-          {{if .MonloaderPTR}}
+          {{if .MonloaderUsable}}
           <button type="button" class="btn-hash-lookup monloader-accent"
-                  title="Lookup this file via monloader"
-                  onclick="document.getElementById('lookup-dialog').showModal()">Lookup</button>
-          {{else}}
-          <button type="button" class="btn-hash-lookup monloader-accent"
-                  title="Lookup this file's tags and source on online boorus via monloader"
-                  hx-post="/images/{{.Image.ID}}/lookup" hx-vals='{"backend":"all"}'
-                  hx-target="#fetch-pending" hx-swap="innerHTML">Lookup</button>
-          {{end}}
+                  title="Find tags and sources for this file on online boorus via monloader"
+                  hx-post="/images/{{.Image.ID}}/lookup" hx-vals='{"backend":"booru"}'
+                  hx-target="#fetch-pending" hx-swap="innerHTML"
+                  hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
+                  hx-confirm="Find tags for this file on online boorus?"
+                  data-confirm-ok="Lookup online boorus">Lookup online boorus</button>
           {{end}}
         </form>
         {{if .MonloaderPaired}}<div id="fetch-pending" class="fetch-status"></div>{{end}}
-        {{if and .MonloaderPaired .MonloaderPTR}}
-        <dialog id="lookup-dialog">
-          <form hx-post="/images/{{.Image.ID}}/lookup"
-                hx-target="#fetch-pending" hx-swap="innerHTML"
-                hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
-                hx-on::after-request="document.getElementById('lookup-dialog').close()">
-            <p>Look up this file's tags and source via monloader:</p>
-            {{if .MonloaderPTRSyncing}}<p class="field-hint">The Public Tag Repository is still syncing, so its answers come from partial data.</p>{{end}}
-            <div class="field">
-              <label style="display:block"><input type="radio" name="backend" value="all" checked> Both (PTR and online boorus)</label>
-              <label style="display:block"><input type="radio" name="backend" value="ptr"> Public Tag Repository only</label>
-              <label style="display:block"><input type="radio" name="backend" value="booru"> Online boorus only</label>
-            </div>
-            <div class="dialog-actions">
-              <button type="submit" autofocus>Lookup</button>
-              <button type="button" onclick="document.getElementById('lookup-dialog').close()">Cancel</button>
-            </div>
-          </form>
-        </dialog>
-        {{end}}
       </div>
+
+      {{if and .MonloaderUsable (ne .Image.FileType "cbz")}}
+      <div id="ptr-contrib-panel" hx-get="/images/{{.Image.ID}}/ptr-contrib-panel" hx-trigger="load, tags-changed from:body, ptr-contrib-closed from:body, monloader-status-changed from:body" hx-swap="innerHTML"></div>
+      {{/* The dialog mounts here, outside the panel, so a panel refetch never
+           destroys an open dialog with its ticks and typed reasons. */}}
+      <div id="ptr-contrib-dialog-host"></div>
+      {{end}}
 
       {{/* Danger zone: delete + a remove-tags dialog. Rendered via a partial so
            HTMX tag-list updates can refresh it via OOB swap. */}}
-      {{template "partials/detail_danger_zone.html" (dict "ImageID" .Image.ID "ImageTags" .ImageTags "HasUserTags" .HasUserTags "ImageTaggers" .ImageTaggers "ImageSources" .ImageSources "CanTransfer" (gt (len .Galleries) 1) "CSRFToken" .CSRFToken "BackQuery" .BackQuery "BackSort" .BackSort "BackOrder" .BackOrder "BackPage" .BackPage "BackSeed" .BackSeed "Ref" .Ref "CurrentFolder" .Image.FolderPath)}}
+      {{template "partials/detail_danger_zone.html" (dict "ImageID" .Image.ID "ImageTags" .ImageTags "HasUserTags" .HasUserTags "HasStaleTags" .HasStaleTags "ImageTaggers" .ImageTaggers "ImageSources" .ImageSources "CanTransfer" (gt (len .Galleries) 1) "CSRFToken" .CSRFToken "BackQuery" .BackQuery "BackSort" .BackSort "BackOrder" .BackOrder "BackPage" .BackPage "BackSeed" .BackSeed "Ref" .Ref "CurrentFolder" .Image.FolderPath "Filename" .Filename)}}
       {{if gt (len .Galleries) 1}}
       <dialog id="transfer-image-dialog">
         <p>Transfer this image to another gallery:</p>
@@ -693,6 +677,7 @@
         var url;
         switch (mode) {
           case 'user':   url = '/images/' + id + '/user-tags'; break;
+          case 'stale':  url = '/images/' + id + '/stale-tags'; break;
           case 'source': url = '/images/' + id + '/source-tags?sources=' + encodeURIComponent(document.getElementById('remove-tags-source').value); break;
           case 'tagger': url = '/images/' + id + '/auto-tags?taggers=' + encodeURIComponent(document.getElementById('remove-tags-tagger').value); break;
           default:       url = '/images/' + id + '/tags';
@@ -706,6 +691,16 @@
         if (!dlg || !input) return;
         input.value = dlg.dataset.currentFolder || '';
         clearSlots('move-image-suggest');
+        dlg.showModal();
+        input.focus();
+        input.select();
+      }
+      function openRenameImageDialog() {
+        var dlg = document.getElementById('rename-image-dialog');
+        var input = document.getElementById('rename-image-name');
+        if (!dlg || !input) return;
+        var name = dlg.dataset.filename || '';
+        input.value = name.replace(/\.[^.]+$/, '');
         dlg.showModal();
         input.focus();
         input.select();
@@ -875,13 +870,13 @@
                     <button type="submit" class="btn-link-accent" title="Make this the primary source">[set primary]</button>
                   </form>{{end}}
                   {{if not (isPTRSite .Site)}}<button type="button" class="btn-link-accent btn-edit-source" data-site="{{.Site}}" data-post="{{.PostID}}" data-url="{{.URL}}" title="Edit">[edit]</button>{{end}}
-                  {{if and .URL $.MonloaderPaired}}<form hx-post="/images/{{$.Image.ID}}/sources/fetch"
+                  {{if and .URL $.MonloaderUsable}}<form hx-post="/images/{{$.Image.ID}}/sources/fetch"
                         hx-target="#fetch-status" hx-swap="innerHTML"
                         hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}' style="display:inline">
                     <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                     <input type="hidden" name="url" value="{{.URL}}">
                     <button type="submit" class="btn-link-accent monloader-accent" title="Refresh tags from this source via monloader">[refresh]</button>
-                  </form>{{else if and $.MonloaderPaired (isPTRSite .Site)}}<form hx-post="/images/{{$.Image.ID}}/lookup"
+                  </form>{{else if and $.MonloaderUsable (isPTRSite .Site)}}<form hx-post="/images/{{$.Image.ID}}/lookup"
                         hx-target="#fetch-status" hx-swap="innerHTML"
                         hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}' style="display:inline">
                     <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">

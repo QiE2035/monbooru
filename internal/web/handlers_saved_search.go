@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 func (s *Server) deleteSavedSearch(w http.ResponseWriter, r *http.Request) {

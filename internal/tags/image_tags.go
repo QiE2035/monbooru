@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/leqwin/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/db"
 )
 
 // image_tags mutation: the add/remove/prune family, the source-sync
@@ -139,6 +139,15 @@ func addTagToImageTxReportingDup(tx *sql.Tx, imageID, tagID int64, isAuto bool, 
 		}
 	}
 
+	// A named source re-confirming an existing tag is what the ledger
+	// exists to capture; a bare UI re-add of a tag already present is a
+	// no-op and must not stamp a phantom 'user' source.
+	if added > 0 || promoted > 0 || taggerName != "" {
+		if err := RecordTagSourceTx(tx, imageID, tagID, taggerName); err != nil {
+			return false, false, err
+		}
+	}
+
 	if err := fanOutImpliedTxImpl(tx, imageID, tagID, ratingCatID, isAutoInt); err != nil {
 		return false, false, err
 	}
@@ -211,20 +220,21 @@ func (s *Service) AddTagsToOneImage(imageID int64, tagIDs []int64, via string) (
 // SyncResult reports what SyncSourceTags changed.
 type SyncResult struct {
 	Added        int
-	Removed      int
+	Retired      int
 	RatingFilled bool
 }
 
 // SyncSourceTags reconciles the tags one source contributed to an image (the
-// image_tags rows with tagger_name = site, is_auto = 0) to exactly the
-// incoming set: incoming tags are added attributed to the site (an existing
-// manual / auto / other-source row keeps its own attribution), and, when prune
-// is set, tags the source no longer carries are dropped. Prune is off when the
-// site holds more than one post on the image - the slice is shared per site,
-// so one post's fetch must not sweep its sibling's tags. An incoming rating
-// tag is skipped when the image is already rated, so a merge never displaces
-// an existing rating.
-func (s *Service) SyncSourceTags(imageID int64, tagIDs []int64, site string, prune bool) (SyncResult, error) {
+// image_tags rows with tagger_name = site, is_auto = 0) against the incoming
+// set: incoming tags are added attributed to the site (an existing manual /
+// auto / other-source row keeps its own attribution), a re-confirmed row
+// sheds its stale flag, and, when reconcile is set, tags the source no
+// longer carries are flagged stale rather than removed - the row stays until
+// the operator acts. Reconcile is off when the site holds more than one post
+// on the image - the slice is shared per site, so one post's fetch must not
+// flag its sibling's tags. An incoming rating tag is skipped when the image
+// is already rated, so a merge never displaces an existing rating.
+func (s *Service) SyncSourceTags(imageID int64, tagIDs []int64, site string, reconcile bool) (SyncResult, error) {
 	if site == "" {
 		return SyncResult{}, errors.New("source label required")
 	}
@@ -267,24 +277,37 @@ func (s *Service) SyncSourceTags(imageID int64, tagIDs []int64, site string, pru
 				res.Added++
 				if isRating {
 					res.RatingFilled = true
+					// A payload carrying more than one rating (a PTR hash with
+					// conflicting ratings) must not stack them: the first wins.
+					alreadyRated = true
 				}
 			}
 		}
 
-		if !prune {
+		// A tag the source lists again is current, whatever flagged it before.
+		for _, tagID := range tagIDs {
+			if _, err := tx.Exec(
+				`UPDATE image_tags SET stale = 0
+				 WHERE image_id = ? AND tag_id = ? AND tagger_name = ? AND stale = 1`,
+				imageID, tagID, site); err != nil {
+				return err
+			}
+		}
+		if !reconcile {
 			out = res
 			return nil
 		}
-		// Prune this source's own tags no longer in the incoming set, but never a
+		// Flag this source's own tags no longer in the incoming set, but never a
 		// rating: an existing rating is protected, so it is neither overwritten
-		// (skipped above) nor swept out here.
+		// (skipped above) nor flagged here.
 		ratingCat := s.ratingCatID
 		if ratingCat == 0 {
 			ratingCat = -1
 		}
 		rows, err := tx.Query(
 			`SELECT it.tag_id FROM image_tags it JOIN tags t ON t.id = it.tag_id
-			 WHERE it.image_id = ? AND it.tagger_name = ? AND it.is_auto = 0 AND t.category_id != ?`,
+			 WHERE it.image_id = ? AND it.tagger_name = ? AND it.is_auto = 0
+			   AND it.stale = 0 AND t.category_id != ?`,
 			imageID, site, ratingCat)
 		if err != nil {
 			return err
@@ -306,10 +329,12 @@ func (s *Service) SyncSourceTags(imageID int64, tagIDs []int64, site string, pru
 		}
 		_ = rows.Close()
 		for _, tid := range stale {
-			if err := removeTagFromImageTx(tx, imageID, tid); err != nil {
+			if _, err := tx.Exec(
+				`UPDATE image_tags SET stale = 1 WHERE image_id = ? AND tag_id = ?`,
+				imageID, tid); err != nil {
 				return err
 			}
-			res.Removed++
+			res.Retired++
 		}
 		out = res
 		return nil
@@ -335,6 +360,9 @@ func addSourceTagTx(tx *sql.Tx, imageID, tagID int64, site string, ratingCatID i
 		if err := bumpTagUsageTx(tx, tagID, imageID); err != nil {
 			return false, err
 		}
+	}
+	if err := RecordTagSourceTx(tx, imageID, tagID, site); err != nil {
+		return false, err
 	}
 	if err := fanOutImpliedTxImpl(tx, imageID, tagID, ratingCatID, 0); err != nil {
 		return false, err
@@ -514,12 +542,28 @@ func removeTagFromImageTx(tx *sql.Tx, imageID, tagID int64) error {
 }
 
 // RemoveUserTagsFromImage drops the operator's manual tags for one image
-// and adjusts usage counts. Manual tags are is_auto = 0 rows with no
-// tagger_name; a source's tags (is_auto = 0 carrying the site as
-// tagger_name) are left in place - RemoveSourceTagsFromImage handles those.
+// and adjusts usage counts. Manual tags are is_auto = 0, is_implied = 0
+// rows with no tagger_name; a source's tags (is_auto = 0 carrying the
+// site as tagger_name) are left in place - RemoveSourceTagsFromImage
+// handles those. Implied rows carry a NULL tagger_name too but were
+// never added by the operator; the closure cleanup sweeps them when
+// their parent goes.
 func (s *Service) RemoveUserTagsFromImage(imageID int64) error {
 	return s.inWriteTx(func(tx *sql.Tx) error {
-		tagIDs, err := scanTagIDsTx(tx, `SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 0 AND (tagger_name IS NULL OR tagger_name = '')`, imageID)
+		tagIDs, err := scanTagIDsTx(tx, `SELECT tag_id FROM image_tags WHERE image_id = ? AND is_auto = 0 AND is_implied = 0 AND (tagger_name IS NULL OR tagger_name = '')`, imageID)
+		if err != nil {
+			return err
+		}
+		return removeTagIDsFromImageTx(tx, imageID, tagIDs)
+	})
+}
+
+// RemoveStaleTagsFromImage drops the image's stale rows - tags a source
+// dropped on its last refresh (stale = 1) - adjusting usage counts and the
+// implied closure like the other removers.
+func (s *Service) RemoveStaleTagsFromImage(imageID int64) error {
+	return s.inWriteTx(func(tx *sql.Tx) error {
+		tagIDs, err := scanTagIDsTx(tx, `SELECT tag_id FROM image_tags WHERE image_id = ? AND stale = 1`, imageID)
 		if err != nil {
 			return err
 		}

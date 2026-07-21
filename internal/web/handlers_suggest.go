@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/search"
-	"github.com/leqwin/monbooru/internal/searchkw"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/search"
+	"github.com/monbooru/monbooru/internal/searchkw"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // suggestItem is the uniform row shape of the shared suggest dropdown
@@ -546,6 +546,23 @@ func (s *Server) systemSuggestLevel1(prefix string) []suggestItem {
 	return rows
 }
 
+// expansionRows renders the static level-2 vocabulary a keyword declares
+// in searchkw.Expansions, filtered by what the user has typed so far.
+func expansionRows(key, valPrefix string) []suggestItem {
+	descs := searchkw.ExpansionDescriptions[key]
+	var rows []suggestItem
+	for _, exp := range searchkw.Expansions[key] {
+		if !strings.HasPrefix(exp, valPrefix) {
+			continue
+		}
+		rows = append(rows, suggestItem{
+			Name:        key + ":" + exp,
+			Description: descs[exp],
+		})
+	}
+	return rows
+}
+
 // quotedSDLabelRows wraps each label as `<key>:"<label>"` so multi-
 // word model / sampler / prompt values stay one parser token.
 func quotedSDLabelRows(key string, labels []string) []suggestItem {
@@ -582,9 +599,11 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []suggestItem {
 	}
 	// Source labels are operator-edited free text that frequently contains
 	// spaces; quote each suggestion so the parser still treats it as one
-	// token. Mirrors the collection: branch above.
+	// token. Mirrors the collection: branch above. The none / any
+	// membership shortcuts lead, since no real label can reach them.
 	if key == "source" {
-		return quotedSDLabelRows("source", s.querySourceLabels(valPrefix, 10))
+		return append(expansionRows(key, valPrefix),
+			quotedSDLabelRows("source", s.querySourceLabels(valPrefix, 10))...)
 	}
 	// name: surfaces distinct file basenames whose substring matches
 	// the prefix, mirroring the executor's `canonical_path LIKE '%/<val>%'`
@@ -621,19 +640,8 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []suggestItem {
 		}
 		return quotedSDLabelRows("prompt", s.querySDStringField("prompt", "prompt", valPrefix, 10, true))
 	}
-	if expansions, ok := searchkw.Expansions[key]; ok {
-		descs := searchkw.ExpansionDescriptions[key]
-		var rows []suggestItem
-		for _, exp := range expansions {
-			if !strings.HasPrefix(exp, valPrefix) {
-				continue
-			}
-			rows = append(rows, suggestItem{
-				Name:        key + ":" + exp,
-				Description: descs[exp],
-			})
-		}
-		return rows
+	if _, ok := searchkw.Expansions[key]; ok {
+		return expansionRows(key, valPrefix)
 	}
 	// Filter keyword without a static expansion (folder, folderonly,
 	// generated): no level-2 hint - the user types the value freeform.

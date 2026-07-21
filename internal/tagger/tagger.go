@@ -12,12 +12,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/config"
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/gallery"
-	"github.com/leqwin/monbooru/internal/jobs"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/config"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/gallery"
+	"github.com/monbooru/monbooru/internal/jobs"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/tags"
 	ort "github.com/yalue/onnxruntime_go"
 )
 
@@ -507,6 +507,15 @@ func storeResults(
 		}
 	}
 
+	// Every emitted tag records the tagger in the source ledger - the
+	// fresh inserts below and the tags already on the image alike, since
+	// re-confirming an existing row is what the ledger captures.
+	for tid, t := range targets {
+		if err := tags.RecordTagSourceTx(tx, imageID, tid, t.taggerName); err != nil {
+			return fmt.Errorf("record tag source %d: %w", tid, err)
+		}
+	}
+
 	for tid, t := range toAdd {
 		var tname any
 		if t.taggerName != "" {
@@ -556,50 +565,21 @@ func storeResults(
 	return tx.Commit()
 }
 
-// sanitizeLabel coerces a label-file name into the documented tag
-// allowlist. Spaces collapse to underscores; out-of-set runes drop.
-// The colon is preserved so labels like `:3` and `rating:general` round
-// trip unchanged. A label that empties out becomes
-// `_unsupported_<idx>` so the slice index keeps its 1:1 mapping with
-// the model's output channels - dropping the entry would shift every
-// later label and corrupt downstream attribution. The returned bool is
-// false in that fallback case so callers can flag the slot as a
-// placeholder and skip emission at inference time.
+// sanitizeLabel coerces a label-file name into the stored tag form through the
+// same normalizer the add path uses (tags.NormalizeName): spaces fold to
+// underscores, control runes drop, the rest of Unicode is kept. A label that
+// empties out, or holds no content rune, becomes `_unsupported_<idx>` so the
+// slice index keeps its 1:1 mapping with the model's output channels - dropping
+// the entry would shift every later label and corrupt downstream attribution.
+// The returned bool is false in that fallback case so callers can flag the slot
+// as a placeholder and skip emission at inference time.
 func sanitizeLabel(raw string, idx int) (string, bool) {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z',
-			r >= '0' && r <= '9',
-			r == '_' || r == '(' || r == ')' || r == '!' ||
-				r == '@' || r == '#' || r == '$' || r == '.' ||
-				r == '~' || r == '+' || r == '-' || r == ':' ||
-				r == '?' || r == '<' || r == '>' || r == '=' ||
-				r == '^':
-			b.WriteRune(r)
-		case r == ' ' || r == '\t':
-			b.WriteByte('_')
-		}
+	name := tags.NormalizeName(raw)
+	if rs := []rune(name); len(rs) > 200 {
+		name = string(rs[:200])
 	}
-	out := b.String()
-	if len(out) > 200 {
-		out = out[:200]
-	}
-	// Match ValidateTagName: emoticon-only labels like "??", ">_<", "^_^"
-	// are accepted alongside alphanumeric ones; only pure separator-class
-	// punctuation drops to the placeholder slot.
-	hasContent := false
-	for _, r := range out {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') ||
-			r == '?' || r == '<' || r == '>' || r == '=' || r == '^' {
-			hasContent = true
-			break
-		}
-	}
-	if !hasContent {
+	if name == "" || !tags.HasTagContent(name) {
 		return fmt.Sprintf("_unsupported_%d", idx), false
 	}
-	return out, true
+	return name, true
 }

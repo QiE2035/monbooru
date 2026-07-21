@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 var errNotPNG = errors.New("not a PNG file")

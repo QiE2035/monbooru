@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/relations"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/relations"
 )
 
 // relationPresence is the per-source existence answer used to

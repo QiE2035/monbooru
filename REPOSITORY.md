@@ -1,1 +1,1 @@
-https://github.com/leqwin/monbooru
+https://github.com/monbooru/monbooru

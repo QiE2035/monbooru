@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 // ipcMethod identifies the IPC call's intent so a single

@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/config"
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/config"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 const (
@@ -356,6 +356,67 @@ func (s *Server) monloaderPairRemove(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
+	notifyErr := s.teardownMonloaderPairing(r)
+	s.renderTemplate(w, "partials/monloader_pairing.html", s.pairViewData(r))
+	s.renderAuthTokensOOB(w, r)
+	if notifyErr != nil {
+		writeFlashOOB(w, "flash-monloader", "warn", "Removed here, but could not reach monloader - remove the pairing in monloader too.")
+	}
+}
+
+// monloaderLightDisconnect pauses the monloader link from the footer light's
+// kill switch: it suspends every call to monloader without dropping the
+// pairing, so the operator can cut the link and later resume it from the same
+// light with no re-pair.
+func (s *Server) monloaderLightDisconnect(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	if s.pairedWith("monloader") {
+		if err := s.setMonloaderPaused(true); err != nil {
+			logx.Errorf("pairing: pause failed: %v", err)
+		}
+		logx.Infof("pairing: monloader link paused from %s", clientIP(r))
+	}
+	s.renderMonloaderLight(w, r, "paused", "")
+}
+
+// monloaderLightReconnect lifts the pause, resuming connectivity with the
+// credentials that stayed on disk. The light renders "checking" and its load
+// poll probes monloader within a second.
+func (s *Server) monloaderLightReconnect(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	if err := s.setMonloaderPaused(false); err != nil {
+		logx.Errorf("pairing: resume failed: %v", err)
+	}
+	logx.Infof("pairing: monloader link resumed from %s", clientIP(r))
+	s.renderMonloaderLight(w, r, "", "")
+}
+
+// setMonloaderPaused persists the footer light's pause flag.
+func (s *Server) setMonloaderPaused(paused bool) error {
+	return s.withConfig(func(c *config.Config) error {
+		c.Monloader.Paused = paused
+		return nil
+	})
+}
+
+// renderMonloaderLight writes the footer light in the given connection state.
+func (s *Server) renderMonloaderLight(w http.ResponseWriter, r *http.Request, conn, version string) {
+	s.renderTemplate(w, "partials/monloader_light.html", map[string]any{
+		"MonloaderConn":    conn,
+		"MonloaderVersion": version,
+		"MonloaderURL":     s.monloaderWebBase(),
+		"CSRFToken":        s.csrfToken(sessionFromContext(r.Context())),
+	})
+}
+
+// teardownMonloaderPairing drops this side of the monloader pairing and
+// notifies the peer, returning the notify error (nil on success). Shared by
+// the settings unpair and the footer light's kill switch.
+func (s *Server) teardownMonloaderPairing(r *http.Request) error {
 	peerURL := s.monloaderAPIBase()
 	s.cfgMu.RLock()
 	peerToken := s.cfg.Monloader.APIToken
@@ -368,11 +429,7 @@ func (s *Server) monloaderPairRemove(w http.ResponseWriter, r *http.Request) {
 		logx.Errorf("pairing: could not notify monloader of teardown: %v", notifyErr)
 	}
 	logx.Infof("pairing: removed monloader pairing from %s", clientIP(r))
-	s.renderTemplate(w, "partials/monloader_pairing.html", s.pairViewData(r))
-	s.renderAuthTokensOOB(w, r)
-	if notifyErr != nil {
-		writeFlashOOB(w, "flash-monloader", "warn", "Removed here, but could not reach monloader - remove the pairing in monloader too.")
-	}
+	return notifyErr
 }
 
 // removePairing tears down this side of a pairing: it drops the pairing token

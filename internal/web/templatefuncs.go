@@ -9,9 +9,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/search"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/search"
+	"github.com/monbooru/monbooru/internal/tags"
 )
+
+// originTagGroup / originImplicationGroup bundle a relation list by the
+// provenance label that declared each row, so the tag-detail relation
+// sections can head each subgroup with its source.
+type originTagGroup struct {
+	Origin string
+	Stale  bool // the PTR's latest refresh no longer listed these rows
+	Tags   []models.Tag
+}
+
+type originImplicationGroup struct {
+	Origin       string
+	Stale        bool // the PTR's latest refresh no longer carried these edges
+	Implications []models.Implication
+}
 
 // templateFuncs is the FuncMap every template render sees. Lives apart
 // from NewServer so router.go stays routes + middleware + server
@@ -114,18 +130,28 @@ func templateFuncs() template.FuncMap {
 						userTags = append(userTags, t)
 						continue
 					}
+					// Stale rows split into their own group so the current fetch
+					// state stays readable at a glance.
 					key := t.TaggerName
+					if t.Stale {
+						key += "\x00stale"
+					}
 					if _, ok := byUserSource[key]; !ok {
-						title := "Tags added by " + key
-						if strings.EqualFold(key, "ptr") {
+						name := t.TaggerName
+						if strings.EqualFold(name, "ptr") {
 							// The source label stays "ptr" (search, image_sources);
 							// only the heading spells it out.
-							title = "Tags added by the Public Tag Repository"
+							name = "the Public Tag Repository"
+						}
+						title := "Tags added by " + name
+						if t.Stale {
+							title = "Stale tags added by " + name
 						}
 						userSourceOrder = append(userSourceOrder, key)
 						byUserSource[key] = &imageTagSourceGroup{
-							Source: key,
+							Source: t.TaggerName,
 							Title:  title,
+							Stale:  t.Stale,
 						}
 					}
 					byUserSource[key].Tags = append(byUserSource[key].Tags, t)
@@ -152,8 +178,17 @@ func templateFuncs() template.FuncMap {
 					Tags:   userTags,
 				})
 			}
+			// Current groups before the stale ones, whatever order the
+			// rows arrived in.
 			for _, k := range userSourceOrder {
-				out = append(out, *byUserSource[k])
+				if !byUserSource[k].Stale {
+					out = append(out, *byUserSource[k])
+				}
+			}
+			for _, k := range userSourceOrder {
+				if byUserSource[k].Stale {
+					out = append(out, *byUserSource[k])
+				}
 			}
 			for _, k := range order {
 				g := byTagger[k]
@@ -183,6 +218,88 @@ func templateFuncs() template.FuncMap {
 				}
 			}
 			return out
+		},
+		// sourceExtraTags lists the tags a source also applied but that
+		// display under another group (that source is not their first
+		// writer), so the group header can reveal the source's full
+		// contribution. The ledger keys match the group source: an empty
+		// tagger lands under "user" both here and in RecordTagSourceTx.
+		"sourceExtraTags": func(group imageTagSourceGroup, tagList []models.ImageTag, ledger map[int64][]tags.TagSource) []models.ImageTag {
+			if group.Stale {
+				// The current group of the same source already reveals the
+				// source's full contribution.
+				return nil
+			}
+			primary := map[int64]bool{}
+			for _, t := range group.Tags {
+				primary[t.TagID] = true
+			}
+			var out []models.ImageTag
+			for _, t := range tagList {
+				if t.IsImplied || primary[t.TagID] {
+					continue
+				}
+				for _, src := range ledger[t.TagID] {
+					if src.Source == group.Source {
+						out = append(out, t)
+						break
+					}
+				}
+			}
+			return out
+		},
+		"groupTagsByOrigin": func(list []models.Tag) []originTagGroup {
+			// Stale rows get their own group, sorted after the current ones.
+			idx := map[string]int{}
+			var out []originTagGroup
+			for _, t := range list {
+				key := t.Origin
+				if t.Stale {
+					key += "\x00stale"
+				}
+				i, ok := idx[key]
+				if !ok {
+					i = len(out)
+					idx[key] = i
+					out = append(out, originTagGroup{Origin: t.Origin, Stale: t.Stale})
+				}
+				out[i].Tags = append(out[i].Tags, t)
+			}
+			sort.SliceStable(out, func(i, j int) bool { return !out[i].Stale && out[j].Stale })
+			return out
+		},
+		"groupImplicationsByOrigin": func(list []models.Implication) []originImplicationGroup {
+			idx := map[string]int{}
+			var out []originImplicationGroup
+			for _, im := range list {
+				key := im.Origin
+				if im.Stale {
+					key += "\x00stale"
+				}
+				i, ok := idx[key]
+				if !ok {
+					i = len(out)
+					idx[key] = i
+					out = append(out, originImplicationGroup{Origin: im.Origin, Stale: im.Stale})
+				}
+				out[i].Implications = append(out[i].Implications, im)
+			}
+			sort.SliceStable(out, func(i, j int) bool { return !out[i].Stale && out[j].Stale })
+			return out
+		},
+		// originLabel spells a provenance label for a relation subheading,
+		// mirroring the meta line's user/ptr handling.
+		"originLabel": func(kinds map[string]string, origin string) string {
+			switch {
+			case origin == "":
+				return "an unrecorded source"
+			case kinds[origin] == "user":
+				return "the user"
+			case kinds[origin] == "ptr" || strings.EqualFold(origin, "ptr"):
+				return "the Public Tag Repository"
+			default:
+				return origin
+			}
 		},
 		"autoConfPct": func(c *float64) string {
 			if c == nil {

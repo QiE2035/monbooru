@@ -1,4 +1,4 @@
-module github.com/leqwin/monbooru
+module github.com/monbooru/monbooru
 
 go 1.25.10
 

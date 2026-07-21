@@ -121,7 +121,7 @@ func buildSpec(baseURL string) map[string]any {
 					"description": "What a duplicate push or enrich folded into the existing image. The merge reconciles the source's own tag slice to the pushed set; tags owned by the operator, the auto-tagger, or another source are never touched.",
 					"properties": map[string]any{
 						"tags_added":    map[string]any{"type": "integer"},
-						"tags_removed":  map[string]any{"type": "integer", "description": "Tags this source contributed earlier and no longer lists"},
+						"tags_retired":  map[string]any{"type": "integer", "description": "Tags this source contributed earlier and no longer lists, kept but flagged stale"},
 						"rating_filled": map[string]any{"type": "boolean", "description": "True when the push supplied a rating and the image had none; an existing rating is never displaced"},
 						"source_added":  map[string]any{"type": "boolean"},
 					},
@@ -206,6 +206,11 @@ func buildSpec(baseURL string) map[string]any {
 						"thumbnail_url": map[string]any{"type": "string"},
 						"phash":         map[string]any{"type": "string", "nullable": true, "description": "16-char hex perceptual hash; null until the phash backfill or ingest has populated it."},
 						"tags":          map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/Tag"}},
+						"tag_sources": map[string]any{
+							"type":                 "object",
+							"description":          "Per-tag source ledger keyed by the tag's category:name form (bare for general): every source that applied or re-confirmed the tag. Present on the single-image GET only.",
+							"additionalProperties": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+						},
 					},
 				},
 				"ImageRelations": map[string]any{

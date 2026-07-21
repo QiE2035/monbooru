@@ -3,7 +3,7 @@ package relations
 import (
 	"database/sql"
 
-	"github.com/leqwin/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/db"
 )
 
 // ImageRelations is the per-image relations summary the detail panel

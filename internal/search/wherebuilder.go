@@ -7,10 +7,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/searchkw"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/searchkw"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // isPureTagExpr reports whether expr's data SELECT should pin
@@ -100,7 +101,7 @@ func isPureTagExpr(expr Expr) bool {
 		return true
 	case FilterExpr:
 		switch e.Key {
-		case "cat", "rating", "tagged", "autotagged", "inbox",
+		case "cat", "rating", "tagged", "autotagged", "stale", "inbox",
 			"width", "height", "date", "ratio", "pages", "tagcount":
 			return true
 		}
@@ -204,7 +205,7 @@ func containsTagPredicate(expr Expr) bool {
 		return true
 	case FilterExpr:
 		switch e.Key {
-		case "cat", "tagged", "autotagged", "folder", "folderonly":
+		case "cat", "tagged", "autotagged", "stale", "folder", "folderonly":
 			return true
 		}
 		return !searchkw.IsKeyword(e.Key)
@@ -258,6 +259,38 @@ func collectAndedTags(expr Expr) []TagExpr {
 	}
 	walk(expr)
 	return out
+}
+
+// expensiveAdjacencyTags reports whether expr's tag predicate forces the
+// newest/filesize adjacency cursor to temp-sort a broad matched set
+// instead of riding a seekable leg: a wildcard tag (its LIST SUBQUERY
+// scans every tag row and resolves to many canonicals) or 3+ ANDed tags.
+// Those get the id-bucket bound like the random shape; a lone exact or
+// cat-qualified tag keeps its own index seek unbucketed.
+func expensiveAdjacencyTags(expr Expr) bool {
+	if len(collectAndedTags(expr)) >= 3 {
+		return true
+	}
+	found := false
+	var walk func(Expr)
+	walk = func(e Expr) {
+		switch v := e.(type) {
+		case AndExpr:
+			walk(v.Left)
+			walk(v.Right)
+		case OrExpr:
+			walk(v.Left)
+			walk(v.Right)
+		case NotExpr:
+			walk(v.Expr)
+		case TagExpr:
+			if v.Wildcard != "" {
+				found = true
+			}
+		}
+	}
+	walk(expr)
+	return found
 }
 
 // collectAndedFilterLeaves returns the FilterExpr leaves whose Key
@@ -913,15 +946,20 @@ func (b *whereBuilder) scalarComp(template, op string, n any, ok bool) string {
 	return fmt.Sprintf(template, op)
 }
 
+// dualMetadataLike matches a substring in either metadata table's named
+// column. The IN-subquery shape mirrors buildSeedFilter for the same reason:
+// a correlated EXISTS makes the planner walk images and probe each metadata
+// table by image_id rowid, one seek per visible row. No index can serve a
+// substring LIKE, so the uncorrelated form scans the (small) metadata tables
+// once instead - tens of thousands of rows against a million images.
 func (b *whereBuilder) dualMetadataLike(sdCol, comfyCol, val string) string {
 	if val == "" {
 		return "1=0"
 	}
 	pat := "%" + db.EscapeLike(val) + "%"
 	b.args = append(b.args, pat, pat)
-	sm := b.imageIDExists("sd_metadata sm", "sm", "sm."+sdCol+` LIKE ? ESCAPE '\'`, false)
-	cm := b.imageIDExists("comfyui_metadata cm", "cm", "cm."+comfyCol+` LIKE ? ESCAPE '\'`, false)
-	return "(" + sm + " OR " + cm + ")"
+	return `(i.id IN (SELECT image_id FROM sd_metadata WHERE ` + sdCol + ` LIKE ? ESCAPE '\')` +
+		` OR i.id IN (SELECT image_id FROM comfyui_metadata WHERE ` + comfyCol + ` LIKE ? ESCAPE '\'))`
 }
 
 // fileTypeBuckets is the set of file_type values a type:/mime: query may
@@ -984,6 +1022,7 @@ var filterBuilders = map[string]func(*whereBuilder, FilterExpr) string{
 	"via":        (*whereBuilder).buildViaFilter,
 	"tagged":     (*whereBuilder).buildTaggedFilter,
 	"autotagged": (*whereBuilder).buildAutotaggedFilter,
+	"stale":      (*whereBuilder).buildStaleFilter,
 	"folder":     (*whereBuilder).buildFolderFilter,
 	"folderonly": (*whereBuilder).buildFolderonlyFilter,
 	"generated":  (*whereBuilder).buildGeneratedFilter,
@@ -1049,16 +1088,25 @@ func (b *whereBuilder) buildAIFilter(e FilterExpr) string {
 }
 
 // buildSourceFilter matches any origin whose site equals the value, the same
-// any-membership shape as collection:. An empty value (the bare `source:`
+// any-membership shape as collection:. `source:none` (and the bare `source:`
 // form) matches images that carry no origin at all - the freshly-ingested
-// triage set. NOCASE so a user who wrote "Pixiv" once and types
-// `source:pixiv` later still finds the row.
+// triage set; `source:any` is the inverse. `any` / `none` shadow a site
+// literally labelled that, as ai:/collection:/relation: do. NOCASE so a user
+// who wrote "Pixiv" once and types `source:pixiv` later still finds the row.
+//
+// The membership test is uncorrelated on purpose: a correlated EXISTS makes
+// the planner drive from images and probe image_sources once per visible row,
+// which is linear in library size (1.5 s at 1M) however few origins exist.
+// The IN form seeks idx_image_sources_site once and rowid-seeks back.
 func (b *whereBuilder) buildSourceFilter(e FilterExpr) string {
-	if e.Val == "" {
+	switch strings.ToLower(e.Val) {
+	case "", "none":
 		return "NOT EXISTS (SELECT 1 FROM image_sources s WHERE s.image_id = i.id)"
+	case "any":
+		return "i.id IN (SELECT image_id FROM image_sources)"
 	}
 	b.args = append(b.args, e.Val)
-	return "EXISTS (SELECT 1 FROM image_sources s WHERE s.image_id = i.id AND s.site = ? COLLATE NOCASE)"
+	return "i.id IN (SELECT image_id FROM image_sources WHERE site = ? COLLATE NOCASE)"
 }
 
 func (b *whereBuilder) buildCatFilter(e FilterExpr) string {
@@ -1347,6 +1395,22 @@ func (b *whereBuilder) buildAutotaggedFilter(e FilterExpr) string {
 	return b.imageTagsPredicate("it.is_auto = 1", !val)
 }
 
+// buildStaleFilter matches images carrying a source-dropped (stale) tag.
+// `stale:any` (and the bare form) is any stale tag; `stale:none` is the
+// inverse; `stale:<tag>` narrows to one tag going stale on the image, resolved
+// through the alias canonical like every tag filter. `any` / `none` shadow a
+// tag literally named that, as ai:/collection:/relation: do.
+func (b *whereBuilder) buildStaleFilter(e FilterExpr) string {
+	switch strings.ToLower(e.Val) {
+	case "", "any":
+		return b.imageTagsPredicate("it.stale = 1", false)
+	case "none":
+		return b.imageTagsPredicate("it.stale = 1", true)
+	}
+	b.args = append(b.args, tags.NormalizeTagName(e.Val))
+	return b.imageTagsPredicate("it.stale = 1 AND it.tag_id IN (SELECT COALESCE(canonical_tag_id, id) FROM tags WHERE name = ?)", false)
+}
+
 // buildFolderFilter does a recursive match: this folder or anywhere
 // beneath it. `folder:` alone is the recursive root - every
 // non-missing image lives at or below the gallery root. Use
@@ -1447,19 +1511,19 @@ func (b *whereBuilder) buildDefaultFilter(e FilterExpr) string {
 		// iter. ExecuteAdjacent's bucket walk pays this 2 000 times per
 		// random-cat back_q render and the resolver result is constant
 		// across the walk.
-		if ids, ok := b.resolveCategoryTagByName(e.Key, strings.ToLower(e.Val)); ok {
+		if ids, ok := b.resolveCategoryTagByName(e.Key, tags.NormalizeTagName(e.Val)); ok {
 			if len(ids) == 0 {
 				return "1=0"
 			}
 			return inlineImageTagsTagIDExists(ids)
 		}
-		b.args = append(b.args, strings.ToLower(e.Val), e.Key)
+		b.args = append(b.args, tags.NormalizeTagName(e.Val), e.Key)
 		return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(t.canonical_tag_id, t.id) FROM tags t JOIN tag_categories tc ON tc.id = t.category_id WHERE t.name = ? AND tc.name = ?)`, false)
 	}
 	if e.Val == "" {
 		return "1=1"
 	}
-	b.args = append(b.args, strings.ToLower(e.Key+":"+e.Val))
+	b.args = append(b.args, tags.NormalizeTagName(e.Key+":"+e.Val))
 	return b.imageTagsPredicate(`it.tag_id IN (SELECT COALESCE(canonical_tag_id, id) FROM tags WHERE name = ?)`, false)
 }
 
@@ -1476,29 +1540,50 @@ func (b *whereBuilder) buildDefaultFilter(e FilterExpr) string {
 // that date" result.
 var dateFilterRe = regexp.MustCompile(`^\d{4}(-\d{2}(-\d{2}(T\d{2}(:\d{2}(:\d{2})?)?)?)?)?$`)
 
-// endOfPrecisionISO returns the lexicographically-largest ingested_at
-// value that still belongs to the truncated precision the caller named.
-// `2026-05-22` -> `2026-05-22T23:59:59Z` (end of day, matches the
-// historical contract), `2026-05-22T06` -> `2026-05-22T06:59:59Z`
-// (end of hour), `2026-05-22T19:23` -> `2026-05-22T19:23:59Z` (end of
-// minute), `2026-05-22T19:23:42` -> `2026-05-22T19:23:42Z` (the exact
-// second). Bare years and months keep the historical end-of-day
-// append since `2026T23:59:59Z` still sorts lex-larger than any
-// `2026-MM-DD...` timestamp.
-func endOfPrecisionISO(val string) string {
-	tIdx := strings.Index(val, "T")
-	if tIdx < 0 {
-		return val + "T23:59:59Z"
+// parseDatePrecision reads a date filter value at whatever precision the
+// caller named, interpreted in the display timezone (time.Local, driven
+// by TZ - the same zone every rendered timestamp uses), and returns the
+// window's start instant plus the step that closes it. ok=false on a
+// value the calendar rejects (month 13, day 32) even when the shape
+// regexp passed.
+func parseDatePrecision(val string) (start time.Time, next func(time.Time) time.Time, ok bool) {
+	for _, p := range []struct {
+		layout string
+		next   func(time.Time) time.Time
+	}{
+		{"2006-01-02T15:04:05", func(t time.Time) time.Time { return t.Add(time.Second) }},
+		{"2006-01-02T15:04", func(t time.Time) time.Time { return t.Add(time.Minute) }},
+		{"2006-01-02T15", func(t time.Time) time.Time { return t.Add(time.Hour) }},
+		{"2006-01-02", func(t time.Time) time.Time { return t.AddDate(0, 0, 1) }},
+		{"2006-01", func(t time.Time) time.Time { return t.AddDate(0, 1, 0) }},
+		{"2006", func(t time.Time) time.Time { return t.AddDate(1, 0, 0) }},
+	} {
+		if t, err := time.ParseInLocation(p.layout, val, time.Local); err == nil {
+			return t, p.next, true
+		}
 	}
-	switch strings.Count(val[tIdx+1:], ":") {
-	case 0:
-		return val + ":59:59Z"
-	case 1:
-		return val + ":59Z"
-	case 2:
-		return val + "Z"
+	return time.Time{}, nil, false
+}
+
+// dateBoundStart / dateBoundEnd render a value's window edges as the
+// UTC `YYYY-MM-DDTHH:MM:SSZ` strings ingested_at stores, so the filter
+// means "that day / hour / minute in the operator's timezone" while the
+// comparison stays a plain lexicographic string compare. Empty on a
+// calendar-invalid value.
+func dateBoundStart(val string) string {
+	t, _, ok := parseDatePrecision(val)
+	if !ok {
+		return ""
 	}
-	return val + "T23:59:59Z"
+	return t.UTC().Format("2006-01-02T15:04:05") + "Z"
+}
+
+func dateBoundEnd(val string) string {
+	t, next, ok := parseDatePrecision(val)
+	if !ok {
+		return ""
+	}
+	return next(t).Add(-time.Second).UTC().Format("2006-01-02T15:04:05") + "Z"
 }
 
 func (b *whereBuilder) buildDateFilter(val string) string {
@@ -1506,17 +1591,13 @@ func (b *whereBuilder) buildDateFilter(val string) string {
 	// prefixes so `>=2026-05-14` doesn't match the `>` arm and strip a
 	// single char, leaving an unparseable `=2026-05-14`.
 	//
-	// `ingested_at` is stored as `YYYY-MM-DDTHH:MM:SSZ`; a bare day
-	// payload like `2026-05-14` is shorter than every real timestamp,
-	// so a plain lexicographic compare to it would treat the day as
-	// "the moment just before 00:00:00Z" and exclude every row from
-	// that day under `<=` (and include every row under `>`). The
-	// inclusive operators (`<=`, `>=`) extend the payload to the
-	// end-of-day (or end-of-minute / second when the caller supplied
-	// time precision) so `date:<=2026-05-14` actually catches the last
-	// image ingested at 23:59. The exclusive `>` does the same
-	// (matches: "ingested strictly after day X"); `<` keeps the bare
-	// day so it means "before midnight of day X".
+	// Every payload names a window in the display timezone, rendered to
+	// the UTC bounds `ingested_at` stores. The inclusive operators
+	// (`<=`, `>=`) and the exclusive `>` land on the window edge that
+	// matches their plain-language reading - `date:<=2026-05-14`
+	// catches the last image ingested at 23:59 local, `>` means
+	// "strictly after day X" - while `<` compares against the window's
+	// start ("before midnight of day X").
 	for _, op := range []string{">=", "<=", ">", "<"} {
 		if !strings.HasPrefix(val, op) {
 			continue
@@ -1525,9 +1606,12 @@ func (b *whereBuilder) buildDateFilter(val string) string {
 		if !dateFilterRe.MatchString(date) {
 			return "1=0"
 		}
-		bound := date
+		bound := dateBoundStart(date)
 		if op == "<=" || op == ">" {
-			bound = endOfPrecisionISO(date)
+			bound = dateBoundEnd(date)
+		}
+		if bound == "" {
+			return "1=0"
 		}
 		b.args = append(b.args, bound)
 		return "i.ingested_at " + op + " ?"
@@ -1551,15 +1635,25 @@ func (b *whereBuilder) buildDateFilter(val string) string {
 		// is `<=X` (every day up to and including X), `X..` is `>=X`
 		// (every day from X forward). Mirrors the level-2 cheat-sheet
 		// hint that includes `..` next to `>=` / `<=`.
+		fromBound, toBound := dateBoundStart(from), dateBoundEnd(to)
 		switch {
 		case from == "":
-			b.args = append(b.args, endOfPrecisionISO(to))
+			if toBound == "" {
+				return "1=0"
+			}
+			b.args = append(b.args, toBound)
 			return "i.ingested_at <= ?"
 		case to == "":
-			b.args = append(b.args, from)
+			if fromBound == "" {
+				return "1=0"
+			}
+			b.args = append(b.args, fromBound)
 			return "i.ingested_at >= ?"
 		}
-		b.args = append(b.args, from, endOfPrecisionISO(to))
+		if fromBound == "" || toBound == "" {
+			return "1=0"
+		}
+		b.args = append(b.args, fromBound, toBound)
 		return "i.ingested_at BETWEEN ? AND ?"
 	}
 	// `=YYYY-MM-DD` is the explicit form of the bare `date:YYYY-MM-DD`
@@ -1570,7 +1664,11 @@ func (b *whereBuilder) buildDateFilter(val string) string {
 	if !dateFilterRe.MatchString(val) {
 		return "1=0"
 	}
-	b.args = append(b.args, val, endOfPrecisionISO(val))
+	start, end := dateBoundStart(val), dateBoundEnd(val)
+	if start == "" || end == "" {
+		return "1=0"
+	}
+	b.args = append(b.args, start, end)
 	return "i.ingested_at BETWEEN ? AND ?"
 }
 

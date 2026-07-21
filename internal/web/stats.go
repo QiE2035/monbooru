@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/tagger"
+	"github.com/monbooru/monbooru/internal/tagger"
 )
 
 // rssBreakdown is what the Linux helper returns. anon comes from

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/leqwin/monbooru/internal/jobs"
+	"github.com/monbooru/monbooru/internal/jobs"
 )
 
 // startJob attempts to register a foreground job of the given type. On

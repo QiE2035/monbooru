@@ -1,0 +1,24 @@
+{{define "partials/ptr_contrib_dialog.html"}}
+{{template "ptr_contrib_shell" (dict
+  "Pairs" false
+  "Verb" "add"
+  "Noun" "tag"
+  "Subject" "image"
+  "ActionNote" "auto-accepted"
+  "PickName" "add"
+  "PetitionName" "petition"
+  "PostURL" (printf "/images/%d/ptr-contrib" .ImageID)
+  "HeadNote" (printf "image %d" .ImageID)
+  "SHA256" .SHA256
+  "CSRFToken" .CSRFToken
+  "Provisional" .Provisional
+  "Actionable" .Actionable
+  "HandledCount" (add (len .Queued) (len .Known))
+  "HandledGroups" (list (dict "Rows" .Queued "Note" "queued") (dict "Rows" .Known "Note" "on the PTR"))
+  "Ineligible" .Ineligible
+  "Petitionable" .Petitionable
+  "Petitioned" .Petitioned
+  "PetitionPlaceholder" "not in the image"
+  "PetitionOptions" (list "not in the image" "wrong character" "wrong artist" "duplicate spelling")
+)}}
+{{end}}

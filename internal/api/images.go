@@ -19,12 +19,12 @@ import (
 
 	_ "golang.org/x/image/webp" // register webp decoder for canDecodeImage
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/gallery"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/search"
-	"github.com/leqwin/monbooru/internal/tagger"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/gallery"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/search"
+	"github.com/monbooru/monbooru/internal/tagger"
 )
 
 // applyCreateProvenance writes the supplied provenance fields onto a
@@ -66,6 +66,32 @@ func writeSourceProvenance(g Gallery, imageID int64, source, postID, url, md5, p
 	return gallery.SetSourceParentURL(g.DB, imageID, source, postID, parentURL)
 }
 
+// applySourceProvenance writes the per-source commentary, original, and
+// annotations an enrich or duplicate-merge push carries, skipping empty
+// values. On failure the returned step names what was being applied so
+// each caller can map the error to its own reporting.
+func applySourceProvenance(g Gallery, imageID int64, source, postID, commentary, original string, notes []models.Annotation) (string, error) {
+	if source == "" {
+		return "", nil
+	}
+	if commentary != "" {
+		if err := gallery.SetSourceCommentary(g.DB, imageID, source, postID, commentary); err != nil {
+			return "commentary", err
+		}
+	}
+	if original != "" {
+		if err := gallery.SetSourceOriginal(g.DB, imageID, source, postID, original); err != nil {
+			return "the original source", err
+		}
+	}
+	if len(notes) > 0 {
+		if err := gallery.ReplaceSourceAnnotations(g.DB, imageID, source, postID, notes); err != nil {
+			return "notes", err
+		}
+	}
+	return "", nil
+}
+
 // linkParentRelations turns a booru parent/child declaration into derivative
 // edges once both sides are in the gallery: a pushed post links under the
 // image already holding its declared parent URL, and images whose origins
@@ -105,16 +131,17 @@ func linkParentRelations(g Gallery, imageID int64, url, parentURL string) {
 // mergeSummary reports what a duplicate-merge folded into an existing image.
 type mergeSummary struct {
 	TagsAdded    int  `json:"tags_added"`
-	TagsRemoved  int  `json:"tags_removed"`
+	TagsRetired  int  `json:"tags_retired"`
 	RatingFilled bool `json:"rating_filled"`
 	SourceAdded  bool `json:"source_added"`
 }
 
 // mergeSource folds a re-pushed file's provenance and tags into an existing
 // image instead of discarding them (issue #6): the origin is recorded and the
-// tags imported from that source are reconciled to the incoming set, with the
-// rating protected. Attribution is the source label so each source owns a
-// prunable slice. A push with no source label leaves tags untouched. The
+// tags imported from that source are reconciled against the incoming set,
+// with the rating protected. Attribution is the source label so each source
+// owns its slice; tags the source dropped are flagged stale, never removed.
+// A push with no source label leaves tags untouched. The
 // second return carries unresolvable-tag warnings for the response envelope.
 // A booru origin arriving while the primary is the url-less "ptr" row takes
 // the primary over: a lookup that hits both backends should lead with the
@@ -141,8 +168,8 @@ func (h *Handler) mergeSource(g Gallery, imageID int64, source, postID, url, md5
 		tagIDs, warns := h.resolveTagNames(g, rawTags, source)
 		warnings = warns
 		// The per-site tag slice is shared by every post of that site on the
-		// image, so the reconcile prune only runs while this origin is the
-		// site's sole one; alongside a sibling post the merge is add-only.
+		// image, so the reconcile only runs while this origin is the site's
+		// sole one; alongside a sibling post the merge is add-only.
 		var origins int
 		if err := g.DB.Read.QueryRow(
 			`SELECT COUNT(*) FROM image_sources WHERE image_id = ? AND site = ?`, imageID, source,
@@ -153,7 +180,7 @@ func (h *Handler) mergeSource(g Gallery, imageID int64, source, postID, url, md5
 		if err != nil {
 			return sum, warnings, err
 		}
-		sum.TagsAdded, sum.TagsRemoved, sum.RatingFilled = r.Added, r.Removed, r.RatingFilled
+		sum.TagsAdded, sum.TagsRetired, sum.RatingFilled = r.Added, r.Retired, r.RatingFilled
 	}
 	return sum, warnings, nil
 }
@@ -202,7 +229,8 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 	if err := validateMaxLen("original", strings.TrimSpace(body.Original), maxImageOriginalLen); badRequest(w, err) {
 		return
 	}
-	if err := validateMaxLen("source_md5", strings.TrimSpace(body.SourceMD5), maxSourceMD5Len); badRequest(w, err) {
+	sourceMD5 := strings.TrimSpace(body.SourceMD5)
+	if err := validateMaxLen("source_md5", sourceMD5, maxSourceMD5Len); badRequest(w, err) {
 		return
 	}
 	postID := strings.TrimSpace(body.PostID)
@@ -223,7 +251,7 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 	}
 	verified := true
 	if body.Verify {
-		if body.SourceMD5 == "" {
+		if sourceMD5 == "" {
 			verified = false // asked to verify, but the source reported no md5
 		} else {
 			got, err := gallery.Md5File(canonPath)
@@ -232,7 +260,7 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 				apiError(w, http.StatusInternalServerError, "internal_error", "cannot hash image: "+err.Error())
 				return
 			}
-			if !strings.EqualFold(got, body.SourceMD5) {
+			if !strings.EqualFold(got, sourceMD5) {
 				// A similarity-matched origin serves a different file by
 				// design, so its mismatch is expected rather than a repointed
 				// post; apply the fetch and report it unverified. The flag may
@@ -248,7 +276,7 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	sum, tagWarnings, err := h.mergeSource(g, id, source, postID, strings.TrimSpace(body.URL), strings.TrimSpace(body.SourceMD5), parentURL, body.Tags)
+	sum, tagWarnings, err := h.mergeSource(g, id, source, postID, strings.TrimSpace(body.URL), sourceMD5, parentURL, body.Tags)
 	if err != nil {
 		g.recordFetch(id, "error", "fetch failed while applying tags")
 		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -263,28 +291,11 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 	// Artist commentary and positional notes are attributed to the same
 	// source, so a refetch pulls them in alongside the tags. Both replace what
 	// the source last carried; an empty payload leaves the stored value be.
-	if source != "" {
-		if commentary := strings.TrimSpace(body.Commentary); commentary != "" {
-			if err := gallery.SetSourceCommentary(g.DB, id, source, postID, commentary); err != nil {
-				g.recordFetch(id, "error", "fetch failed while applying commentary")
-				apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
-				return
-			}
-		}
-		if original := strings.TrimSpace(body.Original); original != "" {
-			if err := gallery.SetSourceOriginal(g.DB, id, source, postID, original); err != nil {
-				g.recordFetch(id, "error", "fetch failed while applying the original source")
-				apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
-				return
-			}
-		}
-		if notes := annotationsFromInput(body.Notes); len(notes) > 0 {
-			if err := gallery.ReplaceSourceAnnotations(g.DB, id, source, postID, notes); err != nil {
-				g.recordFetch(id, "error", "fetch failed while applying notes")
-				apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
-				return
-			}
-		}
+	if step, err := applySourceProvenance(g, id, source, postID,
+		strings.TrimSpace(body.Commentary), strings.TrimSpace(body.Original), annotationsFromInput(body.Notes)); err != nil {
+		g.recordFetch(id, "error", "fetch failed while applying "+step)
+		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
 	}
 	g.invalidate()
 	g.recordFetch(id, "ok", fetchSummary(sum, len(body.Tags)))
@@ -303,12 +314,12 @@ func fetchSummary(sum mergeSummary, tagsSent int) string {
 	switch {
 	case tagsSent == 0 && sum.SourceAdded:
 		return "Recorded the source; no tags were fetched."
-	case sum.TagsAdded > 0 && sum.TagsRemoved > 0:
-		return fmt.Sprintf("Fetched tags from the source (+%d, -%d).", sum.TagsAdded, sum.TagsRemoved)
+	case sum.TagsAdded > 0 && sum.TagsRetired > 0:
+		return fmt.Sprintf("Fetched tags from the source (+%d; %d no longer listed there).", sum.TagsAdded, sum.TagsRetired)
 	case sum.TagsAdded > 0:
 		return fmt.Sprintf("Fetched tags from the source (+%d).", sum.TagsAdded)
-	case sum.TagsRemoved > 0:
-		return fmt.Sprintf("Fetched tags from the source (-%d).", sum.TagsRemoved)
+	case sum.TagsRetired > 0:
+		return fmt.Sprintf("Fetched tags from the source (%d no longer listed there).", sum.TagsRetired)
 	default:
 		return "Fetched tags from the source."
 	}
@@ -400,6 +411,11 @@ func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, 
 	}
 
 	resp := makeImageResponse(g, img, tags, aliases)
+	if srcs, err := loadTagSourcesForImage(g, imageID); err != nil {
+		logx.Warnf("buildImageResponse tag sources: %v", err)
+	} else {
+		resp.TagSources = srcs
+	}
 	if cols, err := gallery.CollectionsForImage(g.DB, imageID); err != nil {
 		logx.Warnf("buildImageResponse collections: %v", err)
 	} else {
@@ -651,6 +667,12 @@ func (h *Handler) parseCreateMultipart(w http.ResponseWriter, r *http.Request, g
 	in.commentary = strings.TrimSpace(r.FormValue("commentary"))
 	in.original = strings.TrimSpace(r.FormValue("original"))
 	in.notes = parseNotesField(r.FormValue("notes"))
+	if tagsJSON := r.FormValue("tags"); tagsJSON != "" {
+		if err := json.Unmarshal([]byte(tagsJSON), &in.initialTags); err != nil {
+			apiError(w, http.StatusBadRequest, "invalid_request", "tags must be a JSON array of names")
+			return in, false
+		}
+	}
 	in.collection = strings.TrimSpace(r.FormValue("collection"))
 	if raw := strings.TrimSpace(r.FormValue("collection_order")); raw != "" {
 		n, convErr := strconv.Atoi(raw)
@@ -692,9 +714,6 @@ func (h *Handler) parseCreateMultipart(w http.ResponseWriter, r *http.Request, g
 	}
 	_ = dst.Close()
 
-	if tagsJSON := r.FormValue("tags"); tagsJSON != "" {
-		_ = json.Unmarshal([]byte(tagsJSON), &in.initialTags)
-	}
 	in.imgPath = dstPath
 	in.uploadedToDisk = true
 	return in, true
@@ -920,26 +939,10 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		linkParentRelations(g, img.ID, in.url, in.parentURL)
-		if in.source != "" && in.commentary != "" {
-			if err := gallery.SetSourceCommentary(g.DB, img.ID, in.source, in.postID, in.commentary); err != nil {
-				logx.Warnf("api createImage commentary: %v", err)
-				apiError(w, http.StatusInternalServerError, "internal_error", "duplicate detected but the merge failed: "+err.Error())
-				return
-			}
-		}
-		if in.source != "" && in.original != "" {
-			if err := gallery.SetSourceOriginal(g.DB, img.ID, in.source, in.postID, in.original); err != nil {
-				logx.Warnf("api createImage original: %v", err)
-				apiError(w, http.StatusInternalServerError, "internal_error", "duplicate detected but the merge failed: "+err.Error())
-				return
-			}
-		}
-		if in.source != "" && len(in.notes) > 0 {
-			if err := gallery.ReplaceSourceAnnotations(g.DB, img.ID, in.source, in.postID, in.notes); err != nil {
-				logx.Warnf("api createImage annotations: %v", err)
-				apiError(w, http.StatusInternalServerError, "internal_error", "duplicate detected but the merge failed: "+err.Error())
-				return
-			}
+		if step, err := applySourceProvenance(g, img.ID, in.source, in.postID, in.commentary, in.original, in.notes); err != nil {
+			logx.Warnf("api createImage %s: %v", step, err)
+			apiError(w, http.StatusInternalServerError, "internal_error", "duplicate detected but the merge failed: "+err.Error())
+			return
 		}
 		if in.collection != "" {
 			// Additive: a pool push whose page the gallery already holds still
@@ -1254,6 +1257,36 @@ func loadTagsForImages(g Gallery, ids []int64) (map[int64][]imageTagJSON, error)
 		}
 		tj.TaggerName = tn
 		out[imageID] = append(out[imageID], tj)
+	}
+	return out, rows.Err()
+}
+
+// loadTagSourcesForImage reads the per-tag source ledger for one image,
+// keyed by the tag's category:name form (bare for general) to match the
+// search syntax.
+func loadTagSourcesForImage(g Gallery, imageID int64) (map[string][]string, error) {
+	rows, err := g.DB.Read.Query(`
+		SELECT t.name, tc.name, its.source
+		FROM image_tag_sources its
+		JOIN tags t ON t.id = its.tag_id
+		JOIN tag_categories tc ON tc.id = t.category_id
+		WHERE its.image_id = ?
+		ORDER BY t.name, its.created_at, its.source`, imageID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string][]string{}
+	for rows.Next() {
+		var name, cat, source string
+		if err := rows.Scan(&name, &cat, &source); err != nil {
+			return nil, err
+		}
+		key := name
+		if cat != "general" {
+			key = cat + ":" + name
+		}
+		out[key] = append(out[key], source)
 	}
 	return out, rows.Err()
 }

@@ -3,8 +3,8 @@ package gallery
 import (
 	"errors"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // AnnotationsForImage returns every positional note overlaid on imageID,

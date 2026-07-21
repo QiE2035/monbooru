@@ -14,7 +14,7 @@
     <tbody id="cat-list">
       {{range index . "Categories"}}
       <tr id="cat-row-{{.ID}}">
-        <td><span style="color:{{.Color}}">{{.Name}}</span></td>
+        <td><span style="color:{{.Color}}">{{.Name}}</span>{{if .IsBuiltin}} <span class="field-hint">(built-in)</span>{{end}}</td>
         <td><span style="color:{{.Color}}" class="mono-small">{{.Color}}</span></td>
         <td>
           <div class="cat-actions">
@@ -30,8 +30,6 @@
             <button class="btn-sm btn-danger btn-delete-category"
                     data-id="{{.ID}}" data-name="{{.Name}}"
                     data-csrf="{{$csrf}}">Delete</button>
-            {{else}}
-            <span class="field-hint">(built-in)</span>
             {{end}}
           </div>
         </td>

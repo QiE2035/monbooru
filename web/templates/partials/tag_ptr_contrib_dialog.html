@@ -1,0 +1,23 @@
+{{define "partials/tag_ptr_contrib_dialog.html"}}
+{{template "ptr_contrib_shell" (dict
+  "Pairs" true
+  "Verb" "suggest"
+  "Noun" "relation"
+  "Subject" "tag"
+  "ActionNote" "needs a janitor"
+  "PickName" "pair"
+  "PetitionName" "pair_petition"
+  "PostURL" (printf "/tags/%d/ptr-contrib" .TagID)
+  "HeadNote" (printf "tag %s" .TagName)
+  "CSRFToken" .CSRFToken
+  "Provisional" .Provisional
+  "Actionable" .Actionable
+  "HandledCount" (add (len .Pending) (len .InSync))
+  "HandledGroups" (list (dict "Rows" .Pending "Note" "already suggested") (dict "Rows" .InSync "Note" "on the PTR"))
+  "Ineligible" .Ineligible
+  "Petitionable" .Petitionable
+  "Petitioned" .Petitioned
+  "PetitionPlaceholder" "not equivalent"
+  "PetitionOptions" (list "not equivalent" "not implied" "wrong direction")
+)}}
+{{end}}

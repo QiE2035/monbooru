@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 // validOrderModes enumerates the three session walk orders. Anything
@@ -492,6 +492,7 @@ func (s *Server) sessionDecidePost(w http.ResponseWriter, r *http.Request) {
 	); err != nil {
 		logx.Warnf("session queue drop: %v", err)
 	}
+	cx.InvalidateCaches()
 	if decision == "duplicate" && writeDuplicatePostDecideHeaders(w, cx, left, right) {
 		return
 	}

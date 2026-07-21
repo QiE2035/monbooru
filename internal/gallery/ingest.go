@@ -15,10 +15,10 @@ import (
 
 	_ "golang.org/x/image/webp"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/metadata"
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/metadata"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // FolderPath computes the relative directory of filePath under
@@ -47,6 +47,22 @@ func Ingest(database *db.DB, galleryPath, thumbnailsPath, path, fileType, origin
 	}
 	ClaimOwnership(path)
 	return ingestWithHash(database, galleryPath, thumbnailsPath, path, fileType, hash, origin)
+}
+
+// decodeImageDimensions reads just the header of the image at path and
+// returns its dimensions, or nils when the file can't be opened or
+// decoded - callers treat missing dimensions as non-fatal.
+func decodeImageDimensions(path string) (w, h *int) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil
+	}
+	defer func() { _ = f.Close() }()
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		return nil, nil
+	}
+	return &cfg.Width, &cfg.Height
 }
 
 // ingestWithHash is the body of Ingest minus the HashFile +
@@ -225,14 +241,7 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 		pageCount = &pcVal
 		_ = archive.Close()
 	} else if !IsVideoType(fileType) {
-		f, openErr := os.Open(path)
-		if openErr == nil {
-			if cfg2, _, decErr := image.DecodeConfig(f); decErr == nil {
-				w, h := cfg2.Width, cfg2.Height
-				imgWidth, imgHeight = &w, &h
-			}
-			_ = f.Close()
-		}
+		imgWidth, imgHeight = decodeImageDimensions(path)
 	}
 
 	var sdMeta *models.SDMetadata

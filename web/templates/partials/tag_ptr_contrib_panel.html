@@ -1,0 +1,34 @@
+{{define "partials/tag_ptr_contrib_panel.html"}}
+<div class="ptr-contrib-card monloader-accent">
+  <div class="ptr-contrib-head">
+    <span class="ptr-contrib-title">Public Tag Repository</span>
+  </div>
+  {{if .Provisional}}<p class="field-hint">the repository copy is still syncing, so this diff may overstate what is new.</p>{{end}}
+  {{if .FailedUploads}}<p class="ptr-contrib-failed">{{.FailedUploads}} contribution{{if gt .FailedUploads 1}}s{{end}} failed to upload - {{if .Monloader}}<a href="{{.Monloader}}/ptr" target="_blank" rel="noopener">contribution history</a>{{else}}see monloader's contribution history{{end}}.</p>{{end}}
+  <div class="ptr-contrib-row">
+    <div class="ptr-contrib-lines">
+      {{if and (gt .NewCount 0) (gt .PetitionCount 0)}}
+      <ul>
+        <li><span class="ptr-contrib-plus">++</span> <span class="ptr-count" title="{{.NewTip}}">{{.NewCount}}</span> of this tag's relations {{if eq .NewCount 1}}is{{else}}are{{end}} new to the Public Tag Repository.</li>
+        <li><span class="ptr-contrib-minus">--</span> the Public Tag Repository holds <span class="ptr-count" title="{{.PetitionTip}}">{{.PetitionCount}}</span> relation{{if gt .PetitionCount 1}}s{{end}} for this tag not declared here.</li>
+      </ul>
+      {{else if gt .NewCount 0}}<p><span class="ptr-contrib-plus">++</span> <span class="ptr-count" title="{{.NewTip}}">{{.NewCount}}</span> of this tag's relations {{if eq .NewCount 1}}is{{else}}are{{end}} new to the Public Tag Repository.</p>
+      {{else if gt .PetitionCount 0}}<p><span class="ptr-contrib-minus">--</span> the Public Tag Repository holds <span class="ptr-count" title="{{.PetitionTip}}">{{.PetitionCount}}</span> relation{{if gt .PetitionCount 1}}s{{end}} for this tag not declared here.</p>
+      {{else if .Pullable}}<p class="field-hint">the Public Tag Repository has aliases or implications for this tag to pull.</p>
+      {{else}}<p class="field-hint">nothing new to contribute for this tag.</p>{{end}}
+    </div>
+    <div class="ptr-contrib-actions">
+      {{if .Pullable}}
+      <button type="button" class="btn-ptr-pull monloader-accent"
+              onclick="pullTagPTR('Pull aliases and implications', 'Pull the PTR aliases and implications for this tag?')">Pull aliases and implications</button>
+      {{end}}
+      <button type="button" class="btn-ptr-contribute"
+              {{if and .CanContribute (or (gt .NewCount 0) (gt .PetitionCount 0))}}
+              hx-get="/tags/{{.TagID}}/ptr-contrib-dialog"
+              hx-target="#ptr-contrib-dialog-host" hx-swap="innerHTML"
+              hx-on::after-request="var d=document.getElementById('ptr-contrib-dialog'); if(d) d.showModal(); else htmx.trigger(document.body,'ptr-contrib-closed');"
+              {{else}}disabled{{if .ContribHint}} title="{{.ContribHint}}"{{end}}{{end}}>Contribute...</button>
+    </div>
+  </div>
+</div>
+{{end}}

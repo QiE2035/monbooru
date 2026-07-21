@@ -9,7 +9,7 @@ import (
 	"os"
 	"sort"
 
-	"github.com/leqwin/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/db"
 )
 
 // phashSize is the input-matrix side length (32x32 greyscale) and

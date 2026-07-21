@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/config"
+	"github.com/monbooru/monbooru/internal/config"
 )
 
 // Default filenames for a tagger subfolder. Each can be overridden in

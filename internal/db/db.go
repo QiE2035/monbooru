@@ -467,6 +467,52 @@ func Bootstrap(db *DB) error {
 		"backfill tags.last_used_at")
 	b.ensureColumn("tag_implications", "origin",
 		`ALTER TABLE tag_implications ADD COLUMN origin TEXT NOT NULL DEFAULT ''`)
+	// stale: the attributed source's latest refresh no longer carried the
+	// row; it stays until the operator acts, rendered in a "stale" group.
+	b.ensureColumn("image_tags", "stale",
+		`ALTER TABLE image_tags ADD COLUMN stale INTEGER NOT NULL DEFAULT 0`)
+	b.ensureColumn("tags", "stale",
+		`ALTER TABLE tags ADD COLUMN stale INTEGER NOT NULL DEFAULT 0`)
+	b.ensureColumn("tag_implications", "stale",
+		`ALTER TABLE tag_implications ADD COLUMN stale INTEGER NOT NULL DEFAULT 0`)
+	// Partial indexes over the small stale-row slice. The tag-leading one
+	// serves the /tags per-row stale counts and stale:<tag>; the image one
+	// serves stale:any / stale:none.
+	b.exec("create idx_image_tags_stale_tag",
+		`CREATE INDEX IF NOT EXISTS idx_image_tags_stale_tag ON image_tags(tag_id, image_id) WHERE stale = 1`)
+	b.exec("create idx_image_tags_stale_image",
+		`CREATE INDEX IF NOT EXISTS idx_image_tags_stale_image ON image_tags(image_id) WHERE stale = 1`)
+	// Per-tag source ledger: one row per (image, tag, source) so a tag
+	// several sources agree on shows every confirmation, not just the
+	// first-wins image_tags.tagger_name. Write paths record through
+	// tags.RecordTagSourceTx (including re-confirmations of an existing
+	// row); implied fan-out rows record nothing - their provenance is
+	// the implication edge. The backfill derives the single source each
+	// existing row can attest ('user' when tagger_name is empty).
+	b.backfillIfFreshTable("image_tag_sources",
+		`CREATE TABLE IF NOT EXISTS image_tag_sources (
+			image_id   INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+			tag_id     INTEGER NOT NULL REFERENCES tags(id)   ON DELETE CASCADE,
+			source     TEXT    NOT NULL,
+			created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			PRIMARY KEY (image_id, tag_id, source)
+		)`,
+		`INSERT OR IGNORE INTO image_tag_sources (image_id, tag_id, source, created_at)
+		 SELECT it.image_id, it.tag_id, COALESCE(NULLIF(it.tagger_name, ''), 'user'), it.created_at
+		 FROM image_tags it
+		 JOIN images i ON i.id = it.image_id
+		 JOIN tags t ON t.id = it.tag_id
+		 WHERE it.is_implied = 0`,
+		"backfill image_tag_sources from tagger_name")
+	// Removing a tag from an image drops its ledger rows. A trigger
+	// instead of per-call cleanup because image_tags rows die through
+	// many shapes (single remove, implied sweep, batch strip, tag
+	// delete, FK cascade) and the ledger must never outlive its row.
+	b.exec("create trg_image_tags_sources_ad", `CREATE TRIGGER IF NOT EXISTS trg_image_tags_sources_ad
+		AFTER DELETE ON image_tags
+		BEGIN
+			DELETE FROM image_tag_sources WHERE image_id = OLD.image_id AND tag_id = OLD.tag_id;
+		END`)
 	// Partial covering index for `fav:true` searches. The bare
 	// idx_images_favorited (CREATE in schema.sql) covers both polarities
 	// but isn't partial; the planner under c=5 sometimes prefers

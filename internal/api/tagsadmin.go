@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // toTagResponse projects a fully-joined models.Tag (the shape GetTag /

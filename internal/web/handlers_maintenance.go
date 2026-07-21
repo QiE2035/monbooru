@@ -9,13 +9,13 @@ import (
 	"runtime/debug"
 	"strconv"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/gallery"
-	"github.com/leqwin/monbooru/internal/logx"
-	meta "github.com/leqwin/monbooru/internal/metadata"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/relations"
-	"github.com/leqwin/monbooru/internal/tagger"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/gallery"
+	"github.com/monbooru/monbooru/internal/logx"
+	meta "github.com/monbooru/monbooru/internal/metadata"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/relations"
+	"github.com/monbooru/monbooru/internal/tagger"
 )
 
 // pruneMissingImagesPost queues the missing-row sweep as a background
@@ -155,6 +155,27 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// findFoldedDuplicatesPost recomputes folded_tag_pairs in the background,
+// pairing each pre-widening folded tag with the richer spelling that
+// superseded it for the /tags Folded-duplicates view.
+func (s *Server) findFoldedDuplicatesPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	if !s.startJob(w, models.JobTypeFold) {
+		return
+	}
+	go func() {
+		n, err := s.tagSvc().ScanFoldedDuplicates()
+		if err != nil {
+			s.jobs.Fail(err.Error())
+			return
+		}
+		s.jobs.Complete(fmt.Sprintf("Found %d folded duplicate(s).", n))
+	}()
+	writeInlineFlash(w, "ok", "Folded-duplicate scan started.")
 }
 
 func (s *Server) duplicatesListHandler(w http.ResponseWriter, r *http.Request) {

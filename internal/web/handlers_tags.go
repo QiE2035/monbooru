@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/models"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // tagsPageData embeds baseData so the layout template sees its fields as
@@ -39,12 +39,24 @@ type tagsPageData struct {
 	// ConflictsTotal is the badge count on the sidebar toggle.
 	Conflicts      bool
 	ConflictsTotal int
-	OriginCounts   []tags.OriginCount
+	// Stale narrows to tags with source-dropped usage ("has" / "full");
+	// StaleTotal is the sidebar badge count.
+	Stale      string
+	StaleTotal int
+	// Folded narrows to the folded originals from the last scan; FoldedTotal
+	// is the sidebar badge count.
+	Folded       bool
+	FoldedTotal  int
+	OriginCounts []tags.OriginCount
 	// OriginKinds classifies each origin label on the page for chip
 	// coloring: "user", "auto", "ptr", or "site".
 	OriginKinds map[string]string
 	ShowZero    bool
 	ZeroOnly    bool
+	// BackQS is the resolved listing state each See-detail link carries
+	// as its `back` value, so the detail page can navigate relative to
+	// this search.
+	BackQS string
 }
 
 // originKinds buckets the given origin labels for the template's chip
@@ -127,47 +139,9 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	sortStr := q.Get("sort")
-	if sortStr == "" {
-		sortStr = "usage"
-	}
-	orderStr := q.Get("order")
-	if orderStr != "asc" && orderStr != "desc" {
-		// Default to the natural reading direction per sort: most-used /
-		// newest / most recently applied first, alphabetical A→Z for name.
-		switch sortStr {
-		case "usage", "created", "last_used":
-			orderStr = "desc"
-		default:
-			orderStr = "asc"
-		}
-	}
-	originStr := q.Get("origin")
-	// Plain tags by default; alias rows surface via the explicit sidebar
-	// filter (whose links always carry a type=, so "All" stays reachable).
-	// The legacy origin=alias spelling opts out - it selects alias rows by
-	// structure and would otherwise always come back empty.
-	typeStr := q.Get("type")
-	if !q.Has("type") && originStr != "alias" {
-		typeStr = "tag"
-	}
-	createdAfterRaw := q.Get("created_after")
-	conflictsOnly := q.Get("conflicts") == "1"
-	// show_zero is tri-state: empty/"1" → Show (default so freshly-declared
-	// tags surface without a filter flip); "0" → Hide; "only" → only zero-
-	// usage rows (triage view).
-	zeroParam := q.Get("show_zero")
-	zeroOnly := zeroParam == "only"
-	showZero := zeroOnly || zeroParam != "0"
-	page := 1
-	if p, err := strconv.Atoi(q.Get("page")); err == nil && p > 0 {
-		page = p
-	}
+	p := tagListingParamsFrom(q)
 
-	filter := s.buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr, typeStr, createdAfterRaw, showZero, zeroOnly, page, 100)
-	filter.ConflictsOnly = conflictsOnly
-
-	tagList, total, err := s.tagSvc().ListTags(filter)
+	tagList, total, err := s.tagSvc().ListTags(s.tagListingFilter(p))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -180,11 +154,9 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 	// the gallery handler. Without this the header reads `Tags <total>`
 	// while the body says "No tags found" when a stale ?page=N URL
 	// survives a tag prune.
-	if total > 0 && page > totalPages {
-		page = totalPages
-		filter = s.buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr, typeStr, createdAfterRaw, showZero, zeroOnly, page, 100)
-		filter.ConflictsOnly = conflictsOnly
-		tagList, total, err = s.tagSvc().ListTags(filter)
+	if total > 0 && p.Page > totalPages {
+		p.Page = totalPages
+		tagList, total, err = s.tagSvc().ListTags(s.tagListingFilter(p))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -208,6 +180,16 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	staleTotal, err := s.tagSvc().StaleUsageCount()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	foldedTotal, err := s.tagSvc().FoldedDuplicatesCount()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	originCounts, err := s.tagSvc().OriginCounts()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -227,23 +209,135 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 		Categories:     cats,
 		Implications:   imps,
 		Total:          total,
-		Page:           page,
+		Page:           p.Page,
 		TotalPages:     totalPages,
-		CategoryID:     catIDStr,
-		Prefix:         prefix,
-		Sort:           sortStr,
-		Order:          orderStr,
-		Origin:         originStr,
-		Type:           typeStr,
-		CreatedAfter:   createdAfterRaw,
-		Conflicts:      conflictsOnly,
+		CategoryID:     p.CatID,
+		Prefix:         p.Prefix,
+		Sort:           p.Sort,
+		Order:          p.Order,
+		Origin:         p.Origin,
+		Type:           p.Type,
+		CreatedAfter:   p.CreatedAfter,
+		Conflicts:      p.Conflicts,
 		ConflictsTotal: conflictsTotal,
+		Stale:          p.Stale,
+		StaleTotal:     staleTotal,
+		Folded:         p.Folded,
+		FoldedTotal:    foldedTotal,
 		OriginCounts:   originCounts,
 		OriginKinds:    s.originKinds(pageLabels),
-		ShowZero:       showZero,
-		ZeroOnly:       zeroOnly,
+		ShowZero:       p.ShowZero,
+		ZeroOnly:       p.ZeroOnly,
+		BackQS:         p.backQS(),
 	}
 	s.renderTemplate(w, "tags.html", data)
+}
+
+// tagListingParams are the /tags query values after the page's
+// defaulting rules. The detail page re-resolves its back context
+// through the same struct so prev/next walk the exact listing order.
+type tagListingParams struct {
+	CatID, Prefix, Sort, Order, Origin, Type, CreatedAfter, ZeroParam, Stale string
+	HasType, Conflicts, ShowZero, ZeroOnly, Folded                           bool
+	Page                                                                     int
+}
+
+func tagListingParamsFrom(q url.Values) tagListingParams {
+	p := tagListingParams{
+		CatID:        q.Get("cat"),
+		Prefix:       q.Get("q"),
+		Sort:         q.Get("sort"),
+		Order:        q.Get("order"),
+		Origin:       q.Get("origin"),
+		Type:         q.Get("type"),
+		HasType:      q.Has("type"),
+		CreatedAfter: q.Get("created_after"),
+		Conflicts:    q.Get("conflicts") == "1",
+		ZeroParam:    q.Get("show_zero"),
+		Page:         1,
+	}
+	if s := q.Get("stale"); s == "has" || s == "full" {
+		p.Stale = s
+	}
+	p.Folded = q.Get("folded") == "1"
+	if p.Sort == "" {
+		p.Sort = "usage"
+	}
+	if p.Order != "asc" && p.Order != "desc" {
+		// Default to the natural reading direction per sort: most-used /
+		// newest / most recently applied first, alphabetical A→Z for name.
+		switch p.Sort {
+		case "usage", "created", "last_used":
+			p.Order = "desc"
+		default:
+			p.Order = "asc"
+		}
+	}
+	// Plain tags by default; alias rows surface via the explicit sidebar
+	// filter (whose links always carry a type=, so "All" stays reachable).
+	// The legacy origin=alias spelling opts out - it selects alias rows by
+	// structure and would otherwise always come back empty.
+	if !p.HasType && p.Origin != "alias" {
+		p.Type = "tag"
+	}
+	// show_zero is tri-state: empty/"1" → Show (default so freshly-declared
+	// tags surface without a filter flip); "0" → Hide; "only" → only zero-
+	// usage rows (triage view).
+	p.ZeroOnly = p.ZeroParam == "only"
+	p.ShowZero = p.ZeroOnly || p.ZeroParam != "0"
+	if n, err := strconv.Atoi(q.Get("page")); err == nil && n > 0 {
+		p.Page = n
+	}
+	return p
+}
+
+func (s *Server) tagListingFilter(p tagListingParams) tags.TagFilter {
+	f := s.buildTagFilter(p.CatID, p.Prefix, p.Sort, p.Order, p.Origin, p.Type, p.CreatedAfter, p.ShowZero, p.ZeroOnly, p.Page, 100)
+	f.ConflictsOnly = p.Conflicts
+	f.Stale = p.Stale
+	f.FoldedOnly = p.Folded
+	return f
+}
+
+// backQS encodes the resolved listing state as the `back` value the
+// detail links carry. Keys whose absence differs from an empty value
+// (type's all-vs-default split) are always written; the rest only when
+// set, so the string stays short on the default view.
+func (p tagListingParams) backQS() string {
+	v := url.Values{}
+	if p.Prefix != "" {
+		v.Set("q", p.Prefix)
+	}
+	v.Set("sort", p.Sort)
+	v.Set("order", p.Order)
+	if p.HasType || p.Type != "" {
+		v.Set("type", p.Type)
+	}
+	if p.CatID != "" {
+		v.Set("cat", p.CatID)
+	}
+	if p.Origin != "" {
+		v.Set("origin", p.Origin)
+	}
+	if p.CreatedAfter != "" {
+		v.Set("created_after", p.CreatedAfter)
+	}
+	if p.Conflicts {
+		v.Set("conflicts", "1")
+	}
+	if p.Stale != "" {
+		v.Set("stale", p.Stale)
+	}
+	if p.Folded {
+		v.Set("folded", "1")
+	}
+	if p.ZeroParam != "" {
+		v.Set("show_zero", p.ZeroParam)
+	}
+	if p.Page > 1 {
+		v.Set("page", strconv.Itoa(p.Page))
+	}
+	return v.Encode()
 }
 
 func (s *Server) buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr, typeStr, createdAfterRaw string, showZero, zeroOnly bool, page, limit int) tags.TagFilter {
@@ -391,16 +485,73 @@ func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
 	hxDone(w, r, "Alias "+name+" created.", "/tags?type=alias&q="+url.QueryEscape(name), "/tags?type=alias")
 }
 
+// addTagAliasPost is the tag detail page's inline alias editor: each
+// token in `name` becomes an alias pointing at {id}. Failures flash in
+// place; success refreshes the page so the new rows render.
+func (s *Server) addTagAliasPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
+		return
+	}
+	rawInput := strings.TrimSpace(r.FormValue("name"))
+	if rawInput == "" {
+		writeInlineFlash(w, "err", "Alias name is required.")
+		return
+	}
+	catTags, parseErrMsg := s.parseTagInput(rawInput)
+	if parseErrMsg != "" {
+		writeInlineFlash(w, "err", parseErrMsg)
+		return
+	}
+
+	added := 0
+	var failures []string
+	for _, ct := range catTags {
+		if _, err := s.tagSvc().CreateAlias(ct.name, ct.catID, id); err != nil {
+			failures = append(failures, ct.name+": "+err.Error())
+			continue
+		}
+		added++
+	}
+	if added > 0 {
+		s.Active().InvalidateCaches()
+	}
+	switch {
+	case len(failures) == 0:
+		noun := "alias"
+		if added != 1 {
+			noun = "aliases"
+		}
+		hxDone(w, r, strconv.Itoa(added)+" "+noun+" created.", "", fmt.Sprintf("/tags/%d", id))
+	case added > 0:
+		writeInlineFlash(w, "err", "Added "+strconv.Itoa(added)+". Failed: "+strings.Join(failures, "; "))
+	default:
+		writeInlineFlash(w, "err", strings.Join(failures, "; "))
+	}
+}
+
 func (s *Server) deleteTagHandler(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathInt64(w, r, "id")
 	if !ok {
 		return
 	}
+	tag, _ := s.tagSvc().GetTag(id)
 	if err := s.tagSvc().DeleteTag(id); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	s.Active().InvalidateCaches()
+	// A deleted alias row changes its canonical's relation diff; the tag
+	// detail PTR panel re-fetches on this. An alias delete also confirms
+	// with a flash, matching the implication remove.
+	if tag != nil && tag.IsAlias {
+		setFlashHeader(w, "Alias removed.", "ok", map[string]any{"tag-relations-changed": ""})
+	} else {
+		w.Header().Set("HX-Trigger", "tag-relations-changed")
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -413,12 +564,7 @@ func (s *Server) deleteTagsSearchPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
-	ids, ok := s.startTagScopeJob(w, r)
-	if !ok {
-		return
-	}
-	go s.runDeleteTagsByIDs(ids)
-	w.WriteHeader(http.StatusAccepted)
+	s.startTagScopeRun(w, r, s.runDeleteTagsByIDs)
 }
 
 // runDeleteTagsByIDs deletes the supplied tag ids one by one, reporting

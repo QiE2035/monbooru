@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // updateSourceField writes one column on an existing origin row, keyed by

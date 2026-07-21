@@ -5,15 +5,14 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"image"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // SyncResult summarizes the outcome of a gallery sync.
@@ -301,7 +300,7 @@ func reconcileFile(database *db.DB, galleryPath, thumbnailsPath string, fi syncF
 		reconcileNewFile(database, galleryPath, thumbnailsPath, fi, bySHA, result)
 		return
 	}
-	reconcileExistingSHA(database, galleryPath, fi, row, known, result, reactivated)
+	reconcileExistingSHA(database, galleryPath, fi, row, bySHA, known, result, reactivated)
 }
 
 // reconcileNewFile handles the new-SHA branch: a fresh ingest reusing
@@ -321,7 +320,10 @@ func reconcileNewFile(database *db.DB, galleryPath, thumbnailsPath string, fi sy
 // reconcileExistingSHA routes a SHA hit to one of the four sub-cases:
 // same path (touch / reactivate), known alias (promote or reactivate),
 // new path with vanished canonical (move), or new copy (duplicate).
-func reconcileExistingSHA(database *db.DB, galleryPath string, fi syncFileInfo, row syncBySHARow, known map[string]syncKnownEntry, result *SyncResult, reactivated *int) {
+// A move rewrites the bySHA entry so a later file with the same SHA sees
+// the fresh canonical instead of re-entering the move branch and
+// deleting the row the first move just installed.
+func reconcileExistingSHA(database *db.DB, galleryPath string, fi syncFileInfo, row syncBySHARow, bySHA map[string]syncBySHARow, known map[string]syncKnownEntry, result *SyncResult, reactivated *int) {
 	// Persist the freshly-observed mtime on the touched row so the next
 	// sync's unchanged-shortcut can fire.
 	if _, wErr := database.Write.Exec(
@@ -343,6 +345,7 @@ func reconcileExistingSHA(database *db.DB, galleryPath string, fi syncFileInfo, 
 	if k, knownAlias := known[fi.path]; knownAlias && k.sha256 == fi.sha256 {
 		if _, canonErr := os.Stat(row.canonicalPath); canonErr != nil {
 			promoteAliasToCanonical(database, galleryPath, fi.path, row)
+			bySHA[fi.sha256] = syncBySHARow{id: row.id, canonicalPath: fi.path, isMissing: 0}
 			result.Moved++
 		} else if row.isMissing == 1 {
 			reactivateImage(database, row.id)
@@ -355,6 +358,7 @@ func reconcileExistingSHA(database *db.DB, galleryPath string, fi syncFileInfo, 
 	// otherwise another copy / alias.
 	if _, canonErr := os.Stat(row.canonicalPath); canonErr != nil {
 		moveCanonical(database, galleryPath, fi.path, row.id)
+		bySHA[fi.sha256] = syncBySHARow{id: row.id, canonicalPath: fi.path, isMissing: 0}
 		result.Moved++
 		return
 	}
@@ -569,14 +573,7 @@ func applyInPlaceEdit(database *db.DB, thumbnailsPath, path, fileType, newSHA st
 			imgWidth, imgHeight = &w, &h
 		}
 	} else {
-		f, openErr := os.Open(path)
-		if openErr == nil {
-			if cfg2, _, decErr := image.DecodeConfig(f); decErr == nil {
-				w, h := cfg2.Width, cfg2.Height
-				imgWidth, imgHeight = &w, &h
-			}
-			_ = f.Close()
-		}
+		imgWidth, imgHeight = decodeImageDimensions(path)
 	}
 
 	tx, err := database.Write.Begin()

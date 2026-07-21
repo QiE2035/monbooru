@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/gallery"
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/gallery"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // ratingCeilingPost sets or clears the monbooru_rating_ceiling cookie.
@@ -394,11 +394,12 @@ func (s *Server) fetchSource(w http.ResponseWriter, r *http.Request) {
 	s.ctxMu.RLock()
 	galleryName := s.activeName
 	s.ctxMu.RUnlock()
+	s.recordFetchStatus(galleryName, id, "pending", "")
 	if err := s.EnqueueMetadataFetch(r.Context(), id, galleryName, url); err != nil {
+		s.clearFetchStatus(galleryName, id)
 		externalErr(w, r, "could not reach monloader: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	s.recordFetchStatus(galleryName, id, "pending", "")
 	if isHTMXRequest(r) {
 		writeFetchPending(w, id, 0)
 		return
@@ -424,8 +425,17 @@ func (s *Server) lookupImage(w http.ResponseWriter, r *http.Request) {
 		externalErr(w, r, "unknown lookup backend", http.StatusBadRequest)
 		return
 	}
+	// This route bypasses ContextMiddleware so the outbound call never runs
+	// under ctxMu; snapshot the gallery once so the row read and the enqueue
+	// name can't straddle a concurrent switch.
+	cx := s.Active()
+	if cx == nil {
+		externalErr(w, r, "no active gallery", http.StatusServiceUnavailable)
+		return
+	}
+	galleryName := cx.Name
 	var canonPath, sha string
-	if err := s.db().Read.QueryRow(
+	if err := cx.DB.Read.QueryRow(
 		`SELECT canonical_path, sha256 FROM images WHERE id = ?`, id,
 	).Scan(&canonPath, &sha); err != nil {
 		externalErr(w, r, "image not found", http.StatusNotFound)
@@ -439,19 +449,6 @@ func (s *Server) lookupImage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Like fetchSource, this route bypasses ContextMiddleware so the outbound
-	// call never runs under ctxMu; snapshot the active name under a short lock.
-	s.ctxMu.RLock()
-	galleryName := s.activeName
-	s.ctxMu.RUnlock()
-	if err := s.EnqueueHashLookup(r.Context(), id, galleryName, backend, md5, sha); err != nil {
-		if errors.Is(err, errPTRUnavailable) {
-			externalErr(w, r, err.Error(), http.StatusConflict)
-			return
-		}
-		externalErr(w, r, "could not reach monloader: "+err.Error(), http.StatusBadGateway)
-		return
-	}
 	hashes := "md5 " + md5 + ", sha256 " + sha
 	switch backend {
 	case "ptr":
@@ -460,6 +457,15 @@ func (s *Server) lookupImage(w http.ResponseWriter, r *http.Request) {
 		hashes = "md5 " + md5
 	}
 	s.recordFetchLookup(galleryName, id, hashes)
+	if err := s.EnqueueHashLookup(r.Context(), id, galleryName, backend, md5, sha); err != nil {
+		s.clearFetchStatus(galleryName, id)
+		if errors.Is(err, errPTRUnavailable) {
+			externalErr(w, r, err.Error(), http.StatusConflict)
+			return
+		}
+		externalErr(w, r, "could not reach monloader: "+err.Error(), http.StatusBadGateway)
+		return
+	}
 	if isHTMXRequest(r) {
 		writeFetchPending(w, id, 0)
 		return
@@ -877,6 +883,50 @@ func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
 			dest = "gallery root"
 		}
 		setFlashHeader(w, fmt.Sprintf("Moved image to %s.", dest), "ok", nil)
+		w.Header().Set("HX-Redirect", fmt.Sprintf("/images/%d", id))
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/images/%d", id), http.StatusSeeOther)
+}
+
+// renameImage renames the one image at {id}'s file in place. A `move` job
+// is used for the same watcher-suppression reason as moveImage.
+func (s *Server) renameImage(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
+		return
+	}
+	newName := strings.TrimSpace(r.FormValue("name"))
+
+	if !s.startJob(w, models.JobTypeMove) {
+		return
+	}
+
+	res, renameErr := gallery.RenameImage(s.db(), s.galleryPath(), id, newName)
+	if renameErr != nil {
+		s.jobs.Fail(renameErr.Error())
+		w.WriteHeader(http.StatusBadRequest)
+		writeInlineFlash(w, "err", renameErr.Error())
+		return
+	}
+	s.Active().InvalidateCaches()
+	s.jobs.Complete("Renamed image.")
+
+	newBase := filepath.Base(res.NewCanonicalPath)
+	// The collections-order tile renames in place and wants the final
+	// name back (collisions may have suffixed it); the detail-page
+	// dialog reloads the page instead.
+	if r.FormValue("inline") == "1" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(newBase))
+		return
+	}
+	if isHTMXRequest(r) {
+		setFlashHeader(w, fmt.Sprintf("Renamed image to %s.", newBase), "ok", nil)
 		w.Header().Set("HX-Redirect", fmt.Sprintf("/images/%d", id))
 		w.WriteHeader(http.StatusOK)
 		return

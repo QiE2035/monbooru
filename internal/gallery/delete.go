@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/leqwin/monbooru/internal/db"
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 // DeleteImageResult holds metadata about a deleted image for post-delete cleanup.

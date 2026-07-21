@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 func (s *Server) categoriesHandler(w http.ResponseWriter, r *http.Request) {

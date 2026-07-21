@@ -5,8 +5,24 @@
 
 {{$csrf := .CSRFToken}}
 {{$kinds := .OriginKinds}}
-<div id="tag-detail-page">
-  <p class="tag-detail-crumb"><a href="/tags">‹ Tags</a> <span class="field-hint">/ #{{.Tag.ID}}</span></p>
+<div id="tag-detail-page" data-esc-back="{{if .BackURL}}{{.BackURL}}{{else}}/tags{{end}}">
+  <div class="tag-detail-crumb">
+    <p><a href="{{if .BackURL}}{{.BackURL}}{{else}}/tags{{end}}">‹ Tags</a> <span class="field-hint">/ #{{.Tag.ID}}</span></p>
+    {{if or .PrevURL .NextURL}}
+    <div class="detail-meta-nav">
+      {{if .PrevURL}}
+      <a href="{{.PrevURL}}" class="nav-arrow" title="Previous tag">← Prev</a>
+      {{else}}
+      <span class="nav-arrow nav-arrow-placeholder" aria-hidden="true">← Prev</span>
+      {{end}}
+      {{if .NextURL}}
+      <a href="{{.NextURL}}" class="nav-arrow" title="Next tag">Next →</a>
+      {{else}}
+      <span class="nav-arrow nav-arrow-placeholder" aria-hidden="true">Next →</span>
+      {{end}}
+    </div>
+    {{end}}
+  </div>
 
   <h2 id="tag-detail-header">
     <span id="tag-detail-name" style="color:{{.Tag.CategoryColor}}">{{.Tag.Name}}</span>
@@ -21,10 +37,6 @@
       <button type="button" id="btn-detail-rename" class="btn-sm" data-id="{{.Tag.ID}}" data-name="{{.Tag.Name}}">Rename</button>
       <button type="button" id="btn-detail-category" class="btn-sm">Change category…</button>
       <button type="button" id="btn-detail-alias" class="btn-sm">{{if .Tag.IsAlias}}Repoint to…{{else}}Alias to…{{end}}</button>
-      {{end}}
-      {{if and .MonloaderPaired .MonloaderPTR (not .Tag.IsAlias) (not .IsRating)}}
-      <button type="button" id="btn-detail-ptr" class="btn-sm monloader-accent"
-              title="Add this tag's aliases and implications from the Public Tag Repository">PTR lookup</button>
       {{end}}
       <button type="button" id="btn-detail-delete" class="btn-sm btn-danger"
               data-name="{{.Tag.Name}}" data-category="{{.Tag.CategoryName}}"
@@ -66,68 +78,119 @@
   {{else}}
   <!-- Inbound (aliases, implied by) left, outbound (implies) right; the
        facing rails meet mid-gap in the tag's category color so the two
-       relational blocks read as flowing through the tag. Stats and the
-       recent strip stack below on the left. -->
+       relational blocks read as flowing through the tag. Below the
+       separator, stats sit left and the PTR panel with the recent strip
+       under it sit right. -->
   <div class="tag-detail-cols">
     <div>
       <div class="tag-detail-inbound" style="border-color:{{.Tag.CategoryColor}}">
         <section class="tag-detail-section">
           <h3>Aliases pointing here</h3>
           {{if .Aliases}}
+          {{range groupTagsByOrigin .Aliases}}
+          <p class="relation-origin-sub">{{if .Stale}}stale, {{end}}added by {{originLabel $kinds .Origin}}</p>
           <ul class="tag-list">
-            {{range .Aliases}}
+            {{range .Tags}}
             <li class="tag-item">
               <a href="/tags/{{.ID}}" style="color:{{.CategoryColor}}" title="Alias details">{{.Name}}</a>
-              {{if .Origin}}
-              {{$kind := index $kinds .Origin}}
-              {{if eq $kind "user"}}<span class="origin-user">user</span>{{else}}<span class="origin-chip origin-{{$kind}}" title="{{.Origin}}">{{.Origin}}</span>{{end}}
-              {{end}}
               <button class="tag-remove-btn"
                       hx-delete="/tags/{{.ID}}"
                       hx-headers='{"X-CSRF-Token":"{{$csrf}}"}'
                       hx-confirm="Delete the alias {{.Name}}?"
                       data-confirm-ok="Delete"
-                      hx-on::after-request="if(event.detail.successful){this.closest('li').remove()}"
+                      hx-on::after-request="if(event.detail.successful){pruneRelationRow(this)}"
                       title="Delete this alias">×</button>
             </li>
             {{end}}
           </ul>
+          {{end}}
           {{else}}
           <p class="field-hint">No aliases point at this tag.</p>
           {{end}}
+          <form class="add-tag-form" hx-post="/tags/{{.Tag.ID}}/aliases"
+                hx-target="#alias-add-flash" hx-swap="innerHTML">
+            <input type="hidden" name="_csrf" value="{{$csrf}}">
+            <input type="text" name="name" placeholder="Alias name(s)..." required autocomplete="off">
+            <button type="submit" class="btn-sm">Add</button>
+          </form>
+          <div id="alias-add-flash"></div>
         </section>
 
         <section class="tag-detail-section">
           <h3>Implied by</h3>
           {{if .ImpliedBy}}
+          {{range groupImplicationsByOrigin .ImpliedBy}}
+          <p class="relation-origin-sub">{{if .Stale}}stale, {{end}}added by {{originLabel $kinds .Origin}}</p>
           <ul class="tag-list">
-            {{range .ImpliedBy}}
+            {{range .Implications}}
             <li class="tag-item">
               <a href="/tags/{{.ParentID}}" style="color:{{.ParentCategoryColor}}">{{.ParentName}}</a>
-              {{if .Origin}}
-              {{$kind := index $kinds .Origin}}
-              {{if eq $kind "user"}}<span class="origin-user">user</span>{{else}}<span class="origin-chip origin-{{$kind}}" title="{{.Origin}}">{{.Origin}}</span>{{end}}
-              {{end}}
               <button class="tag-remove-btn"
                       hx-delete="/tags/{{.ParentID}}/implications/{{$.Tag.ID}}"
                       hx-headers='{"X-CSRF-Token":"{{$csrf}}"}'
-                      hx-on::after-request="if(event.detail.successful){this.closest('li').remove()}"
+                      hx-confirm="Remove the implication that {{.ParentName}} implies {{$.Tag.Name}}?"
+                      data-confirm-ok="Remove"
+                      hx-on::after-request="if(event.detail.successful){pruneRelationRow(this)}"
                       title="Remove this implication">×</button>
             </li>
             {{end}}
           </ul>
+          {{end}}
           {{else}}
           <p class="field-hint">Nothing implies this tag.</p>
           {{end}}
+          <form class="add-tag-form" hx-post="/tags/{{.Tag.ID}}/implied-by"
+                hx-target="#implied-by-add-flash" hx-swap="innerHTML">
+            <input type="hidden" name="_csrf" value="{{$csrf}}">
+            <div class="add-tag-input-wrap">
+              <input type="text" name="parent_id" id="implied-by-add-input"
+                     placeholder="Implied by tag(s)..." required autocomplete="off"
+                     data-multi-tags="1"
+                     hx-get="/internal/tags/suggest"
+                     hx-trigger="input changed delay:200ms"
+                     hx-target="#implied-by-add-suggest"
+                     hx-swap="innerHTML"
+                     hx-vals='js:{q: (document.getElementById("implied-by-add-input").value || "").split(/\s+/).pop()}'
+                     onkeydown="handleSuggestKey(event, 'implied-by-add-suggest', 'implied-by-add-input')">
+              <div id="implied-by-add-suggest" class="suggest-dropdown tag-suggest-dropdown"></div>
+            </div>
+            <button type="submit" class="btn-sm">Add</button>
+          </form>
+          <div id="implied-by-add-flash"></div>
         </section>
       </div>
+    </div>
 
+    <div>
+      <div class="tag-detail-outbound" style="border-color:{{.Tag.CategoryColor}}">
+        <section class="tag-detail-section">
+          <h3>Implies</h3>
+          <div id="implications-editor" data-tag-id="{{.Tag.ID}}">
+            {{template "partials/implications_dialog.html" (dict "Parent" .Tag "Implications" .Implications "CSRFToken" $csrf "OriginKinds" $kinds)}}
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <hr class="tag-detail-sep">
+
+  <div class="tag-detail-cols">
+    <div>
       <!-- Applied-by and the histogram aggregate every row the tag
            carries - seconds on a monster tag - so they arrive as one
            lazy fragment after first paint. -->
       <section class="tag-detail-section"
                hx-get="/tags/{{.Tag.ID}}/usage" hx-trigger="load" hx-swap="innerHTML">Loading…</section>
+    </div>
 
+    <div>
+      {{if and .MonloaderUsable (not .IsRating)}}
+      <div id="ptr-contrib-panel" hx-get="/tags/{{.Tag.ID}}/ptr-contrib-panel" hx-trigger="load, implication-added from:body, tag-relations-changed from:body, ptr-contrib-closed from:body, monloader-status-changed from:body" hx-swap="innerHTML"></div>
+      {{/* The dialog mounts here, outside the panel, so a panel refetch never
+           destroys an open dialog with its ticks and typed reasons. */}}
+      <div id="ptr-contrib-dialog-host"></div>
+      {{end}}
       <section class="tag-detail-section">
         <h3>Recent images</h3>
         {{if .RecentImageIDs}}
@@ -141,17 +204,6 @@
         <p class="field-hint">No visible images carry this tag.</p>
         {{end}}
       </section>
-    </div>
-
-    <div>
-      <div class="tag-detail-outbound" style="border-color:{{.Tag.CategoryColor}}">
-        <section class="tag-detail-section">
-          <h3>Implies</h3>
-          <div id="implications-editor" data-tag-id="{{.Tag.ID}}">
-            {{template "partials/implications_dialog.html" (dict "Parent" .Tag "Implications" .Implications "CSRFToken" $csrf)}}
-          </div>
-        </section>
-      </div>
     </div>
   </div>
   {{end}}
@@ -297,10 +349,8 @@ function confirmDetailAlias() {
   });
 }
 
-(function() {
-  var btn = document.getElementById('btn-detail-ptr');
-  if (!btn) return;
-  btn.addEventListener('click', function() {
+function pullTagPTR(okLabel, question) {
+  showConfirm(question, function() {
     clearSlots('tag-flash');
     postForm('/tags/' + TAG_ID + '/ptr-lookup', null, {
       flashId: 'tag-flash',
@@ -311,8 +361,8 @@ function confirmDetailAlias() {
         if (typeof refreshJobStatus === 'function') refreshJobStatus();
       }
     });
-  });
-})();
+  }, null, okLabel);
+}
 
 (function() {
   var btn = document.getElementById('btn-detail-delete');

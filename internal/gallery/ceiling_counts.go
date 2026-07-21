@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/leqwin/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/db"
 )
 
 // excludeNotExists returns the `AND NOT EXISTS (...)` fragment that

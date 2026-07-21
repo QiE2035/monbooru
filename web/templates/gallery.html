@@ -50,14 +50,14 @@
     <button type="button" class="batch-bar-right" onclick="openTagSelectedDialog()">Add tags manually</button>
     <button type="button" onclick="openStripSelectedDialog()">Remove tags</button>
     {{if .EnabledTaggers}}<button type="button" class="btn-autotag" onclick="openBatchAutotagDialog('selection')">Auto-tag</button>{{end}}
-    {{if .MonloaderPaired}}<button type="button" class="monloader-accent" onclick="openBatchLookupDialog('selection')">Lookup</button>{{end}}
+    {{if .MonloaderUsable}}<button type="button" class="monloader-accent" onclick="openBatchLookupDialog('selection')">Find tags</button>{{end}}
     <span class="batch-bar-sep" aria-hidden="true"></span>
     <button type="button" onclick="openBatchInboxDialog('selection')">Toggle inbox</button>
     <button type="button" onclick="openBatchFavoriteDialog('selection')">Toggle favorite</button>
     <button type="button" onclick="openBatchCollectionDialog('selection')">Set collection</button>
-    <button type="button" onclick="openBatchSourceDialog('selection')">Set source</button>
     <span class="batch-bar-sep" aria-hidden="true"></span>
     {{if gt (len .Galleries) 1}}<button type="button" onclick="openBatchTransferDialog('selection')">Transfer</button>{{end}}
+    <button type="button" onclick="openBatchRenameDialog('selection')">Rename</button>
     <button type="button" onclick="openBatchMoveDialog('selection')">Move</button>
     <button type="button" class="btn-danger" onclick="batchDeleteSelected()">Delete</button>
   </form>
@@ -227,6 +227,7 @@
       {{end}}
       <label style="display:block"><input type="radio" name="mode" value="user"> All user tags</label>
       {{if .SourceLabelCounts}}<label style="display:block"><input type="radio" name="mode" value="source-all"> All external sources</label>{{end}}
+      {{if .SourceLabelCounts}}<label style="display:block"><input type="radio" name="mode" value="stale"> Stale tags</label>{{end}}
       <label style="display:block"><input type="radio" name="mode" value="auto"> All auto-tagger tags</label>
       <label style="display:block"><input type="radio" name="mode" value="all"> All tags</label>
     </div>
@@ -234,6 +235,25 @@
     <div class="dialog-actions">
       <button type="submit" class="btn-warning">Remove</button>
       <button type="button" onclick="closeDialogAndRestoreParent('batch-strip-dialog')">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Rename dialog (scope flip via hidden #batch-rename-scope). -->
+<dialog id="batch-rename-dialog">
+  <p>Rename {{template "batch_count" "batch-rename"}}:</p>
+  <p class="field-hint">Files become name01.ext, name02.ext, ... in scope order; extensions are kept.</p>
+  <form id="batch-rename-form" onsubmit="event.preventDefault(); confirmBatchRename();">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <input type="hidden" id="batch-rename-scope">
+    <div class="field">
+      <input type="text" name="name" id="batch-rename-name" class="upload-wide-input"
+             placeholder="Base name..." required autocomplete="off">
+    </div>
+    <div id="batch-rename-flash"></div>
+    <div class="dialog-actions">
+      <button type="submit">Rename</button>
+      <button type="button" onclick="closeDialogAndRestoreParent('batch-rename-dialog')">Cancel</button>
     </div>
   </form>
 </dialog>
@@ -345,31 +365,6 @@
   </form>
 </dialog>
 
-<!-- Set-source dialog (scope flip via hidden #batch-source-scope).
-     The input drives /internal/source/suggest autocomplete. -->
-<dialog id="batch-source-dialog">
-  <p>Set source for {{template "batch_count" "batch-source"}}:</p>
-  <form id="batch-source-form" onsubmit="event.preventDefault(); confirmBatchSource();">
-    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <input type="hidden" id="batch-source-scope">
-    <div class="field">
-      <div class="radio-row">
-        <label><input type="radio" name="mode" value="add" checked> Add source</label>
-        <label><input type="radio" name="mode" value="remove"> Remove source</label>
-      </div>
-    </div>
-    <div class="field">
-      <label>Source label</label>
-{{template "suggest_input" dict "Name" "site" "InputID" "batch-source-input" "Endpoint" "/internal/source/suggest" "SuggestID" "batch-source-suggest"}}
-    </div>
-    <div id="batch-source-flash"></div>
-    <div class="dialog-actions">
-      <button type="submit">Apply</button>
-      <button type="button" onclick="closeDialogAndRestoreParent('batch-source-dialog')">Cancel</button>
-    </div>
-  </form>
-</dialog>
-
 <!-- Batch lookup dialog. One monloader job per image, so a large scope means
      a long politeness-paced crawl that can't be drained from monbooru once
      queued - hence the count confirm. -->
@@ -380,17 +375,17 @@
     {{template "batch_count" "batch-lookup"}}:
   </p>
   <div class="field">
-    <label style="display:block"><input type="radio" name="batch-lookup-mode" value="source" checked> Refresh tags from the declared source</label>
+    <label style="display:block"><input type="radio" name="batch-lookup-mode" value="source" checked> Refresh tags from the declared source(s)</label>
     <label style="display:block"><input type="radio" name="batch-lookup-mode" value="all"> Look up new sources by file hash and fetch{{if .MonloaderPTR}} (PTR and online boorus){{end}}</label>
     {{if .MonloaderPTR}}
     <label style="display:block"><input type="radio" name="batch-lookup-mode" value="ptr"> Look up in the Public Tag Repository only</label>
     <label style="display:block"><input type="radio" name="batch-lookup-mode" value="booru"> Look up on online boorus only</label>
     {{end}}
   </div>
-  <p style="color:var(--fg-dim);font-size:12px">The source refresh uses each image's primary source URL, or a PTR hash lookup when the primary is a url-less PTR source, and skips images with neither; the hash lookup finds posts for files with no known source. Queued jobs run on monloader and cannot be cancelled from here.</p>
+  <p style="color:var(--fg-dim);font-size:12px">Queued jobs run on monloader and cannot be cancelled from here.</p>
   <div id="batch-lookup-flash"></div>
   <div class="dialog-actions">
-    <button type="button" onclick="confirmBatchLookup()">Lookup</button>
+    <button type="button" onclick="confirmBatchLookup()">Find tags</button>
     <button type="button" onclick="closeDialogAndRestoreParent('batch-lookup-dialog')">Cancel</button>
   </div>
 </dialog>
@@ -435,6 +430,19 @@ function confirmBatchDelete() {
   }
   runBatchOp({endpoint: '/internal/batch-delete', scope: 'selection', params: ids,
               dialogId: 'batch-delete-dialog', flashId: 'batch-delete-flash', failMsg: 'Delete failed.'});
+}
+
+function openBatchRenameDialog(scope) {
+  openBatchDialog('batch-rename', scope, {
+    clearIds: ['batch-rename-name'],
+    focusId: 'batch-rename-name'
+  });
+}
+
+function confirmBatchRename() {
+  var name = document.getElementById('batch-rename-name').value;
+  confirmBatchSimple('batch-rename', '/internal/batch-rename',
+    ['name=' + encodeURIComponent(name)], 'Rename failed.');
 }
 
 function openBatchMoveDialog(scope) {
@@ -558,6 +566,10 @@ function pickBatchAction(action) {
       openBatchTransferDialog('search');
       subId = 'batch-transfer-dialog';
       break;
+    case 'rename':
+      openBatchRenameDialog('search');
+      subId = 'batch-rename-dialog';
+      break;
     case 'move':
       openBatchMoveDialog('search');
       subId = 'batch-move-dialog';
@@ -573,10 +585,6 @@ function pickBatchAction(action) {
     case 'collection':
       openBatchCollectionDialog('search');
       subId = 'batch-collection-dialog';
-      break;
-    case 'source':
-      openBatchSourceDialog('search');
-      subId = 'batch-source-dialog';
       break;
     case 'lookup':
       openBatchLookupDialog('search');
@@ -819,14 +827,6 @@ function openBatchCollectionDialog(scope) {
 
 function confirmBatchCollection() {
   confirmBatchLabeled('batch-collection', '/internal/batch-collection', 'collection');
-}
-
-function openBatchSourceDialog(scope) {
-  openBatchLabeledDialog('batch-source', scope);
-}
-
-function confirmBatchSource() {
-  confirmBatchLabeled('batch-source', '/internal/batch-source', 'site');
 }
 
 function applyRandomSort() {

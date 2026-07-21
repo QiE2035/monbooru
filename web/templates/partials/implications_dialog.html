@@ -1,5 +1,8 @@
 {{define "partials/implications_dialog.html"}}
 <p>Tags implied by <strong style="color:{{.Parent.CategoryColor}}">{{.Parent.Name}}</strong>:</p>
+{{if .Implications}}
+{{range groupImplicationsByOrigin .Implications}}
+{{if $.OriginKinds}}<p class="relation-origin-sub">{{if .Stale}}stale, {{end}}added by {{originLabel $.OriginKinds .Origin}}</p>{{end}}
 <ul class="tag-list">
   {{range .Implications}}
   <li class="tag-item" style="color:{{.ImpliedCategoryColor}}">
@@ -7,13 +10,17 @@
     <button class="tag-remove-btn"
             hx-delete="/tags/{{.ParentID}}/implications/{{.ImpliedID}}"
             hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
-            hx-on::after-request="if(event.detail.successful){this.closest('li').remove();}"
+            hx-confirm="Remove the implication that {{$.Parent.Name}} implies {{.ImpliedName}}?"
+            data-confirm-ok="Remove"
+            hx-on::after-request="if(event.detail.successful){pruneRelationRow(this)}"
             title="Remove this implication">×</button>
   </li>
-  {{else}}
-  <li class="no-tags">No implications declared.</li>
   {{end}}
 </ul>
+{{end}}
+{{else}}
+<ul class="tag-list"><li class="no-tags">No implications declared.</li></ul>
+{{end}}
 <form id="implication-add-form" class="add-tag-form"
       hx-post="/tags/{{.Parent.ID}}/implications"
       hx-target="#implication-add-flash"

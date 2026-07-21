@@ -16,7 +16,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/leqwin/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/logx"
 )
 
 // Config holds all application configuration.
@@ -78,6 +78,10 @@ type ServerConfig struct {
 type MonloaderConfig struct {
 	APIURL   string `toml:"api_url"`
 	APIToken string `toml:"api_token,omitempty"`
+	// Paused suspends every call to monloader without dropping the pairing,
+	// so the footer light's kill switch is reversible: the credentials
+	// survive and re-enabling resumes connectivity with no re-pair.
+	Paused bool `toml:"paused,omitempty"`
 }
 
 // PathsConfig holds process-wide paths. Per-gallery DB and thumbnails

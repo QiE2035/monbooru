@@ -8,8 +8,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/leqwin/monbooru/internal/logx"
-	"github.com/leqwin/monbooru/internal/tags"
+	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 func init() {
