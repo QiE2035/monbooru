@@ -165,8 +165,8 @@ level = "info"                     # debug / info / warn / error
 - **文件监视**:macOS/Linux 使用 `fsnotify`;Windows 走轮询回退。`watch_enabled = false` 可临时关掉。
 - **DB 锁定**:SQLite 单写者;批量操作并发过高会出现 `database is locked`,降低 `tagger.parallel` 或拆分批次。
 - **tagger 调不通**:确认 `CGO_ENABLED=1`、模型/标签 json 路径正确、`libonnxruntime.so` 可被加载;默认 backend 通过 Unix socket 派生子进程,日志会写 `MONBOORU_TAGGER_WORKER_LOG`。
-- **i18n**:`[i18n] language` 单字段全局配置,启动期一次性加载到 `internal/i18n` 的进程级单例;运行期不可热切换,改完配置必须重启 `monbooru`。`language` 必须是 BCP-47 全称(短横线形式),如 `en`、`en-US`、`zh-CN`、`zh-TW`、`ja-JP`,避免用 `zh` 这种笼统代码(无法区分简繁体)。`MONBOORU_I18N_LANGUAGE` 环境变量可覆盖 TOML。模板里以 `{{ T "key" }}` 取翻译;`<html lang>` 由 `layout.html` 直接渲染 `{{ .I18nLang }}`,值即 `cfg.I18n.Language`。新增翻译只需在 `internal/i18n/locales/` 增加对应 BCP-47 文件名的 `.toml` 并重新构建,Settings → Language 下拉会自动列出。
-  - **语言切换不生效**:确认已重启进程(bundle 进程级单例);`<html lang>` 已切但 UI 没换,几乎一定是忘了重启。
+- **i18n**:`[i18n] language` 单字段全局配置,启动期一次性加载到 `internal/i18n` 的进程级单例;运行期可通过 `i18n.SetLanguage` 热替换 Localizer,切换语言立即生效,无需重启。`language` 必须是 BCP-47 全称(短横线形式),如 `en`、`en-US`、`zh-CN`、`zh-TW`、`ja-JP`,避免用 `zh` 这种笼统代码(无法区分简繁体)。`MONBOORU_I18N_LANGUAGE` 环境变量可覆盖 TOML。模板里以 `{{ T "key" }}` 取翻译;`<html lang>` 由 `layout.html` 直接渲染 `{{ .I18nLang }}`,值即 `cfg.I18n.Language`。新增翻译只需在 `internal/i18n/locales/` 增加对应 BCP-47 文件名的 `.toml` 并重新构建,Settings → Language 下拉会自动列出。
+  - **语言切换立即生效**:通过 `i18n.SetLanguage` 热替换 Localizer,切换语言后页面刷新即可看到新语言,无需重启进程。
   - **启动期失败 `i18n: language "xx" is not available`**:缺翻译文件。`xx` 必须与 `internal/i18n/locales/xx.toml` 一一对应;不要写成 `zh_CN`(用短横线)。
   - **页面里出现未翻译的 `key.with_underscore`**:模板调用了 `T` 函数,但 `en.toml` 与当前语言文件都没收这个 key,fallback 后再未命中会原样返回并写 `logx.Debug`(`i18n: Localize %q failed`)。在对应 `locales/*.toml` 加 key;`en.toml` 必填(它是 bundle 回退根),其他语言未填也会回退到 en。
   - **Settings → Language 下拉只显示当前语言**:`i18n.AvailableLocales()` 读 embed FS 失败,模板会兜底成单选项;先看 `internal/i18n/locales.go` 的 `//go:embed` 通配是否还覆盖到新增的 `.toml`。

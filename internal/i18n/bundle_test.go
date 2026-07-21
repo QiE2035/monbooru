@@ -55,6 +55,9 @@ func TestBundle_Singleton(t *testing.T) {
 	if b1 != b2 {
 		t.Errorf("Bundle() returned different pointers: %p vs %p", b1, b2)
 	}
+	// Before any SetLanguage call, repeated Localizer() must return
+	// the same pointer. After SetLanguage the pointer changes (tested
+	// separately in TestSetLanguage_Success).
 	l1, l2 := Localizer(), Localizer()
 	if l1 != l2 {
 		t.Errorf("Localizer() returned different pointers: %p vs %p", l1, l2)
@@ -63,6 +66,104 @@ func TestBundle_Singleton(t *testing.T) {
 	if err := MustInit(cfg); err != nil {
 		t.Errorf("second MustInit error: %v", err)
 	}
+}
+
+func TestSetLanguage_Success(t *testing.T) {
+	t.Cleanup(resetForTest)
+	cfg := config.Default()
+	if err := MustInit(cfg); err != nil {
+		t.Fatalf("MustInit: %v", err)
+	}
+
+	// Verify initial English translation.
+	msg, err := Localizer().Localize(&goi18n.LocalizeConfig{MessageID: "layout_topbar.images"})
+	if err != nil {
+		t.Fatalf("Localize before SetLanguage: %v", err)
+	}
+	if msg != "Images" {
+		t.Fatalf("before SetLanguage: got %q, want %q", msg, "Images")
+	}
+
+	// Swap to zh-CN.
+	if err := SetLanguage("zh-CN"); err != nil {
+		t.Fatalf("SetLanguage(zh-CN): %v", err)
+	}
+
+	msg, err = Localizer().Localize(&goi18n.LocalizeConfig{MessageID: "layout_topbar.images"})
+	if err != nil {
+		t.Fatalf("Localize after SetLanguage: %v", err)
+	}
+	if msg != "图像" {
+		t.Errorf("after SetLanguage(zh-CN): got %q, want %q", msg, "图像")
+	}
+
+	// Bundle pointer must not change — SetLanguage only swaps the localizer.
+	if Bundle() == nil {
+		t.Fatal("Bundle() = nil after SetLanguage")
+	}
+}
+
+func TestSetLanguage_UnavailableLang(t *testing.T) {
+	t.Cleanup(resetForTest)
+	cfg := config.Default()
+	if err := MustInit(cfg); err != nil {
+		t.Fatalf("MustInit: %v", err)
+	}
+
+	err := SetLanguage("fr")
+	if err == nil {
+		t.Fatal("expected error for unavailable language, got nil")
+	}
+	if !strings.Contains(err.Error(), `"fr"`) {
+		t.Errorf("error %q does not mention the offending language", err)
+	}
+
+	// Localizer must remain unchanged — still resolves English.
+	msg, err := Localizer().Localize(&goi18n.LocalizeConfig{MessageID: "layout_topbar.images"})
+	if err != nil {
+		t.Fatalf("Localize after failed SetLanguage: %v", err)
+	}
+	if msg != "Images" {
+		t.Errorf("localizer changed after failed SetLanguage: got %q, want %q", msg, "Images")
+	}
+}
+
+func TestSetLanguage_ConcurrentReadWrite(t *testing.T) {
+	t.Cleanup(resetForTest)
+	cfg := config.Default()
+	if err := MustInit(cfg); err != nil {
+		t.Fatalf("MustInit: %v", err)
+	}
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+
+	// Half the goroutines read via Localizer().
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			l := Localizer()
+			if l == nil {
+				t.Error("Localizer() = nil during concurrent read")
+			}
+		}()
+	}
+
+	// Half the goroutines swap language between en and zh-CN.
+	for i := 0; i < goroutines; i++ {
+		go func(i int) {
+			defer wg.Done()
+			lang := "en"
+			if i%2 == 0 {
+				lang = "zh-CN"
+			}
+			_ = SetLanguage(lang)
+		}(i)
+	}
+
+	wg.Wait()
+	// No panic = pass. Data races are caught by `go test -race`.
 }
 
 func TestMustInit_UnknownLanguage(t *testing.T) {

@@ -1,10 +1,11 @@
 // Package i18n owns the runtime translation bundle: a single go-i18n
-// Bundle + Localizer pair built from the embedded locales directory and
-// selected by the [i18n] language field in monbooru.toml. Accessors
-// (Bundle, Localizer, AvailableLocales) are process-wide singletons
-// after the first MustInit; the init runs once at NewServer startup so
-// any missing / malformed translation file fails fast with a clear
-// error instead of degrading the UI silently.
+// Bundle (process-immutable after MustInit) plus a Localizer that can
+// be hot-swapped at runtime via SetLanguage. The Bundle is initialised
+// once by MustInit at NewServer startup so any missing / malformed
+// translation file fails fast with a clear error instead of degrading
+// the UI silently. The Localizer is protected by a sync.RWMutex so
+// that concurrent template renders observe a consistent pointer while
+// SetLanguage replaces it under a write lock.
 package i18n
 
 import (
@@ -22,10 +23,11 @@ import (
 )
 
 var (
-	once      sync.Once
-	bundle    *i18n.Bundle
-	localizer *i18n.Localizer
-	initErr   error
+	once        sync.Once
+	bundle      *i18n.Bundle
+	localizerMu sync.RWMutex
+	localizer   *i18n.Localizer
+	initErr     error
 )
 
 // MustInit wires the i18n bundle once per process. Safe to call from
@@ -74,7 +76,9 @@ func initBundle(cfg *config.Config) error {
 	// NewLocalizer accepts language tags as strings (the library parses
 	// them internally); the active tag first, then English as the
 	// fallback so a missing key in the active language falls through.
+	localizerMu.Lock()
 	localizer = i18n.NewLocalizer(bundle, cfg.I18n.Language, "en")
+	localizerMu.Unlock()
 	return nil
 }
 
@@ -86,8 +90,41 @@ func initBundle(cfg *config.Config) error {
 func Bundle() *i18n.Bundle { return bundle }
 
 // Localizer returns the process-wide localizer; see Bundle() for the
-// nil-before-init contract.
-func Localizer() *i18n.Localizer { return localizer }
+// nil-before-init contract. Safe for concurrent use; the read lock
+// ensures callers observe a consistent pointer even during
+// SetLanguage.
+func Localizer() *i18n.Localizer {
+	localizerMu.RLock()
+	l := localizer
+	localizerMu.RUnlock()
+	return l
+}
+
+// SetLanguage replaces the process-wide localizer with one that
+// resolves messages in the given language first, falling back to
+// English. It validates that lang is a well-formed BCP-47 tag and
+// that a corresponding locales/<lang>.toml exists. The Bundle itself
+// (loaded message files) is immutable; only the Localizer pointer is
+// swapped under a write lock, so concurrent Localizer() callers never
+// see a torn value. MustInit must have succeeded before calling
+// SetLanguage.
+func SetLanguage(lang string) error {
+	if _, err := language.Parse(lang); err != nil {
+		return fmt.Errorf("i18n: invalid language %q: %w", lang, err)
+	}
+	available, err := listEmbeddedLanguages()
+	if err != nil {
+		return fmt.Errorf("i18n: scan locales: %w", err)
+	}
+	if !contains(available, lang) {
+		return fmt.Errorf("i18n: language %q is not available (no locales/%s.toml); available: %v",
+			lang, lang, available)
+	}
+	localizerMu.Lock()
+	localizer = i18n.NewLocalizer(bundle, lang, "en")
+	localizerMu.Unlock()
+	return nil
+}
 
 // AvailableLocales returns the BCP-47 language codes for every embedded
 // locale, sorted alphabetically. Safe to call before MustInit because it

@@ -161,11 +161,9 @@ func (s *Server) settingsGeneralPost(w http.ResponseWriter, r *http.Request) {
 }
 
 // settingsLanguagePost updates the [i18n] language field and writes it
-// back to monbooru.toml. The bundle itself is process-pinned (sync.Once
-// in the i18n package), so a save here only persists the choice; the new
-// language takes effect on the next process start. The success flash
-// spells that out so the operator doesn't sit there wondering why the UI
-// didn't switch.
+// back to monbooru.toml, then calls i18n.SetLanguage to swap the
+// process-wide localizer so the new language takes effect immediately
+// without a restart.
 func (s *Server) settingsLanguagePost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
@@ -194,8 +192,12 @@ func (s *Server) settingsLanguagePost(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
-	logx.Infof("settings: language set to %q (effective on next restart)", lang)
-	writeInlineFlash(w, "ok", "Language saved. Restart the process for the change to take effect.")
+	if err := i18n.SetLanguage(lang); err != nil {
+		writeInlineFlash(w, "err", "Could not switch language: "+err.Error())
+		return
+	}
+	logx.Infof("settings: language set to %q", lang)
+	writeInlineFlash(w, "ok", "Language saved.")
 }
 
 func (s *Server) settingsMonloaderPost(w http.ResponseWriter, r *http.Request) {
