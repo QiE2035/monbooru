@@ -23,15 +23,16 @@
 {{template "layout_head" .}}
 <div id="sidebar-inner">
   <nav class="settings-nav">
-    <a href="#general">General</a>
-    <a href="#galleries">Galleries</a>
-    <a href="#monloader">Monloader</a>
-    <a href="#tagger">Tagger</a>
-    <a href="#relations">Relations</a>
-    <a href="#auth">Auth</a>
-    <a href="#maintenance">Maintenance</a>
-    <a href="#schedule">Schedule</a>
-    <a href="#stats">Stats</a>
+    <a href="#general">{{ T "settings_nav.general" }}</a>
+    <a href="#galleries">{{ T "settings_nav.galleries" }}</a>
+    <a href="#monloader">{{ T "settings_nav.monloader" }}</a>
+    <a href="#tagger">{{ T "settings_nav.tagger" }}</a>
+    <a href="#relations">{{ T "settings_nav.relations" }}</a>
+    <a href="#auth">{{ T "settings_nav.auth" }}</a>
+    <a href="#maintenance">{{ T "settings_nav.maintenance" }}</a>
+    <a href="#schedule">{{ T "settings_nav.schedule" }}</a>
+    <a href="#stats">{{ T "settings_nav.stats" }}</a>
+    <a href="#language">{{ T "settings_nav.language" }}</a>
   </nav>
 </div>
 {{template "layout_mid" .}}
@@ -45,42 +46,42 @@
 {{$monloaderPeerURL := index . "MonloaderPeerURL"}}
 
 <div id="settings-page">
-  <h2>Settings</h2>
+  <h2>{{ T "settings.title" }}</h2>
 
   <section id="general" class="settings-section">
-    <h3>General</h3>
+    <h3>{{ T "settings_general.heading" }}</h3>
     <div id="flash-general"></div>
     <form hx-post="/settings/general" hx-target="#flash-general" hx-swap="innerHTML">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
       <div class="settings-cols">
         <div class="settings-sub">
-          <h4>Files</h4>
-          {{template "partials/range_field.html" dict "Name" "max_file_size_mb" "Label" "Max file size (MB)" "Min" 1 "Max" 5120 "Value" $cfg.Gallery.MaxFileSizeMB "Ticks" (list 512 1024 2048 3072 4096 5120) "Hint" "Files larger than this are skipped on upload and during sync."}}
+          <h4>{{ T "settings_general.files" }}</h4>
+          {{template "partials/range_field.html" dict "Name" "max_file_size_mb" "Label" (T "settings_general.max_file_size") "Min" 1 "Max" 5120 "Value" $cfg.Gallery.MaxFileSizeMB "Ticks" (list 512 1024 2048 3072 4096 5120) "Hint" (T "settings_general.files_hint")}}
           <div class="field">
-            <label for="default_upload_folder">Default upload folder</label>
-            <input type="text" name="default_upload_folder" id="default_upload_folder" value="{{$cfg.Gallery.DefaultUploadFolder}}" placeholder="(gallery root)">
-            <span class="field-hint">Web uploads land here. Blank means the gallery root.</span>
+            <label for="default_upload_folder">{{ T "settings_general.upload_folder" }}</label>
+            <input type="text" name="default_upload_folder" id="default_upload_folder" value="{{$cfg.Gallery.DefaultUploadFolder}}" placeholder="{{ T "settings_general.upload_folder_ph" }}">
+            <span class="field-hint">{{ T "settings_general.upload_folder_hint" }}</span>
           </div>
           <div class="field">
             <label>
               <input type="checkbox" name="watch_enabled" {{if $cfg.Gallery.WatchEnabled}}checked{{end}}>
-              Watch gallery for new files automatically
+              {{ T "settings_general.watch" }}
             </label>
           </div>
         </div>
         <div class="settings-sub">
-          <h4>UI</h4>
-          {{template "partials/range_field.html" dict "Name" "page_size" "Label" "Page size" "Min" 1 "Max" 100 "Value" $cfg.UI.PageSize "Ticks" (list 20 40 60 80 100)}}
+          <h4>{{ T "settings_general.ui" }}</h4>
+          {{template "partials/range_field.html" dict "Name" "page_size" "Label" (T "settings_general.page_size") "Min" 1 "Max" 100 "Value" $cfg.UI.PageSize "Ticks" (list 20 40 60 80 100)}}
           <div class="field">
-            <label>Thumbnails</label>
+            <label>{{ T "settings_general.thumbnails" }}</label>
             <div class="radio-row">
-              <label><input type="radio" name="thumbnail_fit" value="square" {{if ne $cfg.UI.ThumbnailFit "natural"}}checked{{end}}> Square (cropped)</label>
-              <label><input type="radio" name="thumbnail_fit" value="natural" {{if eq $cfg.UI.ThumbnailFit "natural"}}checked{{end}}> Real aspect ratio</label>
+              <label><input type="radio" name="thumbnail_fit" value="square" {{if ne $cfg.UI.ThumbnailFit "natural"}}checked{{end}}> {{ T "settings_general.square" }}</label>
+              <label><input type="radio" name="thumbnail_fit" value="natural" {{if eq $cfg.UI.ThumbnailFit "natural"}}checked{{end}}> {{ T "settings_general.real_aspect" }}</label>
             </div>
           </div>
         </div>
       </div>
-      <div class="settings-actions"><button type="submit">Save</button></div>
+      <div class="settings-actions"><button type="submit">{{ T "settings_general.save" }}</button></div>
     </form>
   </section>
 
@@ -856,6 +857,25 @@
       {{range $stats.FSWarnings}}<p class="field-hint">{{.}}</p>{{end}}
     </div>
     </div>
+  </section>
+
+  {{$availableLangs := index . "AvailableLangs"}}
+  <section id="language" class="settings-section">
+    <h3>{{ T "settings_i18n.heading" }}</h3>
+    <div id="flash-language"></div>
+    <form hx-post="/settings/language" hx-target="#flash-language" hx-swap="innerHTML">
+      <input type="hidden" name="_csrf" value="{{$csrf}}">
+      <div class="field">
+        <label for="language">{{ T "settings_i18n.language_label" }}</label>
+        <select name="language" id="language">
+          {{range $availableLangs}}
+          <option value="{{.}}" {{if eq . $cfg.I18n.Language}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+        <span class="field-hint">{{ T "settings_i18n.language_hint" }}</span>
+      </div>
+      <div class="settings-actions"><button type="submit">{{ T "settings_general.save" }}</button></div>
+    </form>
   </section>
 </div>
 

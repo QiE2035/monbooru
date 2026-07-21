@@ -1,0 +1,106 @@
+# Monbooru 简体中文翻译。
+# 仅翻译本次 i18n 实施覆盖到的可见字符串;其他 key 缺失时由 en.toml 回退。
+
+[layout]
+html_lang = "zh-CN"
+
+[layout_topbar]
+toggle_sidebar = "切换侧边栏"
+images          = "图像"
+inbox           = "收件箱"
+categories      = "类别"
+tags            = "标签"
+collections     = "合集"
+relations       = "关系"
+settings        = "设置"
+sync_gallery    = "同步图库"
+logout          = "退出登录"
+
+[layout_degraded]
+banner = "⚠ 图库路径不可读 - 同步与监听已禁用。请检查配置。"
+
+[layout_footer]
+switch_gallery_title = "切换图库"
+img                  = "张"
+tags                 = "个标签"
+collections          = "个合集"
+degraded             = "降级"
+rating_label         = "分级:"
+image                = "张图像"
+images               = "张图像"
+hidden_in_search     = "在当前搜索中被隐藏"
+page_loaded_in       = "页面加载耗时"
+ms                   = "毫秒"
+help                 = "帮助"
+api                  = "API"
+
+[layout_dialogs]
+current          = "[当前]"
+switch_gallery   = "切换图库"
+go_to_page       = "跳转到页面 (1–"
+go               = "跳转"
+cancel           = "取消"
+close            = "关闭"
+
+[layout_shortcuts]
+title       = "键盘快捷键"
+anywhere    = "全局"
+gallery     = "图库"
+selection   = "已选择"
+detail      = "图像详情"
+viewer      = "图像查看器"
+tags        = "标签页"
+categories  = "类别页"
+settings    = "设置页"
+reader      = "漫画阅读器"
+pages       = "归档页网格"
+session     = "关系会话"
+
+[login]
+title    = "登录 - "
+password = "密码"
+button   = "登录"
+disabled = "密码登录未启用。请前往 设置 → 认证 中开启。"
+
+[notfound]
+heading = "404 - 未找到"
+hint    = "您请求的页面或图像不存在（或已被移除）。"
+back    = "← 返回图库"
+
+[settings]
+title = "设置"
+
+[settings_nav]
+general      = "常规"
+galleries    = "图库"
+monloader    = "Monloader"
+tagger       = "自动打标"
+relations    = "关系"
+auth         = "认证"
+maintenance  = "维护"
+schedule     = "计划任务"
+stats        = "状态"
+language     = "语言"
+
+[settings_general]
+heading            = "常规"
+files              = "文件"
+max_file_size      = "最大文件大小 (MB)"
+files_hint         = "大于此值的文件将在上传与同步时被跳过。"
+upload_folder      = "默认上传目录"
+upload_folder_ph   = "（图库根目录）"
+upload_folder_hint = "网页上传的文件将存放在此。留空表示图库根目录。"
+watch              = "自动监听图库中的新文件"
+ui                 = "界面"
+page_size          = "每页数量"
+thumbnails         = "缩略图"
+square             = "正方形（裁剪）"
+real_aspect        = "保持原始比例"
+save               = "保存"
+
+[settings_i18n]
+heading        = "语言"
+nav            = "语言"
+language_label = "界面语言"
+language_hint  = "BCP-47 代码（例如 en、zh-CN、zh-TW）。需重启进程后生效。"
+saved          = "语言已保存。需重启进程后生效。"

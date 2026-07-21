@@ -1,0 +1,107 @@
+# Monbooru 繁體中文翻譯。
+# 與 zh-CN.toml 視覺上有可觀察差異（簡/繁字形不同）：
+#  圖像/图像、設置/設定、檔案/文件、合集/合集、合輯/合輯、關係/关系、認証/认证、維護/维护、計劃/计划、語言/语言、標籤/标签、類別/类别、圖庫/图库、當前/当前、隱藏/隐藏、搜索/搜索、圖片/图像 等。
+
+[layout]
+html_lang = "zh-TW"
+
+[layout_topbar]
+toggle_sidebar = "切換側邊欄"
+images          = "圖像"
+inbox           = "收件匣"
+categories      = "類別"
+tags            = "標籤"
+collections     = "合輯"
+relations       = "關係"
+settings        = "設定"
+sync_gallery    = "同步圖庫"
+logout          = "登出"
+
+[layout_degraded]
+banner = "⚠ 圖庫路徑無法讀取 - 同步與監看已停用。請檢查設定。"
+
+[layout_footer]
+switch_gallery_title = "切換圖庫"
+img                  = "張"
+tags                 = "個標籤"
+collections          = "個合輯"
+degraded             = "降級"
+rating_label         = "分級:"
+image                = "張圖像"
+images               = "張圖像"
+hidden_in_search     = "在當前搜尋中被隱藏"
+page_loaded_in       = "頁面載入耗時"
+ms                   = "毫秒"
+help                 = "說明"
+api                  = "API"
+
+[layout_dialogs]
+current          = "[目前]"
+switch_gallery   = "切換圖庫"
+go_to_page       = "跳至頁面 (1–"
+go               = "跳轉"
+cancel           = "取消"
+close            = "關閉"
+
+[layout_shortcuts]
+title       = "鍵盤快速鍵"
+anywhere    = "全域"
+gallery     = "圖庫"
+selection   = "已選取"
+detail      = "圖像詳細資料"
+viewer      = "圖像檢視器"
+tags        = "標籤頁"
+categories  = "類別頁"
+settings    = "設定頁"
+reader      = "漫畫閱讀器"
+pages       = "封存頁面格狀"
+session     = "關連工作階段"
+
+[login]
+title    = "登入 - "
+password = "密碼"
+button   = "登入"
+disabled = "密碼登入未啟用。請至 設定 → 認證 中開啟。"
+
+[notfound]
+heading = "404 - 找不到"
+hint    = "您要求的頁面或圖像不存在（或已被移除）。"
+back    = "← 返回圖庫"
+
+[settings]
+title = "設定"
+
+[settings_nav]
+general      = "一般"
+galleries    = "圖庫"
+monloader    = "Monloader"
+tagger       = "自動標記"
+relations    = "關係"
+auth         = "認證"
+maintenance  = "維護"
+schedule     = "排程"
+stats        = "狀態"
+language     = "語言"
+
+[settings_general]
+heading            = "一般"
+files              = "檔案"
+max_file_size      = "最大檔案大小 (MB)"
+files_hint         = "大於此值的檔案在上傳與同步時會被略過。"
+upload_folder      = "預設上傳資料夾"
+upload_folder_ph   = "（圖庫根目錄）"
+upload_folder_hint = "網頁上傳的檔案會放置於此。留空表示圖庫根目錄。"
+watch              = "自動監看圖庫中的新檔案"
+ui                 = "介面"
+page_size          = "每頁數量"
+thumbnails         = "縮圖"
+square             = "正方形（裁切）"
+real_aspect        = "保持原始比例"
+save               = "儲存"
+
+[settings_i18n]
+heading        = "語言"
+nav            = "語言"
+language_label = "介面語言"
+language_hint  = "BCP-47 代碼（例如 en、zh-CN、zh-TW）。需重新啟動程序後生效。"
+saved          = "語言已儲存。需重新啟動程序後生效。"

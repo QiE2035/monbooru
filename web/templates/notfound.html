@@ -4,9 +4,9 @@
 {{template "layout_mid" .}}
 
 <div id="notfound-page">
-  <h2>404 - not found</h2>
-  <p class="field-hint">The page or image you asked for doesn't exist (anymore).</p>
-  <p><a href="/">← Back to gallery</a></p>
+  <h2>{{ T "notfound.heading" }}</h2>
+  <p class="field-hint">{{ T "notfound.hint" }}</p>
+  <p><a href="/">{{ T "notfound.back" }}</a></p>
 </div>
 
 {{template "layout_end" .}}

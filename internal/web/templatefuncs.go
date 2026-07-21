@@ -9,6 +9,10 @@ import (
 	"strings"
 	"time"
 
+	goi18n "github.com/nicksnyder/go-i18n/v2/i18n"
+
+	"github.com/leqwin/monbooru/internal/i18n"
+	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
 	"github.com/leqwin/monbooru/internal/search"
 )
@@ -336,5 +340,51 @@ func templateFuncs() template.FuncMap {
 			}
 			return time.Since(t).Milliseconds()
 		},
+		// T resolves a translation key through the i18n bundle's localizer.
+		// The localizer is set up with the active language first, English
+		// as fallback, so missing keys in zh-CN still render the en.toml
+		// string. When both miss (untranslated / typo'd key) we return
+		// the key string itself - the spec requires "便于排查" so the
+		// operator can grep for the literal in the templates, and write
+		// a debug log so the missing key shows up in the server log
+		// without spamming at info level on every render.
+		"T": tFunc,
 	}
+}
+
+// tFunc is the template-callable translation helper. The optional second
+// argument is template data for {{.Placeholder}} substitution; a single
+// scalar (string / int) is also accepted for the common "label and one
+// number" case so the template doesn't have to wrap it in (dict "n" ...).
+func tFunc(key string, data ...any) string {
+	if key == "" {
+		return ""
+	}
+	cfg := &goi18n.LocalizeConfig{MessageID: key}
+	if len(data) > 0 {
+		// go-i18n accepts a map[string]any or a struct with template-
+		// parsed fields. Passing a bare scalar like "alice" or 5 means
+		// "no placeholder", which the library treats as if the message
+		// had no TemplateData; we drop the arg in that case so a call
+		// like {{ T "greeting" 5 }} doesn't blow up with "expected map".
+		if _, isMap := data[0].(map[string]any); isMap {
+			cfg.TemplateData = data[0]
+		} else {
+			// A non-map second arg is most often a developer mistake
+			// (the spec's "uploaded_count" placeholder example always
+			// wraps in dict). Log so a broken key surfaces in the log.
+			logx.Debugf("T %q: ignoring non-map data %T (wrap with (dict ...))", key, data[0])
+		}
+	}
+	msg, err := i18n.Localizer().Localize(cfg)
+	if err != nil {
+		// Both the active language and the English fallback missed.
+		// Returning the key verbatim makes the missing string visible
+		// in the rendered page (the operator can grep the template for
+		// it) and the debug log makes it greppable in the server log
+		// without being noisy at the default info level.
+		logx.Debugf("T %q: %v", key, err)
+		return key
+	}
+	return msg
 }

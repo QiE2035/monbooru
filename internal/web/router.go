@@ -20,6 +20,7 @@ import (
 	"github.com/leqwin/monbooru/internal/api"
 	"github.com/leqwin/monbooru/internal/config"
 	"github.com/leqwin/monbooru/internal/gallery"
+	"github.com/leqwin/monbooru/internal/i18n"
 	"github.com/leqwin/monbooru/internal/jobs"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/models"
@@ -131,6 +132,19 @@ type Server struct {
 // NewServer creates the HTTP server with all routes wired. One *db.DB is
 // opened per configured gallery.
 func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) (*Server, error) {
+	// Initialize the i18n bundle before any handler that may render a
+	// template. MustInit is idempotent (sync.Once) so a retry that
+	// arrives here after a partial failure is safe; the underlying
+	// initBundle returns the same error each call. We panic instead of
+	// returning because the spec's "启动期错误直接 panic" contract is
+	// stricter than a soft error: a missing language file means the
+	// operator must fix the config (or install the locale) before
+	// serving makes any sense. Surfacing it as a server-spawn error
+	// would still let the binary limp along with a half-built UI.
+	if err := i18n.MustInit(cfg); err != nil {
+		return nil, fmt.Errorf("i18n: %w", err)
+	}
+
 	sessions := NewSessionStore()
 
 	// Parse all templates
@@ -440,6 +454,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /settings", s.settingsHandler)
 	mux.HandleFunc("POST /settings/general", s.settingsGeneralPost)
+	mux.HandleFunc("POST /settings/language", s.settingsLanguagePost)
 	mux.HandleFunc("POST /settings/monloader", s.settingsMonloaderPost)
 	mux.HandleFunc("POST /settings/tagger", s.settingsTaggerPost)
 	mux.HandleFunc("POST /settings/auth/password", s.settingsPasswordPost)
@@ -733,6 +748,13 @@ type baseData struct {
 	// MonloaderPTRSyncing caveats the lookup backend dialog while the PTR
 	// index is still building: it answers on partial data by design.
 	MonloaderPTRSyncing bool
+	// I18nLang is the active BCP-47 code (e.g. "en", "zh-CN"), injected
+	// into <html lang> on every page so screen readers and CSS :lang()
+	// selectors see the same value the T() template function resolved.
+	// Pulled from cfg at request time so a runtime config edit (via the
+	// Settings page) is reflected immediately even though the bundle
+	// itself is process-pinned.
+	I18nLang string
 }
 
 // AsMap renders baseData as a string→any map for handlers that pass
@@ -771,6 +793,7 @@ func (b baseData) AsMap() map[string]any {
 		"RatingLevels":        b.RatingLevels,
 		"ActiveRating":        b.ActiveRating,
 		"RequestStart":        b.RequestStart,
+		"I18nLang":            b.I18nLang,
 	}
 }
 
@@ -833,6 +856,7 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 		RatingLevels:        ratingFooterLevels,
 		ActiveRating:        active,
 		RequestStart:        requestStartFromContext(r.Context()),
+		I18nLang:            s.cfg.I18n.Language,
 	}
 }
 

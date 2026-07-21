@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{.I18nLang}}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Login - {{.BooruName}}</title>
+  <title>{{ T "login.title" }}{{.BooruName}}</title>
   <link rel="icon" type="image/png" href="{{.BooruFavicon}}">
   <link rel="stylesheet" href="/static/main.css">
 </head>
@@ -17,9 +17,11 @@
       {{if not .AuthDisabled}}
       <form method="POST" action="/login">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <input type="password" name="password" placeholder="Password" autofocus>
-        <button type="submit">Login</button>
+        <input type="password" name="password" placeholder="{{ T "login.password" }}" autofocus>
+        <button type="submit">{{ T "login.button" }}</button>
       </form>
+      {{else}}
+      <p class="login-disabled">{{ T "login.disabled" }}</p>
       {{end}}
     </div>
   </div>

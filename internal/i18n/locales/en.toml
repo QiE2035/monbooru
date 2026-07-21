@@ -1,0 +1,109 @@
+# Monbooru English translations.
+# Keys are dot-separated `<page>_<area>_<purpose>` so the template call
+# site is self-documenting (`{{ T "layout_topbar_images" }}`). Values
+# are the verbatim existing UI strings so language = "en" is a no-op
+# regression for every entry here.
+
+[layout]
+html_lang = "en"
+
+[layout_topbar]
+toggle_sidebar = "Toggle sidebar"
+images          = "Images"
+inbox           = "Inbox"
+categories      = "Categories"
+tags            = "Tags"
+collections     = "Collections"
+relations       = "Relations"
+settings        = "Settings"
+sync_gallery    = "Sync gallery"
+logout          = "Logout"
+
+[layout_degraded]
+banner = "⚠ Gallery path is unreadable - sync and watch are disabled. Check your configuration."
+
+[layout_footer]
+switch_gallery_title = "Switch gallery"
+img                  = "img"
+tags                 = "tags"
+collections          = "collections"
+degraded             = "degraded"
+rating_label         = "rating:"
+image                = "image"
+images               = "images"
+hidden_in_search     = "hidden in the current search"
+page_loaded_in       = "page loaded in"
+ms                   = "ms"
+help                 = "help"
+api                  = "API"
+
+[layout_dialogs]
+current          = "[current]"
+switch_gallery   = "Switch gallery"
+go_to_page       = "Go to page (1–"
+go               = "Go"
+cancel           = "Cancel"
+close            = "Close"
+
+[layout_shortcuts]
+title       = "Keyboard Shortcuts"
+anywhere    = "Anywhere"
+gallery     = "Gallery"
+selection   = "Selection active"
+detail      = "Image detail"
+viewer      = "Image viewer"
+tags        = "Tags page"
+categories  = "Categories page"
+settings    = "Settings page"
+reader      = "Manga reader"
+pages       = "Archive pages grid"
+session     = "Relations session"
+
+[login]
+title    = "Login - "
+password = "Password"
+button   = "Login"
+disabled = "Password authentication is disabled. Enable it from Settings → Authentication."
+
+[notfound]
+heading = "404 - not found"
+hint    = "The page or image you asked for doesn't exist (anymore)."
+back    = "← Back to gallery"
+
+[settings]
+title = "Settings"
+
+[settings_nav]
+general      = "General"
+galleries    = "Galleries"
+monloader    = "Monloader"
+tagger       = "Tagger"
+relations    = "Relations"
+auth         = "Auth"
+maintenance  = "Maintenance"
+schedule     = "Schedule"
+stats        = "Stats"
+language     = "Language"
+
+[settings_general]
+heading          = "General"
+files            = "Files"
+max_file_size    = "Max file size (MB)"
+files_hint       = "Files larger than this are skipped on upload and during sync."
+upload_folder    = "Default upload folder"
+upload_folder_ph = "(gallery root)"
+upload_folder_hint = "Web uploads land here. Blank means the gallery root."
+watch            = "Watch gallery for new files automatically"
+ui               = "UI"
+page_size        = "Page size"
+thumbnails       = "Thumbnails"
+square           = "Square (cropped)"
+real_aspect      = "Real aspect ratio"
+save             = "Save"
+
+[settings_i18n]
+heading        = "Language"
+nav            = "Language"
+language_label = "Interface language"
+language_hint  = "BCP-47 code (e.g. en, zh-CN, zh-TW). Requires restart to take effect."
+saved          = "Language saved. Restart the process for the change to take effect."

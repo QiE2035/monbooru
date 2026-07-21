@@ -557,3 +557,98 @@ func TestValidateTokenNameReserved(t *testing.T) {
 		}
 	}
 }
+
+func TestI18nLanguageDefaultsToEnglish(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "monbooru.toml")
+	if err := os.WriteFile(path, []byte(`
+[[galleries]]
+name = "default"
+gallery_path = "/gallery"
+
+[paths]
+data_path = "/data"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.I18n.Language != "en" {
+		t.Errorf("default I18n.Language = %q, want %q", cfg.I18n.Language, "en")
+	}
+}
+
+func TestI18nLanguageParsedFromTOML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "monbooru.toml")
+	if err := os.WriteFile(path, []byte(`
+[[galleries]]
+name = "default"
+gallery_path = "/gallery"
+
+[paths]
+data_path = "/data"
+
+[i18n]
+language = "zh-CN"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.I18n.Language != "zh-CN" {
+		t.Errorf("I18n.Language = %q, want %q", cfg.I18n.Language, "zh-CN")
+	}
+}
+
+func TestI18nLanguageEnvOverridesTOML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "monbooru.toml")
+	if err := os.WriteFile(path, []byte(`
+[[galleries]]
+name = "default"
+gallery_path = "/gallery"
+
+[paths]
+data_path = "/data"
+
+[i18n]
+language = "en"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MONBOORU_I18N_LANGUAGE", "zh-CN")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.I18n.Language != "zh-CN" {
+		t.Errorf("env override: I18n.Language = %q, want %q", cfg.I18n.Language, "zh-CN")
+	}
+}
+
+func TestI18nLanguageEmptyRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "monbooru.toml")
+	if err := os.WriteFile(path, []byte(`
+[[galleries]]
+name = "default"
+gallery_path = "/gallery"
+
+[paths]
+data_path = "/data"
+
+[i18n]
+language = ""
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "i18n.language") {
+		t.Errorf("expected i18n.language error, got %v", err)
+	}
+}

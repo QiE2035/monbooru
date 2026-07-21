@@ -9,6 +9,7 @@ import (
 
 	"github.com/leqwin/monbooru/internal/config"
 	"github.com/leqwin/monbooru/internal/gallery"
+	"github.com/leqwin/monbooru/internal/i18n"
 	"github.com/leqwin/monbooru/internal/logx"
 	"github.com/leqwin/monbooru/internal/tagger"
 	"golang.org/x/crypto/bcrypt"
@@ -78,6 +79,19 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	data["MonloaderPending"] = s.pairs.listPending()
 	data["MonloaderPaired"] = s.pairedWith("monloader")
 	data["MonloaderPeerURL"] = s.monloaderAPIBase()
+	// AvailableLangs drives the Language dropdown in the i18n section.
+	// Read the embed FS at render time so a future translator who adds a
+	// new .toml under internal/i18n/locales/ gets it for free without a
+	// server restart - well, almost: the bundle itself is process-pinned
+	// to what MustInit saw, but the dropdown at least reflects every
+	// translatable locale the binary shipped with. If the embed read
+	// fails (a torn build, an FS shim gone wrong) we fall back to the
+	// current language so the section still renders one option.
+	avail, err := i18n.AvailableLocales()
+	if err != nil || len(avail) == 0 {
+		avail = []string{s.cfg.I18n.Language}
+	}
+	data["AvailableLangs"] = avail
 	s.renderTemplate(w, "settings.html", data)
 }
 
@@ -144,6 +158,44 @@ func (s *Server) settingsGeneralPost(w http.ResponseWriter, r *http.Request) {
 	}
 	logx.Infof("settings: general updated")
 	writeInlineFlash(w, "ok", "Saved.")
+}
+
+// settingsLanguagePost updates the [i18n] language field and writes it
+// back to monbooru.toml. The bundle itself is process-pinned (sync.Once
+// in the i18n package), so a save here only persists the choice; the new
+// language takes effect on the next process start. The success flash
+// spells that out so the operator doesn't sit there wondering why the UI
+// didn't switch.
+func (s *Server) settingsLanguagePost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	lang := strings.TrimSpace(r.FormValue("language"))
+	if lang == "" {
+		writeInlineFlash(w, "err", "language must not be empty")
+		return
+	}
+	// Refuse a code that has no matching locale file: writing a value
+	// the binary can't resolve would make the next start fail with the
+	// very error the operator is trying to fix from the settings page.
+	avail, err := i18n.AvailableLocales()
+	if err != nil {
+		writeInlineFlash(w, "err", "could not list languages: "+err.Error())
+		return
+	}
+	if !slices.Contains(avail, lang) {
+		writeInlineFlash(w, "err", fmt.Sprintf("language %q is not available", lang))
+		return
+	}
+	if err := s.withConfig(func(c *config.Config) error {
+		c.I18n.Language = lang
+		return nil
+	}); err != nil {
+		writeInlineFlash(w, "err", "Could not save: "+err.Error())
+		return
+	}
+	logx.Infof("settings: language set to %q (effective on next restart)", lang)
+	writeInlineFlash(w, "ok", "Language saved. Restart the process for the change to take effect.")
 }
 
 func (s *Server) settingsMonloaderPost(w http.ResponseWriter, r *http.Request) {

@@ -33,6 +33,15 @@ type Config struct {
 	Log            LogConfig       `toml:"log"`
 	Schedule       ScheduleConfig  `toml:"schedule"`
 	Relations      RelationsConfig `toml:"relations"`
+	I18n           I18nConfig      `toml:"i18n"`
+}
+
+// I18nConfig carries the language code that drives every user-visible
+// string. A single BCP-47 field (e.g. "en", "zh-CN", "zh-TW") so the
+// config surface stays small; fallbacks, locales dir, etc. are baked
+// into the i18n package.
+type I18nConfig struct {
+	Language string `toml:"language"`
 }
 
 // RelationsConfig drives the relations feature's runtime knobs.
@@ -380,6 +389,9 @@ func Default() *Config {
 			DefaultSessionOrder: "smallest_distance_first",
 			IncrementalOnIngest: true,
 		},
+		I18n: I18nConfig{
+			Language: "en",
+		},
 	}
 }
 
@@ -546,6 +558,7 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.Monloader.APIURL = envStr("MONBOORU_MONLOADER_API_URL", cfg.Monloader.APIURL)
 	cfg.Monloader.APIToken = envStr("MONBOORU_MONLOADER_API_TOKEN", cfg.Monloader.APIToken)
 	cfg.Log.Level = envStr("MONBOORU_LOG_LEVEL", cfg.Log.Level)
+	cfg.I18n.Language = envStr("MONBOORU_I18N_LANGUAGE", cfg.I18n.Language)
 }
 
 // MaxPageSize caps UI.PageSize. A gallery page binds one SQL variable per
@@ -623,6 +636,15 @@ func validate(cfg *Config) error {
 	// every browser close instead of after the documented 7 days.
 	if cfg.Auth.SessionLifetimeDays <= 0 {
 		cfg.Auth.SessionLifetimeDays = 7
+	}
+	// I18n.Language drives every translated string in the UI; the i18n
+	// package refuses to start when the value doesn't match a file in
+	// internal/i18n/locales, but the config layer still has to reject
+	// a missing field here (the i18n package's own default of "en"
+	// kicks in only after MustInit is called, which happens after
+	// validate() returns).
+	if strings.TrimSpace(cfg.I18n.Language) == "" {
+		return fmt.Errorf("i18n.language must not be empty")
 	}
 	return nil
 }

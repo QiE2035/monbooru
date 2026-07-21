@@ -1,6 +1,6 @@
 {{define "layout_head"}}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{.I18nLang}}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -14,19 +14,19 @@
 </head>
 <body>
   <div id="topbar">
-    <button id="sidebar-toggle" aria-label="Toggle sidebar">☰</button>
+    <button id="sidebar-toggle" aria-label="{{ T "layout_topbar.toggle_sidebar" }}">☰</button>
     <a href="/" id="logo">
       <img src="{{.BooruLogo}}" alt="" class="topbar-logo">
       <span>{{.BooruName}}</span>
     </a>
     <nav id="nav">
-      <a href="/"        {{if and (eq .ActiveNav "gallery") (not .InboxNavActive)}} class="active"{{end}}>Images</a>
-      <a id="inbox-nav" href="/?q=inbox:true" {{if .InboxNavActive}} class="active"{{end}}>Inbox{{if gt .InboxCount 0}} ({{.InboxCount}}){{end}}</a>
-      <a href="/categories" {{if eq .ActiveNav "categories"}} class="active"{{end}}>Categories</a>
-      <a href="/tags"    {{if eq .ActiveNav "tags"}}    class="active"{{end}}>Tags</a>
-      <a href="/collections" {{if eq .ActiveNav "collections"}} class="active"{{end}}>Collections</a>
-      <a href="/relations" {{if eq .ActiveNav "relations"}} class="active"{{end}}>Relations</a>
-      <a href="/settings"{{if eq .ActiveNav "settings"}}class="active"{{end}}>Settings</a>
+      <a href="/"        {{if and (eq .ActiveNav "gallery") (not .InboxNavActive)}} class="active"{{end}}>{{ T "layout_topbar.images" }}</a>
+      <a id="inbox-nav" href="/?q=inbox:true" {{if .InboxNavActive}} class="active"{{end}}>{{ T "layout_topbar.inbox" }}{{if gt .InboxCount 0}} ({{.InboxCount}}){{end}}</a>
+      <a href="/categories" {{if eq .ActiveNav "categories"}} class="active"{{end}}>{{ T "layout_topbar.categories" }}</a>
+      <a href="/tags"    {{if eq .ActiveNav "tags"}}    class="active"{{end}}>{{ T "layout_topbar.tags" }}</a>
+      <a href="/collections" {{if eq .ActiveNav "collections"}} class="active"{{end}}>{{ T "layout_topbar.collections" }}</a>
+      <a href="/relations" {{if eq .ActiveNav "relations"}} class="active"{{end}}>{{ T "layout_topbar.relations" }}</a>
+      <a href="/settings"{{if eq .ActiveNav "settings"}}class="active"{{end}}>{{ T "layout_topbar.settings" }}</a>
     </nav>
     <div id="topbar-right">
       <div id="job-status"
@@ -44,20 +44,20 @@
             hx-on:htmx:response-error="document.getElementById('sync-flash').innerHTML=event.detail.xhr.responseText;refreshJobStatus();setTimeout(function(){var el=document.getElementById('sync-flash');if(el)el.innerHTML='';},5000)"
             style="display:inline">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <button type="submit" title="Sync gallery">⟳</button>
+        <button type="submit" title="{{ T "layout_topbar.sync_gallery" }}">⟳</button>
       </form>
       {{end}}
       {{if .AuthEnabled}}
         <form method="POST" action="/logout" style="display:inline">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-          <button type="submit">Logout</button>
+          <button type="submit">{{ T "layout_topbar.logout" }}</button>
         </form>
       {{end}}
     </div>
   </div>
   {{if .Degraded}}
   <div id="degraded-banner" class="degraded-banner">
-    ⚠ Gallery path is unreadable - sync and watch are disabled. Check your configuration.
+    {{ T "layout_degraded.banner" }}
   </div>
   {{end}}
   <div id="main-layout">
@@ -75,28 +75,28 @@
   <footer id="footer">
     <div id="footer-left">
       {{with .Galleries}}{{if gt (len .) 1}}
-      <button id="gallery-switch-btn" class="footer-gallery" type="button" title="Switch gallery"
+      <button id="gallery-switch-btn" class="footer-gallery" type="button" title="{{ T "layout_footer.switch_gallery_title" }}"
               onclick="document.getElementById('gallery-switch-dialog').showModal()">[{{$.ActiveGallery}}]</button>
       {{else}}
       <span class="footer-gallery">[{{$.ActiveGallery}}]</span>
       {{end}}{{end}}
       <span class="footer-sep">·</span>
-      <span>{{.VisibleCount}} img</span>
+      <span>{{.VisibleCount}} {{ T "layout_footer.img" }}</span>
       <span class="footer-sep">·</span>
-      <span>{{.TagCount}} tags</span>
+      <span>{{.TagCount}} {{ T "layout_footer.tags" }}</span>
       <span class="footer-sep">·</span>
-      <span>{{.CollectionsCount}} collections</span>
-      {{if .Degraded}}<span class="footer-sep">·</span><span class="footer-degraded">degraded</span>{{end}}
+      <span>{{.CollectionsCount}} {{ T "layout_footer.collections" }}</span>
+      {{if .Degraded}}<span class="footer-sep">·</span><span class="footer-degraded">{{ T "layout_footer.degraded" }}</span>{{end}}
       <span class="footer-sep-strong">::</span>
-      <span class="footer-rating-label">rating:</span>
+      <span class="footer-rating-label">{{ T "layout_footer.rating_label" }}</span>
       {{$active := .ActiveRating}}{{$csrf := .CSRFToken}}{{range $i, $lv := .RatingLevels}}{{if $i}}<span class="footer-sep">·</span>{{end}}{{if eq $lv.Value $active}}<span class="footer-rating-active">[{{$lv.Label}}]</span>{{else}}<form hx-post="/internal/rating-ceiling?level={{$lv.Value}}" hx-swap="none" hx-on::after-request="window.location.reload()" style="display:inline"><input type="hidden" name="_csrf" value="{{$csrf}}"><button type="submit" class="footer-rating-link">{{$lv.Label}}</button></form>{{end}}{{end}}
       {{/* {{with}} keeps the cell empty (and `:empty` CSS-hidden) on every
            non-gallery surface where the handler flattens baseData into a
            map without the HiddenByCeiling key. */}}
-      <span id="footer-hidden" class="footer-hidden">{{with .HiddenByCeiling}}<span class="footer-sep-strong">::</span>{{.}} hidden {{plural . "image" "images"}} in the current search{{end}}</span>
+      <span id="footer-hidden" class="footer-hidden">{{with .HiddenByCeiling}}<span class="footer-sep-strong">::</span>{{.}} {{ T "layout_footer.hidden_in_search" }}{{end}}</span>
     </div>
     <div id="footer-right">
-      {{if .MonloaderPaired}}{{template "partials/monloader_light.html" .}} · {{end}}page loaded in <span id="page-load-ms">{{pageLoadMs .RequestStart}}</span> ms · <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="{{.DocURL}}" target="_blank" rel="noopener">help</a> · <a href="/api/v1/docs" target="_blank" rel="noopener">API</a>
+      {{if .MonloaderPaired}}{{template "partials/monloader_light.html" .}} · {{end}}{{ T "layout_footer.page_loaded_in" }} <span id="page-load-ms">{{pageLoadMs .RequestStart}}</span> {{ T "layout_footer.ms" }} · <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="{{.DocURL}}" target="_blank" rel="noopener">{{ T "layout_footer.help" }}</a> · <a href="/api/v1/docs" target="_blank" rel="noopener">{{ T "layout_footer.api" }}</a>
     </div>
   </footer>
   <dialog id="confirm-dialog">
@@ -104,14 +104,14 @@
     <p id="confirm-dialog-danger" class="confirm-dialog-danger"></p>
     <div class="dialog-actions">
       <button type="button" id="confirm-dialog-ok" class="btn-danger">OK</button>
-      <button type="button" id="confirm-dialog-cancel">Cancel</button>
+      <button type="button" id="confirm-dialog-cancel">{{ T "layout_dialogs.cancel" }}</button>
     </div>
   </dialog>
   <dialog id="shortcuts-help">
-    <h3>Keyboard Shortcuts</h3>
+    <h3>{{ T "layout_shortcuts.title" }}</h3>
     <div class="shortcuts-help-grid">
       <section data-surface="anywhere">
-        <h4>Anywhere</h4>
+        <h4>{{ T "layout_shortcuts.anywhere" }}</h4>
         <table>
           <tbody>
             <tr><td><kbd>?</kbd></td><td>Toggle this overlay</td></tr>
@@ -130,7 +130,7 @@
         </table>
       </section>
       <section data-surface="gallery">
-        <h4>Gallery</h4>
+        <h4>{{ T "layout_shortcuts.gallery" }}</h4>
         <table>
           <tbody>
             <tr><td><kbd>↑ ↓ ← →</kbd> / <kbd>h j k l</kbd></td><td>Move grid cursor</td></tr>
@@ -150,7 +150,7 @@
         </table>
       </section>
       <section data-surface="selection">
-        <h4>Selection active</h4>
+        <h4>{{ T "layout_shortcuts.selection" }}</h4>
         <table>
           <tbody>
             <tr><td><kbd>a</kbd></td><td>Add tags</td></tr>
@@ -166,7 +166,7 @@
         </table>
       </section>
       <section data-surface="detail">
-        <h4>Image detail</h4>
+        <h4>{{ T "layout_shortcuts.detail" }}</h4>
         <table>
           <tbody>
             <tr><td><kbd>← →</kbd> / <kbd>h l</kbd> / <kbd>j k</kbd></td><td>Previous / next</td></tr>
@@ -192,7 +192,7 @@
         </table>
       </section>
       <section data-surface="lightbox">
-        <h4>Image viewer</h4>
+        <h4>{{ T "layout_shortcuts.viewer" }}</h4>
         <table>
           <tbody>
             <tr><td>Click image / <kbd>v</kbd></td><td>Open viewer</td></tr>
@@ -206,7 +206,7 @@
         </table>
       </section>
       <section data-surface="tags">
-        <h4>Tags page</h4>
+        <h4>{{ T "layout_shortcuts.tags" }}</h4>
         <table>
           <tbody>
             <tr><td><kbd>s</kbd></td><td>Focus filter</td></tr>
@@ -216,7 +216,7 @@
         </table>
       </section>
       <section data-surface="categories">
-        <h4>Categories page</h4>
+        <h4>{{ T "layout_shortcuts.categories" }}</h4>
         <table>
           <tbody>
             <tr><td><kbd>n</kbd></td><td>Focus Add category</td></tr>
@@ -224,7 +224,7 @@
         </table>
       </section>
       <section data-surface="settings">
-        <h4>Settings page</h4>
+        <h4>{{ T "layout_shortcuts.settings" }}</h4>
         <table>
           <tbody>
             <tr><td><kbd>1</kbd>-<kbd>9</kbd></td><td>Jump to section heading</td></tr>
@@ -232,7 +232,7 @@
         </table>
       </section>
       <section data-surface="reader">
-        <h4>Manga reader</h4>
+        <h4>{{ T "layout_shortcuts.reader" }}</h4>
         <table>
           <tbody>
             <tr><td><kbd>← →</kbd> / <kbd>h l</kbd> / <kbd>Space</kbd></td><td>Previous / next page</td></tr>
@@ -246,7 +246,7 @@
         </table>
       </section>
       <section data-surface="pages">
-        <h4>Archive pages grid</h4>
+        <h4>{{ T "layout_shortcuts.pages" }}</h4>
         <table>
           <tbody>
             <tr><td><kbd>↑ ↓ ← →</kbd></td><td>Move grid cursor</td></tr>
@@ -257,7 +257,7 @@
         </table>
       </section>
       <section>
-        <h4>Relations session</h4>
+        <h4>{{ T "layout_shortcuts.session" }}</h4>
         <table>
           <tbody>
             <tr><td><kbd>1</kbd></td><td>Right is duplicate of left</td></tr>
@@ -274,30 +274,30 @@
       </section>
     </div>
     <div class="dialog-actions">
-      <button type="button" onclick="document.getElementById('shortcuts-help').close()">Close</button>
+      <button type="button" onclick="document.getElementById('shortcuts-help').close()">{{ T "layout_dialogs.close" }}</button>
     </div>
   </dialog>
   <dialog id="page-jump-dialog">
     <form id="page-jump-form" onsubmit="event.preventDefault(); submitPageJump();">
-      <p>Go to page (1–<span id="page-jump-total">1</span>):</p>
+      <p>{{ T "layout_dialogs.go_to_page" }}<span id="page-jump-total">1</span>):</p>
       <div class="field">
         <input type="number" id="page-jump-input" name="page" min="1" required>
       </div>
       <div class="dialog-actions">
-        <button type="submit">Go</button>
-        <button type="button" onclick="document.getElementById('page-jump-dialog').close()">Cancel</button>
+        <button type="submit">{{ T "layout_dialogs.go" }}</button>
+        <button type="button" onclick="document.getElementById('page-jump-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
   {{template "partials/image_lightbox.html" .}}
   {{with .Galleries}}{{if gt (len .) 1}}
   <dialog id="gallery-switch-dialog">
-    <p>Switch gallery</p>
+    <p>{{ T "layout_dialogs.switch_gallery" }}</p>
     <ul class="gallery-switch-list">
       {{range .}}
       <li>
         {{if eq .Name $.ActiveGallery}}
-          <span class="gallery-switch-current">[current] {{.Name}}</span>
+          <span class="gallery-switch-current">{{ T "layout_dialogs.current" }} {{.Name}}</span>
         {{else}}
           <form hx-post="/internal/gallery/switch"
                 hx-target="#gallery-switch-flash" hx-swap="innerHTML"
@@ -313,7 +313,7 @@
     </ul>
     <div id="gallery-switch-flash"></div>
     <div class="dialog-actions">
-      <button type="button" onclick="document.getElementById('gallery-switch-dialog').close()">Cancel</button>
+      <button type="button" onclick="document.getElementById('gallery-switch-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
     </div>
   </dialog>
   {{end}}{{end}}
