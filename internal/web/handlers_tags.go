@@ -360,7 +360,7 @@ func (s *Server) createTagPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Active().InvalidateCaches()
-	hxDone(w, r, "Tag "+name+" created.", "/tags?q="+url.QueryEscape(name), "/tags")
+	hxDone(w, r, localize("flash.tag_created", map[string]any{"name": name}), "/tags?q="+url.QueryEscape(name), "/tags")
 }
 
 func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
@@ -388,7 +388,7 @@ func (s *Server) createAliasPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Active().InvalidateCaches()
 
-	hxDone(w, r, "Alias "+name+" created.", "/tags?type=alias&q="+url.QueryEscape(name), "/tags?type=alias")
+	hxDone(w, r, localize("flash.alias_created", map[string]any{"name": name}), "/tags?type=alias&q="+url.QueryEscape(name), "/tags?type=alias")
 }
 
 func (s *Server) deleteTagHandler(w http.ResponseWriter, r *http.Request) {
@@ -480,5 +480,5 @@ func (s *Server) renameTagPost(w http.ResponseWriter, r *http.Request) {
 	// Refresh the current URL instead of redirecting to /tags so the
 	// user's active filter - q, sort, origin, page - survives the
 	// rename and the renamed row stays in scope.
-	hxDone(w, r, "Renamed to "+newName+".", "", "/tags")
+	hxDone(w, r, localize("flash.renamed_to", map[string]any{"name": newName}), "", "/tags")
 }

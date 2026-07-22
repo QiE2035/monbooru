@@ -19,18 +19,18 @@
                   hx-target="#image-tags"
                   hx-swap="outerHTML"
                   hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
-                  title="Remove tag">×</button>
+                  title="{{ T "tag_list_remove_tag" }}">×</button>
         </li>
         {{end}}
       </ul>
     </div>
     {{end}}
   {{else}}
-  <ul class="tag-list"><li class="no-tags">No tags yet.</li></ul>
+  <ul class="tag-list"><li class="no-tags">{{ T "tag_list_no_tags" }}</li></ul>
   {{end}}
   {{if or $implied .Aliases}}
   <details class="tag-source-group" data-source="implied">
-    <summary class="tag-source-title">{{if and $implied .Aliases}}Implied tags and aliases{{else if $implied}}Implied tags{{else}}Aliases{{end}}</summary>
+    <summary class="tag-source-title">{{if and $implied .Aliases}}{{ T "tag_list_implied_and_aliases" }}{{else if $implied}}{{ T "tag_list_implied_tags" }}{{else}}{{ T "tag_list_aliases" }}{{end}}</summary>
     {{if $implied}}
     <ul class="tag-list" data-source="implied">
       {{range $implied}}
@@ -52,7 +52,7 @@
   </details>
   {{end}}
   <hr class="tag-list-divider" hidden>
-  <h4 class="tag-list-added-title" hidden>Just added</h4>
+  <h4 class="tag-list-added-title" hidden>{{ T "tag_list_just_added" }}</h4>
   <ul class="tag-list tag-list-added"></ul>
 </div>
 {{if .ClearInput}}<script>

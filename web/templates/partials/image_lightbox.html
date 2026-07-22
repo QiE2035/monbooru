@@ -1,12 +1,12 @@
 {{define "partials/image_lightbox.html"}}
-<dialog id="image-lightbox" class="lightbox-dialog" aria-label="Image viewer">
+<dialog id="image-lightbox" class="lightbox-dialog" aria-label="{{ T "lightbox_aria_label" }}">
   <div class="lightbox-stage" id="lightbox-stage">
     <img id="lightbox-img" class="lightbox-img" alt="">
   </div>
   <div class="lightbox-bar">
-    <button type="button" id="lightbox-close" title="Close (Esc)">× Close</button>
+    <button type="button" id="lightbox-close" title="{{ T "lightbox_close" }} (Esc)">× {{ T "lightbox_close" }}</button>
     <span class="lightbox-zoom" id="lightbox-zoom">100%</span>
-    <a id="lightbox-open" class="lightbox-open" href="" target="_blank" rel="noopener" title="Open original in new tab">↗</a>
+    <a id="lightbox-open" class="lightbox-open" href="" target="_blank" rel="noopener" title="{{ T "lightbox_open_new_tab" }}">↗</a>
   </div>
 </dialog>
 {{end}}

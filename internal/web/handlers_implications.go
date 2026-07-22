@@ -100,7 +100,7 @@ func (s *Server) addImplicationPost(w http.ResponseWriter, r *http.Request) {
 		if added != 1 {
 			noun = "implications"
 		}
-		setFlashHeader(w, strconv.Itoa(added)+" "+noun+" added.", "ok",
+		setFlashHeader(w, localize("flash.implications_added", map[string]any{"count": added, "noun": noun}), "ok",
 			map[string]any{"implication-added": ""})
 	}
 	switch {
@@ -131,7 +131,7 @@ func (s *Server) removeImplicationDelete(w http.ResponseWriter, r *http.Request)
 	s.startImplicationPropagation(parentID, impliedID, "remove")
 	// Seed the cross-navigation flash slot; the dialog stays open and the
 	// /tags reload on close surfaces this above the table.
-	setFlashHeader(w, "Implication removed.", "ok", nil)
+	setFlashHeader(w, localize("flash.implication_removed"), "ok", nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -8,9 +8,9 @@
 <div id="pages-grid-page" data-image-id="{{.Image.ID}}">
   <div class="detail-topbar">
     <div class="detail-nav-group">
-      <a href="/images/{{.Image.ID}}{{.BackQS}}" class="back-link">‹ Image</a>
+      <a href="/images/{{.Image.ID}}{{.BackQS}}" class="back-link">‹ {{ T "pages_image" }}</a>
       <span class="detail-nav-sep">/</span>
-      <span class="detail-filename mono-small">{{.Filename}} ({{.PageCount}} pages)</span>
+      <span class="detail-filename mono-small">{{.Filename}} ({{.PageCount}} {{ T "pages_pages" }})</span>
     </div>
   </div>
   <ul class="manga-pages-grid">

@@ -6,11 +6,11 @@
 {{$csrf := index . "CSRFToken"}}
 
 <div id="categories-page">
-  <h2>Categories</h2>
+  <h2>{{ T "categories_title" }}</h2>
 
   <div id="cat-flash"></div>
   <table class="cat-table">
-    <thead><tr><th>Name</th><th>Color</th><th>Actions</th></tr></thead>
+    <thead><tr><th>{{ T "categories_col_name" }}</th><th>{{ T "categories_col_color" }}</th><th>{{ T "categories_col_actions" }}</th></tr></thead>
     <tbody id="cat-list">
       {{range index . "Categories"}}
       <tr id="cat-row-{{.ID}}">
@@ -19,19 +19,19 @@
         <td>
           <div class="cat-actions">
             <button class="btn-sm btn-cat-recolor-trigger"
-                    data-id="{{.ID}}" data-name="{{.Name}}" data-color="{{.Color}}">Recolor</button>
+                    data-id="{{.ID}}" data-name="{{.Name}}" data-color="{{.Color}}">{{ T "categories_btn_recolor" }}</button>
             {{if not .IsBuiltin}}
             <button class="btn-sm btn-cat-rename-trigger"
-                    data-id="{{.ID}}" data-name="{{.Name}}">Rename</button>
+                    data-id="{{.ID}}" data-name="{{.Name}}">{{ T "categories_btn_rename" }}</button>
             {{else}}
-            <button class="btn-sm cat-action-spacer" tabindex="-1" aria-hidden="true">Rename</button>
+            <button class="btn-sm cat-action-spacer" tabindex="-1" aria-hidden="true">{{ T "categories_btn_rename" }}</button>
             {{end}}
             {{if not .IsBuiltin}}
             <button class="btn-sm btn-danger btn-delete-category"
                     data-id="{{.ID}}" data-name="{{.Name}}"
-                    data-csrf="{{$csrf}}">Delete</button>
+                    data-csrf="{{$csrf}}">{{ T "categories_btn_delete" }}</button>
             {{else}}
-            <span class="field-hint">(built-in)</span>
+            <span class="field-hint">{{ T "categories_builtin" }}</span>
             {{end}}
           </div>
         </td>
@@ -43,13 +43,13 @@
         hx-target="#cat-flash" hx-swap="innerHTML"
         class="add-cat-form">
     <input type="hidden" name="_csrf" value="{{$csrf}}">
-    <input type="text" name="name" placeholder="New category" required>
+    <input type="text" name="name" placeholder="{{ T "categories_new_placeholder" }}" required>
     {{/* Start the picker on a distinctive accent rather than the neutral
          #888888 fallback so a no-change Add doesn't produce a row whose
          hex blends into the body text. The schema and import-path
          defaults still resolve to #888888 for missing values. */}}
     <input type="color" name="color" value="#5c6bc0">
-    <button type="submit">Add</button>
+    <button type="submit">{{ T "categories_btn_add" }}</button>
   </form>
 </div>
 
@@ -57,15 +57,15 @@
 <dialog id="cat-rename-dialog">
   <form id="cat-rename-form" hx-post="" hx-target="#cat-rename-error" hx-swap="innerHTML">
     <input type="hidden" name="_csrf" value="{{$csrf}}">
-    <p>Rename category <strong id="cat-rename-src"></strong></p>
+    <p>{{ T "categories_rename_title" }} <strong id="cat-rename-src"></strong></p>
     <div class="field">
-      <label>New name</label>
+      <label>{{ T "categories_rename_new_name" }}</label>
       <input type="text" name="name" id="cat-rename-input" required autocomplete="off">
     </div>
     <div id="cat-rename-error"></div>
     <div class="dialog-actions">
-      <button type="submit">Rename</button>
-      <button type="button" onclick="document.getElementById('cat-rename-dialog').close()">Cancel</button>
+      <button type="submit">{{ T "categories_btn_rename" }}</button>
+      <button type="button" onclick="document.getElementById('cat-rename-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
     </div>
   </form>
 </dialog>
@@ -74,26 +74,26 @@
 <dialog id="cat-recolor-dialog">
   <form id="cat-recolor-form" hx-patch="" hx-target="#cat-recolor-error" hx-swap="innerHTML">
     <input type="hidden" name="_csrf" value="{{$csrf}}">
-    <p>Recolor category <strong id="cat-recolor-src"></strong></p>
+    <p>{{ T "categories_recolor_title" }} <strong id="cat-recolor-src"></strong></p>
     <div class="field">
-      <label>New color</label>
+      <label>{{ T "categories_recolor_new_color" }}</label>
       <input type="color" name="color" id="cat-recolor-input" required>
     </div>
     <div id="cat-recolor-error"></div>
     <div class="dialog-actions">
-      <button type="submit">Save</button>
-      <button type="button" onclick="document.getElementById('cat-recolor-dialog').close()">Cancel</button>
+      <button type="submit">{{ T "categories_btn_save" }}</button>
+      <button type="button" onclick="document.getElementById('cat-recolor-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
     </div>
   </form>
 </dialog>
 
 <!-- Delete category dialog -->
 <dialog id="delete-cat-dialog">
-  <p>Delete category <strong id="del-cat-name"></strong>?</p>
+  <p>{{ T "categories_delete_title" }} <strong id="del-cat-name"></strong>?</p>
   <p id="del-cat-tag-info" class="field-hint"></p>
   <div id="del-cat-move-section">
     <div class="field">
-      <label>Move tags to category:</label>
+      <label>{{ T "categories_delete_move_to" }}</label>
       <select id="del-cat-target">
         {{range index . "Categories"}}
         <option value="{{.ID}}">{{.Name}}</option>
@@ -103,13 +103,23 @@
   </div>
   <div id="del-cat-flash"></div>
   <div class="dialog-actions" id="del-cat-actions">
-    <button type="button" id="del-cat-move-btn" class="btn-sm">Move tags &amp; delete</button>
-    <button type="button" id="del-cat-delete-all-btn" class="btn-danger btn-sm">Delete all tags &amp; category</button>
-    <button type="button" onclick="document.getElementById('delete-cat-dialog').close()">Cancel</button>
+    <button type="button" id="del-cat-move-btn" class="btn-sm">{{ T "categories_delete_move_btn" }}</button>
+    <button type="button" id="del-cat-delete-all-btn" class="btn-danger btn-sm">{{ T "categories_delete_all_btn" }}</button>
+    <button type="button" onclick="document.getElementById('delete-cat-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
   </div>
 </dialog>
 
 <script>
+var _T = {
+  noTagsInCat: '{{ T "categories_no_tags" }}',
+  affectedSuffix: '{{ T "categories_affected_suffix" }}',
+  deleteCat: '{{ T "categories_delete_category" }}',
+  deleteAllPrefix: '{{ T "categories_delete_all_prefix" }}',
+  deleteAllSuffix: '{{ T "categories_delete_all_suffix" }}',
+  categoryDeleted: '{{ T "categories_deleted" }}',
+  deleteConfirm: '{{ T "categories_delete_confirm" }}',
+  delete: '{{ T "categories_btn_delete" }}'
+};
 document.querySelectorAll('.btn-cat-rename-trigger').forEach(function(btn) {
   btn.addEventListener('click', function() {
     var id = this.dataset.id;
@@ -164,14 +174,14 @@ document.querySelectorAll('.btn-delete-category').forEach(function(btn) {
         });
 
         if (count === 0) {
-          info.textContent = 'No tags in this category.';
+          info.textContent = _T.noTagsInCat;
           moveSection.style.display = 'none';
-          deleteAllBtn.textContent = 'Delete category';
+          deleteAllBtn.textContent = _T.deleteCat;
           moveBtn.style.display = 'none';
         } else {
-          info.textContent = count + ' tag(s) will be affected.';
+          info.textContent = count + _T.affectedSuffix;
           moveSection.style.display = '';
-          deleteAllBtn.textContent = 'Delete all ' + count + ' tag(s) & category';
+          deleteAllBtn.textContent = _T.deleteAllPrefix + count + _T.deleteAllSuffix;
           moveBtn.style.display = '';
         }
 
@@ -186,9 +196,9 @@ document.querySelectorAll('.btn-delete-category').forEach(function(btn) {
         document.getElementById('delete-cat-dialog').showModal();
       })
       .catch(function() {
-        showConfirm('Delete category "' + catName + '"?', function() {
+        showConfirm(_T.deleteConfirm + catName + '"?', function() {
           doDeleteCategory(catId, csrf, 'delete_all', null);
-        }, '', 'Delete');
+        }, '', _T.delete);
       });
   });
 });
@@ -203,7 +213,7 @@ function doDeleteCategory(catId, csrf, action, targetCatId) {
       // The handler also writes HX-Trigger for the htmx path, but raw
       // fetch doesn't process it; seed the shared stash directly so the
       // /categories reload picks up the flash.
-      stashActionFlash('Category deleted.', 'ok');
+      stashActionFlash(_T.categoryDeleted, 'ok');
       document.getElementById('delete-cat-dialog').close();
       window.location.href = window.location.pathname + window.location.search;
     },

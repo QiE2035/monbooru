@@ -546,12 +546,12 @@ func (s *Server) recomputePhashPost(w http.ResponseWriter, r *http.Request) {
 		logx.Warnf("recompute phash %d: %v", id, err)
 		// Flash at 200: htmx ignores HX-Trigger on a non-2xx response and
 		// the form is hx-swap="none", so a 500 here gives no feedback.
-		setFlashHeader(w, "phash recompute failed (is the thumbnail present?)", "err", nil)
+		setFlashHeader(w, localize("flash.phash_recompute_failed"), "err", nil)
 		return
 	}
 	cx.InvalidatePhashMissing()
-	setFlashHeader(w, "phash recomputed.", "ok", nil)
-	writeInlineFlash(w, "ok", "phash recomputed.")
+	setFlashHeader(w, localize("flash.phash_recomputed"), "ok", nil)
+	writeInlineFlash(w, "ok", localize("flash.phash_recomputed"))
 }
 
 // addRelationPost installs a relation between two images. Form fields:
@@ -627,8 +627,8 @@ func (s *Server) addRelationPost(w http.ResponseWriter, r *http.Request) {
 		writeRelationError(w, err)
 		return
 	}
-	setFlashHeader(w, "Relation added.", "ok", nil)
-	writeInlineFlash(w, "ok", "Relation added.")
+	setFlashHeader(w, localize("flash.relation_added"), "ok", nil)
+	writeInlineFlash(w, "ok", localize("flash.relation_added"))
 }
 
 // removeRelationPost / removeRelationDelete unlinks a relation. Form

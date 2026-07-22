@@ -9,12 +9,12 @@
   <div class="sidebar-section"
        hx-boost="true" hx-target="#collections-page" hx-select="#collections-page" hx-swap="outerHTML"
        hx-select-oob="#sidebar-inner" hx-push-url="true">
-    <h3>Filter</h3>
+    <h3>{{ T "collections_filter" }}</h3>
     <form action="/collections" method="get" class="tags-filter-row">
       <!-- No sidebar OOB refresh here (the wrapper's hx-select-oob is
            inherited without the unset): swapping the input would drop
            focus and eat the letters typed since the request. -->
-      <input type="text" name="q" id="collections-q-input" value="{{$prefix}}" placeholder="Search…"
+      <input type="text" name="q" id="collections-q-input" value="{{$prefix}}" placeholder="{{ T "collections_search_placeholder" }}"
              hx-get="/collections"
              hx-trigger="input changed delay:300ms"
              hx-include="closest form"
@@ -22,13 +22,13 @@
              hx-select-oob="unset"
              hx-push-url="true">
       <input type="hidden" name="sort" value="{{$sort}}">
-      <button type="submit">OK</button>
+      <button type="submit">{{ T "collections_ok" }}</button>
     </form>
 
     <div class="filter-group">
-      <span class="filter-label">Sort</span>
-      <a class="filter-btn{{if eq $sort "size"}} active{{end}}" href="/collections?q={{$prefix}}&sort=size">By size</a>
-      <a class="filter-btn{{if eq $sort "name"}} active{{end}}" href="/collections?q={{$prefix}}&sort=name">By name</a>
+      <span class="filter-label">{{ T "collections_sort" }}</span>
+      <a class="filter-btn{{if eq $sort "size"}} active{{end}}" href="/collections?q={{$prefix}}&sort=size">{{ T "collections_sort_size" }}</a>
+      <a class="filter-btn{{if eq $sort "name"}} active{{end}}" href="/collections?q={{$prefix}}&sort=name">{{ T "collections_sort_name" }}</a>
     </div>
   </div>
 </div>
@@ -36,7 +36,7 @@
 
 <div id="collections-page">
   <h2 id="collections-page-header">
-    <span>Collections <span class="count-badge">{{.Total}}</span></span>
+    <span>{{ T "collections_title" }} <span class="count-badge">{{.Total}}</span></span>
   </h2>
 
   <div id="collection-flash"></div>
@@ -47,11 +47,11 @@
     {{$q := printf `collection:"%s"` (qval .Name)}}
     <li class="relations-card" data-name="{{.Name}}">
       <div class="collection-card-head">
-        <a href="/?q={{urlQ $q}}" title="Browse {{.Name}}"><strong>{{.Name}}</strong></a>
-        <span class="field-hint">{{.Count}} image{{if ne .Count 1}}s{{end}}</span>
-        <button type="button" class="btn-link-accent btn-rename-collection" data-name="{{.Name}}">[rename]</button>
-        <button type="button" class="btn-link-accent btn-reorder-collection" data-name="{{.Name}}">[reorder]</button>
-        <button type="button" class="btn-link-accent btn-dissolve-collection" data-name="{{.Name}}">[dissolve]</button>
+        <a href="/?q={{urlQ $q}}" title="{{ T "collections_browse" }} {{.Name}}"><strong>{{.Name}}</strong></a>
+        <span class="field-hint">{{.Count}} {{ T "collections_image_count" }}</span>
+        <button type="button" class="btn-link-accent btn-rename-collection" data-name="{{.Name}}">[{{ T "collections_rename" }}]</button>
+        <button type="button" class="btn-link-accent btn-reorder-collection" data-name="{{.Name}}">[{{ T "collections_reorder" }}]</button>
+        <button type="button" class="btn-link-accent btn-dissolve-collection" data-name="{{.Name}}">[{{ T "collections_dissolve" }}]</button>
         {{template "partials/collection_find_relations.html" (dict "Name" .Name "FindRelations" .FindRelations "CSRFToken" $.CSRFToken)}}
       </div>
       <div class="collection-preview">
@@ -61,15 +61,15 @@
           {{with .Order}}<span class="relations-card-id">#{{.}}</span>{{end}}
         </a>
         {{else}}
-        <span class="field-hint">No previewable images.</span>
+        <span class="field-hint">{{ T "collections_no_preview" }}</span>
         {{end}}
       </div>
     </li>
     {{else}}
     {{if $prefix}}
-    <li class="no-results">No collections match "{{$prefix}}".</li>
+    <li class="no-results">{{ T "collections_no_match" }} "{{$prefix}}".</li>
     {{else}}
-    <li class="no-results">No collections yet. Add an image to a collection to create one.</li>
+    <li class="no-results">{{ T "collections_none_yet" }}</li>
     {{end}}
     {{end}}
   </ul>
@@ -84,15 +84,15 @@
   <form id="collection-rename-form">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <input type="hidden" id="collection-rename-prev" name="prev" value="">
-    <p>Rename <strong id="collection-rename-src"></strong></p>
+    <p>{{ T "collections_rename_title" }} <strong id="collection-rename-src"></strong></p>
     <div class="field">
-      <label>New name (renaming onto an existing collection merges them)</label>
+      <label>{{ T "collections_rename_label" }}</label>
       {{template "suggest_input" dict "Name" "name" "InputID" "collection-rename-input" "Endpoint" "/internal/collection/suggest" "SuggestID" "collection-rename-suggest" "Required" true}}
     </div>
     <div id="collection-rename-error"></div>
     <div class="dialog-actions">
-      <button type="submit">Rename</button>
-      <button type="button" onclick="document.getElementById('collection-rename-dialog').close()">Cancel</button>
+      <button type="submit">{{ T "collections_rename" }}</button>
+      <button type="button" onclick="document.getElementById('collection-rename-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
     </div>
   </form>
 </dialog>
@@ -102,14 +102,29 @@
     <div id="collection-order-body"></div>
     <div id="collection-order-error"></div>
     <div class="dialog-actions">
-      <button type="submit">Save order</button>
-      <button type="button" id="collection-order-reset">Reset</button>
-      <button type="button" onclick="document.getElementById('collection-order-dialog').close()">Cancel</button>
+      <button type="submit">{{ T "collections_save_order" }}</button>
+      <button type="button" id="collection-order-reset">{{ T "collections_reset" }}</button>
+      <button type="button" onclick="document.getElementById('collection-order-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
     </div>
   </form>
 </dialog>
 
 <script>
+var _CT = {
+  newNameRequired: '{{ T "collections_new_name_required" }}',
+  renameFailed: '{{ T "collections_rename_failed" }}',
+  renameRequestFailed: '{{ T "collections_rename_request_failed" }}',
+  couldNotLoad: '{{ T "collections_could_not_load" }}',
+  clickToSetOrder: '{{ T "collections_click_to_set_order" }}',
+  reorderFailed: '{{ T "collections_reorder_failed" }}',
+  reorderRequestFailed: '{{ T "collections_reorder_request_failed" }}',
+  dissolveTitle: '{{ T "collections_dissolve_title" }}',
+  dissolveDesc: '{{ T "collections_dissolve_desc" }}',
+  dissolveFailed: '{{ T "collections_dissolve_failed" }}',
+  dissolveRequestFailed: '{{ T "collections_dissolve_request_failed" }}',
+  dissolveConfirmNote: '{{ T "collections_dissolve_confirm_note" }}',
+  dissolve: '{{ T "collections_dissolve" }}'
+};
 // htmx swaps #collections-page in place on filter clicks and the live
 // search, so the card buttons bind through delegated document-level
 // listeners that resolve their element at event time.
@@ -131,13 +146,13 @@ document.getElementById('collection-rename-form').addEventListener('submit', fun
   var name = document.getElementById('collection-rename-input').value.trim();
   var err = document.getElementById('collection-rename-error');
   err.innerHTML = '';
-  if (!name) { err.innerHTML = '<div class="flash flash-err">New name required.</div>'; return; }
+  if (!name) { err.innerHTML = '<div class="flash flash-err">' + _CT.newNameRequired + '</div>'; return; }
   postForm('/collections/rename', {prev: prev, name: name}, {
     okStatus: 202,
     dialogId: 'collection-rename-dialog',
     flashId: 'collection-rename-error',
-    failMsg: 'Rename failed.',
-    catchMsg: 'Rename request failed.',
+    failMsg: _CT.renameFailed,
+    catchMsg: _CT.renameRequestFailed,
     onOK: function() {
       _pendingGalleryReload = true;
       if (typeof refreshJobStatus === 'function') refreshJobStatus();
@@ -203,11 +218,11 @@ function openCollectionOrder(btn) {
   _orderMode = 'order';
   clearSlots('collection-order-error');
   var body = document.getElementById('collection-order-body');
-  body.innerHTML = 'Loading…';
+  body.innerHTML = '{{ T "collections_loading" }}';
   fetch('/collections/order?name=' + encodeURIComponent(btn.dataset.name), {credentials: 'same-origin', headers: {'HX-Request': 'true'}})
     .then(function(r) { return r.text(); })
     .then(function(html) { body.innerHTML = html; captureOrigOrder(); applyOrderMode(); })
-    .catch(function() { body.innerHTML = '<div class="flash flash-err">Could not load the collection.</div>'; });
+    .catch(function() { body.innerHTML = '<div class="flash flash-err">' + _CT.couldNotLoad + '</div>'; });
   dlg.showModal();
 }
 
@@ -254,14 +269,14 @@ document.getElementById('collection-order-form').addEventListener('submit', func
   } else if (_orderMode === 'filename') {
     params = {collection: name, mode: 'filename'};
   } else {
-    err.innerHTML = '<div class="flash flash-err">Click images to set an order, or switch to "By filename".</div>';
+    err.innerHTML = '<div class="flash flash-err">' + _CT.clickToSetOrder + '</div>';
     return;
   }
   postForm('/collections/order', params, {
     dialogId: 'collection-order-dialog',
     flashId: 'collection-order-error',
-    failMsg: 'Reorder failed.',
-    catchMsg: 'Reorder request failed.',
+    failMsg: _CT.reorderFailed,
+    catchMsg: _CT.reorderRequestFailed,
     onOK: function(res) {
       // Stash the server's "Ordered N image(s)." flash so it survives
       // the reload that refreshes the sample strips.
@@ -275,18 +290,18 @@ document.getElementById('collection-order-form').addEventListener('submit', func
 
 function confirmDissolveCollection(btn) {
   var name = btn.dataset.name;
-  showConfirm('Dissolve "' + name + '"? The collection label is removed from every image in it.', function() {
+  showConfirm(_CT.dissolveTitle + name + _CT.dissolveDesc, function() {
     postForm('/collections/dissolve', {collection: name}, {
       okStatus: 202,
       flashId: 'collection-flash',
-      failMsg: 'Dissolve failed.',
-      catchMsg: 'Dissolve request failed.',
+      failMsg: _CT.dissolveFailed,
+      catchMsg: _CT.dissolveRequestFailed,
       onOK: function() {
         _pendingGalleryReload = true;
         if (typeof refreshJobStatus === 'function') refreshJobStatus();
       }
     });
-  }, 'The images and the files on disk are not deleted.', 'Dissolve');
+  }, _CT.dissolveConfirmNote, _CT.dissolve);
 }
 
 document.addEventListener('click', function(e) {

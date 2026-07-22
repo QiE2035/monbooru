@@ -2,31 +2,31 @@
 <div id="detail-danger-zone"{{if .OOB}} hx-swap-oob="true"{{end}}>
   <div class="danger-zone">
     {{if .ImageTags}}
-    <button type="button" class="btn-warning" onclick="openRemoveTagsDialog()">Remove tag(s)...</button>
+    <button type="button" class="btn-warning" onclick="openRemoveTagsDialog()">{{ T "danger_zone_remove_tags" }}</button>
     {{end}}
     {{if .CanTransfer}}
     <button type="button" class="danger-zone-trailing"
-            onclick="openTransferImageDialog()">Transfer to another gallery</button>
+            onclick="openTransferImageDialog()">{{ T "danger_zone_transfer" }}</button>
     {{end}}
     <button type="button"{{if not .CanTransfer}} class="danger-zone-trailing"{{end}}
-            onclick="openMoveImageDialog()">Move image</button>
+            onclick="openMoveImageDialog()">{{ T "danger_zone_move" }}</button>
     <button class="btn-danger"
             id="delete-image-btn"
             hx-delete="/images/{{.ImageID}}?back_q={{urlQ .BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}{{if .Ref}}&ref={{.Ref}}{{end}}"
             hx-swap="none"
             hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
-            hx-confirm="Delete this image?"
-            data-confirm-danger="Files are permanently deleted from disk. This cannot be undone."
-            data-confirm-ok="Delete">Delete image</button>
+            hx-confirm="{{ T "danger_zone_delete_confirm" }}"
+            data-confirm-danger="{{ T "danger_zone_delete_danger" }}"
+            data-confirm-ok="{{ T "danger_zone_delete" }}">{{ T "danger_zone_delete_image" }}</button>
   </div>
 
   {{if .ImageTags}}
   <dialog id="remove-tags-dialog" data-image-id="{{.ImageID}}" data-csrf="{{.CSRFToken}}">
-    <p>Remove tags from this image:</p>
+    <p>{{ T "danger_zone_remove_tags_from" }}</p>
     <form id="remove-tags-form" onsubmit="event.preventDefault(); confirmRemoveTags();">
       <div class="field">
         {{if .ImageSources}}
-        <label style="display:block"><input type="radio" name="mode" value="source"> Tags from a source</label>
+        <label style="display:block"><input type="radio" name="mode" value="source"> {{ T "danger_zone_tags_from_source" }}</label>
         <div class="field" style="margin: 4px 0 8px 22px">
           <select id="remove-tags-source" class="upload-wide-input">
             {{range .ImageSources}}<option value="{{.}}">{{.}}</option>{{end}}
@@ -34,28 +34,28 @@
         </div>
         {{end}}
         {{if .ImageTaggers}}
-        <label style="display:block"><input type="radio" name="mode" value="tagger"> Tags from an auto-tagger</label>
+        <label style="display:block"><input type="radio" name="mode" value="tagger"> {{ T "danger_zone_tags_from_tagger" }}</label>
         <div class="field" style="margin: 4px 0 8px 22px">
           <select id="remove-tags-tagger" class="upload-wide-input">
             {{range .ImageTaggers}}<option value="{{.}}">{{.}}</option>{{end}}
           </select>
         </div>
         {{end}}
-        {{if .HasUserTags}}<label style="display:block"><input type="radio" name="mode" value="user"> All user tags</label>{{end}}
-        <label style="display:block"><input type="radio" name="mode" value="all"> All tags</label>
+        {{if .HasUserTags}}<label style="display:block"><input type="radio" name="mode" value="user"> {{ T "danger_zone_all_user_tags" }}</label>{{end}}
+        <label style="display:block"><input type="radio" name="mode" value="all"> {{ T "danger_zone_all_tags" }}</label>
       </div>
       <div class="dialog-actions">
-        <button type="submit" class="btn-warning">Remove</button>
-        <button type="button" onclick="document.getElementById('remove-tags-dialog').close()">Cancel</button>
+        <button type="submit" class="btn-warning">{{ T "danger_zone_remove" }}</button>
+        <button type="button" onclick="document.getElementById('remove-tags-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
   {{end}}
 
   <dialog id="move-image-dialog" data-current-folder="{{.CurrentFolder}}">
-    <p>Move this image to folder:</p>
-    <p class="field-hint">Currently in <code>{{if .CurrentFolder}}{{.CurrentFolder}}{{else}}/ (gallery root){{end}}</code></p>
-    <p class="field-hint">Path is relative to the gallery root. Subfolders are created automatically. Absolute paths and <code>..</code> segments are rejected.</p>
+    <p>{{ T "danger_zone_move_to" }}</p>
+    <p class="field-hint">{{ T "danger_zone_currently_in" }} <code>{{if .CurrentFolder}}{{.CurrentFolder}}{{else}}/ ({{ T "danger_zone_gallery_root" }}){{end}}</code></p>
+    <p class="field-hint">{{ T "danger_zone_move_hint" }}</p>
     <form id="move-image-form"
           hx-post="/images/{{.ImageID}}/move"
           hx-swap="none"
@@ -63,7 +63,7 @@
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div class="field" style="position:relative">
         <input type="text" name="folder" id="move-image-folder" class="upload-wide-input"
-               placeholder="Destination path... (blank = gallery root)" autocomplete="off"
+               placeholder="{{ T "danger_zone_move_placeholder" }}" autocomplete="off"
                hx-get="/internal/folders/suggest"
                hx-trigger="input changed delay:200ms"
                hx-target="#move-image-suggest"
@@ -73,8 +73,8 @@
         <div id="move-image-suggest" class="suggest-dropdown folder-suggest-dropdown"></div>
       </div>
       <div class="dialog-actions">
-        <button type="submit">Move</button>
-        <button type="button" onclick="document.getElementById('move-image-dialog').close()">Cancel</button>
+        <button type="submit">{{ T "danger_zone_move_btn" }}</button>
+        <button type="button" onclick="document.getElementById('move-image-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>

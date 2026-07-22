@@ -366,7 +366,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 	s.spawnAutoTagJob(ids, selected, "batch", "")
 
 	if isHTMXRequest(r) {
-		setFlashHeader(w, fmt.Sprintf("Auto-tagger started for %d image(s).", len(ids)), "ok", nil)
+		setFlashHeader(w, localize("flash.autotagger_started_count", map[string]any{"count": len(ids)}), "ok", nil)
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -431,7 +431,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	if isHTMXRequest(r) {
-		setFlashHeader(w, "Auto-tagger started for this image.", "ok", nil)
+		setFlashHeader(w, localize("flash.autotagger_started_single"), "ok", nil)
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}

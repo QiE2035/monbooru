@@ -1,5 +1,13 @@
 'use strict';
 
+// l10n reads a server-rendered <meta name="l10n-<key>"> tag injected by
+// layout.html.  Falls back to the raw key when the meta tag is missing,
+// which keeps things readable in dev / before a build.
+function l10n(key) {
+  var m = document.querySelector('meta[name="l10n-' + key + '"]');
+  return m ? m.content : key;
+}
+
 // Chord state for leader-key navigation. The next key within
 // chordTimeoutMs resolves the chord; anything else cancels.
 var _chordNode = null;
@@ -1480,7 +1488,7 @@ function showConfirm(message, onOk, danger, okLabel) {
   document.getElementById('confirm-dialog-danger').textContent = danger || '';
   var okBtn = document.getElementById('confirm-dialog-ok');
   var cancelBtn = document.getElementById('confirm-dialog-cancel');
-  okBtn.textContent = okLabel || 'OK';
+  okBtn.textContent = okLabel || l10n('ok');
   var close = function() { dlg.close(); okBtn.onclick = null; cancelBtn.onclick = null; };
   okBtn.onclick = function() { close(); onOk(); };
   cancelBtn.onclick = close;
@@ -1543,7 +1551,7 @@ document.addEventListener('click', function(e) {
   var overwrite = document.getElementById('relation-edit-overwrite-btn');
   if (overwrite) {
     overwrite.hidden = true;
-    overwrite.textContent = 'Overwrite existing relation';
+    overwrite.textContent = l10n('overwrite-relation');
   }
   dlg.showModal();
 });
@@ -1574,7 +1582,7 @@ function toggleAnnotations(btn) {
   var media = btn.closest('.detail-media');
   if (!media) return;
   var hidden = media.classList.toggle('annotations-hidden');
-  btn.textContent = hidden ? '[show annotations]' : '[hide annotations]';
+  btn.textContent = hidden ? l10n('show-annotations') : l10n('hide-annotations');
 }
 
 // actionFlashSlots is the ordered list of per-page slot ids the shared
@@ -1702,13 +1710,13 @@ function onRelationEditResponse(event) {
     if (overwrite) {
       var msg = err ? (err.textContent || '') : '';
       if (/already has a different relation/i.test(msg)) {
-        overwrite.textContent = 'Overwrite existing relation';
+        overwrite.textContent = l10n('overwrite-relation');
         overwrite.hidden = false;
       } else if (/already has a version edge/i.test(msg)) {
-        overwrite.textContent = 'Replace existing version edge';
+        overwrite.textContent = l10n('replace-version-edge');
         overwrite.hidden = false;
       } else if (/already has a source/i.test(msg)) {
-        overwrite.textContent = 'Replace existing source';
+        overwrite.textContent = l10n('replace-source');
         overwrite.hidden = false;
       } else {
         overwrite.hidden = true;
@@ -1718,7 +1726,7 @@ function onRelationEditResponse(event) {
   }
   if (overwrite) {
     overwrite.hidden = true;
-    overwrite.textContent = 'Overwrite existing relation';
+    overwrite.textContent = l10n('overwrite-relation');
   }
   src.innerHTML = '';
   var dlg = document.getElementById('relation-edit-dialog');
@@ -2252,8 +2260,8 @@ function scopeCount(scope, countEl, nounEl) {
   }
   if (countEl) countEl.textContent = n;
   if (nounEl) {
-    var suffix = n === 1 ? 'image' : 'images';
-    nounEl.textContent = scope === 'selection' ? 'selected ' + suffix : suffix + ' in current search';
+    var suffix = n === 1 ? l10n('image') : l10n('images');
+    nounEl.textContent = scope === 'selection' ? l10n('selected') + ' ' + suffix : suffix + ' ' + l10n('in-current-search');
   }
   return n;
 }
@@ -2306,11 +2314,11 @@ function runBatchOp(opts) {
       refreshJobStatus();
     } else {
       res.text().then(function(t) {
-        if (flash) flash.innerHTML = t || '<div class="flash flash-err">' + (opts.failMsg || 'Action failed.') + '</div>';
+        if (flash) flash.innerHTML = t || '<div class="flash flash-err">' + (opts.failMsg || l10n('action-failed')) + '</div>';
       });
     }
   }).catch(function() {
-    if (flash) flash.innerHTML = '<div class="flash flash-err">Request failed.</div>';
+    if (flash) flash.innerHTML = '<div class="flash flash-err">' + l10n('request-failed') + '</div>';
   });
 }
 
@@ -2385,7 +2393,7 @@ function confirmBatchSimple(prefix, endpoint, extraParams, failMsg) {
   } else {
     var ids = selectionScopeIds();
     if (!ids) {
-      document.getElementById(prefix + '-flash').innerHTML = '<div class="flash flash-err">No images selected.</div>';
+      document.getElementById(prefix + '-flash').innerHTML = '<div class="flash flash-err">' + l10n('no-images-selected') + '</div>';
       return;
     }
     params = params.concat(ids);
@@ -2435,7 +2443,7 @@ function postForm(url, params, opts) {
   });
   if (opts.catchMsg !== null) {
     p.catch(function() {
-      if (flash) flash.innerHTML = '<div class="flash flash-err">' + (opts.catchMsg || 'Request failed.') + '</div>';
+      if (flash) flash.innerHTML = '<div class="flash flash-err">' + (opts.catchMsg || l10n('request-failed')) + '</div>';
     });
   }
 }
@@ -2769,17 +2777,17 @@ function initInboxUpload() {
   form.addEventListener('htmx:beforeRequest', function() {
     uploadDone = false;
     if (submitBtn) submitBtn.disabled = true;
-    if (result) result.innerHTML = '<div class="field-hint">Uploading...</div>';
+    if (result) result.innerHTML = '<div class="field-hint">' + l10n('uploading') + '</div>';
   });
   form.addEventListener('htmx:xhr:progress', function(e) {
     if (uploadDone || !result || !e.detail || !e.detail.lengthComputable || !e.detail.total) return;
     var pct = Math.round((e.detail.loaded / e.detail.total) * 100);
     if (pct >= 100) {
       uploadDone = true;
-      result.innerHTML = '<div class="field-hint">Processing...</div>';
+      result.innerHTML = '<div class="field-hint">' + l10n('processing') + '</div>';
       return;
     }
-    result.innerHTML = '<div class="field-hint">Uploading... ' + pct + '%</div>';
+    result.innerHTML = '<div class="field-hint">' + l10n('uploading') + ' ' + pct + '%</div>';
   });
   form.addEventListener('htmx:afterRequest', function(e) {
     if (submitBtn) submitBtn.disabled = false;

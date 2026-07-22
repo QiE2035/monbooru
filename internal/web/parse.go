@@ -50,7 +50,7 @@ func formInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool
 	}
 	v, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		writeFieldFlash("Invalid")
+		writeFieldFlash(localize("flash.invalid_field"))
 		return 0, false
 	}
 	return v, true

@@ -1,9 +1,9 @@
 {{define "partials/tag_usage_panel.html"}}
 {{$kinds := .OriginKinds}}
-<h3>Applied by</h3>
+<h3>{{ T "tags_detail.applied_by" }}</h3>
 {{if .AppliedBy}}
 <table class="tag-table tag-applied-table">
-  <thead><tr><th>Source</th><th>Kind</th><th>Images</th></tr></thead>
+  <thead><tr><th>{{ T "tags_detail.source" }}</th><th>{{ T "tags_detail.kind" }}</th><th>{{ T "tags_detail.images" }}</th></tr></thead>
   <tbody>
     {{range .AppliedBy}}
     <tr>
@@ -11,23 +11,23 @@
         {{if .Label}}
         {{$kind := index $kinds .Label}}
         <span class="origin-chip origin-{{$kind}}">{{.Label}}</span>
-        {{else}}<span class="origin-user">user</span>{{end}}
+        {{else}}<span class="origin-user">{{ T "tags.origin_user" }}</span>{{end}}
       </td>
-      <td class="field-hint">{{if .IsAuto}}auto{{else if .Label}}source{{else}}manual{{end}}</td>
+      <td class="field-hint">{{if .IsAuto}}{{ T "tags_detail.kind_auto" }}{{else if .Label}}{{ T "tags_detail.kind_source" }}{{else}}{{ T "tags_detail.kind_manual" }}{{end}}</td>
       <td>{{.Count}}</td>
     </tr>
     {{end}}
   </tbody>
 </table>
 {{else}}
-<p class="field-hint">Not applied to any image.</p>
+<p class="field-hint">{{ T "tags_detail.not_applied" }}</p>
 {{end}}
 
-<h3>Usage over time</h3>
+<h3>{{ T "tags_detail.usage_over_time" }}</h3>
 {{if .Bars}}
 <pre class="tag-usage-graph">{{range .Bars}}{{.Month}}  <span class="usage-bar">{{.Bar}}</span> {{.Count}}
 {{end}}</pre>
 {{else}}
-<p class="field-hint">No applications recorded.</p>
+<p class="field-hint">{{ T "tags_detail.no_applications" }}</p>
 {{end}}
 {{end}}

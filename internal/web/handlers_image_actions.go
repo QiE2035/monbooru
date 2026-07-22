@@ -173,7 +173,7 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 		redirectURL = back.GalleryURL()
 	}
 
-	flashText := fmt.Sprintf("Deleted image #%d.", id)
+	flashText := localize("flash.image_deleted", map[string]any{"id": id})
 	if isHTMXRequest(r) {
 		// Ref case: the user arrived here via a Similar-images click, which
 		// itself may be any depth into a chain. Redirecting to the source
@@ -278,7 +278,7 @@ func (s *Server) promoteCanonical(w http.ResponseWriter, r *http.Request) {
 	// have to drop.
 	s.Active().InvalidateCaches()
 
-	hxDone(w, r, "Canonical path updated.", "", fmt.Sprintf("/images/%d", id))
+	hxDone(w, r, localize("flash.canonical_path_updated"), "", fmt.Sprintf("/images/%d", id))
 }
 
 const (
@@ -336,7 +336,7 @@ func (s *Server) setSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Active().InvalidateCaches()
-	hxDone(w, r, "Source updated.", "", "/images/"+strconv.FormatInt(id, 10))
+	hxDone(w, r, localize("flash.source_updated"), "", "/images/"+strconv.FormatInt(id, 10))
 }
 
 // sourceMembershipAction is the shared skeleton for the origin-row edit
@@ -521,7 +521,7 @@ func (s *Server) setNote(w http.ResponseWriter, r *http.Request) {
 		externalErr(w, r, "image not found", http.StatusNotFound)
 		return
 	}
-	hxDone(w, r, "Note updated.", "", "/images/"+strconv.FormatInt(id, 10))
+	hxDone(w, r, localize("flash.note_updated"), "", "/images/"+strconv.FormatInt(id, 10))
 }
 
 // setImageOriginalSource writes the operator's image-level original source URL.
@@ -553,7 +553,7 @@ func (s *Server) setImageOriginalSource(w http.ResponseWriter, r *http.Request) 
 		externalErr(w, r, "image not found", http.StatusNotFound)
 		return
 	}
-	hxDone(w, r, "Original source updated.", "", "/images/"+strconv.FormatInt(id, 10))
+	hxDone(w, r, localize("flash.original_source_updated"), "", "/images/"+strconv.FormatInt(id, 10))
 }
 
 // setSourceText sets one text field (commentary or original) on an origin,
@@ -587,7 +587,7 @@ func (s *Server) setSourceText(w http.ResponseWriter, r *http.Request, field, la
 // re-pull of that source overwrites it, so it is the source's text, not the
 // operator's durable note.
 func (s *Server) setSourceCommentary(w http.ResponseWriter, r *http.Request) {
-	s.setSourceText(w, r, "commentary", "commentary", maxImageCommentaryLen, "Commentary updated.",
+	s.setSourceText(w, r, "commentary", "commentary", maxImageCommentaryLen, localize("flash.commentary_updated"),
 		func(id int64, site, postID, val string) error {
 			return gallery.SetSourceCommentary(s.db(), id, site, postID, val)
 		})
@@ -596,7 +596,7 @@ func (s *Server) setSourceCommentary(w http.ResponseWriter, r *http.Request) {
 // removeSourceCommentary clears one origin's commentary, leaving the origin
 // itself in the sources list.
 func (s *Server) removeSourceCommentary(w http.ResponseWriter, r *http.Request) {
-	s.sourceMembershipAction(w, r, "Commentary removed.", func(id int64, site, postID string) error {
+	s.sourceMembershipAction(w, r, localize("flash.commentary_removed"), func(id int64, site, postID string) error {
 		return gallery.SetSourceCommentary(s.db(), id, site, postID, "")
 	})
 }
@@ -608,7 +608,7 @@ func (s *Server) removeSourceCommentary(w http.ResponseWriter, r *http.Request) 
 // URL here would reject that and desync web edits from the enrich / API-create
 // paths that fill the field with no such gate.
 func (s *Server) setSourceOriginal(w http.ResponseWriter, r *http.Request) {
-	s.setSourceText(w, r, "original", "original source", maxImageOriginalLen, "Original source updated.",
+	s.setSourceText(w, r, "original", "original source", maxImageOriginalLen, localize("flash.original_source_updated"),
 		func(id int64, site, postID, val string) error {
 			return gallery.SetSourceOriginal(s.db(), id, site, postID, val)
 		})
@@ -677,7 +677,7 @@ func (s *Server) setAnnotation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Active().InvalidateCaches()
-	hxDone(w, r, "Annotation updated.", "", "/images/"+strconv.FormatInt(id, 10))
+	hxDone(w, r, localize("flash.annotation_updated"), "", "/images/"+strconv.FormatInt(id, 10))
 }
 
 // removeAnnotation drops one operator-drawn box by id.
@@ -696,7 +696,7 @@ func (s *Server) removeAnnotation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Active().InvalidateCaches()
-	hxDone(w, r, "Annotation removed.", "", "/images/"+strconv.FormatInt(id, 10))
+	hxDone(w, r, localize("flash.annotation_removed"), "", "/images/"+strconv.FormatInt(id, 10))
 }
 
 // annotationCoord parses one non-negative integer coordinate field.
@@ -750,7 +750,7 @@ func (s *Server) setCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Active().InvalidateCaches()
-	hxDone(w, r, "Collection updated.", "", "/images/"+strconv.FormatInt(id, 10))
+	hxDone(w, r, localize("flash.collection_updated"), "", "/images/"+strconv.FormatInt(id, 10))
 }
 
 // removeCollection drops one membership from an image.
@@ -769,7 +769,7 @@ func (s *Server) removeCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Active().InvalidateCaches()
-	hxDone(w, r, "Collection removed.", "", "/images/"+strconv.FormatInt(id, 10))
+	hxDone(w, r, localize("flash.collection_removed"), "", "/images/"+strconv.FormatInt(id, 10))
 }
 
 func (s *Server) deleteAlias(w http.ResponseWriter, r *http.Request) {
@@ -876,7 +876,7 @@ func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
 		if dest == "" {
 			dest = "gallery root"
 		}
-		setFlashHeader(w, fmt.Sprintf("Moved image to %s.", dest), "ok", nil)
+		setFlashHeader(w, localize("flash.image_moved", map[string]any{"dest": dest}), "ok", nil)
 		w.Header().Set("HX-Redirect", fmt.Sprintf("/images/%d", id))
 		w.WriteHeader(http.StatusOK)
 		return

@@ -136,7 +136,7 @@ func (s *Server) collectionFindRelationsPost(w http.ResponseWriter, r *http.Requ
 	if !enabled {
 		verb = "disabled"
 	}
-	setFlashHeader(w, "Find relations "+verb+" for "+name+".", "ok", nil)
+	setFlashHeader(w, localize("flash.find_relations", map[string]any{"verb": verb, "name": name}), "ok", nil)
 	s.renderTemplate(w, "partials/collection_find_relations.html", map[string]any{
 		"Name":          name,
 		"FindRelations": enabled,

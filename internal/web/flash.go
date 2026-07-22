@@ -5,7 +5,19 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+
+	"github.com/leqwin/monbooru/internal/i18n"
+	goi18n "github.com/nicksnyder/go-i18n/v2/i18n"
 )
+
+// localize returns the translated message for the given key. For messages
+// with template data, pass a map as the second argument.
+func localize(key string, data ...map[string]any) string {
+	if len(data) > 0 {
+		return i18n.Localizer().MustLocalize(&goi18n.LocalizeConfig{MessageID: key, TemplateData: data[0]})
+	}
+	return i18n.Localizer().MustLocalize(&goi18n.LocalizeConfig{MessageID: key})
+}
 
 // flashErr surfaces a validation / failure message in the right format
 // for the caller's request mode. HTMX callers receive the inline flash

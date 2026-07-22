@@ -4,5 +4,5 @@
      when the query is non-empty so Save search remains reachable on
      zero-result queries. The chooser body itself gates entries on Total>0
      and on .Query so each entry only appears when applicable. */}}
-{{if and (not .Degraded) (or (gt .Result.Total 0) .Query)}}<button id="actions-btn" type="button" onclick="openBatchActionsDialog()" title="Actions chooser (a)">Actions...</button>{{end}}
+{{if and (not .Degraded) (or (gt .Result.Total 0) .Query)}}<button id="actions-btn" type="button" onclick="openBatchActionsDialog()" title="{{ T "save_search_area.actions_title" }}">{{ T "save_search_area.actions" }}</button>{{end}}
 {{end}}

@@ -2,7 +2,7 @@
   {{if .SourceLabelCounts}}
   <div id="source-labels-section">
     <div class="sidebar-section-header">
-      <span class="sidebar-section-title">Sources</span>
+      <span class="sidebar-section-title">{{ T "sidebar_sources" }}</span>
       <button id="source-labels-toggle" class="folder-toggle-btn" data-target="source-labels-list">▶</button>
     </div>
     <ul id="source-labels-list" class="folder-tree" style="display:none">
@@ -22,7 +22,7 @@
   {{$root := index .FolderTree 0}}
   <div id="folder-tree-section">
     <div class="sidebar-section-header">
-      <span class="sidebar-section-title">Folders</span>
+      <span class="sidebar-section-title">{{ T "sidebar_folders" }}</span>
       <button id="folder-tree-toggle" class="folder-toggle-btn" data-target="folder-tree-list">▶</button>
     </div>
     <ul id="folder-tree-list" class="folder-tree" style="display:none">
@@ -30,7 +30,7 @@
         <div class="folder-node-row">
           <span class="folder-spacer"></span>
           <a href="/?q=folder:" class="folder-link{{if eq $.Query "folder:"}} active{{end}}">/ ({{$root.Count}})</a>
-          <a href="/?q=folderonly:" class="folder-only-btn{{if eq $.Query "folderonly:"}} active{{end}}" title="Only this folder (no subfolders)">[·]</a>
+          <a href="/?q=folderonly:" class="folder-only-btn{{if eq $.Query "folderonly:"}} active{{end}}" title="{{ T "sidebar_only_this_folder" }}">[·]</a>
         </div>
       </li>
       {{range $root.Children}}
@@ -43,7 +43,7 @@
   {{if .SavedSearches}}
   <div id="saved-searches-section">
     <div class="sidebar-section-header">
-      <span class="sidebar-section-title">Saved Searches</span>
+      <span class="sidebar-section-title">{{ T "sidebar_saved_searches" }}</span>
     </div>
     <ul class="saved-search-list-sidebar">
       {{$csrf := $.CSRFToken}}
@@ -55,7 +55,7 @@
                 hx-target="#ss-{{.ID}}"
                 hx-swap="outerHTML"
                 hx-headers='{"X-CSRF-Token":"{{$csrf}}"}'
-                title="Remove saved search">×</button>
+                title="{{ T "sidebar_remove_saved_search" }}">×</button>
       </li>
       {{end}}
     </ul>
@@ -73,14 +73,14 @@
 <li class="folder-node-wrap">
   <div class="folder-node-row">
     {{if $node.Children}}
-    <button class="folder-toggle-btn folder-expand-btn" data-path="{{$node.Path}}" data-target="fc-{{$node.Path}}" title="Toggle folder">▶</button>
+    <button class="folder-toggle-btn folder-expand-btn" data-path="{{$node.Path}}" data-target="fc-{{$node.Path}}" title="{{ T "sidebar_toggle_folder" }}">▶</button>
     {{else}}
     <span class="folder-spacer"></span>
     {{end}}
     <a href="/?q={{urlQ $quotedActive}}" class="folder-link{{if or (eq $query $active) (eq $query $quotedActive)}} active{{end}}">
       {{$node.Name}}/ ({{$node.Count}})
     </a>
-    <a href="/?q={{urlQ $quotedOnlyActive}}" class="folder-only-btn{{if or (eq $query $onlyActive) (eq $query $quotedOnlyActive)}} active{{end}}" title="Only this folder (no subfolders)">[·]</a>
+    <a href="/?q={{urlQ $quotedOnlyActive}}" class="folder-only-btn{{if or (eq $query $onlyActive) (eq $query $quotedOnlyActive)}} active{{end}}" title="{{ T "sidebar_only_this_folder" }}">[·]</a>
   </div>
   {{if $node.Children}}
   <ul id="fc-{{$node.Path}}" class="folder-children" style="display:none">

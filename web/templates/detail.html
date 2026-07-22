@@ -15,7 +15,7 @@
   <div id="gallery-header">
     <form id="search-form" action="/" method="GET">
       <div class="search-input-wrap">
-        <input type="text" name="q" id="search-input" value="{{.BackQuery}}" placeholder="Search tags…" autocomplete="off"
+        <input type="text" name="q" id="search-input" value="{{.BackQuery}}" placeholder="{{ T "gallery_search.placeholder" }}" autocomplete="off"
                hx-get="/internal/search/suggest"
                hx-trigger="input changed delay:200ms"
                hx-target="#search-suggest"
@@ -26,28 +26,28 @@
         <div id="search-suggest" class="suggest-dropdown search-suggest-dropdown"></div>
       </div>
       <select name="sort" id="search-sort">
-        <option value="newest"   {{if eq .BackSort "newest"}}selected{{end}}>Newest</option>
-        <option value="filesize" {{if eq .BackSort "filesize"}}selected{{end}}>File size</option>
-        <option value="order"    {{if eq .BackSort "order"}}selected{{end}}>Collection order</option>
+        <option value="newest"   {{if eq .BackSort "newest"}}selected{{end}}>{{ T "gallery_search.sort_newest" }}</option>
+        <option value="filesize" {{if eq .BackSort "filesize"}}selected{{end}}>{{ T "gallery_search.sort_filesize" }}</option>
+        <option value="order"    {{if eq .BackSort "order"}}selected{{end}}>{{ T "gallery_search.sort_order" }}</option>
       </select>
       <select name="order">
         <option value="desc" {{if ne .BackOrder "asc"}}selected{{end}}>↓</option>
         <option value="asc"  {{if eq .BackOrder "asc"}}selected{{end}}>↑</option>
       </select>
-      <button type="submit">Search</button>
+      <button type="submit">{{ T "gallery_search.search" }}</button>
     </form>
   </div>
 
   {{/* Missing image banner */}}
   {{if .Image.IsMissing}}
   <div class="missing-banner">
-    <span>⚠ This file is no longer present on disk.</span>
+    <span>{{ T "detail_missing.banner" }}</span>
     <button class="btn-danger btn-sm"
             hx-delete="/images/{{.Image.ID}}"
             hx-swap="none"
             hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
-            hx-confirm="Remove this missing image from the library?"
-            data-confirm-ok="Remove">Remove from library</button>
+            hx-confirm="{{ T "detail_missing.confirm" }}"
+            data-confirm-ok="{{ T "detail_missing.confirm_ok" }}">{{ T "detail_missing.remove" }}</button>
   </div>
   {{end}}
 
@@ -61,11 +61,11 @@
   <div class="detail-topbar">
     <div class="detail-nav-group">
       {{if .RefURL}}
-      <a href="{{.RefURL}}" class="back-link">‹ Previous image</a>
+      <a href="{{.RefURL}}" class="back-link">‹ {{ T "detail_nav.previous_image" }}</a>
       {{else if or .BackQuery .BackSort}}
-      <a href="/?q={{urlQ .BackQuery}}&sort={{.BackSort}}&order={{.BackOrder}}{{if .BackPage}}&page={{.BackPage}}{{end}}{{if .BackSeed}}&seed={{.BackSeed}}{{end}}#img-{{.Image.ID}}" class="back-link">‹ Search</a>
+      <a href="/?q={{urlQ .BackQuery}}&sort={{.BackSort}}&order={{.BackOrder}}{{if .BackPage}}&page={{.BackPage}}{{end}}{{if .BackSeed}}&seed={{.BackSeed}}{{end}}#img-{{.Image.ID}}" class="back-link">‹ {{ T "detail_nav.search" }}</a>
       {{else}}
-      <a href="/#img-{{.Image.ID}}" class="back-link">‹ Search</a>
+      <a href="/#img-{{.Image.ID}}" class="back-link">‹ {{ T "detail_nav.search" }}</a>
       {{end}}
       {{if .Filename}}
       <span class="detail-nav-sep">/</span>
@@ -76,15 +76,15 @@
       <div class="detail-meta-nav">
         {{if .PrevID}}
         <a href="/images/{{deref64 .PrevID}}?back_q={{urlQ .BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}"
-           class="nav-arrow" title="Previous image (←)">← Prev</a>
+           class="nav-arrow" title="{{ T "detail_nav.prev_title" }}">← {{ T "detail_nav.prev" }}</a>
         {{else}}
-        <span class="nav-arrow nav-arrow-placeholder" aria-hidden="true">← Prev</span>
+        <span class="nav-arrow nav-arrow-placeholder" aria-hidden="true">← {{ T "detail_nav.prev" }}</span>
         {{end}}
         {{if .NextID}}
         <a href="/images/{{deref64 .NextID}}?back_q={{urlQ .BackQuery}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}"
-           class="nav-arrow" title="Next image (→)">Next →</a>
+           class="nav-arrow" title="{{ T "detail_nav.next_title" }}">{{ T "detail_nav.next" }} →</a>
         {{else}}
-        <span class="nav-arrow nav-arrow-placeholder" aria-hidden="true">Next →</span>
+        <span class="nav-arrow nav-arrow-placeholder" aria-hidden="true">{{ T "detail_nav.next" }} →</span>
         {{end}}
       </div>
       <div class="detail-actions">
@@ -92,23 +92,23 @@
               hx-target="#inbox-btn" hx-swap="outerHTML"
               hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}' style="display:inline">
           <button type="submit" id="inbox-btn" class="btn-inbox{{if .Image.IsInbox}} active{{end}}"
-                  title="{{if .Image.IsInbox}}Archive (i){{else}}Send to inbox (i){{end}}">
-            {{if .Image.IsInbox}}In inbox{{else}}Archived{{end}}
+                  title="{{if .Image.IsInbox}}{{ T "detail_actions.archive" }}{{else}}{{ T "detail_actions.send_to_inbox" }}{{end}}">
+            {{if .Image.IsInbox}}{{ T "detail_actions.in_inbox" }}{{else}}{{ T "detail_actions.archived" }}{{end}}
           </button>
         </form>
         <form id="fav-form" hx-post="/images/{{.Image.ID}}/favorite"
               hx-target="#fav-btn" hx-swap="outerHTML"
               hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}' style="display:inline">
           <button type="submit" id="fav-btn" class="btn-fav{{if .Image.IsFavorited}} active{{end}}"
-                  title="{{if .Image.IsFavorited}}Unfavorite (f){{else}}Favorite (f){{end}}">
+                  title="{{if .Image.IsFavorited}}{{ T "detail_actions.unfavorite" }}{{else}}{{ T "detail_actions.favorite" }}{{end}}">
             {{if .Image.IsFavorited}}♥{{else}}♡{{end}}
           </button>
         </form>
         {{if and (not (or (eq .Image.FileType "mp4") (eq .Image.FileType "webm"))) (not .IsManga) (not .Image.IsMissing)}}
-        <button type="button" class="btn-sm btn-view" title="View image (v)"
+        <button type="button" class="btn-sm btn-view" title="{{ T "detail_actions.view_image" }}"
                 onclick="openLightbox(null, '/images/{{.Image.ID}}/file')">⛶</button>
         {{end}}
-        <a href="/images/{{.Image.ID}}/file" download class="btn-sm" title="Download image">⤓</a>
+        <a href="/images/{{.Image.ID}}/file" download class="btn-sm" title="{{ T "detail_actions.download_image" }}">⤓</a>
       </div>
     </div>
   </div>
@@ -122,19 +122,19 @@
       <input type="hidden" id="source-prev-site" name="prev_site" value="">
       <input type="hidden" id="source-prev-post" name="prev_post" value="">
       <input type="hidden" id="source-post" name="post_id" value="">
-      <p>Source: <strong id="source-dialog-title">add</strong></p>
+      <p>{{ T "detail_source_dialog.title" }}: <strong id="source-dialog-title">{{ T "detail_source_dialog.add" }}</strong></p>
       <div class="field">
-        <label>Source label (max 200 chars)</label>
+        <label>{{ T "detail_source_dialog.site_label" }}</label>
         {{template "suggest_input" dict "Name" "site" "InputID" "source-site-input" "Endpoint" "/internal/source/suggest" "SuggestID" "source-suggest"}}
       </div>
       <div class="field">
-        <label>URL (must start with http:// or https://; max 2048 chars)</label>
+        <label>{{ T "detail_source_dialog.url_label" }}</label>
         <input id="source-url-input" type="url" name="url" maxlength="2048" placeholder="https://...">
       </div>
       <div id="source-error"></div>
       <div class="dialog-actions">
-        <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('source-dialog').close()">Cancel</button>
+        <button type="submit">{{ T "settings_general.save" }}</button>
+        <button type="button" onclick="document.getElementById('source-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
@@ -146,19 +146,19 @@
           hx-on::after-request="onExternalEditResponse(event, 'collection-dialog')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <input type="hidden" id="collection-prev" name="prev" value="">
-      <p>Collection: <strong id="collection-dialog-title">add</strong></p>
+      <p>{{ T "detail_collection_dialog.title" }}: <strong id="collection-dialog-title">{{ T "detail_collection_dialog.add" }}</strong></p>
       <div class="field">
-        <label>Collection label (max 200 chars)</label>
+        <label>{{ T "detail_collection_dialog.label" }}</label>
         {{template "suggest_input" dict "Name" "collection" "InputID" "collection-name-input" "Endpoint" "/internal/collection/suggest" "SuggestID" "collection-suggest"}}
       </div>
       <div class="field">
-        <label>Order within collection (optional, 1 or higher)</label>
+        <label>{{ T "detail_collection_dialog.order_label" }}</label>
         <input id="collection-order-input" type="number" name="collection_order" min="1">
       </div>
       <div id="collection-error"></div>
       <div class="dialog-actions">
-        <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('collection-dialog').close()">Cancel</button>
+        <button type="submit">{{ T "settings_general.save" }}</button>
+        <button type="button" onclick="document.getElementById('collection-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
@@ -171,15 +171,15 @@
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <input type="hidden" id="commentary-post" name="post_id" value="">
       <input type="hidden" id="commentary-site" name="site" value="">
-      <p>Commentary: <strong id="commentary-dialog-site"></strong></p>
+      <p>{{ T "detail_commentary_dialog.title" }}: <strong id="commentary-dialog-site"></strong></p>
       <div class="field">
-        <label>Commentary text</label>
+        <label>{{ T "detail_commentary_dialog.body_label" }}</label>
         <textarea id="commentary-body" name="commentary" rows="6" maxlength="10000"></textarea>
       </div>
       <div id="commentary-error"></div>
       <div class="dialog-actions">
-        <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('commentary-dialog').close()">Cancel</button>
+        <button type="submit">{{ T "settings_general.save" }}</button>
+        <button type="button" onclick="document.getElementById('commentary-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
@@ -192,15 +192,15 @@
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <input type="hidden" id="original-post" name="post_id" value="">
       <input type="hidden" id="original-site" name="site" value="">
-      <p>Original source: <strong id="original-dialog-site"></strong></p>
+      <p>{{ T "detail_original_dialog.title" }}: <strong id="original-dialog-site"></strong></p>
       <div class="field">
-        <label>Where the artist first posted it (one per line; max 2048 chars)</label>
+        <label>{{ T "detail_original_dialog.label" }}</label>
         <textarea id="original-body" name="original" rows="2" maxlength="2048"></textarea>
       </div>
       <div id="original-error"></div>
       <div class="dialog-actions">
-        <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('original-dialog').close()">Cancel</button>
+        <button type="submit">{{ T "settings_general.save" }}</button>
+        <button type="button" onclick="document.getElementById('original-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
@@ -212,10 +212,10 @@
           hx-on::after-request="onExternalEditResponse(event, 'annotation-dialog')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <input type="hidden" id="annotation-id" name="id" value="">
-      <p><span id="annotation-dialog-title">Add</span> annotation</p>
-      <p class="field-hint">Position and size in original-image pixels{{if .Image.Width}} (image is {{deref .Image.Width}} × {{deref .Image.Height}}){{end}}.</p>
+      <p><span id="annotation-dialog-title">{{ T "detail_annotation_dialog.add" }}</span> {{ T "detail_annotation_dialog.title_noun" }}</p>
+      <p class="field-hint">{{ T "detail_annotation_dialog.position_hint" }}{{if .Image.Width}} ({{ T "detail_annotation_dialog.image_is" }} {{deref .Image.Width}} × {{deref .Image.Height}}){{end}}.</p>
       <div class="field">
-        <label>x, y, width, height</label>
+        <label>{{ T "detail_annotation_dialog.coords_label" }}</label>
         <div class="annotation-coord-row">
           <input id="annotation-x" type="number" name="x" min="0" placeholder="x" autocomplete="off">
           <input id="annotation-y" type="number" name="y" min="0" placeholder="y" autocomplete="off">
@@ -224,13 +224,13 @@
         </div>
       </div>
       <div class="field">
-        <label>Text</label>
+        <label>{{ T "detail_annotation_dialog.text_label" }}</label>
         <textarea id="annotation-body" name="body" rows="3" maxlength="2000"></textarea>
       </div>
       <div id="annotation-error"></div>
       <div class="dialog-actions">
-        <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('annotation-dialog').close()">Cancel</button>
+        <button type="submit">{{ T "settings_general.save" }}</button>
+        <button type="button" onclick="document.getElementById('annotation-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
@@ -241,15 +241,15 @@
           hx-swap="innerHTML"
           hx-on::after-request="onExternalEditResponse(event, 'note-dialog')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <p>Note</p>
+      <p>{{ T "detail_note_dialog.title" }}</p>
       <div class="field">
-        <label>Your note (max 10000 chars)</label>
+        <label>{{ T "detail_note_dialog.body_label" }}</label>
         <textarea id="note-body" name="note" rows="6" maxlength="10000"></textarea>
       </div>
       <div id="note-error"></div>
       <div class="dialog-actions">
-        <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('note-dialog').close()">Cancel</button>
+        <button type="submit">{{ T "settings_general.save" }}</button>
+        <button type="button" onclick="document.getElementById('note-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
@@ -260,15 +260,15 @@
           hx-swap="innerHTML"
           hx-on::after-request="onExternalEditResponse(event, 'image-original-dialog')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <p>Original source</p>
+      <p>{{ T "detail_original_dialog.title" }}</p>
       <div class="field">
-        <label>Where the artist first posted it (a URL; max 2048 chars)</label>
+        <label>{{ T "detail_original_dialog.single_label" }}</label>
         <input id="image-original-body" type="url" name="original" maxlength="2048" placeholder="https://...">
       </div>
       <div id="image-original-error"></div>
       <div class="dialog-actions">
-        <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('image-original-dialog').close()">Cancel</button>
+        <button type="submit">{{ T "settings_general.save" }}</button>
+        <button type="button" onclick="document.getElementById('image-original-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
@@ -278,7 +278,7 @@
     var ec = e.target.closest('.btn-edit-commentary');
     if (ec) {
       document.getElementById('commentary-site').value = ec.dataset.site || '';
-      document.getElementById('commentary-dialog-site').textContent = ec.dataset.site || 'source';
+      document.getElementById('commentary-dialog-site').textContent = ec.dataset.site || '{{ T "detail_source_dialog.source" }}';
       document.getElementById('commentary-post').value = ec.dataset.post || '';
       document.getElementById('commentary-body').value = ec.dataset.commentary || '';
       clearSlots('commentary-error');
@@ -288,7 +288,7 @@
     var eo = e.target.closest('.btn-edit-original');
     if (eo) {
       document.getElementById('original-site').value = eo.dataset.site || '';
-      document.getElementById('original-dialog-site').textContent = eo.dataset.site || 'source';
+      document.getElementById('original-dialog-site').textContent = eo.dataset.site || '{{ T "detail_source_dialog.source" }}';
       document.getElementById('original-post').value = eo.dataset.post || '';
       document.getElementById('original-body').value = eo.dataset.original || '';
       clearSlots('original-error');
@@ -317,14 +317,14 @@
           hx-swap="none"
           hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
           hx-on::after-request="if(event.detail.successful)document.getElementById('autotag-dialog').close()">
-      <p>Auto-tag this image. Pick which tagger to run.</p>
+      <p>{{ T "detail_autotag_dialog.title" }}</p>
       <div class="field">
-        <label style="display:block"><input type="radio" name="tagger_name" value="" checked> All enabled taggers</label>
+        <label style="display:block"><input type="radio" name="tagger_name" value="" checked> {{ T "gallery_autotag_dialog.all_enabled" }}</label>
         {{range .EnabledTaggers}}<label style="display:block"><input type="radio" name="tagger_name" value="{{.Name}}"> {{.Name}}</label>{{end}}
       </div>
       <div class="dialog-actions">
-        <button type="submit">Auto-tag</button>
-        <button type="button" onclick="document.getElementById('autotag-dialog').close()">Cancel</button>
+        <button type="submit">{{ T "gallery_batch.auto_tag" }}</button>
+        <button type="button" onclick="document.getElementById('autotag-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
@@ -337,47 +337,47 @@
           hx-on::after-request="onRelationEditResponse(event)">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <input type="hidden" name="direction" id="relation-edit-direction" value="ab">
-      <p>Declare a <strong>relation</strong> between this image and another.</p>
+      <p>{{ T "detail_relation_dialog.title" }}</p>
       <div class="relation-edit-grid" id="relation-edit-grid">
         <div class="relation-edit-side" data-side="self">
-          <h4>This image</h4>
+          <h4>{{ T "detail_relation_dialog.this_image" }}</h4>
           <div class="relation-edit-thumb-slot">
             <img class="relation-edit-thumb" id="relation-edit-thumb-self"
                  src="/thumbnails/{{.ActiveGallery}}/{{.Image.ID}}.jpg"
-                 alt="image {{.Image.ID}}" loading="lazy">
+                 alt="{{ T "thumbnail_grid.image" }} {{.Image.ID}}" loading="lazy">
           </div>
           <input type="number" name="a" id="relation-parent-id" value="{{.Image.ID}}" readonly required>
         </div>
         <div class="relation-edit-swap">
           <button type="button" class="btn-link-accent" id="relation-edit-swap-btn"
-                  title="Swap which side is left" aria-label="Swap which side is left">⇄</button>
+                  title="{{ T "detail_relation_dialog.swap_title" }}" aria-label="{{ T "detail_relation_dialog.swap_title" }}">⇄</button>
         </div>
         <div class="relation-edit-side" data-side="other">
-          <h4>Other image</h4>
+          <h4>{{ T "detail_relation_dialog.other_image" }}</h4>
           <div class="relation-edit-thumb-slot">
             <img class="relation-edit-thumb" id="relation-edit-thumb-other"
                  alt="" loading="lazy" hidden>
           </div>
           <input type="text" name="b" id="relation-other-id" inputmode="numeric"
                  pattern="[0-9]+" required
-                 placeholder="image id">
+                 placeholder="{{ T "detail_relation_dialog.image_id_placeholder" }}">
         </div>
       </div>
       <div class="field">
-        <label>Relation type</label>
-        <label><input type="radio" name="type" value="duplicate" checked> Same image (Duplicate)</label>
-        <label><input type="radio" name="type" value="alternate"> Variant (Alternate)</label>
-        <label><input type="radio" name="type" value="version"> Newer revision (Version)</label>
-        <label><input type="radio" name="type" value="derivative"> Based on (Derivative)</label>
+        <label>{{ T "detail_relation_dialog.type_label" }}</label>
+        <label><input type="radio" name="type" value="duplicate" checked> {{ T "detail_relation_dialog.type_duplicate" }}</label>
+        <label><input type="radio" name="type" value="alternate"> {{ T "detail_relation_dialog.type_alternate" }}</label>
+        <label><input type="radio" name="type" value="version"> {{ T "detail_relation_dialog.type_version" }}</label>
+        <label><input type="radio" name="type" value="derivative"> {{ T "detail_relation_dialog.type_derivative" }}</label>
       </div>
       <p class="relation-edit-summary field-hint" id="relation-edit-summary"
-         data-self-id="{{.Image.ID}}">Pick the other image and a relation type.</p>
+         data-self-id="{{.Image.ID}}">{{ T "detail_relation_dialog.pick_hint" }}</p>
       <div id="relation-edit-error"></div>
       <div class="dialog-actions">
         <button type="submit" name="force" value="true" id="relation-edit-overwrite-btn"
-                class="btn-danger" hidden>Overwrite existing relation</button>
-        <button type="submit">Add relation</button>
-        <button type="button" onclick="document.getElementById('relation-edit-dialog').close()">Cancel</button>
+                class="btn-danger" hidden>{{ T "detail_relation_dialog.overwrite" }}</button>
+        <button type="submit">{{ T "detail_relation_dialog.add_relation" }}</button>
+        <button type="button" onclick="document.getElementById('relation-edit-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
     <script>
@@ -397,8 +397,8 @@
       function sideLabel(input) {
         if (!input) return '';
         var v = (input.value || '').trim();
-        if (v === '' || v === '0') return v === '' ? '(other image)' : '#' + v;
-        if (v === selfID) return 'this image';
+        if (v === '' || v === '0') return v === '' ? '({{ T "detail_relation_dialog.other_image" }}'.toLowerCase() + ')' : '#' + v;
+        if (v === selfID) return '{{ T "detail_relation_dialog.this_image" }}'.toLowerCase();
         return '#' + v;
       }
       function selectedType() {
@@ -419,18 +419,18 @@
         var s;
         switch (t) {
           case 'alternate':
-            s = left + ' and ' + right + ' are variants.';
+            s = left + ' {{ T "detail_relation_dialog.summary_and" }} ' + right + ' {{ T "detail_relation_dialog.summary_are_variants" }}';
             break;
           case 'version':
-            s = right + ' is a newer revision of ' + left + '.';
+            s = right + ' {{ T "detail_relation_dialog.summary_is_newer_revision" }} ' + left + '.';
             break;
           case 'derivative':
-            s = right + ' is based on ' + left + '.';
+            s = right + ' {{ T "detail_relation_dialog.summary_is_based_on" }} ' + left + '.';
             break;
           default:
             // Duplicate: the side passed first ("left") becomes the
             // original on a fresh group, so name it explicitly.
-            s = right + ' is the same image as ' + left + ' (' + left + ' is the original).';
+            s = right + ' {{ T "detail_relation_dialog.summary_is_same_image" }} ' + left + ' (' + left + ' {{ T "detail_relation_dialog.summary_is_original" }}).';
         }
         summary.textContent = s;
       }
@@ -459,7 +459,7 @@
           otherThumb.alt = '';
           return;
         }
-        otherThumb.alt = 'image ' + raw;
+        otherThumb.alt = '{{ T "thumbnail_grid.image" }} ' + raw;
         otherThumb.hidden = false;
         otherThumb.src = '/thumbnails/' + encodeURIComponent(gallery) + '/' + raw + '.jpg';
       }
@@ -498,17 +498,17 @@
         {{if or (eq .Image.FileType "mp4") (eq .Image.FileType "webm")}}
         <video src="/images/{{.Image.ID}}/file" controls loop autoplay muted playsinline preload="auto" class="detail-video"
                onloadedmetadata="this.play().catch(function(){})">
-          Your browser does not support video.
+          {{ T "detail_media.video_not_supported" }}
         </video>
         {{else if .IsManga}}
-        <a href="/images/{{.Image.ID}}/read?page=1" title="Open in reader">
-          <img src="/images/{{.Image.ID}}/page/1" alt="Cover of manga {{.Image.ID}}" class="detail-img"
+        <a href="/images/{{.Image.ID}}/read?page=1" title="{{ T "detail_media.open_reader" }}">
+          <img src="/images/{{.Image.ID}}/page/1" alt="{{ T "detail_media.cover_of_manga" }} {{.Image.ID}}" class="detail-img"
                onerror="if(!this.dataset.fallback){this.dataset.fallback='1';this.src='/thumbnails/{{.ActiveGallery}}/{{.Image.ID}}.jpg';}else{this.onerror=null;}">
         </a>
         {{else}}
         <div class="detail-media-frame">
           <a href="/images/{{.Image.ID}}/file" target="_blank"{{if not .Image.IsMissing}} class="detail-img-link" onclick="return openLightbox(event, this.href)"{{end}}>
-            <img src="/images/{{.Image.ID}}/file" alt="image {{.Image.ID}}" class="detail-img"
+            <img src="/images/{{.Image.ID}}/file" alt="{{ T "thumbnail_grid.image" }} {{.Image.ID}}" class="detail-img"
                  onerror="if(!this.dataset.fallback){this.dataset.fallback='1';this.src='/thumbnails/{{.ActiveGallery}}/{{.Image.ID}}.jpg';}else{this.onerror=null;}">
           </a>
           {{if .Annotations}}
@@ -520,16 +520,16 @@
           {{end}}
         </div>
         {{if .Annotations}}
-        <div class="annotation-controls"><button type="button" class="btn-link-accent annotation-toggle" onclick="toggleAnnotations(this)">[hide annotations]</button></div>
+        <div class="annotation-controls"><button type="button" class="btn-link-accent annotation-toggle" onclick="toggleAnnotations(this)">[{{ T "detail_media.hide_annotations" }}]</button></div>
         {{end}}
         {{end}}
       </div>
 
       {{if .IsManga}}
       <div class="manga-actions">
-        <a href="/images/{{.Image.ID}}/read?page=1{{.BackKVQS}}" class="btn-manga-action btn-read" title="Open in reader (R)">Open in reader <span class="btn-key-hint">(R)</span></a>
+        <a href="/images/{{.Image.ID}}/read?page=1{{.BackKVQS}}" class="btn-manga-action btn-read" title="{{ T "detail_media.open_reader_title" }}">{{ T "detail_media.open_reader" }} <span class="btn-key-hint">(R)</span></a>
         {{if .Image.PageCount}}{{if gt (deref .Image.PageCount) 1}}
-        <a href="/images/{{.Image.ID}}/pages{{.BackQS}}" class="btn-manga-action btn-pages" title="See all pages (P)">See all pages <span class="btn-key-hint">(P)</span></a>
+        <a href="/images/{{.Image.ID}}/pages{{.BackQS}}" class="btn-manga-action btn-pages" title="{{ T "detail_media.see_all_pages_title" }}">{{ T "detail_media.see_all_pages" }} <span class="btn-key-hint">(P)</span></a>
         {{end}}{{end}}
       </div>
       {{end}}
@@ -540,34 +540,34 @@
       <section class="detail-commentary">
         <div class="commentary-block detail-note">
           <div class="commentary-head">
-            <span class="commentary-label">Personal note</span>
+            <span class="commentary-label">{{ T "detail_commentary.personal_note" }}</span>
             {{if .Image.Note}}
-            <button type="button" class="btn-link-accent btn-edit-note" data-note="{{.Image.Note}}" title="Edit note">[edit]</button>
+            <button type="button" class="btn-link-accent btn-edit-note" data-note="{{.Image.Note}}" title="{{ T "detail_commentary.edit_note" }}">[{{ T "detail_actions.edit" }}]</button>
             {{else}}
-            <button type="button" class="btn-link-accent btn-edit-note" data-note="" title="Add note">[+ add note]</button>
+            <button type="button" class="btn-link-accent btn-edit-note" data-note="" title="{{ T "detail_commentary.add_note" }}">[+ {{ T "detail_actions.add" }}]</button>
             {{end}}
           </div>
           {{if .Image.Note}}<div class="commentary-body">{{.Image.Note}}</div>{{end}}
         </div>
         <div class="commentary-block detail-annotations">
           <div class="commentary-head">
-            <span class="commentary-label">Annotations</span>
-            <button type="button" class="btn-link-accent btn-add-annotation" title="Add an annotation">[+ add annotation]</button>
+            <span class="commentary-label">{{ T "detail_commentary.annotations" }}</span>
+            <button type="button" class="btn-link-accent btn-add-annotation" title="{{ T "detail_commentary.add_annotation" }}">[+ {{ T "detail_actions.add" }}]</button>
           </div>
           {{if .ManualAnnotations}}
           <ul class="collection-list operator-annotation-list">
             {{range .ManualAnnotations}}
             <li class="collection-item annotation-entry" data-ann-id="{{.ID}}">
-              <span class="meta-annotation-body" title="{{.Body}}">{{if .Body}}{{.Body}}{{else}}(no text){{end}}</span>
-              <button type="button" class="btn-link-accent btn-edit-annotation" data-id="{{.ID}}" data-x="{{.X}}" data-y="{{.Y}}" data-w="{{.W}}" data-h="{{.H}}" data-body="{{.Body}}" title="Edit">[edit]</button>
+              <span class="meta-annotation-body" title="{{.Body}}">{{if .Body}}{{.Body}}{{else}}({{ T "detail_actions.no_text" }}){{end}}</span>
+              <button type="button" class="btn-link-accent btn-edit-annotation" data-id="{{.ID}}" data-x="{{.X}}" data-y="{{.Y}}" data-w="{{.W}}" data-h="{{.H}}" data-body="{{.Body}}" title="{{ T "detail_actions.edit" }}">[{{ T "detail_actions.edit" }}]</button>
               <form method="POST" action="/images/{{$.Image.ID}}/annotations/remove"
                     hx-post="/images/{{$.Image.ID}}/annotations/remove" hx-swap="none"
                     hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
-                    hx-confirm="Remove this annotation?" data-confirm-ok="Remove"
+                    hx-confirm="{{ T "detail_actions.remove_annotation_confirm" }}" data-confirm-ok="{{ T "gallery_strip_dialog.remove_btn" }}"
                     style="display:inline">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="id" value="{{.ID}}">
-                <button type="submit" class="btn-link-accent" title="Remove annotation">[×]</button>
+                <button type="submit" class="btn-link-accent" title="{{ T "detail_actions.remove_annotation" }}">[×]</button>
               </form>
             </li>
             {{end}}
@@ -578,7 +578,7 @@
 
       {{/* Tag editor */}}
       <div class="tag-editor-section">
-        <h3>Tags</h3>
+        <h3>{{ T "detail_tags.title" }}</h3>
         {{template "partials/tag_list.html" (dict "ImageID" .Image.ID "ImageTags" .ImageTags "Aliases" .Aliases "CSRFToken" .CSRFToken)}}
         <form id="add-tag-form" class="add-tag-form"
               hx-post="/images/{{.Image.ID}}/tags"
@@ -586,7 +586,7 @@
               hx-swap="outerHTML">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
           <div class="add-tag-input-wrap">
-            <input type="text" name="tag" id="tag-input" placeholder="Add tag(s)..." autocomplete="off"
+            <input type="text" name="tag" id="tag-input" placeholder="{{ T "gallery_tag_dialog.tags_placeholder" }}" autocomplete="off"
                    hx-get="/internal/tags/suggest"
                    hx-trigger="input changed delay:200ms"
                    hx-target="#tag-suggest-dropdown"
@@ -595,21 +595,21 @@
                    onkeydown="handleSuggestKey(event, 'tag-suggest-dropdown', 'tag-input')">
             <div id="tag-suggest-dropdown" class="suggest-dropdown tag-suggest-dropdown"></div>
           </div>
-          <button type="submit">Add</button>
+          <button type="submit">{{ T "detail_tags.add" }}</button>
           {{if .EnabledTaggers}}
-          <button type="button" class="btn-autotag" title="Auto-tag this image (t)"
-                  onclick="document.getElementById('autotag-dialog').showModal()">Auto-tag</button>
+          <button type="button" class="btn-autotag" title="{{ T "detail_tags.auto_tag_title" }}"
+                  onclick="document.getElementById('autotag-dialog').showModal()">{{ T "gallery_batch.auto_tag" }}</button>
           {{end}}
           {{if .MonloaderPaired}}
           {{if .MonloaderPTR}}
           <button type="button" class="btn-hash-lookup monloader-accent"
-                  title="Lookup this file via monloader"
-                  onclick="document.getElementById('lookup-dialog').showModal()">Lookup</button>
+                  title="{{ T "detail_tags.lookup_title" }}"
+                  onclick="document.getElementById('lookup-dialog').showModal()">{{ T "gallery_batch.lookup" }}</button>
           {{else}}
           <button type="button" class="btn-hash-lookup monloader-accent"
-                  title="Lookup this file's tags and source on online boorus via monloader"
+                  title="{{ T "detail_tags.lookup_booru_title" }}"
                   hx-post="/images/{{.Image.ID}}/lookup" hx-vals='{"backend":"all"}'
-                  hx-target="#fetch-pending" hx-swap="innerHTML">Lookup</button>
+                  hx-target="#fetch-pending" hx-swap="innerHTML">{{ T "gallery_batch.lookup" }}</button>
           {{end}}
           {{end}}
         </form>
@@ -620,16 +620,16 @@
                 hx-target="#fetch-pending" hx-swap="innerHTML"
                 hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
                 hx-on::after-request="document.getElementById('lookup-dialog').close()">
-            <p>Look up this file's tags and source via monloader:</p>
-            {{if .MonloaderPTRSyncing}}<p class="field-hint">The Public Tag Repository is still syncing, so its answers come from partial data.</p>{{end}}
+            <p>{{ T "detail_lookup_dialog.title" }}</p>
+            {{if .MonloaderPTRSyncing}}<p class="field-hint">{{ T "detail_lookup_dialog.ptr_syncing_hint" }}</p>{{end}}
             <div class="field">
-              <label style="display:block"><input type="radio" name="backend" value="all" checked> Both (PTR and online boorus)</label>
-              <label style="display:block"><input type="radio" name="backend" value="ptr"> Public Tag Repository only</label>
-              <label style="display:block"><input type="radio" name="backend" value="booru"> Online boorus only</label>
+              <label style="display:block"><input type="radio" name="backend" value="all" checked> {{ T "detail_lookup_dialog.both" }}</label>
+              <label style="display:block"><input type="radio" name="backend" value="ptr"> {{ T "gallery_lookup_dialog.ptr_only" }}</label>
+              <label style="display:block"><input type="radio" name="backend" value="booru"> {{ T "gallery_lookup_dialog.booru_only" }}</label>
             </div>
             <div class="dialog-actions">
-              <button type="submit" autofocus>Lookup</button>
-              <button type="button" onclick="document.getElementById('lookup-dialog').close()">Cancel</button>
+              <button type="submit" autofocus>{{ T "gallery_batch.lookup" }}</button>
+              <button type="button" onclick="document.getElementById('lookup-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
             </div>
           </form>
         </dialog>
@@ -641,26 +641,26 @@
       {{template "partials/detail_danger_zone.html" (dict "ImageID" .Image.ID "ImageTags" .ImageTags "HasUserTags" .HasUserTags "ImageTaggers" .ImageTaggers "ImageSources" .ImageSources "CanTransfer" (gt (len .Galleries) 1) "CSRFToken" .CSRFToken "BackQuery" .BackQuery "BackSort" .BackSort "BackOrder" .BackOrder "BackPage" .BackPage "BackSeed" .BackSeed "Ref" .Ref "CurrentFolder" .Image.FolderPath)}}
       {{if gt (len .Galleries) 1}}
       <dialog id="transfer-image-dialog">
-        <p>Transfer this image to another gallery:</p>
-        <p class="field-hint">The image and its tags, sources and notes are copied into the target gallery.</p>
-        <p class="field-hint" style="color:var(--error)">Relations and collections are not carried over.</p>
+        <p>{{ T "detail_transfer_dialog.title" }}</p>
+        <p class="field-hint">{{ T "gallery_transfer_dialog.hint" }}</p>
+        <p class="field-hint" style="color:var(--error)">{{ T "gallery_transfer_dialog.warning" }}</p>
         <form id="transfer-image-form"
               hx-post="/images/{{.Image.ID}}/transfer"
               hx-swap="none"
               hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'>
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
           <div class="field">
-            <label>Target gallery</label>
+            <label>{{ T "gallery_transfer_dialog.target_gallery" }}</label>
             <select name="target" id="transfer-image-target" class="upload-wide-input">
               {{range .Galleries}}{{if ne .Name $.ActiveGallery}}<option value="{{.Name}}">{{.Name}}</option>{{end}}{{end}}
             </select>
           </div>
           <div class="field">
-            <label><input type="checkbox" name="remove_after" id="transfer-image-remove" value="1"> Remove from this gallery after transfer</label>
+            <label><input type="checkbox" name="remove_after" id="transfer-image-remove" value="1"> {{ T "gallery_transfer_dialog.remove_after" }}</label>
           </div>
           <div class="dialog-actions">
-            <button type="submit">Transfer</button>
-            <button type="button" onclick="document.getElementById('transfer-image-dialog').close()">Cancel</button>
+            <button type="submit">{{ T "gallery_transfer_dialog.transfer_btn" }}</button>
+            <button type="button" onclick="document.getElementById('transfer-image-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
           </div>
         </form>
       </dialog>
@@ -718,7 +718,7 @@
         document.getElementById('source-post').value = post || '';
         document.getElementById('source-site-input').value = site || '';
         document.getElementById('source-url-input').value = url || '';
-        document.getElementById('source-dialog-title').textContent = (site || url) ? 'edit' : 'add';
+        document.getElementById('source-dialog-title').textContent = (site || url) ? '{{ T "detail_source_dialog.edit" }}' : '{{ T "detail_source_dialog.add" }}';
         clearSlots('source-suggest', 'source-error');
         dlg.showModal();
         var input = document.getElementById('source-site-input');
@@ -737,7 +737,7 @@
         document.getElementById('collection-prev').value = name || '';
         document.getElementById('collection-name-input').value = name || '';
         document.getElementById('collection-order-input').value = order || '';
-        document.getElementById('collection-dialog-title').textContent = name ? 'edit ' + name : 'add';
+        document.getElementById('collection-dialog-title').textContent = name ? '{{ T "detail_source_dialog.edit" }} ' + name : '{{ T "detail_source_dialog.add" }}';
         clearSlots('collection-suggest', 'collection-error');
         dlg.showModal();
         var input = document.getElementById('collection-name-input');
@@ -759,7 +759,7 @@
         document.getElementById('annotation-w').value = w || '';
         document.getElementById('annotation-h').value = h || '';
         document.getElementById('annotation-body').value = body || '';
-        document.getElementById('annotation-dialog-title').textContent = id ? 'Edit' : 'Add';
+        document.getElementById('annotation-dialog-title').textContent = id ? '{{ T "detail_actions.edit" }}' : '{{ T "detail_annotation_dialog.add" }}';
         clearSlots('annotation-error');
         dlg.showModal();
         document.getElementById('annotation-x').focus();
@@ -790,19 +790,19 @@
     {{/* Right: metadata panel */}}
     <div class="detail-meta-col">
     <details class="detail-meta-panel" open>
-      <summary>Metadata</summary>
+      <summary>{{ T "detail_meta.metadata" }}</summary>
       <div class="detail-meta-content">
 
         {{/* Basic metadata table */}}
         <table class="meta-table">
           <tbody>
-            <tr><th>Image ID</th><td>
+            <tr><th>{{ T "detail_meta.image_id" }}</th><td>
               <button type="button" class="mono-small sha-copyable"
-                      data-copy="{{.Image.ID}}" title="Click to copy">{{.Image.ID}}</button>
-              <span class="copy-flash" hidden>copied</span>
+                      data-copy="{{.Image.ID}}" title="{{ T "detail_meta.click_to_copy" }}">{{.Image.ID}}</button>
+              <span class="copy-flash" hidden>{{ T "detail_meta.copied" }}</span>
             </td></tr>
-            <tr><th>Path</th><td class="mono-small meta-path" title="{{.Image.CanonicalPath}}">{{.Image.CanonicalPath}}</td></tr>
-            <tr><th>Type</th><td>{{.Image.FileType}}
+            <tr><th>{{ T "detail_meta.path" }}</th><td class="mono-small meta-path" title="{{.Image.CanonicalPath}}">{{.Image.CanonicalPath}}</td></tr>
+            <tr><th>{{ T "detail_meta.type" }}</th><td>{{.Image.FileType}}
               {{if and .Image.SourceType (ne .Image.SourceType "none")}}
                 <span class="source-badge">AI</span>
                 {{if eq .Image.SourceType "a1111,comfyui"}}
@@ -814,42 +814,42 @@
               {{end}}
             </td></tr>
             {{if .Image.Width}}
-            <tr><th>Resolution</th><td>{{deref .Image.Width}} × {{deref .Image.Height}}</td></tr>
+            <tr><th>{{ T "detail_meta.resolution" }}</th><td>{{deref .Image.Width}} × {{deref .Image.Height}}</td></tr>
             {{end}}
             {{if .Image.DurationSec}}
-            <tr><th>Duration</th><td>{{printf "%.1f" (deref64f .Image.DurationSec)}} s</td></tr>
+            <tr><th>{{ T "detail_meta.duration" }}</th><td>{{printf "%.1f" (deref64f .Image.DurationSec)}} s</td></tr>
             {{end}}
-            <tr><th>File size</th><td>{{humanBytes .Image.FileSize}}</td></tr>
-            <tr><th>SHA-256</th><td>
+            <tr><th>{{ T "detail_meta.file_size" }}</th><td>{{humanBytes .Image.FileSize}}</td></tr>
+            <tr><th>{{ T "detail_meta.sha256" }}</th><td>
               <button type="button" class="mono-small sha-truncated sha-copyable"
-                      data-copy="{{.Image.SHA256}}" title="Click to copy">{{.Image.SHA256}}</button>
-              <span class="copy-flash" hidden>copied</span>
+                      data-copy="{{.Image.SHA256}}" title="{{ T "detail_meta.click_to_copy" }}">{{.Image.SHA256}}</button>
+              <span class="copy-flash" hidden>{{ T "detail_meta.copied" }}</span>
             </td></tr>
-            <tr><th>pHash</th><td>
+            <tr><th>{{ T "detail_meta.phash" }}</th><td>
               {{if .Image.Phash}}
                 {{$hex := phashHex .Image.Phash}}
-                <button type="button" class="mono-small sha-copyable" data-copy="{{$hex}}" title="Click to copy">{{$hex}}</button>
-                <a href="/?q=phash:{{$hex}}~{{.PhashDistance}}" class="btn-link-accent" title="Search near-duplicates (Hamming distance {{.PhashDistance}})">[search near-duplicates]</a>
-                <span class="copy-flash" hidden>copied</span>
+                <button type="button" class="mono-small sha-copyable" data-copy="{{$hex}}" title="{{ T "detail_meta.click_to_copy" }}">{{$hex}}</button>
+                <a href="/?q=phash:{{$hex}}~{{.PhashDistance}}" class="btn-link-accent" title="{{ T "detail_meta.search_near_duplicates" }} (Hamming distance {{.PhashDistance}})">[{{ T "detail_meta.search_near_duplicates_btn" }}]</a>
+                <span class="copy-flash" hidden>{{ T "detail_meta.copied" }}</span>
               {{else}}
-                <span class="field-hint">(not computed)</span>
+                <span class="field-hint">({{ T "detail_meta.not_computed" }})</span>
                 <form hx-post="/relations/phash/{{.Image.ID}}/recompute" hx-swap="none"
                       hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
                   <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-                  <button type="submit" class="btn-link-accent">[backfill]</button>
+                  <button type="submit" class="btn-link-accent">[{{ T "detail_meta.backfill" }}]</button>
                 </form>
               {{end}}
             </td></tr>
-            <tr><th>Ingested</th><td>{{localTime .Image.IngestedAt}}</td></tr>
-            {{if .Image.Origin}}<tr><th>Added via</th><td>{{.Image.Origin}}</td></tr>{{end}}
+            <tr><th>{{ T "detail_meta.ingested" }}</th><td>{{localTime .Image.IngestedAt}}</td></tr>
+            {{if .Image.Origin}}<tr><th>{{ T "detail_meta.added_via" }}</th><td>{{.Image.Origin}}</td></tr>{{end}}
             {{if and .IsManga .Image.PageCount}}
-            <tr><th>Pages</th><td>{{deref .Image.PageCount}}</td></tr>
+            <tr><th>{{ T "detail_meta.pages" }}</th><td>{{deref .Image.PageCount}}</td></tr>
             {{end}}
             {{if .Image.AutoTaggedAt}}
-            <tr><th>Auto-tagged</th><td>{{localTimePtr .Image.AutoTaggedAt}}</td></tr>
+            <tr><th>{{ T "detail_meta.auto_tagged" }}</th><td>{{localTimePtr .Image.AutoTaggedAt}}</td></tr>
             {{end}}
             {{if .Image.IsMissing}}
-            <tr><th>Status</th><td class="text-warning">⚠ File missing from disk</td></tr>
+            <tr><th>{{ T "detail_meta.status" }}</th><td class="text-warning">⚠ {{ T "detail_meta.file_missing" }}</td></tr>
             {{end}}
           </tbody>
         </table>
@@ -859,12 +859,12 @@
         <hr class="meta-editable-separator">
         <table class="meta-table meta-editable">
           <tbody>
-            <tr><th>Sources</th><td>
+            <tr><th>{{ T "detail_meta.sources" }}</th><td>
               {{if .Sources}}
               <ul class="collection-list source-list">
                 {{range $i, $src := .Sources}}
                 <li class="collection-item">
-                  {{if .Site}}<a href="/?q={{urlQ (printf "source:\"%s\"" (qval .Site))}}" class="meta-source-value" title="Search this source">{{.Site}}</a>{{if gt .Similarity 0.0}} <span class="field-hint" title="Found by image similarity at {{printf "%.0f" .Similarity}}%">~{{printf "%.0f" .Similarity}}%</span>{{end}}{{if .URL}} <a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="btn-link-accent" title="{{.URL}}">[open]</a>{{end}}{{else}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="meta-url-value">{{.URL}}</a>{{if gt .Similarity 0.0}} <span class="field-hint" title="Found by image similarity at {{printf "%.0f" .Similarity}}%">~{{printf "%.0f" .Similarity}}%</span>{{end}}{{end}}
+                  {{if .Site}}<a href="/?q={{urlQ (printf "source:\"%s\"" (qval .Site))}}" class="meta-source-value" title="{{ T "detail_meta.search_this_source" }}">{{.Site}}</a>{{if gt .Similarity 0.0}} <span class="field-hint" title="{{ T "detail_meta.found_by_similarity" }} {{printf "%.0f" .Similarity}}%">~{{printf "%.0f" .Similarity}}%</span>{{end}}{{if .URL}} <a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="btn-link-accent" title="{{.URL}}">[{{ T "detail_meta.open" }}]</a>{{end}}{{else}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="meta-url-value">{{.URL}}</a>{{if gt .Similarity 0.0}} <span class="field-hint" title="{{ T "detail_meta.found_by_similarity" }} {{printf "%.0f" .Similarity}}%">~{{printf "%.0f" .Similarity}}%</span>{{end}}{{end}}
                   {{if gt $i 0}}<form method="POST" action="/images/{{$.Image.ID}}/sources/primary"
                         hx-post="/images/{{$.Image.ID}}/sources/primary" hx-swap="none"
                         hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
@@ -872,72 +872,72 @@
                     <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                     <input type="hidden" name="site" value="{{.Site}}">
                     <input type="hidden" name="post_id" value="{{.PostID}}">
-                    <button type="submit" class="btn-link-accent" title="Make this the primary source">[set primary]</button>
+                    <button type="submit" class="btn-link-accent" title="{{ T "detail_meta.set_primary" }}">[{{ T "detail_meta.set_primary_btn" }}]</button>
                   </form>{{end}}
-                  {{if not (isPTRSite .Site)}}<button type="button" class="btn-link-accent btn-edit-source" data-site="{{.Site}}" data-post="{{.PostID}}" data-url="{{.URL}}" title="Edit">[edit]</button>{{end}}
+                  {{if not (isPTRSite .Site)}}<button type="button" class="btn-link-accent btn-edit-source" data-site="{{.Site}}" data-post="{{.PostID}}" data-url="{{.URL}}" title="{{ T "detail_actions.edit" }}">[{{ T "detail_actions.edit" }}]</button>{{end}}
                   {{if and .URL $.MonloaderPaired}}<form hx-post="/images/{{$.Image.ID}}/sources/fetch"
                         hx-target="#fetch-status" hx-swap="innerHTML"
                         hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}' style="display:inline">
                     <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                     <input type="hidden" name="url" value="{{.URL}}">
-                    <button type="submit" class="btn-link-accent monloader-accent" title="Refresh tags from this source via monloader">[refresh]</button>
+                    <button type="submit" class="btn-link-accent monloader-accent" title="{{ T "detail_meta.refresh_from_source" }}">[{{ T "detail_meta.refresh" }}]</button>
                   </form>{{else if and $.MonloaderPaired (isPTRSite .Site)}}<form hx-post="/images/{{$.Image.ID}}/lookup"
                         hx-target="#fetch-status" hx-swap="innerHTML"
                         hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}' style="display:inline">
                     <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                     <input type="hidden" name="backend" value="ptr">
-                    <button type="submit" class="btn-link-accent monloader-accent" title="Refresh tags from the Public Tag Repository via monloader">[refresh]</button>
+                    <button type="submit" class="btn-link-accent monloader-accent" title="{{ T "detail_meta.refresh_from_ptr" }}">[{{ T "detail_meta.refresh" }}]</button>
                   </form>{{end}}
                   <form method="POST" action="/images/{{$.Image.ID}}/sources/remove"
                         hx-post="/images/{{$.Image.ID}}/sources/remove" hx-swap="none"
                         hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
-                        hx-confirm="Remove this source?" data-confirm-ok="Remove"
+                        hx-confirm="{{ T "detail_meta.remove_source_confirm" }}" data-confirm-ok="{{ T "gallery_strip_dialog.remove_btn" }}"
                         style="display:inline">
                     <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                     <input type="hidden" name="site" value="{{.Site}}">
                     <input type="hidden" name="post_id" value="{{.PostID}}">
-                    <button type="submit" class="btn-link-accent" title="Remove this source">[×]</button>
+                    <button type="submit" class="btn-link-accent" title="{{ T "detail_meta.remove_source" }}">[×]</button>
                   </form>
                 </li>
                 {{end}}
               </ul>
-              {{else}}<span class="field-hint">(none)</span>{{end}}
-              <button type="button" class="btn-link-accent btn-add-source" title="Add a source">[+ add]</button>
+              {{else}}<span class="field-hint">({{ T "detail_meta.none" }})</span>{{end}}
+              <button type="button" class="btn-link-accent btn-add-source" title="{{ T "detail_meta.add_source" }}">[+ {{ T "detail_actions.add" }}]</button>
             </td></tr>
-            <tr><th>Original</th><td>
-              {{if .Image.OriginalSource}}<a href="{{.Image.OriginalSource}}" target="_blank" rel="noopener noreferrer" class="meta-url-value" title="{{.Image.OriginalSource}}">{{urlDomain .Image.OriginalSource}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
-              <button type="button" class="btn-link-accent btn-edit-image-original" data-original="{{.Image.OriginalSource}}" title="{{if .Image.OriginalSource}}Edit original source{{else}}Add original source{{end}}">{{if .Image.OriginalSource}}[edit]{{else}}[+ add]{{end}}</button>
+            <tr><th>{{ T "detail_meta.original" }}</th><td>
+              {{if .Image.OriginalSource}}<a href="{{.Image.OriginalSource}}" target="_blank" rel="noopener noreferrer" class="meta-url-value" title="{{.Image.OriginalSource}}">{{urlDomain .Image.OriginalSource}}</a>{{else}}<span class="field-hint">({{ T "detail_meta.none" }})</span>{{end}}
+              <button type="button" class="btn-link-accent btn-edit-image-original" data-original="{{.Image.OriginalSource}}" title="{{if .Image.OriginalSource}}{{ T "detail_meta.edit_original" }}{{else}}{{ T "detail_meta.add_original" }}{{end}}">{{if .Image.OriginalSource}}[{{ T "detail_actions.edit" }}]{{else}}[+ {{ T "detail_actions.add" }}]{{end}}</button>
               {{if .Image.OriginalSource}}<form method="POST" action="/images/{{.Image.ID}}/original-source"
                     hx-post="/images/{{.Image.ID}}/original-source" hx-swap="none"
                     hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
-                    hx-confirm="Remove the original source?" data-confirm-ok="Remove"
+                    hx-confirm="{{ T "detail_meta.remove_original_confirm" }}" data-confirm-ok="{{ T "gallery_strip_dialog.remove_btn" }}"
                     style="display:inline">
                 <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
                 <input type="hidden" name="original" value="">
-                <button type="submit" class="btn-link-accent" title="Remove original source">[×]</button>
+                <button type="submit" class="btn-link-accent" title="{{ T "detail_meta.remove_original" }}">[×]</button>
               </form>{{end}}
             </td></tr>
-            <tr><th>Collections</th><td>
+            <tr><th>{{ T "detail_meta.collections" }}</th><td>
               {{if .Collections}}
               <ul class="collection-list">
                 {{range .Collections}}
                 <li class="collection-item">
-                  <a href="/?q={{urlQ (printf "collection:\"%s\"" (qval .Name))}}" class="meta-source-value" title="Search this collection">{{.Name}}</a>{{if .Order}} <span class="series-pill-order">#{{deref .Order}}</span>{{end}}
-                  <button type="button" class="btn-link-accent btn-edit-collection" data-name="{{.Name}}" data-order="{{if .Order}}{{deref .Order}}{{end}}" title="Edit">[edit]</button>
+                  <a href="/?q={{urlQ (printf "collection:\"%s\"" (qval .Name))}}" class="meta-source-value" title="{{ T "detail_meta.search_this_collection" }}">{{.Name}}</a>{{if .Order}} <span class="series-pill-order">#{{deref .Order}}</span>{{end}}
+                  <button type="button" class="btn-link-accent btn-edit-collection" data-name="{{.Name}}" data-order="{{if .Order}}{{deref .Order}}{{end}}" title="{{ T "detail_actions.edit" }}">[{{ T "detail_actions.edit" }}]</button>
                   <form method="POST" action="/images/{{$.Image.ID}}/collections/remove"
                         hx-post="/images/{{$.Image.ID}}/collections/remove" hx-swap="none"
                         hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
-                        hx-confirm="Remove this image from {{.Name}}?" data-confirm-ok="Remove"
+                        hx-confirm="{{ T "detail_meta.remove_from_collection_confirm" (dict "name" .Name) }}" data-confirm-ok="{{ T "gallery_strip_dialog.remove_btn" }}"
                         style="display:inline">
                     <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                     <input type="hidden" name="collection" value="{{.Name}}">
-                    <button type="submit" class="btn-link-accent" title="Remove from collection">[×]</button>
+                    <button type="submit" class="btn-link-accent" title="{{ T "detail_meta.remove_from_collection" }}">[×]</button>
                   </form>
                 </li>
                 {{end}}
               </ul>
-              {{else}}<span class="field-hint">(none)</span>{{end}}
-              <button type="button" class="btn-link-accent btn-add-collection" title="Add to a collection">[+ add]</button>
+              {{else}}<span class="field-hint">({{ T "detail_meta.none" }})</span>{{end}}
+              <button type="button" class="btn-link-accent btn-add-collection" title="{{ T "detail_meta.add_to_collection" }}">[+ {{ T "detail_actions.add" }}]</button>
             </td></tr>
           </tbody>
         </table>
@@ -945,30 +945,30 @@
         {{/* SD Generation metadata */}}
         {{if .SDMeta}}
         <details class="gen-details" open>
-          <summary>► Generation data (SD / Forge)</summary>
+          <summary>► {{ T "detail_meta.gen_data_sd" }}</summary>
           <div class="node-list">
             {{if .SDMeta.GenerationHash}}
             <div class="node-entry">
-              <div class="node-header"><span class="node-title">Generation hash</span>
-                <a class="gen-hash-link" href="/?q=generated:{{.SDMeta.GenerationHash}}" title="Find images with the same recipe">{{.SDMeta.GenerationHash}}</a>
+              <div class="node-header"><span class="node-title">{{ T "detail_meta.generation_hash" }}</span>
+                <a class="gen-hash-link" href="/?q=generated:{{.SDMeta.GenerationHash}}" title="{{ T "detail_meta.find_same_recipe" }}">{{.SDMeta.GenerationHash}}</a>
               </div>
             </div>
             {{end}}
             {{if .SDMeta.Prompt}}
             <div class="node-entry">
-              <div class="node-header"><span class="node-title">Prompt</span></div>
+              <div class="node-header"><span class="node-title">{{ T "detail_meta.prompt" }}</span></div>
               <pre class="gen-text">{{.SDMeta.Prompt}}</pre>
             </div>
             {{end}}
             {{if .SDMeta.NegativePrompt}}
             <div class="node-entry">
-              <div class="node-header"><span class="node-title">Negative prompt</span></div>
+              <div class="node-header"><span class="node-title">{{ T "detail_meta.negative_prompt" }}</span></div>
               <pre class="gen-text">{{.SDMeta.NegativePrompt}}</pre>
             </div>
             {{end}}
             {{if .SDMeta.ParsedParams}}
             <div class="node-entry">
-              <div class="node-header"><span class="node-title">Parameters</span></div>
+              <div class="node-header"><span class="node-title">{{ T "detail_meta.parameters" }}</span></div>
               <table class="node-params">
                 {{range .SDMeta.ParsedParams}}
                 <tr><td class="node-param-name">{{.Key}}</td><td class="node-param-value">
@@ -979,15 +979,15 @@
             </div>
             {{else if or .SDMeta.Model .SDMeta.Seed .SDMeta.Sampler .SDMeta.Steps .SDMeta.CFGScale}}
             <div class="node-entry">
-              <div class="node-header"><span class="node-title">Parameters</span></div>
+              <div class="node-header"><span class="node-title">{{ T "detail_meta.parameters" }}</span></div>
               <table class="node-params">
-                {{if .SDMeta.Model}}<tr><td class="node-param-name">Model</td><td class="node-param-value">
+                {{if .SDMeta.Model}}<tr><td class="node-param-name">{{ T "detail_meta.model" }}</td><td class="node-param-value">
                   {{if isLongValue .SDMeta.Model}}<details class="long-value"><summary>{{truncate .SDMeta.Model 140}}…</summary><pre class="long-value-full">{{.SDMeta.Model}}</pre></details>{{else}}{{.SDMeta.Model}}{{end}}
                 </td></tr>{{end}}
-                {{if .SDMeta.Seed}}<tr><td class="node-param-name">Seed</td><td class="node-param-value">{{deref64 .SDMeta.Seed}}</td></tr>{{end}}
-                {{if .SDMeta.Sampler}}<tr><td class="node-param-name">Sampler</td><td class="node-param-value">{{.SDMeta.Sampler}}</td></tr>{{end}}
-                {{if .SDMeta.Steps}}<tr><td class="node-param-name">Steps</td><td class="node-param-value">{{deref .SDMeta.Steps}}</td></tr>{{end}}
-                {{if .SDMeta.CFGScale}}<tr><td class="node-param-name">CFG Scale</td><td class="node-param-value">{{printf "%.1f" (deref64f .SDMeta.CFGScale)}}</td></tr>{{end}}
+                {{if .SDMeta.Seed}}<tr><td class="node-param-name">{{ T "detail_meta.seed" }}</td><td class="node-param-value">{{deref64 .SDMeta.Seed}}</td></tr>{{end}}
+                {{if .SDMeta.Sampler}}<tr><td class="node-param-name">{{ T "detail_meta.sampler" }}</td><td class="node-param-value">{{.SDMeta.Sampler}}</td></tr>{{end}}
+                {{if .SDMeta.Steps}}<tr><td class="node-param-name">{{ T "detail_meta.steps" }}</td><td class="node-param-value">{{deref .SDMeta.Steps}}</td></tr>{{end}}
+                {{if .SDMeta.CFGScale}}<tr><td class="node-param-name">{{ T "detail_meta.cfg_scale" }}</td><td class="node-param-value">{{printf "%.1f" (deref64f .SDMeta.CFGScale)}}</td></tr>{{end}}
               </table>
             </div>
             {{end}}
@@ -997,7 +997,7 @@
 
         {{if .GenericMeta}}
         <details class="gen-details">
-          <summary>► Other metadata</summary>
+          <summary>► {{ T "detail_meta.other_metadata" }}</summary>
           <div class="node-list">
             <div class="node-entry">
               <table class="node-params">
@@ -1014,12 +1014,12 @@
 
         {{if .ComfyMeta}}
         <details class="gen-details" open>
-          <summary>► Generation data (ComfyUI)</summary>
+          <summary>► {{ T "detail_meta.gen_data_comfyui" }}</summary>
           {{if .ComfyMeta.GenerationHash}}
           <div class="node-list">
             <div class="node-entry">
-              <div class="node-header"><span class="node-title">Generation hash</span>
-                <a class="gen-hash-link" href="/?q=generated:{{.ComfyMeta.GenerationHash}}" title="Find images with the same recipe">{{.ComfyMeta.GenerationHash}}</a>
+              <div class="node-header"><span class="node-title">{{ T "detail_meta.generation_hash" }}</span>
+                <a class="gen-hash-link" href="/?q=generated:{{.ComfyMeta.GenerationHash}}" title="{{ T "detail_meta.find_same_recipe" }}">{{.ComfyMeta.GenerationHash}}</a>
               </div>
             </div>
           </div>
@@ -1042,57 +1042,57 @@
             {{end}}
           </div>
           {{else}}
-          <p class="field-hint">No workflow nodes extracted.</p>
+          <p class="field-hint">{{ T "detail_meta.no_workflow_nodes" }}</p>
           {{end}}
         </details>
         {{end}}
 
         {{if .MangaMeta}}
         <details class="gen-details" open>
-          <summary>► Comic / manga metadata</summary>
+          <summary>► {{ T "detail_meta.comic_manga_metadata" }}</summary>
           <div class="node-list">
             <div class="node-entry">
               <table class="node-params">
-                {{if .MangaMeta.Title}}<tr><td class="node-param-name">Title</td><td class="node-param-value">{{.MangaMeta.Title}}</td></tr>{{end}}
-                {{if .MangaMeta.Series}}<tr><td class="node-param-name">Series</td><td class="node-param-value">{{.MangaMeta.Series}}</td></tr>{{end}}
-                {{if .MangaMeta.Number}}<tr><td class="node-param-name">Number</td><td class="node-param-value">{{.MangaMeta.Number}}</td></tr>{{end}}
-                {{if .MangaMeta.Volume}}<tr><td class="node-param-name">Volume</td><td class="node-param-value">{{.MangaMeta.Volume}}</td></tr>{{end}}
-                {{if .MangaMeta.Count}}<tr><td class="node-param-name">Issue count</td><td class="node-param-value">{{deref .MangaMeta.Count}}</td></tr>{{end}}
-                {{if .MangaMeta.Year}}<tr><td class="node-param-name">Date</td><td class="node-param-value">{{deref .MangaMeta.Year}}{{if .MangaMeta.Month}}-{{deref .MangaMeta.Month}}{{end}}{{if .MangaMeta.Day}}-{{deref .MangaMeta.Day}}{{end}}</td></tr>{{end}}
-                {{if .MangaMeta.Writer}}<tr><td class="node-param-name">Writer</td><td class="node-param-value">{{.MangaMeta.Writer}}</td></tr>{{end}}
-                {{if .MangaMeta.Penciller}}<tr><td class="node-param-name">Penciller</td><td class="node-param-value">{{.MangaMeta.Penciller}}</td></tr>{{end}}
-                {{if .MangaMeta.Inker}}<tr><td class="node-param-name">Inker</td><td class="node-param-value">{{.MangaMeta.Inker}}</td></tr>{{end}}
-                {{if .MangaMeta.Colorist}}<tr><td class="node-param-name">Colorist</td><td class="node-param-value">{{.MangaMeta.Colorist}}</td></tr>{{end}}
-                {{if .MangaMeta.Letterer}}<tr><td class="node-param-name">Letterer</td><td class="node-param-value">{{.MangaMeta.Letterer}}</td></tr>{{end}}
-                {{if .MangaMeta.CoverArtist}}<tr><td class="node-param-name">Cover artist</td><td class="node-param-value">{{.MangaMeta.CoverArtist}}</td></tr>{{end}}
-                {{if .MangaMeta.Editor}}<tr><td class="node-param-name">Editor</td><td class="node-param-value">{{.MangaMeta.Editor}}</td></tr>{{end}}
-                {{if .MangaMeta.Publisher}}<tr><td class="node-param-name">Publisher</td><td class="node-param-value">{{.MangaMeta.Publisher}}</td></tr>{{end}}
-                {{if .MangaMeta.Imprint}}<tr><td class="node-param-name">Imprint</td><td class="node-param-value">{{.MangaMeta.Imprint}}</td></tr>{{end}}
-                {{if .MangaMeta.Genre}}<tr><td class="node-param-name">Genre</td><td class="node-param-value">{{.MangaMeta.Genre}}</td></tr>{{end}}
-                {{if .MangaMeta.Web}}<tr><td class="node-param-name">Web</td><td class="node-param-value">{{if or (hasPrefix .MangaMeta.Web "http://") (hasPrefix .MangaMeta.Web "https://")}}<a href="{{.MangaMeta.Web}}" target="_blank" rel="noopener noreferrer">{{.MangaMeta.Web}}</a>{{else}}{{.MangaMeta.Web}}{{end}}</td></tr>{{end}}
-                {{if .MangaMeta.LanguageISO}}<tr><td class="node-param-name">Language</td><td class="node-param-value">{{.MangaMeta.LanguageISO}}</td></tr>{{end}}
-                {{if .MangaMeta.Format}}<tr><td class="node-param-name">Format</td><td class="node-param-value">{{.MangaMeta.Format}}</td></tr>{{end}}
-                {{if .MangaMeta.Manga}}<tr><td class="node-param-name">Manga</td><td class="node-param-value">{{.MangaMeta.Manga}}</td></tr>{{end}}
-                {{if .MangaMeta.AgeRating}}<tr><td class="node-param-name">Age rating</td><td class="node-param-value">{{.MangaMeta.AgeRating}}</td></tr>{{end}}
-                {{if .MangaMeta.CommunityRating}}<tr><td class="node-param-name">Community rating</td><td class="node-param-value">{{printf "%.2f" (deref64f .MangaMeta.CommunityRating)}}</td></tr>{{end}}
-                {{if .MangaMeta.XMLPageCount}}<tr><td class="node-param-name">XML page count</td><td class="node-param-value">{{deref .MangaMeta.XMLPageCount}}</td></tr>{{end}}
+                {{if .MangaMeta.Title}}<tr><td class="node-param-name">{{ T "detail_meta.title" }}</td><td class="node-param-value">{{.MangaMeta.Title}}</td></tr>{{end}}
+                {{if .MangaMeta.Series}}<tr><td class="node-param-name">{{ T "detail_meta.series" }}</td><td class="node-param-value">{{.MangaMeta.Series}}</td></tr>{{end}}
+                {{if .MangaMeta.Number}}<tr><td class="node-param-name">{{ T "detail_meta.number" }}</td><td class="node-param-value">{{.MangaMeta.Number}}</td></tr>{{end}}
+                {{if .MangaMeta.Volume}}<tr><td class="node-param-name">{{ T "detail_meta.volume" }}</td><td class="node-param-value">{{.MangaMeta.Volume}}</td></tr>{{end}}
+                {{if .MangaMeta.Count}}<tr><td class="node-param-name">{{ T "detail_meta.issue_count" }}</td><td class="node-param-value">{{deref .MangaMeta.Count}}</td></tr>{{end}}
+                {{if .MangaMeta.Year}}<tr><td class="node-param-name">{{ T "detail_meta.date" }}</td><td class="node-param-value">{{deref .MangaMeta.Year}}{{if .MangaMeta.Month}}-{{deref .MangaMeta.Month}}{{end}}{{if .MangaMeta.Day}}-{{deref .MangaMeta.Day}}{{end}}</td></tr>{{end}}
+                {{if .MangaMeta.Writer}}<tr><td class="node-param-name">{{ T "detail_meta.writer" }}</td><td class="node-param-value">{{.MangaMeta.Writer}}</td></tr>{{end}}
+                {{if .MangaMeta.Penciller}}<tr><td class="node-param-name">{{ T "detail_meta.penciller" }}</td><td class="node-param-value">{{.MangaMeta.Penciller}}</td></tr>{{end}}
+                {{if .MangaMeta.Inker}}<tr><td class="node-param-name">{{ T "detail_meta.inker" }}</td><td class="node-param-value">{{.MangaMeta.Inker}}</td></tr>{{end}}
+                {{if .MangaMeta.Colorist}}<tr><td class="node-param-name">{{ T "detail_meta.colorist" }}</td><td class="node-param-value">{{.MangaMeta.Colorist}}</td></tr>{{end}}
+                {{if .MangaMeta.Letterer}}<tr><td class="node-param-name">{{ T "detail_meta.letterer" }}</td><td class="node-param-value">{{.MangaMeta.Letterer}}</td></tr>{{end}}
+                {{if .MangaMeta.CoverArtist}}<tr><td class="node-param-name">{{ T "detail_meta.cover_artist" }}</td><td class="node-param-value">{{.MangaMeta.CoverArtist}}</td></tr>{{end}}
+                {{if .MangaMeta.Editor}}<tr><td class="node-param-name">{{ T "detail_meta.editor" }}</td><td class="node-param-value">{{.MangaMeta.Editor}}</td></tr>{{end}}
+                {{if .MangaMeta.Publisher}}<tr><td class="node-param-name">{{ T "detail_meta.publisher" }}</td><td class="node-param-value">{{.MangaMeta.Publisher}}</td></tr>{{end}}
+                {{if .MangaMeta.Imprint}}<tr><td class="node-param-name">{{ T "detail_meta.imprint" }}</td><td class="node-param-value">{{.MangaMeta.Imprint}}</td></tr>{{end}}
+                {{if .MangaMeta.Genre}}<tr><td class="node-param-name">{{ T "detail_meta.genre" }}</td><td class="node-param-value">{{.MangaMeta.Genre}}</td></tr>{{end}}
+                {{if .MangaMeta.Web}}<tr><td class="node-param-name">{{ T "detail_meta.web" }}</td><td class="node-param-value">{{if or (hasPrefix .MangaMeta.Web "http://") (hasPrefix .MangaMeta.Web "https://")}}<a href="{{.MangaMeta.Web}}" target="_blank" rel="noopener noreferrer">{{.MangaMeta.Web}}</a>{{else}}{{.MangaMeta.Web}}{{end}}</td></tr>{{end}}
+                {{if .MangaMeta.LanguageISO}}<tr><td class="node-param-name">{{ T "detail_meta.language" }}</td><td class="node-param-value">{{.MangaMeta.LanguageISO}}</td></tr>{{end}}
+                {{if .MangaMeta.Format}}<tr><td class="node-param-name">{{ T "detail_meta.format" }}</td><td class="node-param-value">{{.MangaMeta.Format}}</td></tr>{{end}}
+                {{if .MangaMeta.Manga}}<tr><td class="node-param-name">{{ T "detail_meta.manga" }}</td><td class="node-param-value">{{.MangaMeta.Manga}}</td></tr>{{end}}
+                {{if .MangaMeta.AgeRating}}<tr><td class="node-param-name">{{ T "detail_meta.age_rating" }}</td><td class="node-param-value">{{.MangaMeta.AgeRating}}</td></tr>{{end}}
+                {{if .MangaMeta.CommunityRating}}<tr><td class="node-param-name">{{ T "detail_meta.community_rating" }}</td><td class="node-param-value">{{printf "%.02f" (deref64f .MangaMeta.CommunityRating)}}</td></tr>{{end}}
+                {{if .MangaMeta.XMLPageCount}}<tr><td class="node-param-name">{{ T "detail_meta.xml_page_count" }}</td><td class="node-param-value">{{deref .MangaMeta.XMLPageCount}}</td></tr>{{end}}
               </table>
             </div>
             {{if .MangaMeta.Summary}}
             <div class="node-entry">
-              <div class="node-header"><span class="node-title">Summary</span></div>
+              <div class="node-header"><span class="node-title">{{ T "detail_meta.summary" }}</span></div>
               <pre class="gen-text comic-info-summary">{{.MangaMeta.Summary}}</pre>
             </div>
             {{end}}
             {{if .MangaMeta.Notes}}
             <div class="node-entry">
-              <div class="node-header"><span class="node-title">Notes</span></div>
+              <div class="node-header"><span class="node-title">{{ T "detail_meta.notes" }}</span></div>
               <pre class="gen-text comic-info-summary">{{.MangaMeta.Notes}}</pre>
             </div>
             {{end}}
             {{if .MangaMeta.RawXML}}
             <details class="long-value">
-              <summary>Raw ComicInfo.xml</summary>
+              <summary>{{ T "detail_meta.raw_comicinfo_xml" }}</summary>
               <pre class="long-value-full">{{.MangaMeta.RawXML}}</pre>
             </details>
             {{end}}
@@ -1108,57 +1108,57 @@
          Sources row; here only the commentary body and the boxes are. */}}
     {{range .SourcePanels}}
     <details class="detail-meta-panel detail-source-panel" open>
-      <summary>{{if .Site}}{{.Site}}{{else}}source{{end}}</summary>
+      <summary>{{if .Site}}{{.Site}}{{else}}{{ T "detail_meta.source" }}{{end}}</summary>
       <div class="detail-meta-content">
         <table class="meta-table meta-editable">
           <tbody>
-            <tr><th>Original</th><td>
+            <tr><th>{{ T "detail_meta.original" }}</th><td>
               {{if .OriginalLines}}<ul class="collection-list">
                 {{range .OriginalLines}}
                 <li class="collection-item">{{if .IsURL}}<a href="{{.Text}}" target="_blank" rel="noopener noreferrer" class="meta-url-value" title="{{.Text}}">{{urlDomain .Text}}</a>{{else}}<span class="meta-source-value" title="{{.Text}}">{{.Text}}</span>{{end}}</li>
                 {{end}}
               </ul>{{end}}
-              <button type="button" class="btn-link-accent btn-edit-original" data-site="{{.Site}}" data-post="{{.PostID}}" data-original="{{.Original}}" title="{{if .Original}}Edit original source{{else}}Add original source{{end}}">{{if .Original}}[edit]{{else}}[+ add]{{end}}</button>
+              <button type="button" class="btn-link-accent btn-edit-original" data-site="{{.Site}}" data-post="{{.PostID}}" data-original="{{.Original}}" title="{{if .Original}}{{ T "detail_meta.edit_original" }}{{else}}{{ T "detail_meta.add_original" }}{{end}}">{{if .Original}}[{{ T "detail_actions.edit" }}]{{else}}[+ {{ T "detail_actions.add" }}]{{end}}</button>
               {{if .Original}}<form method="POST" action="/images/{{$.Image.ID}}/original/remove"
                     hx-post="/images/{{$.Image.ID}}/original/remove" hx-swap="none"
                     hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
-                    hx-confirm="Remove this original source?" data-confirm-ok="Remove"
+                    hx-confirm="{{ T "detail_meta.remove_original_confirm" }}" data-confirm-ok="{{ T "gallery_strip_dialog.remove_btn" }}"
                     style="display:inline">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="site" value="{{.Site}}">
                 <input type="hidden" name="post_id" value="{{.PostID}}">
-                <button type="submit" class="btn-link-accent" title="Remove original source">[×]</button>
+                <button type="submit" class="btn-link-accent" title="{{ T "detail_meta.remove_original" }}">[×]</button>
               </form>{{end}}
             </td></tr>
-            <tr><th>Commentary</th><td>
+            <tr><th>{{ T "detail_meta.commentary" }}</th><td>
               {{if .Commentary}}<div class="commentary-body">{{.Commentary}}</div>{{end}}
-              <button type="button" class="btn-link-accent btn-edit-commentary" data-site="{{.Site}}" data-post="{{.PostID}}" data-commentary="{{.Commentary}}" title="{{if .Commentary}}Edit commentary{{else}}Add commentary{{end}}">{{if .Commentary}}[edit]{{else}}[+ add]{{end}}</button>
+              <button type="button" class="btn-link-accent btn-edit-commentary" data-site="{{.Site}}" data-post="{{.PostID}}" data-commentary="{{.Commentary}}" title="{{if .Commentary}}{{ T "detail_meta.edit_commentary" }}{{else}}{{ T "detail_meta.add_commentary" }}{{end}}">{{if .Commentary}}[{{ T "detail_actions.edit" }}]{{else}}[+ {{ T "detail_actions.add" }}]{{end}}</button>
               {{if .Commentary}}<form method="POST" action="/images/{{$.Image.ID}}/commentary/remove"
                     hx-post="/images/{{$.Image.ID}}/commentary/remove" hx-swap="none"
                     hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
-                    hx-confirm="Remove this commentary?" data-confirm-ok="Remove"
+                    hx-confirm="{{ T "detail_meta.remove_commentary_confirm" }}" data-confirm-ok="{{ T "gallery_strip_dialog.remove_btn" }}"
                     style="display:inline">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="site" value="{{.Site}}">
                 <input type="hidden" name="post_id" value="{{.PostID}}">
-                <button type="submit" class="btn-link-accent" title="Remove commentary">[×]</button>
+                <button type="submit" class="btn-link-accent" title="{{ T "detail_meta.remove_commentary" }}">[×]</button>
               </form>{{end}}
             </td></tr>
             {{if .Annotations}}
-            <tr><th>Annotations</th><td>
+            <tr><th>{{ T "detail_commentary.annotations" }}</th><td>
               <ul class="collection-list">
                 {{range .Annotations}}
                 <li class="collection-item annotation-entry" data-ann-id="{{.ID}}">
-                  <span class="meta-annotation-body" title="{{.Body}}">{{if .Body}}{{.Body}}{{else}}(no text){{end}}</span>
-                  <button type="button" class="btn-link-accent btn-edit-annotation" data-id="{{.ID}}" data-x="{{.X}}" data-y="{{.Y}}" data-w="{{.W}}" data-h="{{.H}}" data-body="{{.Body}}" title="Edit">[edit]</button>
+                  <span class="meta-annotation-body" title="{{.Body}}">{{if .Body}}{{.Body}}{{else}}({{ T "detail_actions.no_text" }}){{end}}</span>
+                  <button type="button" class="btn-link-accent btn-edit-annotation" data-id="{{.ID}}" data-x="{{.X}}" data-y="{{.Y}}" data-w="{{.W}}" data-h="{{.H}}" data-body="{{.Body}}" title="{{ T "detail_actions.edit" }}">[{{ T "detail_actions.edit" }}]</button>
                   <form method="POST" action="/images/{{$.Image.ID}}/annotations/remove"
                         hx-post="/images/{{$.Image.ID}}/annotations/remove" hx-swap="none"
                         hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
-                        hx-confirm="Remove this annotation?" data-confirm-ok="Remove"
+                        hx-confirm="{{ T "detail_actions.remove_annotation_confirm" }}" data-confirm-ok="{{ T "gallery_strip_dialog.remove_btn" }}"
                         style="display:inline">
                     <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                     <input type="hidden" name="id" value="{{.ID}}">
-                    <button type="submit" class="btn-link-accent" title="Remove annotation">[×]</button>
+                    <button type="submit" class="btn-link-accent" title="{{ T "detail_actions.remove_annotation" }}">[×]</button>
                   </form>
                 </li>
                 {{end}}

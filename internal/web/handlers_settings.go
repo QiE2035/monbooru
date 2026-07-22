@@ -392,7 +392,7 @@ func (s *Server) settingsTokenPrivilegesPost(w http.ResponseWriter, r *http.Requ
 	}
 	logx.Infof("settings: API token %s privileges updated from %s", id, clientIP(r))
 	setDialogSavedTrigger(w, "token-saved", "token-cfg-"+id)
-	writeOOBSummaryFlash(w, "token-scopes-"+id, strings.Join(scopes, " "), "flash-auth", "Token privileges saved.")
+	writeOOBSummaryFlash(w, "token-scopes-"+id, strings.Join(scopes, " "), "flash-auth", localize("flash.token_privileges_saved"))
 }
 
 // filterScopes keeps only recognized scopes, in canonical order, dropping

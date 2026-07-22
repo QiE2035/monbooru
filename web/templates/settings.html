@@ -86,15 +86,15 @@
   </section>
 
   <section id="galleries" class="settings-section">
-    <h3>Galleries</h3>
+    <h3>{{ T "settings_galleries.heading" }}</h3>
     <div id="flash-galleries"></div>
     <div class="table-scroll">
     <table class="gallery-table">
       <thead>
         <tr>
-          <th>Name</th><th>Gallery path</th><th>Status</th><th>Content</th>
-          <th>Switch</th><th>Set default</th><th>Rename</th>
-          <th>Export</th><th>Import</th><th>Delete</th>
+          <th>{{ T "settings_galleries.name" }}</th><th>{{ T "settings_galleries.gallery_path" }}</th><th>{{ T "settings_galleries.status" }}</th><th>{{ T "settings_galleries.content" }}</th>
+          <th>{{ T "settings_galleries.switch" }}</th><th>{{ T "settings_galleries.set_default" }}</th><th>{{ T "settings_galleries.rename" }}</th>
+          <th>{{ T "settings_galleries.export" }}</th><th>{{ T "settings_galleries.import" }}</th><th>{{ T "settings_galleries.delete" }}</th>
         </tr>
       </thead>
       <tbody>
@@ -103,16 +103,16 @@
           <td><strong>{{.Name}}</strong></td>
           <td class="gallery-path-cell"><code>{{.GalleryPath}}</code></td>
           <td class="gallery-status-cell">
-            {{if eq .Name $active}}<span class="status-badge status-ok">active</span>{{end}}
-            {{if eq .Name $cfg.DefaultGallery}}<span class="status-badge status-ok">default</span>{{end}}
+            {{if eq .Name $active}}<span class="status-badge status-ok">{{ T "settings_galleries.active" }}</span>{{end}}
+            {{if eq .Name $cfg.DefaultGallery}}<span class="status-badge status-ok">{{ T "settings_galleries.default_status" }}</span>{{end}}
           </td>
-          <td class="gallery-info"><span title="?gallery={{.Name}}">{{.Images}} img{{if .Images}} · {{.Tags}} tags{{end}}</span></td>
+          <td class="gallery-info"><span title="?gallery={{.Name}}">{{.Images}} {{ T "layout_footer.img" }}{{if .Images}} · {{.Tags}} {{ T "layout_footer.tags" }}{{end}}</span></td>
           <td>
             {{if ne .Name $active}}
             <form hx-post="/internal/gallery/switch" hx-target="#flash-galleries" hx-swap="innerHTML" style="display:inline">
               <input type="hidden" name="_csrf" value="{{$csrf}}">
               <input type="hidden" name="name" value="{{.Name}}">
-              <button type="submit" class="btn-sm">Switch</button>
+              <button type="submit" class="btn-sm">{{ T "settings_galleries.switch" }}</button>
             </form>
             {{else}}
             <span class="status-dim">-</span>
@@ -122,26 +122,26 @@
             {{if ne .Name $cfg.DefaultGallery}}
             <form hx-post="/settings/galleries/{{.Name}}/default" hx-target="#flash-galleries" hx-swap="innerHTML" style="display:inline">
               <input type="hidden" name="_csrf" value="{{$csrf}}">
-              <button type="submit" class="btn-sm btn-set-default">Set default</button>
+              <button type="submit" class="btn-sm btn-set-default">{{ T "settings_galleries.set_default" }}</button>
             </form>
             {{else}}
             <span class="status-dim">-</span>
             {{end}}
           </td>
           <td>
-            <button class="btn-sm btn-gallery-rename" data-name="{{.Name}}">Rename</button>
+            <button class="btn-sm btn-gallery-rename" data-name="{{.Name}}">{{ T "settings_galleries.rename" }}</button>
           </td>
           <td>
-            <button class="btn-sm btn-gallery-export" data-name="{{.Name}}">Export</button>
+            <button class="btn-sm btn-gallery-export" data-name="{{.Name}}">{{ T "settings_galleries.export" }}</button>
           </td>
           <td>
             <button class="btn-sm btn-danger btn-gallery-import"
                     data-name="{{.Name}}"
-                    data-can-replace="{{if or (eq .Name $active) (eq .Name $cfg.DefaultGallery)}}false{{else}}true{{end}}">Import</button>
+                    data-can-replace="{{if or (eq .Name $active) (eq .Name $cfg.DefaultGallery)}}false{{else}}true{{end}}">{{ T "settings_galleries.import" }}</button>
           </td>
           <td>
             {{if and (ne .Name $active) (ne .Name $cfg.DefaultGallery) (gt (len $galleries) 1)}}
-            <button class="btn-sm btn-danger btn-gallery-delete" data-name="{{.Name}}">Delete</button>
+            <button class="btn-sm btn-danger btn-gallery-delete" data-name="{{.Name}}">{{ T "settings_galleries.delete" }}</button>
             {{else}}
             <span class="status-dim">-</span>
             {{end}}
@@ -153,7 +153,7 @@
     </div>
     <div class="settings-actions">
       <button type="button" id="add-gallery-btn"
-              onclick="openAddGalleryDialog()">Add gallery</button>
+              onclick="openAddGalleryDialog()">{{ T "settings_galleries.add_gallery" }}</button>
     </div>
 
     <dialog id="gallery-add-dialog">
@@ -163,28 +163,28 @@
             hx-on::before-request="setAddGalleryBusy(this, true)"
             hx-on::after-request="onAddGalleryResponse(this)">
         <input type="hidden" name="_csrf" value="{{$csrf}}">
-        <p>Add a new gallery</p>
+        <p>{{ T "settings_galleries.add_dialog_title" }}</p>
         <div class="field">
-          <label>Name</label>
+          <label>{{ T "settings_galleries.name_label" }}</label>
           <input type="text" name="name" required pattern="[A-Za-z0-9_\-]+"
-                 title="Letters, digits, underscore, dash"
-                 placeholder="letters / digits / _ / -">
+                 title="{{ T "settings_galleries.name_format_title" }}"
+                 placeholder="{{ T "settings_galleries.name_format_placeholder" }}">
         </div>
         <div class="field">
-          <label>Gallery path</label>
+          <label>{{ T "settings_galleries.gallery_path_label" }}</label>
           <input type="text" name="gallery_path" required>
         </div>
         <div class="field">
-          <label><input type="checkbox" id="gallery-add-import-toggle"> Import an existing gallery</label>
+          <label><input type="checkbox" id="gallery-add-import-toggle"> {{ T "settings_galleries.import_existing" }}</label>
         </div>
         <div class="field" id="gallery-add-import-row" hidden>
-          <label>Import file (.db / .json / .zip)</label>
+          <label>{{ T "settings_galleries.import_file_label" }}</label>
           <input type="file" name="import_file" accept=".db,.sqlite,.json,.zip">
         </div>
         <div id="flash-gallery-add"></div>
         <div class="dialog-actions">
-          <button type="submit">Add</button>
-          <button type="button" onclick="document.getElementById('gallery-add-dialog').close()">Cancel</button>
+          <button type="submit">{{ T "settings_galleries.add_btn" }}</button>
+          <button type="button" onclick="document.getElementById('gallery-add-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
         </div>
       </form>
     </dialog>
@@ -235,17 +235,17 @@
   <dialog id="gallery-rename-dialog">
     <form id="gallery-rename-form" hx-post="" hx-target="#flash-gallery-rename" hx-swap="innerHTML">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
-      <p>Rename <strong id="gallery-rename-src"></strong></p>
+      <p>{{ T "settings_galleries.rename" }} <strong id="gallery-rename-src"></strong></p>
       <div class="field">
-        <label>New name</label>
+        <label>{{ T "settings_galleries.new_name_label" }}</label>
         <input type="text" name="new_name" id="gallery-rename-input" required pattern="[A-Za-z0-9_\-]+" autocomplete="off"
-               title="Letters, digits, underscore, dash"
-               placeholder="letters / digits / _ / -">
+               title="{{ T "settings_galleries.name_format_title" }}"
+               placeholder="{{ T "settings_galleries.name_format_placeholder" }}">
       </div>
       <div id="flash-gallery-rename"></div>
       <div class="dialog-actions">
-        <button type="submit">Rename</button>
-        <button type="button" onclick="document.getElementById('gallery-rename-dialog').close()">Cancel</button>
+        <button type="submit">{{ T "settings_galleries.rename" }}</button>
+        <button type="button" onclick="document.getElementById('gallery-rename-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
@@ -258,19 +258,19 @@
          stays open so the confirm-name input can be retried. -->
     <form id="gallery-delete-form" hx-post="" hx-target="#flash-gallery-delete" hx-swap="innerHTML">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
-      <p>Delete gallery <strong id="gallery-delete-src"></strong>?</p>
-      <p class="confirm-dialog-danger">The database and thumbnails will be erased.</p>
+      <p>{{ T "settings_galleries.delete_dialog_title" }} <strong id="gallery-delete-src"></strong>?</p>
+      <p class="confirm-dialog-danger">{{ T "settings_galleries.delete_dialog_danger" }}</p>
       <div class="field">
-        <label><input type="checkbox" name="remove_folder"> Also delete the gallery folder (source images)</label>
+        <label><input type="checkbox" name="remove_folder"> {{ T "settings_galleries.delete_remove_folder" }}</label>
       </div>
       <div class="field">
-        <label>Type the gallery name to confirm</label>
+        <label>{{ T "settings_galleries.type_name_confirm" }}</label>
         <input type="text" name="confirm_name" id="gallery-delete-confirm" required autocomplete="off">
       </div>
       <div id="flash-gallery-delete"></div>
       <div class="dialog-actions">
-        <button type="submit" class="btn-danger">Delete</button>
-        <button type="button" onclick="document.getElementById('gallery-delete-dialog').close()">Cancel</button>
+        <button type="submit" class="btn-danger">{{ T "settings_galleries.delete" }}</button>
+        <button type="button" onclick="document.getElementById('gallery-delete-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
@@ -278,22 +278,22 @@
   <dialog id="gallery-export-dialog">
     <form id="gallery-export-form" method="get" action=""
           onsubmit="setTimeout(function(){document.getElementById('gallery-export-dialog').close()}, 100)">
-      <p>Export gallery <strong id="gallery-export-src"></strong></p>
+      <p>{{ T "settings_galleries.export_dialog_title" }} <strong id="gallery-export-src"></strong></p>
       <div class="field">
-        <label><input type="radio" name="format" value="db" checked> Database (.db): SQLite snapshot, monbooru format</label>
+        <label><input type="radio" name="format" value="db" checked> {{ T "settings_galleries.export_format_db" }}</label>
       </div>
       <div class="field">
-        <label><input type="radio" name="format" value="json"> JSON (.json): human-readable dump, monbooru format</label>
+        <label><input type="radio" name="format" value="json"> {{ T "settings_galleries.export_format_json" }}</label>
       </div>
       <div class="field">
-        <label><input type="radio" name="format" value="light"> Light (.json): images<->tags only, no monbooru-specific data</label>
+        <label><input type="radio" name="format" value="light"> {{ T "settings_galleries.export_format_light" }}</label>
       </div>
       <div class="field">
-        <label><input type="checkbox" name="with_images" value="true" id="gallery-export-with-images"> Include image files (bundled in a .zip)</label>
+        <label><input type="checkbox" name="with_images" value="true" id="gallery-export-with-images"> {{ T "settings_galleries.export_include_images" }}</label>
       </div>
       <div class="dialog-actions">
-        <button type="submit">Download</button>
-        <button type="button" onclick="document.getElementById('gallery-export-dialog').close()">Cancel</button>
+        <button type="submit">{{ T "settings_galleries.download" }}</button>
+        <button type="button" onclick="document.getElementById('gallery-export-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
@@ -310,27 +310,27 @@
           hx-headers='{"X-CSRF-Token": "{{$csrf}}"}'
           hx-on::before-request="setImportBusy(this, true)"
           hx-on::after-request="onImportResponse(this)">
-      <p>Import into gallery <strong id="gallery-import-src"></strong></p>
+      <p>{{ T "settings_galleries.import_dialog_title" }} <strong id="gallery-import-src"></strong></p>
       <div class="field">
-        <label><input type="radio" name="mode" value="merge" checked> Merge: add new images and tags from the uploaded file</label>
+        <label><input type="radio" name="mode" value="merge" checked> {{ T "settings_galleries.import_mode_merge" }}</label>
       </div>
       <div class="field">
-        <label><input type="radio" name="mode" value="replace"> Replace: wipe this gallery and restore from the uploaded file</label>
+        <label><input type="radio" name="mode" value="replace"> {{ T "settings_galleries.import_mode_replace" }}</label>
       </div>
-      <p id="gallery-import-danger" class="confirm-dialog-danger">Destructive: replaces the current database. If the uploaded file is a .zip with images, the source folder is replaced as well.</p>
+      <p id="gallery-import-danger" class="confirm-dialog-danger">{{ T "settings_galleries.import_dialog_danger" }}</p>
       <div class="field" id="gallery-import-confirm-row">
-        <label>Type the gallery name to confirm</label>
+        <label>{{ T "settings_galleries.type_name_confirm" }}</label>
         <input type="text" name="confirm_name" autocomplete="off">
       </div>
       <div class="field">
-        <label>File (.db, .json, or .zip)</label>
+        <label>{{ T "settings_galleries.import_file_label2" }}</label>
         <input type="file" name="file" accept=".db,.sqlite,.json,.zip" required>
       </div>
-      <p id="gallery-import-wait" class="field-hint" hidden>Uploading and restoring the database. On large galleries this can take a few minutes; keep this tab open.</p>
+      <p id="gallery-import-wait" class="field-hint" hidden>{{ T "settings_galleries.import_wait_hint" }}</p>
       <div id="flash-gallery-import"></div>
       <div class="dialog-actions">
-        <button type="submit" class="btn-danger">Import</button>
-        <button type="button" onclick="document.getElementById('gallery-import-dialog').close()">Cancel</button>
+        <button type="submit" class="btn-danger">{{ T "settings_galleries.import" }}</button>
+        <button type="button" onclick="document.getElementById('gallery-import-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
       </div>
     </form>
   </dialog>
@@ -468,36 +468,36 @@
   </script>
 
   <section id="monloader" class="settings-section">
-    <h3>Monloader</h3>
+    <h3>{{ T "settings_monloader.heading" }}</h3>
     <div id="flash-monloader"></div>
     <form hx-post="/settings/monloader" hx-target="#flash-monloader" hx-swap="innerHTML">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
       <div class="settings-sub">
-        <h4>URLs</h4>
+        <h4>{{ T "settings_monloader.urls" }}</h4>
         <div class="settings-cols">
           <div class="field">
-            <label for="monloader_api_url">api url</label>
-            <input type="text" name="api_url" id="monloader_api_url" value="{{$cfg.Monloader.APIURL}}" placeholder="auto-detected from pairing">
-            <p class="field-hint">Internal URL monbooru uses to reach monloader. Blank = auto-detected from the pairing.</p>
+            <label for="monloader_api_url">{{ T "settings_monloader.api_url_label" }}</label>
+            <input type="text" name="api_url" id="monloader_api_url" value="{{$cfg.Monloader.APIURL}}" placeholder="{{ T "settings_monloader.api_url_placeholder" }}">
+            <p class="field-hint">{{ T "settings_monloader.api_url_hint" }}</p>
           </div>
           <div class="field">
-            <label for="monloader_url">web url</label>
+            <label for="monloader_url">{{ T "settings_monloader.web_url_label" }}</label>
             <input type="text" name="monloader_url" id="monloader_url" value="{{$cfg.Server.MonloaderURL}}" placeholder="http://localhost:8081">
-            <p class="field-hint">Browser URL for the footer "connected to monloader" link; blank = same as api url.</p>
+            <p class="field-hint">{{ T "settings_monloader.web_url_hint" }}</p>
           </div>
         </div>
       </div>
-      <div class="settings-actions"><button type="submit">Save</button></div>
+      <div class="settings-actions"><button type="submit">{{ T "settings_monloader.save" }}</button></div>
     </form>
     <div class="settings-sub">
-      <h4>Pairing</h4>
+      <h4>{{ T "settings_monloader.pairing" }}</h4>
       {{template "partials/monloader_pairing.html" (dict "Pending" $monloaderPending "Paired" $monloaderPaired "PeerURL" $monloaderPeerURL "CSRFToken" $csrf)}}
     </div>
   </section>
 
   <section id="tagger" class="settings-section">
     <div class="settings-section-header">
-      <h3>Auto-Tagger</h3>
+      <h3>{{ T "settings_tagger.heading" }}</h3>
       {{template "partials/tagger_mode_badge.html" (dict "UseCUDA" $cfg.Tagger.UseCUDA)}}
     </div>
     <div id="flash-tagger"></div>
@@ -508,30 +508,30 @@
     <form hx-post="/settings/tagger" hx-target="#flash-tagger" hx-swap="innerHTML">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
       <div class="settings-sub">
-        <h4>Workers / GPU</h4>
+        <h4>{{ T "settings_tagger.workers_gpu" }}</h4>
         <div class="settings-cols">
           <div class="field">
-            <label><input type="checkbox" name="use_cuda"{{if $cfg.Tagger.UseCUDA}} checked{{end}}> Use GPU (CUDA)</label>
-            <p class="field-hint">Requires a CUDA-capable image and a GPU passed into the container.</p>
+            <label><input type="checkbox" name="use_cuda"{{if $cfg.Tagger.UseCUDA}} checked{{end}}> {{ T "settings_tagger.use_cuda" }}</label>
+            <p class="field-hint">{{ T "settings_tagger.use_cuda_hint" }}</p>
           </div>
-          {{template "partials/range_field.html" dict "Name" "parallel" "Label" "Parallel workers" "Min" 1 "Max" 16 "Value" $cfg.Tagger.Parallel "Ticks" (list 1 2 4 8 12 16) "Hint" "Images tagged in parallel."}}
-          {{template "partials/range_field.html" dict "Name" "idle_release_after_minutes" "Label" "Tagger RAM/VRAM idle release (minutes)" "Min" 0 "Max" 60 "Value" $cfg.Tagger.IdleReleaseAfterMinutes "Ticks" (list 0 15 30 45 60) "Hint" "Use 0 to free it just after inference."}}
+          {{template "partials/range_field.html" dict "Name" "parallel" "Label" (T "settings_tagger.parallel_workers") "Min" 1 "Max" 16 "Value" $cfg.Tagger.Parallel "Ticks" (list 1 2 4 8 12 16) "Hint" (T "settings_tagger.parallel_workers_hint")}}
+          {{template "partials/range_field.html" dict "Name" "idle_release_after_minutes" "Label" (T "settings_tagger.idle_release") "Min" 0 "Max" 60 "Value" $cfg.Tagger.IdleReleaseAfterMinutes "Ticks" (list 0 15 30 45 60) "Hint" (T "settings_tagger.idle_release_hint")}}
         </div>
-        <div class="settings-actions"><button type="submit">Save</button></div>
+        <div class="settings-actions"><button type="submit">{{ T "settings_tagger.save" }}</button></div>
       </div>
     </form>
     <div class="settings-sub">
-      <h4>Taggers list</h4>
+      <h4>{{ T "settings_tagger.taggers_list" }}</h4>
       {{if $rows}}
       <div class="table-scroll">
       <table class="tagger-table">
         <thead>
-          <tr><th>Tagger</th><th>Instructions</th><th>Status</th><th>Thresholds</th><th>Galleries</th><th>Enable</th><th>Delete</th></tr>
+          <tr><th>{{ T "settings_tagger.col_tagger" }}</th><th>{{ T "settings_tagger.col_instructions" }}</th><th>{{ T "settings_tagger.col_status" }}</th><th>{{ T "settings_tagger.col_thresholds" }}</th><th>{{ T "settings_tagger.col_galleries" }}</th><th>{{ T "settings_tagger.col_enable" }}</th><th>{{ T "settings_tagger.col_delete" }}</th></tr>
         </thead>
         <tbody>
           {{range $i, $r := $rows}}
           {{if and (gt $supported 0) (gt $unsupported 0) (eq $i $supported)}}
-          <tr class="tagger-sep"><td colspan="7">unsupported (not in catalog)</td></tr>
+          <tr class="tagger-sep"><td colspan="7">{{ T "settings_tagger.unsupported" }}</td></tr>
           {{end}}
           <tr>
             <td>
@@ -544,14 +544,14 @@
                       data-tagger-name="{{$r.Name}}"
                       data-tagger-desc="{{$r.Description}}"
                       data-host-cmd="{{$r.HostCommand}}"
-                      data-docker-cmd="{{$r.DockerCommand}}">Show instructions</button>
+                      data-docker-cmd="{{$r.DockerCommand}}">{{ T "settings_tagger.show_instructions" }}</button>
               {{end}}
             </td>
             <td>
-              {{if not $r.Installed}}<span class="status-dim" title="Not installed">not installed</span>
-              {{else if not $r.Available}}<span class="status-err" title="{{$r.Reason}}">unavailable</span>
-              {{else if $r.Enabled}}<span class="status-badge status-enabled" title="Enabled">enabled</span>
-              {{else}}<span class="status-dim" title="Disabled">disabled</span>{{end}}
+              {{if not $r.Installed}}<span class="status-dim" title="{{ T "settings_tagger.not_installed_title" }}">{{ T "settings_tagger.not_installed" }}</span>
+              {{else if not $r.Available}}<span class="status-err" title="{{$r.Reason}}">{{ T "settings_tagger.unavailable" }}</span>
+              {{else if $r.Enabled}}<span class="status-badge status-enabled" title="{{ T "settings_tagger.enabled_title" }}">{{ T "settings_tagger.enabled" }}</span>
+              {{else}}<span class="status-dim" title="{{ T "settings_tagger.disabled_title" }}">{{ T "settings_tagger.disabled" }}</span>{{end}}
             </td>
             <td>
               {{if and $r.Installed $r.Enabled}}
@@ -559,7 +559,7 @@
                       hx-get="/settings/tagger/{{$r.Name}}/thresholds"
                       hx-target="#tagger-thresh-{{$r.Name}}-body"
                       hx-trigger="click once"
-                      onclick="document.getElementById('tagger-thresh-{{$r.Name}}').showModal()">Configure</button>
+                      onclick="document.getElementById('tagger-thresh-{{$r.Name}}').showModal()">{{ T "settings_tagger.configure" }}</button>
               <span id="tagger-thresh-summary-{{$r.Name}}" class="field-hint">{{$r.ThresholdSummary}}</span>
               {{else}}
               <span class="status-dim">-</span>
@@ -571,7 +571,7 @@
                       hx-get="/settings/tagger/{{$r.Name}}/galleries"
                       hx-target="#tagger-gal-{{$r.Name}}-body"
                       hx-trigger="click once"
-                      onclick="document.getElementById('tagger-gal-{{$r.Name}}').showModal()">Configure</button>
+                      onclick="document.getElementById('tagger-gal-{{$r.Name}}').showModal()">{{ T "settings_tagger.configure" }}</button>
               <span id="tagger-gal-summary-{{$r.Name}}" class="field-hint">{{$r.GallerySummary}}</span>
               {{else}}
               <span class="status-dim">-</span>
@@ -582,11 +582,11 @@
                 {{if $r.Enabled}}
                 <button type="button" class="btn-sm"
                         hx-post="/settings/tagger/{{$r.Name}}/disable" hx-target="#flash-tagger" hx-swap="innerHTML"
-                        hx-vals='{"_csrf":"{{$csrf}}"}'>Disable</button>
+                        hx-vals='{"_csrf":"{{$csrf}}"}'>{{ T "settings_tagger.disable" }}</button>
                 {{else if $r.Available}}
                 <button type="button" class="btn-sm btn-success"
                         hx-post="/settings/tagger/{{$r.Name}}/enable" hx-target="#flash-tagger" hx-swap="innerHTML"
-                        hx-vals='{"_csrf":"{{$csrf}}"}'>Enable</button>
+                        hx-vals='{"_csrf":"{{$csrf}}"}'>{{ T "settings_tagger.enable" }}</button>
                 {{end}}
               {{end}}
             </td>
@@ -595,9 +595,9 @@
               <button type="button" class="btn-sm btn-danger"
                       hx-post="/settings/tagger/{{$r.Name}}/delete" hx-target="#flash-tagger" hx-swap="innerHTML"
                       hx-vals='{"_csrf":"{{$csrf}}"}'
-                      hx-confirm="Delete tagger {{$r.Name}}?"
-                      data-confirm-danger="The folder under model_path will be permanently removed from disk."
-                      data-confirm-ok="Delete">Delete</button>
+                      hx-confirm='{{ T "settings_tagger.delete_confirm" (dict "name" $r.Name) }}'
+                      data-confirm-danger="{{ T "settings_tagger.delete_confirm_danger" }}"
+                      data-confirm-ok="{{ T "settings_tagger.delete_confirm_ok" }}">{{ T "settings_tagger.delete_confirm_ok" }}</button>
               {{end}}
             </td>
           </tr>
@@ -606,115 +606,115 @@
       </table>
       </div>
       {{else}}
-      <p class="field-hint">No tagger subfolders found in <code>{{$cfg.Paths.ModelPath}}</code>.</p>
+      <p class="field-hint">{{ T "settings_tagger.no_taggers" (dict "path" $cfg.Paths.ModelPath) }}</p>
       {{end}}
     </div>
     {{range $rows}}{{if .Installed}}
     <dialog id="tagger-thresh-{{.Name}}" class="tagger-thresh-dialog">
-      <h4>{{.Name}} - thresholds</h4>
-      <div id="tagger-thresh-{{.Name}}-body">Loading...</div>
+      <h4>{{.Name}} - {{ T "settings_tagger.thresholds" }}</h4>
+      <div id="tagger-thresh-{{.Name}}-body">{{ T "settings_tagger.loading" }}</div>
     </dialog>
     <dialog id="tagger-gal-{{.Name}}" class="tagger-gal-dialog">
-      <h4>{{.Name}} - galleries</h4>
-      <div id="tagger-gal-{{.Name}}-body">Loading...</div>
+      <h4>{{.Name}} - {{ T "settings_tagger.galleries_label" }}</h4>
+      <div id="tagger-gal-{{.Name}}-body">{{ T "settings_tagger.loading" }}</div>
     </dialog>
     {{end}}{{end}}
     <dialog id="tagger-cmd-dialog">
       <p><strong id="tagger-cmd-name"></strong> - <span id="tagger-cmd-desc"></span></p>
-      <p class="field-hint">Run one of the commands below on a host with internet access, then reload the Settings page.</p>
-      <p class="code-block-label"><strong>Direct host install</strong> <span class="field-hint">(run inside <code>{{$cfg.Paths.ModelPath}}</code>)</span>
-        <button type="button" class="btn-sm code-block-copy" id="tagger-cmd-host-copy" title="Copy command">Copy</button>
+      <p class="field-hint">{{ T "settings_tagger.cmd_hint" }}</p>
+      <p class="code-block-label"><strong>{{ T "settings_tagger.direct_install" }}</strong> <span class="field-hint">({{ T "settings_tagger.run_inside" (dict "path" $cfg.Paths.ModelPath) }})</span>
+        <button type="button" class="btn-sm code-block-copy" id="tagger-cmd-host-copy" title="{{ T "settings_tagger.copy_title" }}">{{ T "settings_tagger.copy" }}</button>
         <span class="copy-flash" hidden>copied</span>
       </p>
       <pre class="code-block"><code id="tagger-cmd-host"></code></pre>
-      <p class="code-block-label"><strong>Docker (monbooru container)</strong>
-        <button type="button" class="btn-sm code-block-copy" id="tagger-cmd-docker-copy" title="Copy command">Copy</button>
+      <p class="code-block-label"><strong>{{ T "settings_tagger.docker" }}</strong>
+        <button type="button" class="btn-sm code-block-copy" id="tagger-cmd-docker-copy" title="{{ T "settings_tagger.copy_title" }}">{{ T "settings_tagger.copy" }}</button>
         <span class="copy-flash" hidden>copied</span>
       </p>
       <pre class="code-block"><code id="tagger-cmd-docker"></code></pre>
       <div class="dialog-actions">
-        <button type="button" onclick="this.closest('dialog').close()">Close</button>
+        <button type="button" onclick="this.closest('dialog').close()">{{ T "layout_dialogs.close" }}</button>
       </div>
     </dialog>
   </section>
 
   <section id="relations" class="settings-section">
-    <h3>Relations</h3>
+    <h3>{{ T "settings_relations.heading" }}</h3>
     <div id="flash-relations-settings"></div>
     <form hx-post="/settings/relations" hx-target="#flash-relations-settings" hx-swap="innerHTML">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
       <div class="settings-cols">
         <div class="settings-sub">
-          <h4>Find-pairs default distance</h4>
-          {{template "partials/range_field.html" dict "Name" "default_distance" "Label" "Hamming distance" "Min" 0 "Max" 12 "Value" $cfg.Relations.DefaultDistance "Ticks" (list 0 2 4 6 8 10 12)}}
+          <h4>{{ T "settings_relations.find_pairs_distance" }}</h4>
+          {{template "partials/range_field.html" dict "Name" "default_distance" "Label" (T "settings_relations.hamming_distance") "Min" 0 "Max" 12 "Value" $cfg.Relations.DefaultDistance "Ticks" (list 0 2 4 6 8 10 12)}}
         </div>
         <div class="settings-sub">
-          <h4>Default session order</h4>
+          <h4>{{ T "settings_relations.default_session_order" }}</h4>
           <div class="field">
-            <label><input type="radio" name="default_session_order" value="smallest_distance_first" {{if eq $cfg.Relations.DefaultSessionOrder "smallest_distance_first"}}checked{{end}}> Smallest distance first</label>
-            <label><input type="radio" name="default_session_order" value="largest_file_first" {{if eq $cfg.Relations.DefaultSessionOrder "largest_file_first"}}checked{{end}}> Largest file first</label>
-            <label><input type="radio" name="default_session_order" value="random" {{if eq $cfg.Relations.DefaultSessionOrder "random"}}checked{{end}}> Random</label>
+            <label><input type="radio" name="default_session_order" value="smallest_distance_first" {{if eq $cfg.Relations.DefaultSessionOrder "smallest_distance_first"}}checked{{end}}> {{ T "settings_relations.smallest_distance_first" }}</label>
+            <label><input type="radio" name="default_session_order" value="largest_file_first" {{if eq $cfg.Relations.DefaultSessionOrder "largest_file_first"}}checked{{end}}> {{ T "settings_relations.largest_file_first" }}</label>
+            <label><input type="radio" name="default_session_order" value="random" {{if eq $cfg.Relations.DefaultSessionOrder "random"}}checked{{end}}> {{ T "settings_relations.random" }}</label>
           </div>
         </div>
       </div>
-      <div class="settings-actions"><button type="submit">Save</button></div>
+      <div class="settings-actions"><button type="submit">{{ T "settings_relations.save" }}</button></div>
     </form>
   </section>
 
   <section id="auth" class="settings-section">
-    <h3>Authentication</h3>
+    <h3>{{ T "settings_auth.heading" }}</h3>
     <div id="flash-auth"></div>
     <div class="settings-cols">
       {{template "partials/auth_password_section.html" (dict "AuthEnabled" $cfg.Auth.EnablePassword "CSRFToken" $csrf)}}
       <div class="settings-sub">
-        <h4>API Tokens</h4>
-        <p class="field-hint">Bearer tokens for the REST API. The secret is shown once, at creation.</p>
+        <h4>{{ T "settings_auth.api_tokens" }}</h4>
+        <p class="field-hint">{{ T "settings_auth.api_tokens_hint" }}</p>
         {{template "partials/auth_tokens.html" (dict "Tokens" $cfg.Auth.Tokens "CSRFToken" $csrf)}}
         <form hx-post="/settings/auth/tokens" hx-target="#flash-auth" hx-swap="innerHTML" style="margin-top:8px">
           <input type="hidden" name="_csrf" value="{{$csrf}}">
-          <input type="text" id="token-name-input" name="name" placeholder="token name" maxlength="64" required>
-          <button type="submit">Create token</button>
+          <input type="text" id="token-name-input" name="name" placeholder="{{ T "settings_auth.token_name_placeholder" }}" maxlength="64" required>
+          <button type="submit">{{ T "settings_auth.create_token" }}</button>
         </form>
       </div>
     </div>
   </section>
 
   <section id="maintenance" class="settings-section">
-    <h3>Maintenance</h3>
+    <h3>{{ T "settings_maintenance.heading" }}</h3>
     <div id="flash-maintenance"></div>
     <div class="table-scroll">
     <table class="maintenance-table">
       <tbody>
         <tr>
-          <td><strong>Missing images</strong> <span class="field-hint">- remove DB entries whose files are gone (<a href="/?q=missing:true">view</a>)</span></td>
+          <td><strong>{{ T "settings_maintenance.missing_images" }}</strong> <span class="field-hint">- {{ T "settings_maintenance.missing_images_desc" }} (<a href="/?q=missing:true">{{ T "settings_maintenance.view" }}</a>)</span></td>
           <td>
             <form hx-post="/settings/maintenance/prune-missing" hx-target="#flash-maintenance" hx-swap="innerHTML"
-                  hx-confirm="Prune every image marked missing from the database?"
-                  data-confirm-danger="Tags on those images are removed too. Re-mounting the gallery volume before pruning restores the files."
-                  data-confirm-ok="Prune"
+                  hx-confirm="{{ T "settings_maintenance.missing_images_confirm" }}"
+                  data-confirm-danger="{{ T "settings_maintenance.missing_images_confirm_danger" }}"
+                  data-confirm-ok="{{ T "settings_maintenance.prune" }}"
                   style="display:inline">
               <input type="hidden" name="_csrf" value="{{$csrf}}">
-              <button type="submit" class="btn-danger btn-sm">Prune</button>
+              <button type="submit" class="btn-danger btn-sm">{{ T "settings_maintenance.prune" }}</button>
             </form>
           </td>
         </tr>
-        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Orphaned thumbnails" "Desc" "remove thumbnail files with no matching image" "URL" "/settings/maintenance/prune-orphaned-thumbnails" "Verb" "Remove"}}
-        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Rebuild thumbnails" "Desc" "regenerate thumbnail files for every image" "URL" "/settings/maintenance/rebuild-thumbnails" "Verb" "Rebuild" "JobKick" true "Confirm" "Rebuild thumbnails for every image in this gallery?" "ConfirmDanger" "Long-running job; blocks other jobs until it finishes." "ConfirmOK" "Rebuild"}}
-        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Compute perceptual hashes" "Desc" "backfill phash for every image that doesn't have one yet" "URL" "/settings/maintenance/compute-phashes" "Verb" "Compute" "JobKick" true "Confirm" "Compute perceptual hashes for every image still missing one?" "ConfirmOK" "Compute"}}
-        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Rebuild pair queue" "Desc" "wipe potential relation pairs and rescan from scratch" "URL" "/relations/find-pairs" "Verb" "Rebuild" "Danger" true "JobKick" true "Confirm" "Wipe the existing pair queue and rescan from scratch?" "ConfirmDanger" "Skipped pairs and any queue work in progress are dropped." "ConfirmOK" "Rebuild" "Fields" (dict "replace" "true" "confirm" "REBUILD")}}
-        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Tag counts" "Desc" "recompute usage counts" "URL" "/settings/maintenance/recalc-tags" "Verb" "Recalculate"}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" (T "settings_maintenance.orphaned_thumbnails") "Desc" (T "settings_maintenance.orphaned_thumbnails_desc") "URL" "/settings/maintenance/prune-orphaned-thumbnails" "Verb" (T "settings_maintenance.remove")}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" (T "settings_maintenance.rebuild_thumbnails") "Desc" (T "settings_maintenance.rebuild_thumbnails_desc") "URL" "/settings/maintenance/rebuild-thumbnails" "Verb" (T "settings_maintenance.rebuild") "JobKick" true "Confirm" (T "settings_maintenance.rebuild_thumbnails_confirm") "ConfirmDanger" (T "settings_maintenance.long_running_confirm_danger") "ConfirmOK" (T "settings_maintenance.rebuild")}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" (T "settings_maintenance.compute_phash") "Desc" (T "settings_maintenance.compute_phash_desc") "URL" "/settings/maintenance/compute-phashes" "Verb" (T "settings_maintenance.compute") "JobKick" true "Confirm" (T "settings_maintenance.compute_phash_confirm") "ConfirmOK" (T "settings_maintenance.compute")}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" (T "settings_maintenance.rebuild_pair_queue") "Desc" (T "settings_maintenance.rebuild_pair_queue_desc") "URL" "/relations/find-pairs" "Verb" (T "settings_maintenance.rebuild") "Danger" true "JobKick" true "Confirm" (T "settings_maintenance.rebuild_pair_queue_confirm") "ConfirmDanger" (T "settings_maintenance.rebuild_pair_queue_confirm_danger") "ConfirmOK" (T "settings_maintenance.rebuild") "Fields" (dict "replace" "true" "confirm" "REBUILD")}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" (T "settings_maintenance.tag_counts") "Desc" (T "settings_maintenance.tag_counts_desc") "URL" "/settings/maintenance/recalc-tags" "Verb" (T "settings_maintenance.recalculate")}}
         <tr>
-          <td><strong>Category conflicts</strong> <span class="field-hint">- list tags whose name occupies more than one category</span></td>
+          <td><strong>{{ T "settings_maintenance.category_conflicts" }}</strong> <span class="field-hint">- {{ T "settings_maintenance.category_conflicts_desc" }}</span></td>
           <td>
             <form hx-post="/settings/maintenance/tag-conflicts" hx-target="#flash-maintenance" hx-swap="innerHTML" style="display:inline">
               <input type="hidden" name="_csrf" value="{{$csrf}}">
-              <button type="submit" class="btn-sm">List</button>
+              <button type="submit" class="btn-sm">{{ T "settings_maintenance.list" }}</button>
             </form>
           </td>
         </tr>
-        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Re-extract metadata" "Desc" "re-parse metadata for every image" "URL" "/settings/maintenance/re-extract-metadata" "Verb" "Re-extract" "Confirm" "Re-parse metadata for every image in this gallery?" "ConfirmDanger" "Long-running job; blocks other jobs until it finishes." "ConfirmOK" "Re-extract"}}
-        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Vacuum database" "Desc" "compact the SQLite file after mass deletions" "URL" "/settings/maintenance/vacuum-db" "Verb" "Vacuum" "Confirm" "Compact the SQLite database now?" "ConfirmDanger" "Holds a database lock for the duration of the VACUUM; other jobs and queries will wait." "ConfirmOK" "Vacuum"}}
-        {{template "maintenance_row" dict "CSRF" $csrf "Title" "Free memory" "Desc" "shrink SQLite caches, return the Go heap, and release the auto-tagger from RAM/VRAM." "URL" "/settings/maintenance/free-memory" "Verb" "Free"}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" (T "settings_maintenance.re_extract") "Desc" (T "settings_maintenance.re_extract_desc") "URL" "/settings/maintenance/re-extract-metadata" "Verb" (T "settings_maintenance.re_extract") "Confirm" (T "settings_maintenance.re_extract_confirm") "ConfirmDanger" (T "settings_maintenance.long_running_confirm_danger") "ConfirmOK" (T "settings_maintenance.re_extract")}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" (T "settings_maintenance.vacuum_database") "Desc" (T "settings_maintenance.vacuum_database_desc") "URL" "/settings/maintenance/vacuum-db" "Verb" (T "settings_maintenance.vacuum") "Confirm" (T "settings_maintenance.vacuum_confirm") "ConfirmDanger" (T "settings_maintenance.vacuum_confirm_danger") "ConfirmOK" (T "settings_maintenance.vacuum")}}
+        {{template "maintenance_row" dict "CSRF" $csrf "Title" (T "settings_maintenance.free_memory") "Desc" (T "settings_maintenance.free_memory_desc") "URL" "/settings/maintenance/free-memory" "Verb" (T "settings_maintenance.free")}}
       </tbody>
     </table>
     </div>
@@ -724,104 +724,104 @@
   {{$sched := $cfg.Schedule}}
   {{$schedSt := index . "ScheduleStatus"}}
   <section id="schedule" class="settings-section">
-    <h3>Schedule</h3>
+    <h3>{{ T "settings_schedule.heading" }}</h3>
     <div id="flash-schedule"></div>
-    <p class="field-hint">Runs the selected maintenance actions once per day at the configured time, on every configured gallery in sequence. Skipped silently if another job is already running at fire time.</p>
+    <p class="field-hint">{{ T "settings_schedule.hint" }}</p>
     <p class="field-hint">
-      {{if $schedSt.LastRun.IsZero}}Last run: never.{{else}}Last run: {{$schedSt.LastRun.Format "2006-01-02 15:04:05"}} ({{$schedSt.LastInfo}}, {{schedDuration $schedSt.LastDur}}).{{end}}
-      {{if $schedSt.NextRun.IsZero}}No next run scheduled (every action is off).{{else}}Next run: {{$schedSt.NextRun.Format "2006-01-02 15:04:05"}}.{{end}}
+      {{if $schedSt.LastRun.IsZero}}{{ T "settings_schedule.last_run_never" }}{{else}}{{ T "settings_schedule.last_run" (dict "time" (localTime $schedSt.LastRun) "info" $schedSt.LastInfo "dur" (schedDuration $schedSt.LastDur)) }}{{end}}
+      {{if $schedSt.NextRun.IsZero}}{{ T "settings_schedule.no_next_run" }}{{else}}{{ T "settings_schedule.next_run" (dict "time" (localTime $schedSt.NextRun)) }}{{end}}
     </p>
     <form hx-post="/settings/schedule" hx-target="#flash-schedule" hx-swap="innerHTML">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
       <div class="field">
-        <label>Time of day (24h, HH:MM) <input type="text" name="time" value="{{$sched.Time}}"
+        <label>{{ T "settings_schedule.time_of_day" }} <input type="text" name="time" value="{{$sched.Time}}"
                pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="HH:MM" maxlength="5"
                class="schedule-time-input" required></label>
       </div>
       <div class="schedule-grid">
         <div class="field">
-          <label><input type="checkbox" name="sync_gallery"{{if $sched.SyncGallery}} checked{{end}}> Sync gallery</label>
+          <label><input type="checkbox" name="sync_gallery"{{if $sched.SyncGallery}} checked{{end}}> {{ T "settings_schedule.sync_gallery" }}</label>
         </div>
         <div class="field">
-          <label><input type="checkbox" name="remove_orphans"{{if $sched.RemoveOrphans}} checked{{end}}> Remove orphaned thumbnails</label>
+          <label><input type="checkbox" name="remove_orphans"{{if $sched.RemoveOrphans}} checked{{end}}> {{ T "settings_schedule.remove_orphaned_thumbnails" }}</label>
         </div>
         <div class="field">
-          <label><input type="checkbox" name="run_auto_taggers"{{if $sched.RunAutoTaggers}} checked{{end}}> Run enabled auto-taggers</label>
+          <label><input type="checkbox" name="run_auto_taggers"{{if $sched.RunAutoTaggers}} checked{{end}}> {{ T "settings_schedule.run_auto_taggers" }}</label>
         </div>
         <div class="field">
-          <label><input type="checkbox" name="find_relation_pairs"{{if $sched.FindRelationPairs}} checked{{end}}> Find relation pairs (phash near-duplicates)</label>
+          <label><input type="checkbox" name="find_relation_pairs"{{if $sched.FindRelationPairs}} checked{{end}}> {{ T "settings_schedule.find_relation_pairs" }}</label>
         </div>
       </div>
-      <div class="settings-actions"><button type="submit">Save</button></div>
+      <div class="settings-actions"><button type="submit">{{ T "settings_schedule.save" }}</button></div>
     </form>
   </section>
 
   {{$stats := index . "Stats"}}
   <section id="stats" class="settings-section">
-    <h3>Stats</h3>
+    <h3>{{ T "settings_stats.heading" }}</h3>
     <div class="stats-cols">
     <div class="settings-sub">
-      <h4>Process memory</h4>
+      <h4>{{ T "settings_stats.process_memory" }}</h4>
       <table class="stats-table">
         <tbody>
           {{if $stats.Mem.Available}}
-          <tr><th>Memory used (PSS)</th><td>{{humanBytes $stats.Mem.Total}}</td></tr>
+          <tr><th>{{ T "settings_stats.memory_used_pss" }}</th><td>{{humanBytes $stats.Mem.Total}}</td></tr>
           {{if or $stats.Mem.Anon $stats.Mem.File}}
-          <tr><th class="stats-d1">Private (anonymous)</th><td>{{humanBytes $stats.Mem.Anon}}</td></tr>
-          <tr><th class="stats-d2">Go runtime (reserved)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
-          <tr><th class="stats-d3">Go heap (live objects)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
-          <tr><th class="stats-d2">Native heap (SQLite, CGO)</th><td>{{humanBytes $stats.Mem.Native}}</td></tr>
-          <tr><th class="stats-d1">Shared (file-backed)</th><td>{{humanBytes $stats.Mem.File}}</td></tr>
+          <tr><th class="stats-d1">{{ T "settings_stats.private_anonymous" }}</th><td>{{humanBytes $stats.Mem.Anon}}</td></tr>
+          <tr><th class="stats-d2">{{ T "settings_stats.go_runtime_reserved" }}</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
+          <tr><th class="stats-d3">{{ T "settings_stats.go_heap_live" }}</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
+          <tr><th class="stats-d2">{{ T "settings_stats.native_heap" }}</th><td>{{humanBytes $stats.Mem.Native}}</td></tr>
+          <tr><th class="stats-d1">{{ T "settings_stats.shared_file_backed" }}</th><td>{{humanBytes $stats.Mem.File}}</td></tr>
           {{if $stats.Mem.DB}}
-          <tr><th class="stats-d2">DB pages (memory-mapped)</th><td>{{humanBytes $stats.Mem.DB}}</td></tr>
-          <tr><th class="stats-d2">Code &amp; shared libs</th><td>{{humanBytes $stats.Mem.OtherFile}}</td></tr>
+          <tr><th class="stats-d2">{{ T "settings_stats.db_pages" }}</th><td>{{humanBytes $stats.Mem.DB}}</td></tr>
+          <tr><th class="stats-d2">{{ T "settings_stats.code_shared_libs" }}</th><td>{{humanBytes $stats.Mem.OtherFile}}</td></tr>
           {{end}}
           {{else}}
-          <tr><th class="stats-d1">Go runtime (reserved)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
-          <tr><th class="stats-d2">Go heap (live objects)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
+          <tr><th class="stats-d1">{{ T "settings_stats.go_runtime_reserved" }}</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
+          <tr><th class="stats-d2">{{ T "settings_stats.go_heap_live" }}</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
           {{end}}
           {{else}}
-          <tr><th>Go runtime (reserved)</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
-          <tr><th class="stats-d1">Go heap (live objects)</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
+          <tr><th>{{ T "settings_stats.go_runtime_reserved" }}</th><td>{{humanBytes $stats.Mem.Sys}}</td></tr>
+          <tr><th class="stats-d1">{{ T "settings_stats.go_heap_live" }}</th><td>{{humanBytes $stats.Mem.HeapAlloc}}</td></tr>
           {{end}}
-          <tr><th>Goroutines</th><td>{{$stats.Mem.Goroutines}}</td></tr>
+          <tr><th>{{ T "settings_stats.goroutines" }}</th><td>{{$stats.Mem.Goroutines}}</td></tr>
         </tbody>
       </table>
     </div>
     {{$tg := $stats.Tagger}}
     <div class="settings-sub">
-      <h4>Auto-tagger</h4>
+      <h4>{{ T "settings_stats.auto_tagger" }}</h4>
       <table class="stats-table">
         <tbody>
           {{if $tg.Loaded}}
-          <tr><th>Mode</th><td>{{if $tg.UseCUDA}}CUDA{{else}}CPU{{end}}</td></tr>
-          <tr><th>Status</th><td>
-            {{if $tg.InUse}}running
-            {{else}}idle {{schedDuration $tg.IdleFor}}
+          <tr><th>{{ T "settings_stats.mode" }}</th><td>{{if $tg.UseCUDA}}CUDA{{else}}CPU{{end}}</td></tr>
+          <tr><th>{{ T "settings_stats.status" }}</th><td>
+            {{if $tg.InUse}}{{ T "settings_stats.running" }}
+            {{else}}{{ T "settings_stats.idle" }} {{schedDuration $tg.IdleFor}}
               {{if $tg.IdleReleaseAfter}}
                 {{$remain := minusDuration $tg.IdleReleaseAfter $tg.IdleFor}}
-                {{if gt (int64Duration $remain) 0}}(releases in {{schedDuration $remain}}){{else}}(release pending){{end}}
+                {{if gt (int64Duration $remain) 0}}{{ T "settings_stats.releases_in" (dict "duration" (schedDuration $remain)) }}{{else}}{{ T "settings_stats.release_pending" }}{{end}}
               {{end}}
             {{end}}
           </td></tr>
-          <tr><th>Models</th><td>{{range $i, $n := $tg.Sessions}}{{if $i}}, {{end}}{{$n}}{{end}}</td></tr>
+          <tr><th>{{ T "settings_stats.models" }}</th><td>{{range $i, $n := $tg.Sessions}}{{if $i}}, {{end}}{{$n}}{{end}}</td></tr>
           {{if $tg.WorkerPSS}}
-          <tr><th>Worker PID</th><td>{{$tg.WorkerPID}}</td></tr>
-          <tr><th class="stats-d1">Worker memory (PSS)</th><td>{{humanBytes $tg.WorkerPSS}}</td></tr>
-          <tr><th class="stats-d2">Worker native (ONNX + CGO)</th><td>{{humanBytes $tg.WorkerAnon}}</td></tr>
-          <tr><th class="stats-d2">Worker code &amp; libs</th><td>{{humanBytes $tg.WorkerFile}}</td></tr>
+          <tr><th>{{ T "settings_stats.worker_pid" }}</th><td>{{$tg.WorkerPID}}</td></tr>
+          <tr><th class="stats-d1">{{ T "settings_stats.worker_memory_pss" }}</th><td>{{humanBytes $tg.WorkerPSS}}</td></tr>
+          <tr><th class="stats-d2">{{ T "settings_stats.worker_native" }}</th><td>{{humanBytes $tg.WorkerAnon}}</td></tr>
+          <tr><th class="stats-d2">{{ T "settings_stats.worker_code_libs" }}</th><td>{{humanBytes $tg.WorkerFile}}</td></tr>
           {{end}}
           {{else}}
-          <tr><th>Status</th><td>not loaded</td></tr>
+          <tr><th>{{ T "settings_stats.status" }}</th><td>{{ T "settings_stats.not_loaded" }}</td></tr>
           {{end}}
         </tbody>
       </table>
     </div>
     <div class="settings-sub">
-      <h4>Database size per gallery</h4>
+      <h4>{{ T "settings_stats.db_size_per_gallery" }}</h4>
       <div class="table-scroll">
       <table class="stats-table">
-        <thead><tr><th>Gallery</th><th>DB path</th><th>Size</th></tr></thead>
+        <thead><tr><th>{{ T "settings_stats.gallery" }}</th><th>{{ T "settings_stats.db_path" }}</th><th>{{ T "settings_stats.size" }}</th></tr></thead>
         <tbody>
           {{range $stats.Galleries}}
           <tr>
@@ -835,11 +835,11 @@
       </div>
     </div>
     <div class="settings-sub">
-      <h4>Filesystem free space</h4>
+      <h4>{{ T "settings_stats.filesystem_free_space" }}</h4>
       {{if $stats.Mounts}}
       <div class="table-scroll">
       <table class="stats-table">
-        <thead><tr><th>Mount</th><th>Used</th><th>Free</th><th>Total</th><th>Used %</th></tr></thead>
+        <thead><tr><th>{{ T "settings_stats.mount" }}</th><th>{{ T "settings_stats.used" }}</th><th>{{ T "settings_stats.free" }}</th><th>{{ T "settings_stats.total" }}</th><th>{{ T "settings_stats.used_pct" }}</th></tr></thead>
         <tbody>
           {{range $stats.Mounts}}
           <tr>

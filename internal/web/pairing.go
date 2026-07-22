@@ -177,16 +177,16 @@ func (s *Server) pairRequest(w http.ResponseWriter, r *http.Request) {
 		PeerToken       string   `json:"peer_token"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil || body.App == "" {
-		writePairJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_request", "error": "app and a JSON body are required"})
+		writePairJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_request", "error": localize("flash.pairing_invalid_request")})
 		return
 	}
 	if s.pairedWith(body.App) {
-		writePairJSON(w, http.StatusConflict, map[string]string{"code": "already_paired", "error": "already paired with " + body.App + "; remove the existing pairing first"})
+		writePairJSON(w, http.StatusConflict, map[string]string{"code": "already_paired", "error": localize("flash.pairing_already_paired", map[string]any{"app": body.App})})
 		return
 	}
 	id, ok := s.pairs.create(body.App, body.URL, clientIP(r), body.RequestedScopes, body.PeerToken)
 	if !ok {
-		writePairJSON(w, http.StatusTooManyRequests, map[string]string{"code": "too_many_requests", "error": "too many pending pairing requests"})
+		writePairJSON(w, http.StatusTooManyRequests, map[string]string{"code": "too_many_requests", "error": localize("flash.pairing_rate_limited")})
 		return
 	}
 	logx.Infof("pairing: request from %s (%s)", body.App, body.URL)
@@ -200,7 +200,7 @@ func (s *Server) pairStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	req, ok := s.pairs.get(id)
 	if !ok {
-		writePairJSON(w, http.StatusNotFound, map[string]string{"code": "not_found", "error": "unknown pairing request"})
+		writePairJSON(w, http.StatusNotFound, map[string]string{"code": "not_found", "error": localize("flash.pairing_not_found")})
 		return
 	}
 	if req.State != pairApproved {
@@ -235,7 +235,7 @@ func (s *Server) pairTeardown(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfgMu.RUnlock()
 	if secret == "" || paired == "" {
-		writePairJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized", "error": "pairing token required"})
+		writePairJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized", "error": localize("flash.pairing_unauthorized")})
 		return
 	}
 	if err := s.removePairing(paired); err != nil {

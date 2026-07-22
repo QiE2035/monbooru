@@ -1,22 +1,22 @@
 {{define "partials/batch_actions_body.html"}}
-<p>Apply the following actions to <strong id="batch-actions-count">{{.Result.Total}}</strong> <span id="batch-actions-noun">{{plural .Result.Total "image" "images"}}</span> in current search:</p>
+<p>{{ T "batch_actions.title_prefix" }} <strong id="batch-actions-count">{{.Result.Total}}</strong> <span id="batch-actions-noun">{{plural .Result.Total (T "gallery_batch.image") (T "gallery_batch.images")}}</span> {{ T "batch_actions.title_suffix" }}</p>
 <ul class="actions-menu">
-  {{if .Query}}<li class="actions-menu-item" data-action="save"><button type="button" data-action="save">Save search</button></li>{{end}}
+  {{if .Query}}<li class="actions-menu-item" data-action="save"><button type="button" data-action="save">{{ T "batch_actions.save_search" }}</button></li>{{end}}
   {{if and (not .Degraded) (gt .Result.Total 0)}}
   <li class="actions-menu-sep" aria-hidden="true"></li>
-  <li class="actions-menu-item" data-action="add"><button type="button" data-action="add">Add tags manually</button></li>
-  <li class="actions-menu-item" data-action="strip"><button type="button" data-action="strip">Remove tags</button></li>
-  {{if .EnabledTaggers}}<li class="actions-menu-item" data-action="autotag"><button type="button" class="btn-autotag" data-action="autotag">Auto-tag</button></li>{{end}}
-  {{if .MonloaderPaired}}<li class="actions-menu-item" data-action="lookup"><button type="button" class="monloader-accent" data-action="lookup">Lookup</button></li>{{end}}
+  <li class="actions-menu-item" data-action="add"><button type="button" data-action="add">{{ T "gallery_batch.add_tags" }}</button></li>
+  <li class="actions-menu-item" data-action="strip"><button type="button" data-action="strip">{{ T "gallery_batch.remove_tags" }}</button></li>
+  {{if .EnabledTaggers}}<li class="actions-menu-item" data-action="autotag"><button type="button" class="btn-autotag" data-action="autotag">{{ T "gallery_batch.auto_tag" }}</button></li>{{end}}
+  {{if .MonloaderPaired}}<li class="actions-menu-item" data-action="lookup"><button type="button" class="monloader-accent" data-action="lookup">{{ T "gallery_batch.lookup" }}</button></li>{{end}}
   <li class="actions-menu-sep" aria-hidden="true"></li>
-  <li class="actions-menu-item" data-action="inbox-toggle"><button type="button" data-action="inbox-toggle">Toggle inbox</button></li>
-  <li class="actions-menu-item" data-action="fav-toggle"><button type="button" data-action="fav-toggle">Toggle favorite</button></li>
-  <li class="actions-menu-item" data-action="collection"><button type="button" data-action="collection">Set collection</button></li>
-  <li class="actions-menu-item" data-action="source"><button type="button" data-action="source">Set source</button></li>
+  <li class="actions-menu-item" data-action="inbox-toggle"><button type="button" data-action="inbox-toggle">{{ T "gallery_batch.toggle_inbox" }}</button></li>
+  <li class="actions-menu-item" data-action="fav-toggle"><button type="button" data-action="fav-toggle">{{ T "gallery_batch.toggle_favorite" }}</button></li>
+  <li class="actions-menu-item" data-action="collection"><button type="button" data-action="collection">{{ T "gallery_batch.set_collection" }}</button></li>
+  <li class="actions-menu-item" data-action="source"><button type="button" data-action="source">{{ T "gallery_batch.set_source" }}</button></li>
   <li class="actions-menu-sep" aria-hidden="true"></li>
-  {{if gt (len .Galleries) 1}}<li class="actions-menu-item" data-action="transfer"><button type="button" data-action="transfer">Transfer</button></li>{{end}}
-  <li class="actions-menu-item" data-action="move"><button type="button" data-action="move">Move</button></li>
-  <li class="actions-menu-item" data-action="delete"><button type="button" class="btn-danger" data-action="delete">Delete</button></li>
+  {{if gt (len .Galleries) 1}}<li class="actions-menu-item" data-action="transfer"><button type="button" data-action="transfer">{{ T "gallery_batch.transfer" }}</button></li>{{end}}
+  <li class="actions-menu-item" data-action="move"><button type="button" data-action="move">{{ T "gallery_batch.move" }}</button></li>
+  <li class="actions-menu-item" data-action="delete"><button type="button" class="btn-danger" data-action="delete">{{ T "gallery_batch.delete" }}</button></li>
   {{end}}
 </ul>
 {{end}}

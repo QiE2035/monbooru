@@ -2,7 +2,7 @@
 {{if .InboxUploadActive}}
 <div id="inbox-upload" class="inbox-upload">
   {{if .Degraded}}
-  <p class="field-hint">Upload is disabled for this gallery because its path is unreadable. Fix the configuration or switch to another gallery.</p>
+  <p class="field-hint">{{ T "thumbnail_grid.upload_disabled" }}</p>
   {{else}}
   <form id="inbox-upload-form"
         hx-post="/upload"
@@ -13,16 +13,16 @@
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div id="inbox-upload-drop" class="upload-drop-zone">
       <div class="upload-drop-prompt">
-        <span class="upload-drop-hint">Drop files here or use the button.</span>
-        <button type="button" id="inbox-upload-pick-btn" class="btn-sm">Choose files</button>
+        <span class="upload-drop-hint">{{ T "thumbnail_grid.drop_files" }}</span>
+        <button type="button" id="inbox-upload-pick-btn" class="btn-sm">{{ T "thumbnail_grid.choose_files" }}</button>
       </div>
       <input type="file" name="files" id="inbox-upload-file-input" multiple accept="{{.AcceptFileTypes}}" hidden>
       <ul id="inbox-upload-file-list" class="upload-file-list"></ul>
     </div>
     <div class="thumb-cluster-header inbox-upload-footer">
       <span class="thumb-cluster-rule" aria-hidden="true"></span>
-      <button type="button" id="inbox-upload-reset-btn" class="btn-sm thumb-cluster-select" title="Clears files you picked but did not upload yet. Already-uploaded files stay in the inbox.">[Clear staged]</button>
-      <button type="submit" id="inbox-upload-submit-btn" class="btn-sm thumb-cluster-select">[Upload]</button>
+      <button type="button" id="inbox-upload-reset-btn" class="btn-sm thumb-cluster-select" title="{{ T "thumbnail_grid.clear_staged_title" }}">[{{ T "thumbnail_grid.clear_staged" }}]</button>
+      <button type="submit" id="inbox-upload-submit-btn" class="btn-sm thumb-cluster-select">[{{ T "thumbnail_grid.upload" }}]</button>
     </div>
     <div id="inbox-upload-result"></div>
   </form>
@@ -34,31 +34,31 @@
   {{if $.InboxClusterAtIdx}}{{with index $.InboxClusterAtIdx $i}}
   <div class="thumb-cluster-header" data-cluster-start="{{$i}}">
     <span class="thumb-cluster-rule" aria-hidden="true"></span>
-    <span class="thumb-cluster-label mono-small">{{.DateLabel}} · <a class="thumb-cluster-range" href="{{.RangeLink}}">{{.RangeLabel}}</a> · {{.Count}} on this page</span>
+    <span class="thumb-cluster-label mono-small">{{.DateLabel}} · <a class="thumb-cluster-range" href="{{.RangeLink}}">{{.RangeLabel}}</a> · {{.Count}} {{ T "thumbnail_grid.on_this_page" }}</span>
     <span class="thumb-cluster-rule" aria-hidden="true"></span>
-    <button type="button" class="btn-sm thumb-cluster-select" data-cluster-unselect hidden>[Unselect]</button>
-    <button type="button" class="btn-sm thumb-cluster-select" data-cluster-select>[Select]</button>
+    <button type="button" class="btn-sm thumb-cluster-select" data-cluster-unselect hidden>[{{ T "thumbnail_grid.unselect" }}]</button>
+    <button type="button" class="btn-sm thumb-cluster-select" data-cluster-select>[{{ T "thumbnail_grid.select" }}]</button>
   </div>
   {{end}}{{end}}
   <div class="thumb-card" data-id="{{.ID}}"
        {{if or (eq .FileType "mp4") (eq .FileType "webm") (eq .FileType "gif")}}data-hover="/thumbnails/{{$.ActiveGallery}}/{{.ID}}_hover.webp"{{end}}>
     <input type="checkbox" class="thumb-checkbox" name="ids" value="{{.ID}}">
     <a href="/images/{{.ID}}?back_q={{urlQ $.Query}}&back_sort={{$.Sort}}&back_order={{$.Order}}&back_page={{$.Page}}{{if $.RandomSeed}}&back_seed={{$.RandomSeed}}{{end}}" class="thumb-link">
-      <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy"
+      <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="{{ T "thumbnail_grid.image" }} {{.ID}}" loading="lazy"
            class="thumb-img"
-           onerror="this.parentElement.innerHTML='<div class=thumb-placeholder title=&quot;preview unavailable&quot;>?</div>'">
+           onerror="this.parentElement.innerHTML='<div class=thumb-placeholder title=&quot;{{ T "thumbnail_grid.preview_unavailable" }}&quot;>?</div>'">
       <div class="thumb-overlay">
         {{if or (eq .FileType "mp4") (eq .FileType "webm")}}
-          <span class="badge badge-video" title="Video"></span>
+          <span class="badge badge-video" title="{{ T "thumbnail_grid.video" }}"></span>
         {{end}}
         {{if .IsFavorited}}
-          <span class="badge fav-heart" title="Favorited"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 11 L1.2 6.4 a2.6 2.6 0 0 1 3.7 -3.7 L6 3.7 l1.1 -1 a2.6 2.6 0 0 1 3.7 3.7 Z"/></svg></span>
+          <span class="badge fav-heart" title="{{ T "thumbnail_grid.favorited" }}"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 11 L1.2 6.4 a2.6 2.6 0 0 1 3.7 -3.7 L6 3.7 l1.1 -1 a2.6 2.6 0 0 1 3.7 3.7 Z"/></svg></span>
         {{end}}
         {{if .IsInbox}}
-          <span class="badge badge-inbox" title="In inbox">Inbox</span>
+          <span class="badge badge-inbox" title="{{ T "thumbnail_grid.in_inbox" }}">{{ T "thumbnail_grid.inbox" }}</span>
         {{end}}
         {{if .IsMissing}}
-          <span class="badge badge-missing" title="Missing from disk"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></span>
+          <span class="badge badge-missing" title="{{ T "thumbnail_grid.missing_from_disk" }}"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></span>
         {{end}}
         {{if eq $.Sort "filesize"}}
           <span class="badge badge-filesize">{{humanBytes .FileSize}}</span>
@@ -66,13 +66,13 @@
       </div>
       {{if eq .FileType "cbz"}}
         {{if .PageCount}}
-        <span class="manga-pill">{{deref .PageCount}} pages</span>
+        <span class="manga-pill">{{deref .PageCount}} {{ T "thumbnail_grid.pages" }}</span>
         {{else}}
-        <span class="manga-pill">manga</span>
+        <span class="manga-pill">{{ T "thumbnail_grid.manga" }}</span>
         {{end}}
       {{end}}
       {{if .Series}}
-        <span class="series-pill" title="Collection: {{.Series}}{{if .SeriesOrder}} #{{deref .SeriesOrder}}{{end}}">
+        <span class="series-pill" title="{{ T "thumbnail_grid.collection" }}: {{.Series}}{{if .SeriesOrder}} #{{deref .SeriesOrder}}{{end}}">
           {{if .SeriesOrder}}<span class="series-pill-order">#{{deref .SeriesOrder}}</span>{{end}}
           <span class="series-pill-name">{{.Series}}</span>
         </span>
@@ -80,7 +80,7 @@
     </a>
   </div>
   {{else}}
-  <div class="no-results">No images found.</div>
+  <div class="no-results">{{ T "thumbnail_grid.no_images_found" }}</div>
   {{end}}
 </div>
 
@@ -91,23 +91,23 @@
   {{if and (gt .Page 1) (gt .TotalPages 2)}}
     <a href="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page=1"
        hx-get="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page=1"
-       hx-target="#gallery-grid" hx-swap="innerHTML" hx-push-url="true">« First</a>
+       hx-target="#gallery-grid" hx-swap="innerHTML" hx-push-url="true">« {{ T "thumbnail_grid.first" }}</a>
   {{end}}
   {{if gt .Page 1}}
     <a href="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{sub .Page 1}}"
        hx-get="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{sub .Page 1}}"
-       hx-target="#gallery-grid" hx-swap="innerHTML" hx-push-url="true">← Prev</a>
+       hx-target="#gallery-grid" hx-swap="innerHTML" hx-push-url="true">← {{ T "thumbnail_grid.prev" }}</a>
   {{end}}
-  <button type="button" class="page-jump current" data-current="{{.Page}}" data-total="{{.TotalPages}}" title="Go to page…">Page {{.Page}} / {{.TotalPages}}</button>
+  <button type="button" class="page-jump current" data-current="{{.Page}}" data-total="{{.TotalPages}}" title="{{ T "thumbnail_grid.go_to_page" }}">{{ T "thumbnail_grid.page" }} {{.Page}} / {{.TotalPages}}</button>
   {{if lt .Page .TotalPages}}
     <a href="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{add .Page 1}}"
        hx-get="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{add .Page 1}}"
-       hx-target="#gallery-grid" hx-swap="innerHTML" hx-push-url="true">Next →</a>
+       hx-target="#gallery-grid" hx-swap="innerHTML" hx-push-url="true">{{ T "thumbnail_grid.next" }} →</a>
   {{end}}
   {{if and (lt .Page .TotalPages) (gt .TotalPages 2)}}
     <a href="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{.TotalPages}}"
        hx-get="/?q={{$q}}&sort={{.Sort}}&order={{.Order}}{{if $seed}}&seed={{$seed}}{{end}}&page={{.TotalPages}}"
-       hx-target="#gallery-grid" hx-swap="innerHTML" hx-push-url="true">Last »</a>
+       hx-target="#gallery-grid" hx-swap="innerHTML" hx-push-url="true">{{ T "thumbnail_grid.last" }} »</a>
   {{end}}
 </div>
 {{end}}

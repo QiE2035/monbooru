@@ -15,7 +15,7 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		// template hides the form itself; a dead field and button only
 		// suggest a login that could work.
 		s.renderTemplate(w, "login.html", s.loginPageData(map[string]any{
-			"Error":        "Password authentication is disabled. Enable it from Settings → Authentication.",
+			"Error":        localize("flash.auth_disabled"),
 			"AuthDisabled": true,
 		}))
 		return
@@ -49,7 +49,7 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	if !s.loginRL.check(ip) {
 		logx.Warnf("login rate-limited from %s", ip)
 		s.renderTemplate(w, "login.html", s.loginPageData(map[string]any{
-			"Error": "Too many attempts. Please wait before trying again.",
+			"Error": localize("flash.auth_rate_limited"),
 		}))
 		return
 	}
@@ -61,7 +61,7 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		s.loginRL.recordFailure(ip)
 		logx.Warnf("login failed from %s", ip)
 		s.renderTemplate(w, "login.html", s.loginPageData(map[string]any{
-			"Error": "Invalid password",
+			"Error": localize("flash.auth_invalid_password"),
 		}))
 		return
 	}

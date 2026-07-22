@@ -74,7 +74,7 @@ func (s *Server) createCategoryPost(w http.ResponseWriter, r *http.Request) {
 		externalErr(w, r, err.Error(), http.StatusBadRequest)
 		return
 	}
-	hxDone(w, r, "Category "+name+" created.", "/categories", "/categories")
+	hxDone(w, r, localize("flash.category_created", map[string]any{"name": name}), "/categories", "/categories")
 }
 
 func (s *Server) updateCategoryPatch(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +91,7 @@ func (s *Server) updateCategoryPatch(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", err.Error())
 		return
 	}
-	hxDone(w, r, "Category color updated.", "/categories", "/categories")
+	hxDone(w, r, localize("flash.category_color_updated"), "/categories", "/categories")
 }
 
 func (s *Server) deleteCategoryDelete(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +117,7 @@ func (s *Server) deleteCategoryDelete(w http.ResponseWriter, r *http.Request) {
 	// Surface on /tags (the redirect target), not /categories - the
 	// flash rides the shared monbooru:flash channel which lands in
 	// whichever flash slot the destination page exposes.
-	hxDone(w, r, "Category deleted.", "/tags", "/tags")
+	hxDone(w, r, localize("flash.category_deleted"), "/tags", "/tags")
 }
 
 func (s *Server) renameCategoryPost(w http.ResponseWriter, r *http.Request) {
@@ -137,5 +137,5 @@ func (s *Server) renameCategoryPost(w http.ResponseWriter, r *http.Request) {
 		externalErr(w, r, err.Error(), http.StatusBadRequest)
 		return
 	}
-	hxDone(w, r, "Category renamed to "+newName+".", "/categories", "/categories")
+	hxDone(w, r, localize("flash.category_renamed", map[string]any{"name": newName}), "/categories", "/categories")
 }

@@ -192,7 +192,7 @@ func (s *Server) applyTaggerEnabled(w http.ResponseWriter, name string, enabled 
 	logx.Infof("settings: tagger %q %s", name, verb)
 	// The flash rides monbooru:flash so it survives the refresh; an
 	// inline body would be discarded before the swap ever painted.
-	setFlashHeader(w, "Tagger "+name+" "+verb+".", "ok", nil)
+	setFlashHeader(w, localize("flash.tagger_action", map[string]any{"name": name, "verb": verb}), "ok", nil)
 	w.Header().Set("HX-Refresh", "true")
 }
 
@@ -298,7 +298,7 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 	logx.Infof("settings: tagger %q thresholds updated (global=%.2f, %d threshold overrides, %d top-K overrides, %d disabled)", name, global, len(overrides), len(topK), len(disabled))
 	summary := taggerThresholdSummary(global, overrides, disabled)
 	setDialogSavedTrigger(w, "tagger-saved", "tagger-thresh-"+name)
-	writeOOBSummaryFlash(w, "tagger-thresh-summary-"+name, summary, "flash-tagger", "Tagger "+name+" thresholds saved.")
+	writeOOBSummaryFlash(w, "tagger-thresh-summary-"+name, summary, "flash-tagger", localize("flash.tagger_thresholds_saved", map[string]any{"name": name}))
 }
 
 // settingsTaggerThresholdsResetPost wipes per-tagger threshold and
@@ -553,7 +553,7 @@ func (s *Server) settingsTaggerGalleriesPost(w http.ResponseWriter, r *http.Requ
 	logx.Infof("settings: tagger %q galleries updated (all=%t, %d named)", name, all, len(galleries))
 	summary := taggerGallerySummary(galleries, len(s.cfg.Galleries))
 	setDialogSavedTrigger(w, "tagger-saved", "tagger-gal-"+name)
-	writeOOBSummaryFlash(w, "tagger-gal-summary-"+name, summary, "flash-tagger", "Tagger "+name+" galleries saved.")
+	writeOOBSummaryFlash(w, "tagger-gal-summary-"+name, summary, "flash-tagger", localize("flash.tagger_galleries_saved", map[string]any{"name": name}))
 }
 
 // galleryDialogData returns one row per configured gallery, with

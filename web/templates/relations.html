@@ -4,92 +4,92 @@
 {{template "layout_mid" .}}
 
 <div id="relations-page">
-  <h2>Relations</h2>
+  <h2>{{ T "relations_title" }}</h2>
   <div id="flash-relations"></div>
 
   <div class="relations-hub-cols">
     <section id="find" class="settings-section">
-      <h3>Find relations</h3>
-      <p class="field-hint">Walk a queue of candidate pairs surfaced by perceptual-hash similarity. Decide one pair at a time as same image, variant, newer revision, based on, or not related.</p>
+      <h3>{{ T "relations_find_title" }}</h3>
+      <p class="field-hint">{{ T "relations_find_desc" }}</p>
       {{- $emptyQueue := and (eq .Counts.QueueOpen 0) (eq .Counts.QueueSkipped 0) -}}
       <div class="relations-header-row">
         <form hx-post="/relations/find-pairs" hx-target="#flash-relations" hx-swap="innerHTML"
               hx-on::after-request="if(event.detail.successful){document.getElementById('job-status').setAttribute('hx-trigger','load');htmx.trigger('#job-status','load')}"
               style="display:inline">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-          <button type="submit" class="btn-sm{{if $emptyQueue}} btn-purple{{end}}">Find new pairs</button>
+          <button type="submit" class="btn-sm{{if $emptyQueue}} btn-purple{{end}}">{{ T "relations_find_new_pairs" }}</button>
         </form>
         {{if $emptyQueue}}
-        <button type="button" class="btn-sm" disabled title="Empty queue - find pairs first">Start a session</button>
+        <button type="button" class="btn-sm" disabled title="{{ T "relations_empty_queue_hint" }}">{{ T "relations_start_session" }}</button>
         {{else}}
-        <a class="btn-sm btn-purple" href="/relations/session">Start a session</a>
+        <a class="btn-sm btn-purple" href="/relations/session">{{ T "relations_start_session" }}</a>
         {{end}}
         <form hx-post="/relations/reset-skipped" hx-target="#flash-relations" hx-swap="innerHTML"
               hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-              hx-confirm="Move every skipped pair back to the unresolved queue?"
-              data-confirm-ok="Reset"
+              hx-confirm="{{ T "relations_reset_skipped_confirm" }}"
+              data-confirm-ok="{{ T "relations_reset" }}"
               style="display:inline">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-          <button type="submit" class="btn-sm"{{if eq .Counts.QueueSkipped 0}} disabled title="No skipped pairs to reset"{{end}}>Reset skipped{{if gt .Counts.QueueSkipped 0}} ({{.Counts.QueueSkipped}}){{end}}</button>
+          <button type="submit" class="btn-sm"{{if eq .Counts.QueueSkipped 0}} disabled title="{{ T "relations_no_skipped" }}"{{end}}>{{ T "relations_reset_skipped" }}{{if gt .Counts.QueueSkipped 0}} ({{.Counts.QueueSkipped}}){{end}}</button>
         </form>
       </div>
       <p class="field-hint">
-        Queue: <strong>{{.Counts.QueueOpen}}</strong> unresolved, <strong>{{.Counts.QueueSkipped}}</strong> skipped
-        {{if gt .Counts.PhashMissing 0}}· <a href="/?q=-phash:" title="Search images without a phash"><strong>{{.Counts.PhashMissing}}</strong></a> image(s) without a phash{{end}}
+        {{ T "relations_queue_label" }}: <strong>{{.Counts.QueueOpen}}</strong> {{ T "relations_queue_unresolved" }}, <strong>{{.Counts.QueueSkipped}}</strong> {{ T "relations_queue_skipped" }}
+        {{if gt .Counts.PhashMissing 0}}· <a href="/?q=-phash:" title="{{ T "relations_search_no_phash" }}"><strong>{{.Counts.PhashMissing}}</strong></a> {{ T "relations_without_phash" }}{{end}}
       </p>
       {{if and (eq .Counts.QueueOpen 0) (eq .Counts.QueueSkipped 0)}}
-      <p class="field-hint">The queue is empty. Click <strong>Find new pairs</strong> to surface candidates with similar perceptual hashes.</p>
+      <p class="field-hint">{{ T "relations_queue_empty_hint" }}</p>
       {{end}}
     </section>
 
     <section id="browse" class="settings-section">
-      <h3>Browse relations</h3>
-      <p class="field-hint">Review every relation already declared, grouped by kind. Dissolve groups, merge groups, unlink edges, or jump back to the images.</p>
+      <h3>{{ T "relations_browse_title" }}</h3>
+      <p class="field-hint">{{ T "relations_browse_desc" }}</p>
       <p class="field-hint">
-        <strong>{{.Counts.DupGroups}}</strong> same-image group(s) ·
-        <strong>{{.Counts.AltGroups}}</strong> variant group(s) ·
-        <strong>{{.Counts.VersionChains}}</strong> revision chain(s) ·
-        <strong>{{.Counts.DerivativeTrees}}</strong> based-on tree(s)
+        <strong>{{.Counts.DupGroups}}</strong> {{ T "relations_same_image_groups" }} ·
+        <strong>{{.Counts.AltGroups}}</strong> {{ T "relations_variant_groups" }} ·
+        <strong>{{.Counts.VersionChains}}</strong> {{ T "relations_revision_chains" }} ·
+        <strong>{{.Counts.DerivativeTrees}}</strong> {{ T "relations_based_on_trees" }}
       </p>
       <div class="relations-header-row">
-        <a class="btn-sm" href="/relations/browse">Browse relations</a>
+        <a class="btn-sm" href="/relations/browse">{{ T "relations_browse_btn" }}</a>
       </div>
     </section>
   </div>
 
   <section id="duplicates" class="settings-section">
-    <h3>Duplicates</h3>
+    <h3>{{ T "relations_duplicates_title" }}</h3>
     <div class="settings-cols">
       <div class="settings-sub">
-        <h4>Duplicate files</h4>
-        <p class="field-hint">The same file saved at more than one path on disk.</p>
+        <h4>{{ T "relations_dup_files_title" }}</h4>
+        <p class="field-hint">{{ T "relations_dup_files_desc" }}</p>
         <div class="relations-header-row">
-          <a class="btn-sm" href="/relations/duplicates/sha256">Review duplicate files</a>
+          <a class="btn-sm" href="/relations/duplicates/sha256">{{ T "relations_review_dup_files" }}</a>
           <form hx-post="/relations/file-duplicates/remove"
                 hx-target="#flash-relations" hx-swap="innerHTML"
                 hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-                hx-confirm="Remove every non-canonical duplicate file and its bytes from disk? The canonical path stays."
-                data-confirm-ok="Remove all"
+                hx-confirm="{{ T "relations_remove_dup_files_confirm" }}"
+                data-confirm-ok="{{ T "relations_remove_all" }}"
                 style="display:inline">
             <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
             <input type="hidden" name="all" value="true">
-            <button type="submit" class="btn-danger btn-sm">Delete all duplicate files</button>
+            <button type="submit" class="btn-danger btn-sm">{{ T "relations_delete_all_dup_files" }}</button>
           </form>
         </div>
       </div>
       <div class="settings-sub">
-        <h4>Duplicate images</h4>
-        <p class="field-hint">Images you marked as duplicates of each other. <strong>{{.Counts.DupGroups}}</strong> group(s) declared via the Relations session or the detail-page panel.</p>
+        <h4>{{ T "relations_dup_images_title" }}</h4>
+        <p class="field-hint">{{ T "relations_dup_images_desc" }} <strong>{{.Counts.DupGroups}}</strong> {{ T "relations_dup_images_groups" }}</p>
         <div class="relations-header-row">
-          <a class="btn-sm" href="/relations/duplicates/marked">Review duplicate images</a>
+          <a class="btn-sm" href="/relations/duplicates/marked">{{ T "relations_review_dup_images" }}</a>
           <form hx-post="/relations/duplicates/marked/delete-all"
                 hx-target="#flash-relations" hx-swap="innerHTML"
                 hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-                hx-confirm="Delete every non-original member of every duplicate-image group? Files are removed from disk."
-                data-confirm-ok="Delete all"
+                hx-confirm="{{ T "relations_delete_dup_images_confirm" }}"
+                data-confirm-ok="{{ T "relations_delete_all" }}"
                 style="display:inline">
             <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <button type="submit" class="btn-danger btn-sm">Delete all duplicate images</button>
+            <button type="submit" class="btn-danger btn-sm">{{ T "relations_delete_all_dup_images" }}</button>
           </form>
         </div>
       </div>

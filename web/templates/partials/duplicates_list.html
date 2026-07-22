@@ -1,9 +1,9 @@
 {{define "partials/duplicates_list.html"}}
 {{if not .Aliases}}
-<p class="field-hint">No SHA-256 duplicates found.</p>
+<p class="field-hint">{{ T "duplicates_no_dup" }}</p>
 {{else}}
 <table class="help-table">
-  <thead><tr><th>Image</th><th>Canonical</th><th>Duplicate path</th><th>Action</th></tr></thead>
+  <thead><tr><th>{{ T "duplicates_col_image" }}</th><th>{{ T "duplicates_col_canonical" }}</th><th>{{ T "duplicates_col_path" }}</th><th>{{ T "duplicates_col_action" }}</th></tr></thead>
   <tbody>
     {{range .Aliases}}
     <tr>
@@ -14,12 +14,12 @@
         <form hx-post="/relations/file-duplicates/promote"
               hx-target="#flash-relations" hx-swap="innerHTML"
               hx-on::after-request="if(event.detail.successful){htmx.trigger('#duplicates-list','load')}"
-              hx-confirm="Promote this path to canonical? The previous canonical becomes the duplicate."
-              data-confirm-ok="Promote"
+              hx-confirm="{{ T "duplicates_promote_confirm" }}"
+              data-confirm-ok="{{ T "duplicates_promote" }}"
               style="display:inline">
           <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
           <input type="hidden" name="path_id" value="{{.PathID}}">
-          <button type="submit" class="btn-sm">[promote]</button>
+          <button type="submit" class="btn-sm">[{{ T "duplicates_promote" }}]</button>
         </form>
       </td>
     </tr>

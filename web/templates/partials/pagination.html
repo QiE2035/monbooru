@@ -2,17 +2,17 @@
 {{if gt .Total 1}}
 <div class="pagination">
   {{if and (gt .Page 2) (gt .Total 2)}}
-  <a href="{{.Base}}1">« First</a>
+  <a href="{{.Base}}1">« {{ T "pagination_first" }}</a>
   {{end}}
   {{if gt .Page 1}}
-  <a href="{{.Base}}{{sub .Page 1}}">← Prev</a>
+  <a href="{{.Base}}{{sub .Page 1}}">← {{ T "pagination_prev" }}</a>
   {{end}}
-  <button type="button" class="page-jump current" data-current="{{.Page}}" data-total="{{.Total}}" title="Go to page…">Page {{.Page}} / {{.Total}}</button>
+  <button type="button" class="page-jump current" data-current="{{.Page}}" data-total="{{.Total}}" title="{{ T "pagination_go_to_page" }}">{{ T "pagination_page" }} {{.Page}} / {{.Total}}</button>
   {{if lt .Page .Total}}
-  <a href="{{.Base}}{{add .Page 1}}">Next →</a>
+  <a href="{{.Base}}{{add .Page 1}}">{{ T "pagination_next" }} →</a>
   {{end}}
   {{if and (lt .Page .Total) (gt .Total 2)}}
-  <a href="{{.Base}}{{.Total}}">Last »</a>
+  <a href="{{.Base}}{{.Total}}">{{ T "pagination_last" }} »</a>
   {{end}}
 </div>
 {{end}}
