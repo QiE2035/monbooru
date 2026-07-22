@@ -620,7 +620,7 @@ func (s *Server) addRelationPost(w http.ResponseWriter, r *http.Request) {
 		err = cx.RelationsSvc.AddNotRelated(a, b)
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Unknown relation type.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_unknown_relation_type"))
 		return
 	}
 	if err != nil {
@@ -766,7 +766,7 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 		return
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Unknown relation type.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_unknown_relation_type"))
 		return
 	}
 	setFlashHeader(w, msg, "ok", nil)
@@ -798,7 +798,7 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) {
 		}
 		if ar == 0 || br == 0 || ar == br {
 			w.WriteHeader(http.StatusBadRequest)
-			writeInlineFlash(w, "err", "Group must have exactly two members.")
+			writeInlineFlash(w, "err", localize("handler_flash.err_group_must_have_two_members"))
 			return
 		}
 		a, b = ar, br
@@ -845,7 +845,7 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) {
 		a, b = ar, br
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Unknown review-again kind.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_unknown_review_again_kind"))
 		return
 	}
 	// not_related_pairs is keyed (a,b) without canonical ordering;
@@ -1017,10 +1017,10 @@ func (s *Server) reverseRelationPost(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Unknown relation type.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_unknown_relation_type"))
 		return
 	}
-	writeInlineFlash(w, "ok", "Edge reversed.")
+	writeInlineFlash(w, "ok", localize("handler_flash.ok_edge_reversed"))
 }
 
 // mergeGroupsPost merges N alt or dup groups into one. Form fields:

@@ -527,7 +527,7 @@ func (s *Server) systemSuggestLevel1(prefix string) []suggestItem {
 		}
 		rows = append(rows, suggestItem{
 			Name:        kw + ":",
-			Description: searchkw.Descriptions[kw],
+			Description: localize("search_suggest." + kw),
 		})
 	}
 	for _, cat := range s.systemCategoryRows() {
@@ -540,10 +540,95 @@ func (s *Server) systemSuggestLevel1(prefix string) []suggestItem {
 		rows = append(rows, suggestItem{
 			Name:        cat.Name + ":",
 			Color:       cat.Color,
-			Description: "tag category",
+			Description: localize("search_suggest.tag_category"),
 		})
 	}
 	return rows
+}
+
+// opToKeyNameSuffix maps search operators to translation key suffixes.
+// Different keywords use different suffixes for the same operator.
+var opToKeyNameSuffix = map[string]map[string]string{
+	"date": {
+		">":  "after",
+		"<":  "before",
+		">=": "on_or_after",
+		"<=": "on_or_before",
+		"=":  "exactly",
+		"..": "range",
+	},
+	"width": {
+		">=": "at_least",
+		"<=": "at_most",
+		">":  "more_than",
+		"<":  "less_than",
+		"=":  "exactly",
+		"..": "range",
+	},
+	"height": {
+		">=": "at_least",
+		"<=": "at_most",
+		">":  "more_than",
+		"<":  "less_than",
+		"=":  "exactly",
+		"..": "range",
+	},
+	"ai": {
+		"a1111":   "a1111",
+		"comfyui": "comfyui",
+		"none":    "none",
+		"any":     "any",
+		"sd":      "sd",
+	},
+	"pages": {
+		">=": "at_least",
+		"<=": "at_most",
+		">":  "more_than",
+		"<":  "less_than",
+		"=":  "exactly",
+		"..": "range",
+	},
+	"type": {
+		"image":    "image",
+		"archive":  "archive",
+		"animated": "animated",
+	},
+	"size": {
+		">=": "at_least",
+		"<=": "at_most",
+		">":  "more_than",
+		"<":  "less_than",
+		"=":  "exactly",
+		"..": "range",
+	},
+	"ratio": {
+		">=": "at_least",
+		"<=": "at_most",
+		">":  "more_than",
+		"<":  "less_than",
+		"=":  "exactly",
+		"..": "range",
+	},
+	"tagcount": {
+		">=": "at_least",
+		"<=": "at_most",
+		">":  "more_than",
+		"<":  "less_than",
+		"=":  "exactly",
+		"..": "range",
+	},
+	"duration": {
+		">=": "at_least",
+		"<=": "at_most",
+		">":  "more_than",
+		"<":  "less_than",
+		"=":  "exactly",
+		"..": "range",
+	},
+	"via": {
+		"ingest": "ingest",
+		"upload": "upload",
+	},
 }
 
 // quotedSDLabelRows wraps each label as `<key>:"<label>"` so multi-
@@ -622,15 +707,25 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []suggestItem {
 		return quotedSDLabelRows("prompt", s.querySDStringField("prompt", "prompt", valPrefix, 10, true))
 	}
 	if expansions, ok := searchkw.Expansions[key]; ok {
-		descs := searchkw.ExpansionDescriptions[key]
 		var rows []suggestItem
 		for _, exp := range expansions {
 			if !strings.HasPrefix(exp, valPrefix) {
 				continue
 			}
+			// Translate expansion description
+			var desc string
+			if keyMap, ok := opToKeyNameSuffix[key]; ok {
+				if suffix, ok := keyMap[exp]; ok {
+					desc = localize("search_suggest." + key + "_" + suffix)
+				}
+			}
+			if desc == "" {
+				// Fallback to original description if no translation found
+				desc = searchkw.ExpansionDescriptions[key][exp]
+			}
 			rows = append(rows, suggestItem{
 				Name:        key + ":" + exp,
-				Description: descs[exp],
+				Description: desc,
 			})
 		}
 		return rows

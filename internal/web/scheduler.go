@@ -204,14 +204,14 @@ func (s *Server) scheduledFindRelationPairs(cx *galleryCtx) error {
 	}
 	added, err := relations.FindPairs(ctx, cx.DB, cx.bkTree, opts, s.jobs.Update)
 	if err == context.Canceled || ctx.Err() != nil {
-		s.jobs.Complete(fmt.Sprintf("[%s] find-pairs cancelled (%d added)", cx.Name, added))
+		s.jobs.Complete(localize("handler_flash.scheduler_find_pairs_cancelled", map[string]any{"gallery": cx.Name, "added": added}))
 		return nil
 	}
 	if err != nil {
 		s.jobs.Fail(err.Error())
 		return err
 	}
-	s.jobs.Complete(fmt.Sprintf("[%s] find-pairs added %d candidate(s).", cx.Name, added))
+	s.jobs.Complete(localize("handler_flash.scheduler_find_pairs_completed", map[string]any{"gallery": cx.Name, "added": added}))
 	return nil
 }
 
@@ -225,8 +225,12 @@ func (s *Server) scheduledSync(cx *galleryCtx) error {
 	// Match the user-trigger handlers' shape: ctx cancellation produces
 	// a clean Complete summary, only real failures fall to Fail().
 	if ctx.Err() != nil {
-		s.jobs.Complete(fmt.Sprintf("[%s] sync cancelled (%d added, %d missing, %d moved)",
-			cx.Name, result.Added, result.Removed, result.Moved))
+		s.jobs.Complete(localize("handler_flash.scheduler_sync_cancelled", map[string]any{
+			"gallery": cx.Name,
+			"added":   result.Added,
+			"missing": result.Removed,
+			"moved":   result.Moved,
+		}))
 		return nil
 	}
 	if err != nil {
@@ -234,8 +238,12 @@ func (s *Server) scheduledSync(cx *galleryCtx) error {
 		logx.Warnf("scheduler sync %q: %v", cx.Name, err)
 		return err
 	}
-	s.jobs.Complete(fmt.Sprintf("[%s] %d added, %d missing, %d moved",
-		cx.Name, result.Added, result.Removed, result.Moved))
+	s.jobs.Complete(localize("handler_flash.scheduler_sync_completed", map[string]any{
+		"gallery": cx.Name,
+		"added":   result.Added,
+		"missing": result.Removed,
+		"moved":   result.Moved,
+	}))
 	return nil
 }
 
@@ -252,10 +260,15 @@ func (s *Server) scheduledRemoveOrphans(cx *galleryCtx) error {
 		return err
 	}
 	if ctx.Err() != nil {
-		s.jobs.Complete(fmt.Sprintf("[%s] orphan sweep cancelled (%d/%d scanned, %d removed)", cx.Name, processed, total, removed))
+		s.jobs.Complete(localize("handler_flash.scheduler_orphan_sweep_cancelled", map[string]any{
+			"gallery":   cx.Name,
+			"processed": processed,
+			"total":     total,
+			"removed":   removed,
+		}))
 		return nil
 	}
-	s.jobs.Complete(fmt.Sprintf("[%s] removed %d orphaned thumbnail(s)", cx.Name, removed))
+	s.jobs.Complete(localize("handler_flash.scheduler_orphan_sweep_completed", map[string]any{"gallery": cx.Name, "removed": removed}))
 	logx.Infof("scheduler: [%s] removed %d orphaned thumbnail(s)", cx.Name, removed)
 	return nil
 }
@@ -361,7 +374,7 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) error {
 	skipped, err := tagger.RunWithTaggers(ctx, cx.DB, s.cfg, ids, enabled, s.jobs, s.cfg.Tagger.UseCUDA, cx.MangaCacheDir())
 	cx.InvalidateCaches()
 	if ctx.Err() != nil {
-		s.jobs.Complete(fmt.Sprintf("[%s] auto-tagging cancelled (%d image(s) queued)", cx.Name, len(ids)))
+		s.jobs.Complete(localize("handler_flash.scheduler_auto_tagging_cancelled", map[string]any{"gallery": cx.Name, "count": len(ids)}))
 		return nil
 	}
 	if err != nil {
@@ -371,10 +384,15 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) error {
 	}
 	logAutotagPeak(fmt.Sprintf("scheduled %s %d image(s)", cx.Name, len(ids)), baseline)
 	if skipped > 0 {
-		s.jobs.Complete(fmt.Sprintf("[%s] auto-tagged %d of %d image(s), %d skipped", cx.Name, len(ids)-skipped, len(ids), skipped))
+		s.jobs.Complete(localize("handler_flash.scheduler_auto_tagged_partial", map[string]any{
+			"gallery": cx.Name,
+			"count":   len(ids) - skipped,
+			"total":   len(ids),
+			"skipped": skipped,
+		}))
 		return nil
 	}
-	s.jobs.Complete(fmt.Sprintf("[%s] auto-tagged %d image(s)", cx.Name, len(ids)))
+	s.jobs.Complete(localize("handler_flash.scheduler_auto_tagged_completed", map[string]any{"gallery": cx.Name, "count": len(ids)}))
 	return nil
 }
 

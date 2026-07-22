@@ -10,8 +10,8 @@
   </ul>
   <div id="flash-token-cfg-{{.ID}}"></div>
   <div class="dialog-actions">
-    {{if .Paired}}<span class="field-hint">Managed by a pairing.</span>{{else}}<button type="submit">Save</button>{{end}}
-    <button type="button" onclick="this.closest('dialog').close()">Close</button>
+    {{if .Paired}}<span class="field-hint">{{ T "token_privileges.managed_by_pairing" }}</span>{{else}}<button type="submit">{{ T "common.save" }}</button>{{end}}
+    <button type="button" onclick="this.closest('dialog').close()">{{ T "common.close" }}</button>
   </div>
 </form>
 {{end}}

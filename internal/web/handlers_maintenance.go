@@ -84,7 +84,9 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 				active.InvalidateCaches()
 			}
 		}
-		s.finishJob(err, cancelled, fmt.Sprintf("prune cancelled (%d/%d removed)", removed, total), fmt.Sprintf("Removed %d missing image(s).", removed))
+		s.finishJob(err, cancelled,
+			localize("handler_flash.prune_cancelled", map[string]any{"removed": removed, "total": total}),
+			localize("handler_flash.prune_completed", map[string]any{"count": removed}))
 	}()
 	writeInlineFlash(w, "ok", localize("handler_flash.prune_started"))
 }
@@ -111,10 +113,10 @@ func (s *Server) pruneOrphanedThumbnailsPost(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		if ctx.Err() != nil {
-			s.jobs.Complete(fmt.Sprintf("orphan sweep cancelled (%d/%d scanned, %d removed)", processed, total, removed))
+			s.jobs.Complete(localize("handler_flash.orphan_sweep_cancelled", map[string]any{"processed": processed, "total": total, "removed": removed}))
 			return
 		}
-		s.jobs.Complete(fmt.Sprintf("Removed %d orphaned thumbnail(s).", removed))
+		s.jobs.Complete(localize("handler_flash.orphan_sweep_completed", map[string]any{"count": removed}))
 	}()
 	writeInlineFlash(w, "ok", localize("handler_flash.thumbnail_prune_started"))
 }
@@ -328,7 +330,9 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		})
-		s.finishJob(err, cancelled, fmt.Sprintf("remove duplicates cancelled (%d/%d)", removed, total), fmt.Sprintf("Removed %d duplicate path(s).", removed))
+		s.finishJob(err, cancelled,
+			localize("handler_flash.remove_duplicates_cancelled", map[string]any{"removed": removed, "total": total}),
+			localize("handler_flash.remove_duplicates_completed", map[string]any{"count": removed}))
 	}()
 	writeInlineFlash(w, "ok", localize("handler_flash.duplicate_removal_started"))
 }
@@ -448,7 +452,7 @@ func (s *Server) startRebuildThumbsJob(cx *galleryCtx) error {
 		total := len(imgs)
 		for _, img := range imgs {
 			if ctx.Err() != nil {
-				s.jobs.Complete(fmt.Sprintf("[%s] rebuild cancelled (%d/%d rebuilt)", galleryName, processed, total))
+				s.jobs.Complete(localize("handler_flash.rebuild_cancelled", map[string]any{"gallery": galleryName, "processed": processed, "total": total}))
 				return
 			}
 			s.jobs.Update(processed, total, fmt.Sprintf("[%s] rebuilding…", galleryName))
@@ -471,7 +475,7 @@ func (s *Server) startRebuildThumbsJob(cx *galleryCtx) error {
 			}
 			processed++
 		}
-		s.jobs.Complete(fmt.Sprintf("[%s] rebuilt %d thumbnail(s).", galleryName, processed))
+		s.jobs.Complete(localize("handler_flash.rebuild_completed", map[string]any{"gallery": galleryName, "count": processed}))
 	}()
 	return nil
 }
@@ -502,14 +506,14 @@ func (s *Server) computePhashesPost(w http.ResponseWriter, r *http.Request) {
 		}
 		active.InvalidatePhashMissing()
 		if err == context.Canceled || ctx.Err() != nil {
-			s.jobs.Complete(fmt.Sprintf("phash cancelled (%d processed, %d computed)", processed, updated))
+			s.jobs.Complete(localize("handler_flash.phash_cancelled", map[string]any{"processed": processed, "updated": updated}))
 			return
 		}
 		if err != nil {
 			s.jobs.Fail(err.Error())
 			return
 		}
-		s.jobs.Complete(fmt.Sprintf("Computed perceptual hashes for %d image(s) (%d updated).", processed, updated))
+		s.jobs.Complete(localize("handler_flash.phash_completed", map[string]any{"processed": processed, "updated": updated}))
 	}()
 	writeInlineFlash(w, "ok", localize("handler_flash.phash_backfill_started"))
 }
@@ -542,7 +546,7 @@ func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
 		}
 		afterSize := dbFileSize(s.dbPath())
 		freed := max(beforeSize-afterSize, 0)
-		s.jobs.Complete(fmt.Sprintf("Vacuumed (reclaimed %s).", humanBytesFmt(freed)))
+		s.jobs.Complete(localize("handler_flash.vacuum_completed", map[string]any{"bytes": humanBytesFmt(freed)}))
 	}()
 	writeInlineFlash(w, "ok", localize("handler_flash.vacuum_started"))
 }
@@ -671,7 +675,7 @@ func (s *Server) reExtractMetadataPost(w http.ResponseWriter, r *http.Request) {
 		total := len(imgs)
 		for _, img := range imgs {
 			if ctx.Err() != nil {
-				s.jobs.Complete(fmt.Sprintf("re-extraction cancelled (%d/%d processed, %d updated)", processed, total, updated))
+				s.jobs.Complete(localize("handler_flash.re_extract_cancelled", map[string]any{"processed": processed, "total": total, "updated": updated}))
 				return
 			}
 			s.jobs.Update(processed, total, "Processing…")
@@ -736,7 +740,7 @@ func (s *Server) reExtractMetadataPost(w http.ResponseWriter, r *http.Request) {
 			updated++
 		}
 		active.InvalidatePhashMissing()
-		s.jobs.Complete(fmt.Sprintf("Re-extracted metadata for %d image(s) (%d updated).", processed, updated))
+		s.jobs.Complete(localize("handler_flash.re_extract_completed", map[string]any{"processed": processed, "updated": updated}))
 	}()
 
 	writeInlineFlash(w, "ok", localize("handler_flash.re_extraction_started"))

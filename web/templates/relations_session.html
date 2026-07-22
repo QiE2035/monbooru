@@ -6,7 +6,7 @@
 <div id="relations-session-page" class="relations-session" data-esc-back="/relations">
   <div class="detail-topbar">
     <div class="detail-nav-group">
-      <a class="back-link" href="/relations">‹ Relations</a>
+      <a class="back-link" href="/relations">‹ {{ T "relations.back_link" }}</a>
       <span class="detail-nav-sep">/</span>
       <strong class="walker-page-title">{{ T "relations_session.title" }}</strong>
       {{if .Pair}}
@@ -95,28 +95,28 @@
       <input type="hidden" name="left" id="session-left" value="{{.Pair.LeftID}}">
       <input type="hidden" name="order" value="{{.Order}}">
 
-      <p class="session-hint">Use the buttons below to commit the decision, or swap sides first.</p>
+      <p class="session-hint">{{ T "relations_session.hint_text" }}</p>
       <div class="session-buttons">
         <button type="submit" name="type" value="duplicate"
-                data-prompt-sentence="{right} is the same image as {left} ({left} is the original)."
-                title="Right is the same image as left (1)">1 Same image (Duplicate)</button>
+                data-prompt-sentence="{{ T "relations_session.prompt_duplicate" }}"
+                title="{{ T "relations_session.btn_duplicate_title" }}">{{ T "relations_session.btn_duplicate" }}</button>
         <button type="submit" name="type" value="alternate"
-                data-prompt-sentence="{left} and {right} are variants."
-                title="Right is a variant of left (2)">2 Variant (Alternate)</button>
+                data-prompt-sentence="{{ T "relations_session.prompt_alternate" }}"
+                title="{{ T "relations_session.btn_alternate_title" }}">{{ T "relations_session.btn_alternate" }}</button>
         <button type="submit" name="type" value="version"
-                data-prompt-sentence="{right} is a newer revision of {left}."
-                title="Right is a newer revision of left (3)">3 Newer revision (Version)</button>
+                data-prompt-sentence="{{ T "relations_session.prompt_version" }}"
+                title="{{ T "relations_session.btn_version_title" }}">{{ T "relations_session.btn_version" }}</button>
         <button type="submit" name="type" value="derivative"
-                data-prompt-sentence="{right} is based on {left}."
-                title="Right is based on left (4)">4 Based on (Derivative)</button>
+                data-prompt-sentence="{{ T "relations_session.prompt_derivative" }}"
+                title="{{ T "relations_session.btn_derivative_title" }}">{{ T "relations_session.btn_derivative" }}</button>
       </div>
       <div class="session-buttons session-buttons-secondary">
         <button type="submit" name="type" value="not_related"
-                data-prompt-sentence="{left} and {right} are not related; the pair stays out of every future session."
-                title="Not related (5)">5 Not related</button>
+                data-prompt-sentence="{{ T "relations_session.prompt_not_related" }}"
+                title="{{ T "relations_session.btn_not_related_title" }}">{{ T "relations_session.btn_not_related" }}</button>
         <button type="submit" name="type" value="skip"
-                data-prompt-sentence="Skip this pair - it returns at the back of the queue."
-                title="Skip (6 / Space)">6 Skip</button>
+                data-prompt-sentence="{{ T "relations_session.prompt_skip" }}"
+                title="{{ T "relations_session.btn_skip_title" }}">{{ T "relations_session.btn_skip" }}</button>
       </div>
     </form>
 

@@ -36,7 +36,7 @@ func (s *Server) resolveBatchScope(w http.ResponseWriter, r *http.Request, errLa
 		expr, parseErr := search.Parse(r.FormValue("q"))
 		if parseErr != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			writeInlineFlash(w, "err", "Could not parse search: "+parseErr.Error())
+			writeInlineFlash(w, "err", localize("handler_flash.err_parse_search", map[string]any{"error": parseErr.Error()}))
 			return nil, false
 		}
 		// "act on current search" must mirror what the operator sees in
@@ -52,13 +52,13 @@ func (s *Server) resolveBatchScope(w http.ResponseWriter, r *http.Request, errLa
 		if err != nil {
 			logx.Errorf("%s search: %v", errLabel, err)
 			w.WriteHeader(http.StatusInternalServerError)
-			writeInlineFlash(w, "err", "Search error.")
+			writeInlineFlash(w, "err", localize("handler_flash.err_search_error"))
 			return nil, false
 		}
 		return ids, true
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "scope must be search or selection")
+		writeInlineFlash(w, "err", localize("handler_flash.err_scope_must_be_search_or_selection"))
 		return nil, false
 	}
 }
@@ -95,7 +95,7 @@ func (s *Server) batchDelete(w http.ResponseWriter, r *http.Request) {
 		// client reads as success - so surface the failure instead.
 		logx.Warnf("batch delete: load targets: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Could not load the selected images.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_could_not_load_selected_images"))
 		return
 	}
 	defer func() { _ = rows.Close() }()
@@ -112,7 +112,7 @@ func (s *Server) batchDelete(w http.ResponseWriter, r *http.Request) {
 	if err := rows.Err(); err != nil {
 		logx.Warnf("batch delete: scan targets: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Could not load the selected images.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_could_not_load_selected_images"))
 		return
 	}
 	targets := make([]search.DeleteTarget, 0, len(ids))
@@ -134,7 +134,7 @@ func (s *Server) deleteSearchPost(w http.ResponseWriter, r *http.Request) {
 	if parseErr != nil {
 		logx.Warnf("delete-search parse: %v", parseErr)
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Could not parse search: "+parseErr.Error())
+		writeInlineFlash(w, "err", localize("handler_flash.err_parse_search", map[string]any{"error": parseErr.Error()}))
 		return
 	}
 	expr = resolveCeiling(r, s.Active()).Apply(expr)
@@ -150,7 +150,7 @@ func (s *Server) deleteSearchPost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logx.Errorf("delete-search: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Search error.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_search_error"))
 		return
 	}
 
@@ -228,7 +228,9 @@ func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 	if processed > 0 {
 		s.Active().InvalidateCaches()
 	}
-	s.finishJob(nil, cancelled, fmt.Sprintf("delete cancelled (%d/%d deleted)", processed, total), fmt.Sprintf("Deleted %d image(s).", processed))
+	s.finishJob(nil, cancelled,
+		localize("handler_flash.batch_delete_cancelled", map[string]any{"processed": processed, "total": total}),
+		localize("handler_flash.batch_deleted", map[string]any{"count": processed}))
 }
 
 // batchMove kicks off a background `move` job that relocates the selected
@@ -289,12 +291,12 @@ func (s *Server) runBatchMove(ids []int64, targetFolder string) {
 		s.Active().InvalidateCaches()
 	}
 	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("move cancelled (%d/%d moved)", moved, total))
+		s.jobs.Complete(localize("handler_flash.batch_move_cancelled", map[string]any{"moved": moved, "total": total}))
 		return
 	}
-	summary := fmt.Sprintf("Moved %d image(s).", moved)
+	summary := fmt.Sprintf(localize("handler_flash.batch_moved"), moved)
 	if failed > 0 {
-		summary = fmt.Sprintf("Moved %d image(s), %d failed.", moved, failed)
+		summary = fmt.Sprintf(localize("handler_flash.batch_moved_failed"), moved, failed)
 	}
 	s.jobs.Complete(summary)
 }
@@ -313,13 +315,13 @@ func (s *Server) batchTag(w http.ResponseWriter, r *http.Request) {
 	op := strings.TrimSpace(r.FormValue("op"))
 	if op != "add" && op != "remove" {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "op must be add or remove")
+		writeInlineFlash(w, "err", localize("handler_flash.err_op_must_be_add_or_remove"))
 		return
 	}
 	tagInput := strings.TrimSpace(r.FormValue("tags"))
 	if tagInput == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "No tags provided.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_no_tags_provided"))
 		return
 	}
 	catTags, parseErrMsg := s.parseTagInput(tagInput)
@@ -330,7 +332,7 @@ func (s *Server) batchTag(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(catTags) == 0 {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "No tags to apply.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_no_tags_to_apply"))
 		return
 	}
 
@@ -390,7 +392,7 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 		}
 	}
 	if len(resolved) == 0 {
-		s.jobs.Complete(fmt.Sprintf("nothing to %s (no matching tags)", op))
+		s.jobs.Complete(localize("handler_flash.batch_nothing_to_apply", map[string]any{"op": op}))
 		return
 	}
 
@@ -448,7 +450,9 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 	}
 	s.Active().InvalidateCaches()
 
-	s.finishJob(nil, cancelled, fmt.Sprintf("%s cancelled (%d/%d processed)", label, processed, total), fmt.Sprintf("%s %d image(s) (%d row change(s)).", summary, processed, applied))
+	s.finishJob(nil, cancelled,
+		localize("handler_flash.batch_tag_cancelled", map[string]any{"op": label, "processed": processed, "total": total}),
+		localize("handler_flash.batch_tag_completed", map[string]any{"op": summary, "count": processed, "applied": applied}))
 }
 
 // batchStrip kicks off a background `tag` job that strips tags by category
@@ -466,7 +470,7 @@ func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
 	case "user", "auto", "all", "source", "source-all":
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "mode must be user, auto, all, source, or source-all")
+		writeInlineFlash(w, "err", localize("handler_flash.err_invalid_tagging_mode"))
 		return
 	}
 	// filterName narrows mode=auto to one tagger's output and mode=source to
@@ -479,7 +483,7 @@ func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
 		filterName = strings.TrimSpace(r.FormValue("source"))
 		if filterName == "" {
 			w.WriteHeader(http.StatusBadRequest)
-			writeInlineFlash(w, "err", "pick a source")
+			writeInlineFlash(w, "err", localize("handler_flash.err_pick_a_source"))
 			return
 		}
 	}
@@ -558,7 +562,9 @@ func (s *Server) runBatchStrip(ids []int64, mode, filterName string) {
 	}
 	s.Active().InvalidateCaches()
 
-	s.finishJob(nil, cancelled, fmt.Sprintf("%s cancelled (%d/%d processed)", label, processed, total), fmt.Sprintf("%s %d image(s).", summary, processed))
+	s.finishJob(nil, cancelled,
+		localize("handler_flash.batch_strip_cancelled", map[string]any{"op": label, "processed": processed, "total": total}),
+		localize("handler_flash.batch_strip_completed", map[string]any{"op": summary, "count": processed}))
 }
 
 // batchInbox kicks off a background `tag` job that flips is_inbox across
@@ -656,12 +662,12 @@ func (s *Server) batchCollection(w http.ResponseWriter, r *http.Request) {
 	collectionVal := strings.TrimSpace(r.FormValue("collection"))
 	if collectionVal == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Collection label required.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_collection_label_required"))
 		return
 	}
 	if len(collectionVal) > maxExternalSourceLen {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Collection label too long.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_collection_label_too_long"))
 		return
 	}
 	mode := r.FormValue("mode")
@@ -742,14 +748,14 @@ func (s *Server) runBatchCollection(ids []int64, label, mode string) {
 	s.Active().InvalidateCaches()
 
 	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("collection cancelled (%d/%d processed)", processed, total))
+		s.jobs.Complete(localize("handler_flash.batch_collection_cancelled", map[string]any{"processed": processed, "total": total}))
 		return
 	}
 	if remove {
-		s.jobs.Complete(fmt.Sprintf("Removed %d image(s) from collection.", processed))
+		s.jobs.Complete(localize("handler_flash.batch_collection_removed", map[string]any{"count": processed}))
 		return
 	}
-	s.jobs.Complete(fmt.Sprintf("Added %d image(s) to collection.", processed))
+	s.jobs.Complete(localize("handler_flash.batch_collection_added", map[string]any{"count": processed}))
 }
 
 // batchSource adds or removes a source label across every image in
@@ -764,12 +770,12 @@ func (s *Server) batchSource(w http.ResponseWriter, r *http.Request) {
 	siteVal := strings.TrimSpace(r.FormValue("site"))
 	if siteVal == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Source label required.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_source_label_required"))
 		return
 	}
 	if len(siteVal) > maxExternalSourceLen {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Source label too long.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_source_label_too_long"))
 		return
 	}
 	mode := r.FormValue("mode")
@@ -857,14 +863,14 @@ func (s *Server) runBatchSource(ids []int64, label, mode string) {
 	s.Active().InvalidateCaches()
 
 	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("source cancelled (%d/%d processed)", processed, total))
+		s.jobs.Complete(localize("handler_flash.batch_source_cancelled", map[string]any{"processed": processed, "total": total}))
 		return
 	}
 	if remove {
-		s.jobs.Complete(fmt.Sprintf("Removed source from %d image(s).", processed))
+		s.jobs.Complete(localize("handler_flash.batch_source_removed", map[string]any{"count": processed}))
 		return
 	}
-	s.jobs.Complete(fmt.Sprintf("Added source to %d image(s).", processed))
+	s.jobs.Complete(localize("handler_flash.batch_source_added", map[string]any{"count": processed}))
 }
 
 // batchLookup fans a monloader tag lookup across `scope=search` or
@@ -897,7 +903,7 @@ func (s *Server) runBatchLookup(mode string, ids []int64) {
 	enqueued, skipped := 0, 0
 	for _, id := range ids {
 		if ctx.Err() != nil {
-			s.jobs.Complete(fmt.Sprintf("Lookup cancelled after queueing %d.", enqueued))
+			s.jobs.Complete(localize("handler_flash.batch_lookup_cancelled", map[string]any{"count": enqueued}))
 			return
 		}
 		var url, source, canonPath, sha string
@@ -949,11 +955,11 @@ func (s *Server) runBatchLookup(mode string, ids []int64) {
 	}
 	switch mode {
 	case "source":
-		s.jobs.Complete(fmt.Sprintf("Queued %d source fetch(es) on monloader; skipped %d without a fetchable source.", enqueued, skipped))
+		s.jobs.Complete(localize("handler_flash.batch_lookup_queued_source", map[string]any{"count": enqueued, "skipped": skipped}))
 	case "ptr":
-		s.jobs.Complete(fmt.Sprintf("Queued %d PTR lookup(s) on monloader; skipped %d (PTR unavailable).", enqueued, skipped))
+		s.jobs.Complete(localize("handler_flash.batch_lookup_queued_ptr", map[string]any{"count": enqueued, "skipped": skipped}))
 	default:
-		s.jobs.Complete(fmt.Sprintf("Queued %d hash lookup(s) on monloader; skipped %d unreadable file(s).", enqueued, skipped))
+		s.jobs.Complete(localize("handler_flash.batch_lookup_queued_hash", map[string]any{"count": enqueued, "skipped": skipped}))
 	}
 }
 

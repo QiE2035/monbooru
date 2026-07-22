@@ -1,7 +1,6 @@
 package web
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -202,7 +201,7 @@ func (s *Server) sha256WalkerRemoveOnePost(w http.ResponseWriter, r *http.Reques
 	pathID, err := strconv.ParseInt(r.FormValue("path_id"), 10, 64)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Invalid path id.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_invalid_path_id"))
 		return
 	}
 	var aliasPath string
@@ -211,7 +210,7 @@ func (s *Server) sha256WalkerRemoveOnePost(w http.ResponseWriter, r *http.Reques
 		pathID,
 	).Scan(&aliasPath); err != nil {
 		w.WriteHeader(http.StatusNotFound)
-		writeInlineFlash(w, "err", "Not a non-canonical path.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_not_non_canonical_path"))
 		return
 	}
 	if _, err := s.db().Write.Exec(`DELETE FROM image_paths WHERE id = ?`, pathID); err != nil {
@@ -237,7 +236,7 @@ func (s *Server) markedWalkerDeleteOnePost(w http.ResponseWriter, r *http.Reques
 	imageID, err := strconv.ParseInt(r.FormValue("image_id"), 10, 64)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Invalid image id.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_invalid_image_id"))
 		return
 	}
 	if _, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), imageID, s.tagSvc().RemoveAllTagsFromImage, s.onImageDeleteCallback()); err != nil {
@@ -287,7 +286,7 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if len(victims) == 0 {
-		writeInlineFlash(w, "ok", "Removed 0 marked duplicate(s).")
+		writeInlineFlash(w, "ok", localize("handler_flash.ok_removed_zero_duplicates"))
 		return
 	}
 	// Reserve a job slot so the per-image unlinks don't race a concurrent
@@ -307,7 +306,7 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 		removed := 0
 		for i, id := range victims {
 			if ctx.Err() != nil {
-				s.jobs.Complete(fmt.Sprintf("marked delete-all cancelled (%d/%d)", removed, total))
+				s.jobs.Complete(localize("handler_flash.duplicates_cancelled", map[string]any{"removed": removed, "total": total}))
 				s.Active().InvalidateCaches()
 				return
 			}
@@ -321,9 +320,9 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		s.Active().InvalidateCaches()
-		s.jobs.Complete(fmt.Sprintf("Removed %d marked duplicate(s).", removed))
+		s.jobs.Complete(localize("handler_flash.duplicates_completed", map[string]any{"count": removed}))
 	}()
-	writeInlineFlash(w, "ok", "Marked duplicate removal started.")
+	writeInlineFlash(w, "ok", localize("handler_flash.ok_marked_duplicate_removal_started"))
 }
 
 // redirectWalker writes an HX-Redirect (or 303) back to the walker

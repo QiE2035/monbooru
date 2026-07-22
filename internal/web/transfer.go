@@ -64,7 +64,7 @@ func (s *Server) transferImage(w http.ResponseWriter, r *http.Request) {
 	if removeAfter {
 		srcCx.InvalidateCaches()
 	}
-	msg := fmt.Sprintf("Transferred image to %s.", dstCx.Name)
+	msg := localize("handler_flash.transferred_image", map[string]any{"gallery": dstCx.Name})
 	s.jobs.Complete(msg)
 
 	dest := fmt.Sprintf("/images/%d", id)
@@ -88,15 +88,15 @@ func (s *Server) transferTarget(w http.ResponseWriter, r *http.Request) (*galler
 	msg := ""
 	switch target {
 	case "":
-		msg = "Pick a target gallery."
+		msg = localize("handler_flash.err_pick_target_gallery")
 	case s.activeName:
-		msg = "The target must be a different gallery."
+		msg = localize("handler_flash.err_target_different_gallery")
 	}
 	if msg == "" {
 		if dst := s.Get(target); dst == nil || dst.DB == nil {
-			msg = "Unknown target gallery."
+			msg = localize("handler_flash.err_unknown_target_gallery")
 		} else if dst.Degraded {
-			msg = "The target gallery is unavailable."
+			msg = localize("handler_flash.err_target_gallery_unavailable")
 		} else {
 			return dst, r.FormValue("remove_after") != "", true
 		}
@@ -141,12 +141,21 @@ func (s *Server) runBatchTransfer(ids []int64, dstCx *galleryCtx, removeAfter bo
 		}
 	}
 	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("transfer cancelled (%d/%d done)", transferred, total))
+		s.jobs.Complete(localize("handler_flash.transfer_cancelled", map[string]any{"transferred": transferred, "total": total}))
 		return
 	}
-	summary := fmt.Sprintf("Transferred %d image(s) to %s.", transferred, dstCx.Name)
+	var summary string
 	if failed > 0 {
-		summary = fmt.Sprintf("Transferred %d image(s) to %s, %d failed.", transferred, dstCx.Name, failed)
+		summary = localize("handler_flash.transfer_completed_with_failures", map[string]any{
+			"transferred": transferred,
+			"gallery":     dstCx.Name,
+			"failed":      failed,
+		})
+	} else {
+		summary = localize("handler_flash.transfer_completed", map[string]any{
+			"transferred": transferred,
+			"gallery":     dstCx.Name,
+		})
 	}
 	s.jobs.Complete(summary)
 }

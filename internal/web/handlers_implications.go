@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/leqwin/monbooru/internal/db"
@@ -57,7 +56,7 @@ func (s *Server) addImplicationPost(w http.ResponseWriter, r *http.Request) {
 	}
 	rawInput := strings.TrimSpace(r.FormValue("implied_id"))
 	if rawInput == "" {
-		writeInlineFlash(w, "err", "Tag name is required.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_tag_name_required"))
 		return
 	}
 
@@ -107,9 +106,9 @@ func (s *Server) addImplicationPost(w http.ResponseWriter, r *http.Request) {
 	case len(failures) == 0 && added > 0:
 		w.WriteHeader(http.StatusNoContent)
 	case len(failures) == 0 && added == 0:
-		writeInlineFlash(w, "ok", "Already declared.")
+		writeInlineFlash(w, "ok", localize("handler_flash.ok_already_declared"))
 	case added > 0:
-		writeInlineFlash(w, "err", "Added "+strconv.Itoa(added)+". Failed: "+strings.Join(failures, "; "))
+		writeInlineFlash(w, "err", localize("handler_flash.ok_implications_added_partial", map[string]any{"added": added, "failed": strings.Join(failures, "; ")}))
 	default:
 		writeInlineFlash(w, "err", strings.Join(failures, "; "))
 	}
@@ -262,7 +261,7 @@ func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string)
 		return
 	}
 	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("%s cancelled (%d/%d)", verb, processed, len(ids)))
+		s.jobs.Complete(localize("handler_flash.implications_cancelled", map[string]any{"verb": verb, "processed": processed, "total": len(ids)}))
 		return
 	}
 
@@ -270,7 +269,7 @@ func (s *Server) runImplicationPropagation(parentID, impliedID int64, op string)
 		logx.Warnf("implication propagation recalc: %v", err)
 	}
 	s.Active().InvalidateCaches()
-	s.jobs.Complete(fmt.Sprintf("%s applied to %d image(s)", verb, processed))
+	s.jobs.Complete(localize("handler_flash.implications_completed", map[string]any{"verb": verb, "count": processed}))
 }
 
 // propagateAddImplication backfills implied rows for the parent on the

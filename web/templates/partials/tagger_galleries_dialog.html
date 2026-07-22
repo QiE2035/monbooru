@@ -10,8 +10,8 @@
       <span class="field-hint">(including ones added later)</span></label>
   </div>
   <div class="tagger-gal-actions">
-    <button type="button" class="btn-sm" onclick="taggerGalSelect(this, true)">Select all</button>
-    <button type="button" class="btn-sm" onclick="taggerGalSelect(this, false)">Select none</button>
+    <button type="button" class="btn-sm" onclick="taggerGalSelect(this, true)">{{ T "common.select_all" }}</button>
+    <button type="button" class="btn-sm" onclick="taggerGalSelect(this, false)">{{ T "common.select_none" }}</button>
   </div>
   <ul class="tagger-gal-list">
     {{range .Rows}}
@@ -21,8 +21,8 @@
   </ul>
   <div id="flash-tagger-gal-{{.Name}}"></div>
   <div class="dialog-actions">
-    <button type="submit">Save</button>
-    <button type="button" onclick="this.closest('dialog').close()">Close</button>
+    <button type="submit">{{ T "common.save" }}</button>
+    <button type="button" onclick="this.closest('dialog').close()">{{ T "common.close" }}</button>
   </div>
 </form>
 {{end}}

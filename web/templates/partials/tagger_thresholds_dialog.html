@@ -37,7 +37,7 @@
         </td>
         <td>
           <a href="#" class="reset-thresh"
-             onclick="resetThreshRow(this); return false;">Reset</a>
+             onclick="resetThreshRow(this); return false;">{{ T "common.reset" }}</a>
         </td>
       </tr>
       {{end}}
@@ -45,14 +45,14 @@
   </table>
   <div id="flash-tagger-thresh-{{.Name}}"></div>
   <div class="dialog-actions">
-    <button type="submit">Save</button>
+    <button type="submit">{{ T "common.save" }}</button>
     <button type="button"
             hx-post="/settings/tagger/{{.Name}}/thresholds/reset"
             hx-vals='{"_csrf":"{{.CSRFToken}}"}'
             hx-target="#tagger-thresh-{{.Name}}-body"
             hx-swap="innerHTML"
-            hx-confirm="Reset all thresholds and max-tag caps for {{.Name}} to defaults?">Reset to defaults</button>
-    <button type="button" onclick="this.closest('dialog').close()">Close</button>
+            hx-confirm="{{ T `tagger_thresholds.reset_confirm` (dict `name` .Name) }}">{{ T "tagger_thresholds.reset_to_defaults" }}</button>
+    <button type="button" onclick="this.closest('dialog').close()">{{ T "common.close" }}</button>
   </div>
 </form>
 {{end}}

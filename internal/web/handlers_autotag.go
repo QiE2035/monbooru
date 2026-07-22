@@ -46,7 +46,7 @@ func (s *Server) spawnAutoTagJob(ids []int64, selected []tagger.TaggerStatus, lo
 		// outcome (cancelled runs still wrote rows for completed images).
 		cx.InvalidateCaches()
 		if ctx.Err() != nil {
-			s.jobs.Complete(fmt.Sprintf("auto-tagging cancelled (%d image(s) queued)", len(ids)))
+			s.jobs.Complete(localize("handler_flash.autotag_cancelled_queued", map[string]any{"count": len(ids)}))
 			return
 		}
 		if err != nil {
@@ -55,10 +55,10 @@ func (s *Server) spawnAutoTagJob(ids []int64, selected []tagger.TaggerStatus, lo
 		}
 		logAutotagPeak(fmt.Sprintf("%s %d image(s)", logScope, len(ids)), baseline)
 		if skipped > 0 {
-			s.jobs.Complete(fmt.Sprintf("auto-tagged %d of %d %simage(s), %d skipped", len(ids)-skipped, len(ids), itemNoun, skipped))
+			s.jobs.Complete(localize("handler_flash.autotag_completed_with_skip", map[string]any{"tagged": len(ids) - skipped, "total": len(ids), "noun": itemNoun, "skipped": skipped}))
 			return
 		}
-		s.jobs.Complete(fmt.Sprintf("auto-tagged %d %simage(s)", len(ids), itemNoun))
+		s.jobs.Complete(localize("handler_flash.autotag_completed", map[string]any{"count": len(ids), "noun": itemNoun}))
 	}()
 }
 
@@ -85,7 +85,7 @@ func logAutotagPeak(scope string, baselineRSS uint64) {
 func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	if cx := s.Active(); cx == nil || cx.Degraded {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		writeInlineFlash(w, "err", "Upload unavailable: gallery path is unreadable.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_upload_unavailable"))
 		return
 	}
 	maxBytes := int64(s.cfg.Gallery.MaxFileSizeMB) * 1024 * 1024
@@ -96,7 +96,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBytes*10+4096) // allow multiple files
 	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeInlineFlash(w, "err", "Upload too large or invalid.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_upload_too_large"))
 		return
 	}
 
@@ -111,7 +111,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
 	files := r.MultipartForm.File["files"]
 	if len(files) == 0 {
-		writeInlineFlash(w, "err", "No files selected.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_no_files_selected"))
 		return
 	}
 
@@ -121,7 +121,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := os.MkdirAll(destDir, 0755); err != nil {
-		writeInlineFlash(w, "err", "Could not create folder: "+err.Error())
+		writeInlineFlash(w, "err", localize("handler_flash.err_could_not_create_folder", map[string]any{"error": err.Error()}))
 		return
 	}
 
@@ -415,7 +415,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, []int64{id}, selected, s.jobs, false, cx.MangaCacheDir())
 		cx.InvalidateCaches()
 		if ctx.Err() != nil {
-			s.jobs.Complete("auto-tagging cancelled")
+			s.jobs.Complete(localize("handler_flash.autotag_cancelled"))
 			return
 		}
 		if err != nil {
@@ -424,10 +424,10 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 		}
 		logAutotagPeak(fmt.Sprintf("image #%d", id), baseline)
 		if skipped > 0 {
-			s.jobs.Complete(fmt.Sprintf("auto-tagger skipped image #%d", id))
+			s.jobs.Complete(localize("handler_flash.autotag_skipped_image", map[string]any{"id": id}))
 			return
 		}
-		s.jobs.Complete(fmt.Sprintf("auto-tagged image #%d", id))
+		s.jobs.Complete(localize("handler_flash.autotag_single_image", map[string]any{"id": id}))
 	}()
 
 	if isHTMXRequest(r) {

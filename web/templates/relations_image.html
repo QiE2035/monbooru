@@ -6,7 +6,7 @@
   <div id="detail-flash"></div>
   <div class="detail-topbar">
     <div class="detail-nav-group">
-      <a href="/images/{{.Image.ID}}?back_q={{urlQ .BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}" class="back-link">‹ Image</a>
+      <a href="/images/{{.Image.ID}}?back_q={{urlQ .BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}" class="back-link">‹ {{ T "relations.back_link_image" }}</a>
       <span class="detail-nav-sep">/</span>
       <span class="detail-filename mono-small">image {{.Image.ID}}</span>
     </div>

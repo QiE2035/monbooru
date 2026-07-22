@@ -364,7 +364,7 @@ func (s *Server) settingsGalleriesPost(w http.ResponseWriter, r *http.Request) {
 		if switchErr := s.SwitchGallery(name); switchErr != nil {
 			logx.Infof("gallery %q: post-add switch skipped: %v", name, switchErr)
 		}
-		writeInlineFlash(w, "ok", "Gallery "+name+" added and now active.")
+		writeInlineFlash(w, "ok", localize("handler_flash.ok_gallery_added_active", map[string]any{"name": name}))
 		return
 	}
 	if err != nil {
@@ -376,21 +376,21 @@ func (s *Server) settingsGalleriesPost(w http.ResponseWriter, r *http.Request) {
 		if switchErr := s.SwitchGallery(name); switchErr != nil {
 			logx.Infof("gallery %q: post-add switch skipped: %v", name, switchErr)
 		}
-		writeInlineFlash(w, "ok", "Gallery "+name+" added and now active.")
+		writeInlineFlash(w, "ok", localize("handler_flash.ok_gallery_added_active", map[string]any{"name": name}))
 		return
 	}
 	format := formatFromExt(fh.Filename)
 	if format == "" {
-		writeInlineFlash(w, "err", "Gallery created. Import failed: file must be .db, .json, or .zip.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_import_format"))
 		return
 	}
 	// ImportGallery itself calls SwitchGallery on success, so the gallery
 	// becomes active without an extra step here.
 	if err := s.ImportGallery(name, format, file); err != nil {
-		writeInlineFlash(w, "err", "Gallery created. Import failed: "+err.Error())
+		writeInlineFlash(w, "err", localize("handler_flash.err_gallery_created_import_failed", map[string]any{"err": err.Error()}))
 		return
 	}
-	writeInlineFlash(w, "ok", "Gallery "+name+" added and imported.")
+	writeInlineFlash(w, "ok", localize("handler_flash.ok_gallery_added_imported", map[string]any{"name": name}))
 }
 
 func (s *Server) settingsGalleryRenamePost(w http.ResponseWriter, r *http.Request) {
@@ -413,7 +413,7 @@ func (s *Server) settingsGalleryDeletePost(w http.ResponseWriter, r *http.Reques
 	name := r.PathValue("name")
 	confirm := strings.TrimSpace(r.FormValue("confirm_name"))
 	if confirm != name {
-		writeInlineFlash(w, "err", "type-to-confirm name does not match")
+		writeInlineFlash(w, "err", localize("handler_flash.err_confirm_name_mismatch"))
 		return
 	}
 	removeFolder := r.FormValue("remove_folder") == "on"

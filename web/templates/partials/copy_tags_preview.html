@@ -26,9 +26,9 @@
         hx-on::after-request="if(event.detail.successful){document.getElementById('copy-tags-preview-dialog').close();setTimeout(function(){window.location.reload()},1500)}"
         style="display:inline">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <button type="submit">Copy {{.Total}} tag(s)</button>
+    <button type="submit">{{ T "copy_tags_preview.copy_count" (dict "count" .Total) }}</button>
   </form>
   {{end}}
-  <button type="button" onclick="document.getElementById('copy-tags-preview-dialog').close()">Cancel</button>
+  <button type="button" onclick="document.getElementById('copy-tags-preview-dialog').close()">{{ T "common.cancel" }}</button>
 </div>
 {{end}}

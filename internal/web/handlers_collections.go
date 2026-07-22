@@ -96,7 +96,7 @@ func (s *Server) renameCollectionPost(w http.ResponseWriter, r *http.Request) {
 	newName := strings.TrimSpace(r.FormValue("name"))
 	if oldName == "" || newName == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Both the current and the new collection name are required.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_both_collection_names_required"))
 		return
 	}
 	if len(newName) > maxExternalSourceLen {
@@ -123,13 +123,13 @@ func (s *Server) collectionFindRelationsPost(w http.ResponseWriter, r *http.Requ
 	name := strings.TrimSpace(r.FormValue("collection"))
 	if name == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Collection label required.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_collection_label_required"))
 		return
 	}
 	enabled := r.FormValue("enabled") == "1"
 	if err := gallery.SetCollectionFindRelations(s.db(), name, enabled); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Could not update the collection.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_could_not_update_collection"))
 		return
 	}
 	verb := "enabled"
@@ -204,17 +204,17 @@ func (s *Server) reorderCollectionPost(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("mode") == "filename" {
 		if err := gallery.SortCollectionByFilename(s.db(), name); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			writeInlineFlash(w, "err", "Could not reorder the collection.")
+			writeInlineFlash(w, "err", localize("handler_flash.err_could_not_reorder_collection"))
 			return
 		}
 		s.Active().InvalidateCaches()
-		writeInlineFlash(w, "ok", "Ordered by filename.")
+		writeInlineFlash(w, "ok", localize("handler_flash.ok_ordered_by_filename"))
 		return
 	}
 	raw := strings.TrimSpace(r.FormValue("ids"))
 	if raw == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Click at least one image first.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_click_at_least_one_image"))
 		return
 	}
 	var ids []int64
@@ -222,14 +222,14 @@ func (s *Server) reorderCollectionPost(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			writeInlineFlash(w, "err", "Bad image id list.")
+			writeInlineFlash(w, "err", localize("handler_flash.err_bad_image_id_list"))
 			return
 		}
 		ids = append(ids, id)
 	}
 	if err := gallery.ReorderCollection(s.db(), name, ids); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Could not reorder the collection.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_could_not_reorder_collection"))
 		return
 	}
 	s.Active().InvalidateCaches()
@@ -243,12 +243,12 @@ func (s *Server) startCollectionJob(w http.ResponseWriter, name string, run func
 	ids, err := gallery.CollectionMemberIDs(s.db(), name)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Could not read the collection.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_could_not_read_collection"))
 		return
 	}
 	if len(ids) == 0 {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "That collection no longer exists.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_collection_no_longer_exists"))
 		return
 	}
 	if !s.startJob(w, models.JobTypeTag) {
@@ -268,7 +268,7 @@ func (s *Server) dissolveCollectionPost(w http.ResponseWriter, r *http.Request) 
 	name := strings.TrimSpace(r.FormValue("collection"))
 	if name == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Collection label required.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_collection_label_required"))
 		return
 	}
 	s.startCollectionJob(w, name, func(ids []int64) {

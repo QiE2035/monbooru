@@ -1825,7 +1825,7 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 
 	mr, err := r.MultipartReader()
 	if err != nil {
-		writeInlineFlash(w, "err", "expected multipart/form-data")
+		writeInlineFlash(w, "err", localize("handler_flash.multipart_expected"))
 		return
 	}
 
@@ -1839,14 +1839,14 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			writeInlineFlash(w, "err", "malformed upload")
+			writeInlineFlash(w, "err", localize("handler_flash.malformed_upload"))
 			return
 		}
 		if part.FileName() == "" {
 			body, readErr := io.ReadAll(io.LimitReader(part, maxFieldBytes))
 			_ = part.Close()
 			if readErr != nil {
-				writeInlineFlash(w, "err", "malformed upload")
+				writeInlineFlash(w, "err", localize("handler_flash.malformed_upload"))
 				return
 			}
 			fields[part.FormName()] = strings.TrimSpace(string(body))
@@ -1857,7 +1857,7 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 		break
 	}
 	if filePart == nil {
-		writeInlineFlash(w, "err", "missing file")
+		writeInlineFlash(w, "err", localize("handler_flash.missing_file"))
 		return
 	}
 	defer func() { _ = filePart.Close() }()
@@ -1867,24 +1867,24 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 		mode = "replace"
 	}
 	if mode != "replace" && mode != "merge" {
-		writeInlineFlash(w, "err", "mode must be replace or merge")
+		writeInlineFlash(w, "err", localize("handler_flash.invalid_mode"))
 		return
 	}
 	if mode == "replace" {
 		if fields["confirm_name"] != name {
-			writeInlineFlash(w, "err", "type-to-confirm name does not match")
+			writeInlineFlash(w, "err", localize("handler_flash.name_mismatch"))
 			return
 		}
 	}
 	format := formatFromExt(fileFilename)
 	if format == "" {
-		writeInlineFlash(w, "err", "file must be .db, .json, or .zip")
+		writeInlineFlash(w, "err", localize("handler_flash.invalid_file_type"))
 		return
 	}
 
 	if mode == "merge" {
 		if err := s.MergeGallery(name, format, filePart); err != nil {
-			writeInlineFlash(w, "err", err.Error())
+			writeInlineFlash(w, "err", localize("handler_flash.error_prefix", map[string]any{"error": err.Error()}))
 			return
 		}
 		// Mirror the replace path (ImportGallery → SwitchGallery): a merge
@@ -1893,17 +1893,17 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 		if err := s.SwitchGallery(name); err != nil {
 			logx.Infof("gallery %q: post-merge switch skipped: %v", name, err)
 		}
-		writeInlineFlash(w, "ok", "Gallery "+name+" merged.")
+		writeInlineFlash(w, "ok", localize("handler_flash.gallery_merged", map[string]any{"name": name}))
 		return
 	}
 	if err := s.ImportGallery(name, format, filePart); err != nil {
-		writeInlineFlash(w, "err", err.Error())
+		writeInlineFlash(w, "err", localize("handler_flash.error_prefix", map[string]any{"error": err.Error()}))
 		return
 	}
 	// Write the success flash into #flash-galleries; the dialog's
 	// after-request hook detects the flash-ok, closes the modal, and
 	// triggers a reload so the newly-active gallery badge shows.
-	writeInlineFlash(w, "ok", "Gallery "+name+" imported. Rebuilding thumbnails in the background.")
+	writeInlineFlash(w, "ok", localize("handler_flash.gallery_imported", map[string]any{"name": name}))
 }
 
 func formatFromExt(filename string) string {

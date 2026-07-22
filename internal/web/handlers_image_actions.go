@@ -66,8 +66,8 @@ func (s *Server) toggleBoolColumn(w http.ResponseWriter, r *http.Request, column
 
 func (s *Server) toggleFavorite(w http.ResponseWriter, r *http.Request) {
 	s.toggleBoolColumn(w, r, "is_favorited",
-		`<button type="submit" id="fav-btn" class="btn-fav active" title="Unfavorite">♥</button>`,
-		`<button type="submit" id="fav-btn" class="btn-fav" title="Favorite">♡</button>`,
+		fmt.Sprintf(`<button type="submit" id="fav-btn" class="btn-fav active" title="%s">♥</button>`, localize("handler_flash.title_unfavorite")),
+		fmt.Sprintf(`<button type="submit" id="fav-btn" class="btn-fav" title="%s">♡</button>`, localize("handler_flash.title_favorite")),
 		nil,
 	)
 }
@@ -78,8 +78,8 @@ func (s *Server) toggleFavorite(w http.ResponseWriter, r *http.Request) {
 // as "this is what it is" with the action surfaced on hover.
 func (s *Server) toggleInbox(w http.ResponseWriter, r *http.Request) {
 	s.toggleBoolColumn(w, r, "is_inbox",
-		`<button type="submit" id="inbox-btn" class="btn-inbox active" title="Archive (i)">In inbox</button>`,
-		`<button type="submit" id="inbox-btn" class="btn-inbox" title="Send to inbox (i)">Archived</button>`,
+		fmt.Sprintf(`<button type="submit" id="inbox-btn" class="btn-inbox active" title="%s">In inbox</button>`, localize("handler_flash.title_archive")),
+		fmt.Sprintf(`<button type="submit" id="inbox-btn" class="btn-inbox" title="%s">Archived</button>`, localize("handler_flash.title_send_to_inbox")),
 		s.inboxNavOOB,
 	)
 }
@@ -156,7 +156,7 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 		}
 		logx.Errorf("delete image %d: %v", id, err)
 		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Delete failed; check server log.")
+		writeInlineFlash(w, "err", localize("handler_flash.err_delete_failed"))
 		return
 	}
 	s.Active().InvalidateCaches()
@@ -869,7 +869,7 @@ func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Active().InvalidateCaches()
-	s.jobs.Complete("Moved image.")
+	s.jobs.Complete(localize("handler_flash.image_moved"))
 
 	if isHTMXRequest(r) {
 		dest := targetFolder

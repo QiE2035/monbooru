@@ -485,10 +485,10 @@ func (s *Server) changeTagCategory(w http.ResponseWriter, r *http.Request) {
 	s.Active().InvalidateCaches()
 	if isHTMXRequest(r) {
 		if merged {
-			writeInlineFlash(w, "ok", "Merged into the existing tag.")
+			writeInlineFlash(w, "ok", localize("handler_flash.ok_merged_into_existing_tag"))
 			return
 		}
-		writeInlineFlash(w, "ok", "Category updated.")
+		writeInlineFlash(w, "ok", localize("handler_flash.ok_category_updated"))
 		return
 	}
 	http.Redirect(w, r, "/tags", http.StatusSeeOther)
