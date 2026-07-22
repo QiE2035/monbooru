@@ -988,6 +988,16 @@ err_target_gallery_unavailable = "目標圖庫不可用。"
 transfer_cancelled        = "轉移已取消（已完成 {{.transferred}}/{{.total}}）"
 transfer_completed        = "已轉移 {{.transferred}} 張圖像到 {{.gallery}}。"
 transfer_completed_with_failures = "已轉移 {{.transferred}} 張圖像到 {{.gallery}}，{{.failed}} 失敗。"
+# handlers_image_actions.go
+in_inbox                        = "在收件匣中"
+archived                        = "已歸檔"
+err_source_label_or_url_required = "來源標籤或 URL 必需"
+err_source_too_long             = "來源過長（最多 {{.max}} 字元）"
+err_url_too_long                = "URL 過長（最多 {{.max}} 字元）"
+err_url_must_start_with_http    = "URL 必須以 http:// 或 https:// 開頭"
+err_coordinates_invalid         = "坐標必須為非負整數"
+inbox                           = "收件匣"
+err_collection_too_long         = "合集過長（最多 {{.max}} 字符）"
 
 [flash]
 category_created = "類別 {{.name}} 已建立。"

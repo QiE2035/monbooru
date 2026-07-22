@@ -950,6 +950,16 @@ err_target_gallery_unavailable = "目标图库不可用。"
 transfer_cancelled        = "转移已取消（已完成 {{.transferred}}/{{.total}}）"
 transfer_completed        = "已转移 {{.transferred}} 张图像到 {{.gallery}}。"
 transfer_completed_with_failures = "已转移 {{.transferred}} 张图像到 {{.gallery}}，{{.failed}} 失败。"
+# handlers_image_actions.go
+in_inbox                        = "在收件箱中"
+archived                        = "已归档"
+err_source_label_or_url_required = "来源标签或 URL 必需"
+err_source_too_long             = "来源过长（最多 {{.max}} 字符）"
+err_url_too_long                = "URL 过长（最多 {{.max}} 字符）"
+err_url_must_start_with_http    = "URL 必须以 http:// 或 https:// 开头"
+err_coordinates_invalid         = "坐标必须为非负整数"
+inbox                           = "收件箱"
+err_collection_too_long         = "合集过长（最多 {{.max}} 字符）"
 
 [flash]
 category_created = "类别 {{.name}} 已创建。"

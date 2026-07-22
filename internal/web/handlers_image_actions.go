@@ -78,8 +78,8 @@ func (s *Server) toggleFavorite(w http.ResponseWriter, r *http.Request) {
 // as "this is what it is" with the action surfaced on hover.
 func (s *Server) toggleInbox(w http.ResponseWriter, r *http.Request) {
 	s.toggleBoolColumn(w, r, "is_inbox",
-		fmt.Sprintf(`<button type="submit" id="inbox-btn" class="btn-inbox active" title="%s">In inbox</button>`, localize("handler_flash.title_archive")),
-		fmt.Sprintf(`<button type="submit" id="inbox-btn" class="btn-inbox" title="%s">Archived</button>`, localize("handler_flash.title_send_to_inbox")),
+		fmt.Sprintf(`<button type="submit" id="inbox-btn" class="btn-inbox active" title="%s">%s</button>`, localize("handler_flash.title_archive"), localize("handler_flash.in_inbox")),
+		fmt.Sprintf(`<button type="submit" id="inbox-btn" class="btn-inbox" title="%s">%s</button>`, localize("handler_flash.title_send_to_inbox"), localize("handler_flash.archived")),
 		s.inboxNavOOB,
 	)
 }
@@ -101,7 +101,7 @@ func (s *Server) inboxNavOOB(r *http.Request) string {
 	if n > 0 {
 		suffix = fmt.Sprintf(" (%d)", n)
 	}
-	return fmt.Sprintf(`<a id="inbox-nav" href="/?q=inbox:true" hx-swap-oob="true">Inbox%s</a>`, suffix)
+	return fmt.Sprintf(`<a id="inbox-nav" href="/?q=inbox:true" hx-swap-oob="true">%s%s</a>`, localize("handler_flash.inbox"), suffix)
 }
 
 func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
@@ -305,21 +305,21 @@ func (s *Server) setSource(w http.ResponseWriter, r *http.Request) {
 	site := strings.TrimSpace(r.FormValue("site"))
 	url := strings.TrimSpace(r.FormValue("url"))
 	if site == "" && url == "" {
-		externalErr(w, r, "source label or url required", http.StatusBadRequest)
+		externalErr(w, r, localize("handler_flash.err_source_label_or_url_required"), http.StatusBadRequest)
 		return
 	}
 	if len(site) > maxExternalSourceLen {
-		externalErr(w, r, fmt.Sprintf("source too long (max %d chars)", maxExternalSourceLen), http.StatusBadRequest)
+		externalErr(w, r, localize("handler_flash.err_source_too_long", map[string]any{"max": maxExternalSourceLen}), http.StatusBadRequest)
 		return
 	}
 	if url != "" {
 		if len(url) > maxExternalURLLen {
-			externalErr(w, r, fmt.Sprintf("url too long (max %d chars)", maxExternalURLLen), http.StatusBadRequest)
+			externalErr(w, r, localize("handler_flash.err_url_too_long", map[string]any{"max": maxExternalURLLen}), http.StatusBadRequest)
 			return
 		}
 		lower := strings.ToLower(url)
 		if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
-			externalErr(w, r, "url must start with http:// or https://", http.StatusBadRequest)
+			externalErr(w, r, localize("handler_flash.err_url_must_start_with_http"), http.StatusBadRequest)
 			return
 		}
 	}
@@ -643,7 +643,7 @@ func (s *Server) setAnnotation(w http.ResponseWriter, r *http.Request) {
 	bw, okW := annotationCoord(r, "w")
 	bh, okH := annotationCoord(r, "h")
 	if !okX || !okY || !okW || !okH {
-		externalErr(w, r, "coordinates must be non-negative integers", http.StatusBadRequest)
+		externalErr(w, r, localize("handler_flash.err_coordinates_invalid"), http.StatusBadRequest)
 		return
 	}
 	if wImg.Valid && hImg.Valid && wImg.Int64 > 0 && hImg.Int64 > 0 {
@@ -719,11 +719,11 @@ func (s *Server) setCollection(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.FormValue("collection"))
 	if name == "" {
-		externalErr(w, r, "collection label required", http.StatusBadRequest)
+		externalErr(w, r, localize("handler_flash.err_collection_label_required"), http.StatusBadRequest)
 		return
 	}
 	if len(name) > maxExternalSourceLen {
-		externalErr(w, r, fmt.Sprintf("collection too long (max %d chars)", maxExternalSourceLen), http.StatusBadRequest)
+		externalErr(w, r, localize("handler_flash.err_collection_too_long", map[string]any{"max": maxExternalSourceLen}), http.StatusBadRequest)
 		return
 	}
 	var order *int
@@ -761,7 +761,7 @@ func (s *Server) removeCollection(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.FormValue("collection"))
 	if name == "" {
-		externalErr(w, r, "collection label required", http.StatusBadRequest)
+		externalErr(w, r, localize("handler_flash.err_collection_label_required"), http.StatusBadRequest)
 		return
 	}
 	if err := gallery.RemoveCollectionMembership(s.db(), id, name); err != nil {

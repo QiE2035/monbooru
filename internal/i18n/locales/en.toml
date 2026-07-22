@@ -682,6 +682,16 @@ err_target_gallery_unavailable = "The target gallery is unavailable."
 transfer_cancelled        = "transfer cancelled ({{.transferred}}/{{.total}} done)"
 transfer_completed        = "Transferred {{.transferred}} image(s) to {{.gallery}}."
 transfer_completed_with_failures = "Transferred {{.transferred}} image(s) to {{.gallery}}, {{.failed}} failed."
+# handlers_image_actions.go
+in_inbox                        = "In inbox"
+archived                        = "Archived"
+err_source_label_or_url_required = "source label or url required"
+err_source_too_long             = "source too long (max {{.max}} chars)"
+err_url_too_long                = "url too long (max {{.max}} chars)"
+err_url_must_start_with_http    = "url must start with http:// or https://"
+err_coordinates_invalid         = "coordinates must be non-negative integers"
+inbox                           = "Inbox"
+err_collection_too_long         = "collection too long (max {{.max}} chars)"
 
 [tags_js]
 strip_confirm              = "Strip \"{0}\" from every image?"
