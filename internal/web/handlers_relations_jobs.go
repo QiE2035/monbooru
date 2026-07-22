@@ -71,9 +71,9 @@ func (s *Server) findRelationPairsPost(w http.ResponseWriter, r *http.Request) {
 			s.jobs.Fail(err.Error())
 			return
 		}
-		s.jobs.Complete(fmt.Sprintf("find-pairs added %d candidate(s).", added))
+		s.jobs.Complete(localize("handler_flash.find_pairs_added", map[string]any{"count": added}))
 	}()
-	writeInlineFlash(w, "ok", "Find-pairs started.")
+	writeInlineFlash(w, "ok", localize("handler_flash.find_pairs_started"))
 }
 
 // resetSkippedPost clears skipped_at on every potential_relation_pairs

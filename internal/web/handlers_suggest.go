@@ -527,7 +527,7 @@ func (s *Server) systemSuggestLevel1(prefix string) []suggestItem {
 		}
 		rows = append(rows, suggestItem{
 			Name:        kw + ":",
-			Description: localize("search_suggest." + kw),
+			Description: localize("search_suggest." + translateKeyName(kw)),
 		})
 	}
 	for _, cat := range s.systemCategoryRows() {
@@ -544,6 +544,19 @@ func (s *Server) systemSuggestLevel1(prefix string) []suggestItem {
 		})
 	}
 	return rows
+}
+
+// translateKeyName maps search keyword to valid TOML key name.
+// Some keywords conflict with TOML reserved words (hash, id) and are renamed in translation files.
+func translateKeyName(kw string) string {
+	switch kw {
+	case "hash":
+		return "sha256_hash"
+	case "id":
+		return "image_id"
+	default:
+		return kw
+	}
 }
 
 // opToKeyNameSuffix maps search operators to translation key suffixes.
