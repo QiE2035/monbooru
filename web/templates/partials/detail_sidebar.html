@@ -2,7 +2,7 @@
   {{if .ImageTags}}
   <div id="tags-section">
     <div class="sidebar-section-header">
-      <span class="sidebar-section-title">{{ T "detail_sidebar_tags" }}</span>
+      <span class="sidebar-section-title">{{ T "detail_sidebar.tags" }}</span>
       <button id="tags-toggle" class="folder-toggle-btn" data-target="tag-groups">▼</button>
     </div>
     <div id="tag-groups" class="detail-tag-groups">
@@ -12,7 +12,7 @@
         <ul class="tag-list-sidebar">
           {{range .Tags}}
           <li class="tag-entry {{if .IsAuto}}tag-auto-entry{{end}}" data-name="{{.TagName}}">
-            {{if .IsAuto}}<span class="auto-dot" title="{{ T "detail_sidebar_auto_tagged" }}">·</span>{{else}}<span class="auto-dot-spacer"></span>{{end}}
+            {{if .IsAuto}}<span class="auto-dot" title="{{ T "detail_sidebar.auto_tagged" }}">·</span>{{else}}<span class="auto-dot-spacer"></span>{{end}}
             <a href="/?q={{.Category}}:{{.TagName}}" class="tag-link" style="color:{{.Color}}">{{.TagName}}</a>
             <span class="tag-count">{{.UsageCount}}</span>
           </li>

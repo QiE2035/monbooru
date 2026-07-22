@@ -9,12 +9,12 @@
   <div class="sidebar-section"
        hx-boost="true" hx-target="#collections-page" hx-select="#collections-page" hx-swap="outerHTML"
        hx-select-oob="#sidebar-inner" hx-push-url="true">
-    <h3>{{ T "collections_filter" }}</h3>
+    <h3>{{ T "collections.filter" }}</h3>
     <form action="/collections" method="get" class="tags-filter-row">
       <!-- No sidebar OOB refresh here (the wrapper's hx-select-oob is
            inherited without the unset): swapping the input would drop
            focus and eat the letters typed since the request. -->
-      <input type="text" name="q" id="collections-q-input" value="{{$prefix}}" placeholder="{{ T "collections_search_placeholder" }}"
+      <input type="text" name="q" id="collections-q-input" value="{{$prefix}}" placeholder="{{ T "collections.search_placeholder" }}"
              hx-get="/collections"
              hx-trigger="input changed delay:300ms"
              hx-include="closest form"
@@ -22,13 +22,13 @@
              hx-select-oob="unset"
              hx-push-url="true">
       <input type="hidden" name="sort" value="{{$sort}}">
-      <button type="submit">{{ T "collections_ok" }}</button>
+      <button type="submit">{{ T "collections.ok" }}</button>
     </form>
 
     <div class="filter-group">
-      <span class="filter-label">{{ T "collections_sort" }}</span>
-      <a class="filter-btn{{if eq $sort "size"}} active{{end}}" href="/collections?q={{$prefix}}&sort=size">{{ T "collections_sort_size" }}</a>
-      <a class="filter-btn{{if eq $sort "name"}} active{{end}}" href="/collections?q={{$prefix}}&sort=name">{{ T "collections_sort_name" }}</a>
+      <span class="filter-label">{{ T "collections.sort" }}</span>
+      <a class="filter-btn{{if eq $sort "size"}} active{{end}}" href="/collections?q={{$prefix}}&sort=size">{{ T "collections.sort_size" }}</a>
+      <a class="filter-btn{{if eq $sort "name"}} active{{end}}" href="/collections?q={{$prefix}}&sort=name">{{ T "collections.sort_name" }}</a>
     </div>
   </div>
 </div>
@@ -36,7 +36,7 @@
 
 <div id="collections-page">
   <h2 id="collections-page-header">
-    <span>{{ T "collections_title" }} <span class="count-badge">{{.Total}}</span></span>
+    <span>{{ T "collections.title" }} <span class="count-badge">{{.Total}}</span></span>
   </h2>
 
   <div id="collection-flash"></div>
@@ -47,11 +47,11 @@
     {{$q := printf `collection:"%s"` (qval .Name)}}
     <li class="relations-card" data-name="{{.Name}}">
       <div class="collection-card-head">
-        <a href="/?q={{urlQ $q}}" title="{{ T "collections_browse" }} {{.Name}}"><strong>{{.Name}}</strong></a>
-        <span class="field-hint">{{.Count}} {{ T "collections_image_count" }}</span>
-        <button type="button" class="btn-link-accent btn-rename-collection" data-name="{{.Name}}">[{{ T "collections_rename" }}]</button>
-        <button type="button" class="btn-link-accent btn-reorder-collection" data-name="{{.Name}}">[{{ T "collections_reorder" }}]</button>
-        <button type="button" class="btn-link-accent btn-dissolve-collection" data-name="{{.Name}}">[{{ T "collections_dissolve" }}]</button>
+        <a href="/?q={{urlQ $q}}" title="{{ T "collections.browse" }} {{.Name}}"><strong>{{.Name}}</strong></a>
+        <span class="field-hint">{{.Count}} {{ T "collections.image_count" }}</span>
+        <button type="button" class="btn-link-accent btn-rename-collection" data-name="{{.Name}}">[{{ T "collections.rename" }}]</button>
+        <button type="button" class="btn-link-accent btn-reorder-collection" data-name="{{.Name}}">[{{ T "collections.reorder" }}]</button>
+        <button type="button" class="btn-link-accent btn-dissolve-collection" data-name="{{.Name}}">[{{ T "collections.dissolve" }}]</button>
         {{template "partials/collection_find_relations.html" (dict "Name" .Name "FindRelations" .FindRelations "CSRFToken" $.CSRFToken)}}
       </div>
       <div class="collection-preview">
@@ -61,15 +61,15 @@
           {{with .Order}}<span class="relations-card-id">#{{.}}</span>{{end}}
         </a>
         {{else}}
-        <span class="field-hint">{{ T "collections_no_preview" }}</span>
+        <span class="field-hint">{{ T "collections.no_preview" }}</span>
         {{end}}
       </div>
     </li>
     {{else}}
     {{if $prefix}}
-    <li class="no-results">{{ T "collections_no_match" }} "{{$prefix}}".</li>
+    <li class="no-results">{{ T "collections.no_match" }} "{{$prefix}}".</li>
     {{else}}
-    <li class="no-results">{{ T "collections_none_yet" }}</li>
+    <li class="no-results">{{ T "collections.none_yet" }}</li>
     {{end}}
     {{end}}
   </ul>
@@ -84,14 +84,14 @@
   <form id="collection-rename-form">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <input type="hidden" id="collection-rename-prev" name="prev" value="">
-    <p>{{ T "collections_rename_title" }} <strong id="collection-rename-src"></strong></p>
+    <p>{{ T "collections.rename_title" }} <strong id="collection-rename-src"></strong></p>
     <div class="field">
-      <label>{{ T "collections_rename_label" }}</label>
+      <label>{{ T "collections.rename_label" }}</label>
       {{template "suggest_input" dict "Name" "name" "InputID" "collection-rename-input" "Endpoint" "/internal/collection/suggest" "SuggestID" "collection-rename-suggest" "Required" true}}
     </div>
     <div id="collection-rename-error"></div>
     <div class="dialog-actions">
-      <button type="submit">{{ T "collections_rename" }}</button>
+      <button type="submit">{{ T "collections.rename" }}</button>
       <button type="button" onclick="document.getElementById('collection-rename-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
     </div>
   </form>
@@ -102,8 +102,8 @@
     <div id="collection-order-body"></div>
     <div id="collection-order-error"></div>
     <div class="dialog-actions">
-      <button type="submit">{{ T "collections_save_order" }}</button>
-      <button type="button" id="collection-order-reset">{{ T "collections_reset" }}</button>
+      <button type="submit">{{ T "collections.save_order" }}</button>
+      <button type="button" id="collection-order-reset">{{ T "collections.reset" }}</button>
       <button type="button" onclick="document.getElementById('collection-order-dialog').close()">{{ T "layout_dialogs.cancel" }}</button>
     </div>
   </form>
@@ -111,19 +111,19 @@
 
 <script>
 var _CT = {
-  newNameRequired: '{{ T "collections_new_name_required" }}',
-  renameFailed: '{{ T "collections_rename_failed" }}',
-  renameRequestFailed: '{{ T "collections_rename_request_failed" }}',
-  couldNotLoad: '{{ T "collections_could_not_load" }}',
-  clickToSetOrder: '{{ T "collections_click_to_set_order" }}',
-  reorderFailed: '{{ T "collections_reorder_failed" }}',
-  reorderRequestFailed: '{{ T "collections_reorder_request_failed" }}',
-  dissolveTitle: '{{ T "collections_dissolve_title" }}',
-  dissolveDesc: '{{ T "collections_dissolve_desc" }}',
-  dissolveFailed: '{{ T "collections_dissolve_failed" }}',
-  dissolveRequestFailed: '{{ T "collections_dissolve_request_failed" }}',
-  dissolveConfirmNote: '{{ T "collections_dissolve_confirm_note" }}',
-  dissolve: '{{ T "collections_dissolve" }}'
+  newNameRequired: '{{ T "collections.new_name_required" }}',
+  renameFailed: '{{ T "collections.rename_failed" }}',
+  renameRequestFailed: '{{ T "collections.rename_request_failed" }}',
+  couldNotLoad: '{{ T "collections.could_not_load" }}',
+  clickToSetOrder: '{{ T "collections.click_to_set_order" }}',
+  reorderFailed: '{{ T "collections.reorder_failed" }}',
+  reorderRequestFailed: '{{ T "collections.reorder_request_failed" }}',
+  dissolveTitle: '{{ T "collections.dissolve_title" }}',
+  dissolveDesc: '{{ T "collections.dissolve_desc" }}',
+  dissolveFailed: '{{ T "collections.dissolve_failed" }}',
+  dissolveRequestFailed: '{{ T "collections.dissolve_request_failed" }}',
+  dissolveConfirmNote: '{{ T "collections.dissolve_confirm_note" }}',
+  dissolve: '{{ T "collections.dissolve" }}'
 };
 // htmx swaps #collections-page in place on filter clicks and the live
 // search, so the card buttons bind through delegated document-level
@@ -218,7 +218,7 @@ function openCollectionOrder(btn) {
   _orderMode = 'order';
   clearSlots('collection-order-error');
   var body = document.getElementById('collection-order-body');
-  body.innerHTML = '{{ T "collections_loading" }}';
+  body.innerHTML = '{{ T "collections.loading" }}';
   fetch('/collections/order?name=' + encodeURIComponent(btn.dataset.name), {credentials: 'same-origin', headers: {'HX-Request': 'true'}})
     .then(function(r) { return r.text(); })
     .then(function(html) { body.innerHTML = html; captureOrigOrder(); applyOrderMode(); })

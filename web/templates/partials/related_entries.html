@@ -5,29 +5,29 @@
      weight on the detail page. */}}
 {{if gt (len .ImagePaths) 1}}
 <div class="related-images duplicates-section">
-  <h3>Duplicates</h3>
+  <h3>{{ T "related_entries.duplicates" }}</h3>
   <ul class="duplicates-list">
     {{range .ImagePaths}}
     <li class="duplicates-entry">
       <div class="duplicates-path mono-small">{{.Path}}</div>
       <div class="duplicates-actions">
         {{if .IsCanonical}}
-        <span class="btn-sm btn-canonical" aria-disabled="true">Canonical</span>
+        <span class="btn-sm btn-canonical" aria-disabled="true">{{ T "related_entries.canonical" }}</span>
         {{else}}
         <form method="POST" action="/images/{{$.ImageID}}/canonical-path"
               hx-post="/images/{{$.ImageID}}/canonical-path" hx-swap="none"
               style="display:inline">
           <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
           <input type="hidden" name="path" value="{{.Path}}">
-          <button type="submit" class="btn-sm">Set canonical</button>
+          <button type="submit" class="btn-sm">{{ T "related_entries.set_canonical" }}</button>
         </form>
         <button class="btn-sm btn-danger"
                 hx-delete="/images/{{$.ImageID}}/aliases/{{.ID}}"
                 hx-target="closest .duplicates-entry"
                 hx-swap="outerHTML"
                 hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
-                hx-confirm="Delete this duplicate file from disk? The canonical path stays."
-                data-confirm-ok="Delete">Delete</button>
+                hx-confirm="{{ T "related_entries.delete_duplicate_confirm" }}"
+                data-confirm-ok="{{ T "related_entries.delete" }}">{{ T "related_entries.delete" }}</button>
         {{end}}
       </div>
     </li>
@@ -38,10 +38,10 @@
 
 <div class="related-images related-entries">
   <div class="related-entries-header">
-    <h3>Related images</h3>
+    <h3>{{ T "related_entries.related_images" }}</h3>
     <div class="related-entries-actions">
-      {{if .Tiles}}<a class="btn-link-accent" href="/images/{{.ImageID}}/relations?back_q={{urlQ .BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}">[See all]</a>{{end}}
-      <button type="button" class="btn-link-accent" data-relations-add="{{.ImageID}}">[Add a relation]</button>
+      {{if .Tiles}}<a class="btn-link-accent" href="/images/{{.ImageID}}/relations?back_q={{urlQ .BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}">{{ T "related_entries.see_all" }}</a>{{end}}
+      <button type="button" class="btn-link-accent" data-relations-add="{{.ImageID}}">{{ T "related_entries.add_relation" }}</button>
     </div>
   </div>
   {{if .Tiles}}
@@ -56,14 +56,14 @@
     {{end}}
   </div>
   {{else}}
-  <p class="field-hint">No declared relations yet.</p>
+  <p class="field-hint">{{ T "related_entries.no_relations" }}</p>
   {{end}}
 </div>
 
 {{if .Collection}}
 <div class="related-images same-collection">
   <div class="related-entries-header">
-    <h3>Same collection</h3>
+    <h3>{{ T "related_entries.same_collection" }}</h3>
     <div class="related-entries-actions">
       <a class="btn-link-accent" href="/images/{{.ImageID}}/relations?back_q={{urlQ .BackQ}}&back_sort={{.BackSort}}&back_order={{.BackOrder}}{{if .BackPage}}&back_page={{.BackPage}}{{end}}{{if .BackSeed}}&back_seed={{.BackSeed}}{{end}}">[See all]</a>
     </div>

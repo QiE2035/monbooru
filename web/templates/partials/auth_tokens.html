@@ -3,12 +3,12 @@
   {{if .Tokens}}
   <div class="table-scroll">
   <table class="gallery-table">
-    <thead><tr><th>{{ T "tokens_col_name" }}</th><th>{{ T "tokens_col_created" }}</th><th>{{ T "tokens_col_scopes" }}</th><th>{{ T "tokens_col_config" }}</th><th>{{ T "tokens_col_revoke" }}</th></tr></thead>
+    <thead><tr><th>{{ T "tokens.col_name" }}</th><th>{{ T "tokens.col_created" }}</th><th>{{ T "tokens.col_scopes" }}</th><th>{{ T "tokens.col_config" }}</th><th>{{ T "tokens.col_revoke" }}</th></tr></thead>
     <tbody>
       {{$csrf := .CSRFToken}}
       {{range .Tokens}}
       <tr>
-        <td><strong>{{.Name}}</strong>{{if .Paired}} <span class="status-badge status-ok">{{ T "tokens_paired" }}</span>{{end}}</td>
+        <td><strong>{{.Name}}</strong>{{if .Paired}} <span class="status-badge status-ok">{{ T "tokens.paired" }}</span>{{end}}</td>
         <td>{{.CreatedAt}}</td>
         <td><span id="token-scopes-{{.ID}}">{{range $i, $s := .Scopes}}{{if $i}} {{end}}{{$s}}{{end}}</span></td>
         <td>
@@ -16,17 +16,17 @@
                   hx-get="/settings/auth/tokens/{{.ID}}/privileges"
                   hx-target="#token-cfg-{{.ID}}-body"
                   hx-trigger="click once"
-                  onclick="document.getElementById('token-cfg-{{.ID}}').showModal()">{{ T "tokens_col_config" }}</button>
+                  onclick="document.getElementById('token-cfg-{{.ID}}').showModal()">{{ T "tokens.col_config" }}</button>
         </td>
         <td>
-          {{if .Paired}}<span class="field-hint">{{ T "tokens_via_pairing" }}</span>{{else}}
+          {{if .Paired}}<span class="field-hint">{{ T "tokens.via_pairing" }}</span>{{else}}
           <button class="btn-sm btn-danger"
                   hx-delete="/settings/auth/tokens/{{.ID}}"
                   hx-target="#flash-auth" hx-swap="innerHTML"
                   hx-headers='{"X-CSRF-Token": "{{$csrf}}"}'
-                  hx-confirm="{{ T "tokens_revoke_confirm" }} {{.Name}}?"
-                  data-confirm-ok="{{ T "tokens_revoke" }}"
-                  data-confirm-danger="{{ T "tokens_revoke_danger" }}">{{ T "tokens_revoke" }}</button>{{end}}
+                  hx-confirm="{{ T "tokens.revoke_confirm" }} {{.Name}}?"
+                  data-confirm-ok="{{ T "tokens.revoke" }}"
+                  data-confirm-danger="{{ T "tokens.revoke_danger" }}">{{ T "tokens.revoke" }}</button>{{end}}
         </td>
       </tr>
       {{end}}
@@ -35,12 +35,12 @@
   </div>
   {{range .Tokens}}
   <dialog id="token-cfg-{{.ID}}">
-    <h4>{{.Name}} - {{ T "tokens_privileges" }}</h4>
-    <div id="token-cfg-{{.ID}}-body">{{ T "tokens_loading" }}</div>
+    <h4>{{.Name}} - {{ T "tokens.privileges" }}</h4>
+    <div id="token-cfg-{{.ID}}-body">{{ T "tokens.loading" }}</div>
   </dialog>
   {{end}}
   {{else}}
-  <p class="field-hint">{{ T "tokens_none_yet" }}</p>
+  <p class="field-hint">{{ T "tokens.none_yet" }}</p>
   {{end}}
 </div>
 {{end}}

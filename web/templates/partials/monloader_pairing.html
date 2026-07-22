@@ -3,10 +3,10 @@
   {{$csrf := .CSRFToken}}
   {{if .Pending}}
   <div class="pairing-pending">
-  <p class="pairing-pending-msg">monloader is requesting to pair. Approve or deny below.</p>
+  <p class="pairing-pending-msg">{{ T "monloader_pairing.pending_msg" }}</p>
   <div class="table-scroll">
   <table class="gallery-table">
-    <thead><tr><th>App</th><th>Source</th><th>Scopes</th><th>Approve</th><th>Deny</th></tr></thead>
+    <thead><tr><th>{{ T "monloader_pairing.app" }}</th><th>{{ T "monloader_pairing.source" }}</th><th>{{ T "monloader_pairing.scopes" }}</th><th>{{ T "monloader_pairing.approve" }}</th><th>{{ T "monloader_pairing.deny" }}</th></tr></thead>
     <tbody>
       {{range .Pending}}
       <tr>
@@ -16,13 +16,13 @@
         <td>
           <form hx-post="/settings/monloader/pair/{{.ID}}/approve" hx-target="#monloader-pairing" hx-swap="outerHTML" style="display:inline">
             <input type="hidden" name="_csrf" value="{{$csrf}}">
-            <button type="submit" class="btn-sm btn-success">Approve</button>
+            <button type="submit" class="btn-sm btn-success">{{ T "monloader_pairing.approve_btn" }}</button>
           </form>
         </td>
         <td>
           <form hx-post="/settings/monloader/pair/{{.ID}}/deny" hx-target="#monloader-pairing" hx-swap="outerHTML" style="display:inline">
             <input type="hidden" name="_csrf" value="{{$csrf}}">
-            <button type="submit" class="btn-sm">Deny</button>
+            <button type="submit" class="btn-sm">{{ T "monloader_pairing.deny_btn" }}</button>
           </form>
         </td>
       </tr>
@@ -33,16 +33,16 @@
   </div>
   {{end}}
   {{if .Paired}}
-  <p class="field-hint">Paired with monloader{{if .PeerURL}} at <code>{{.PeerURL}}</code>{{end}}.
+  <p class="field-hint">{{ T "monloader_pairing.paired_msg" }}{{if .PeerURL}} {{ T "monloader_pairing.paired_at" }} <code>{{.PeerURL}}</code>{{end}}.
     <form hx-post="/settings/monloader/pair/remove" hx-target="#monloader-pairing" hx-swap="outerHTML"
-          hx-confirm="Remove the monloader pairing?" data-confirm-ok="Remove"
-          data-confirm-danger="monloader must re-pair before it can push again." style="display:inline">
+          hx-confirm="{{ T "monloader_pairing.remove_confirm" }}" data-confirm-ok="Remove"
+          data-confirm-danger="{{ T "monloader_pairing.remove_danger" }}" style="display:inline">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
-      <button type="submit" class="btn-sm btn-danger">Remove pairing</button>
+      <button type="submit" class="btn-sm btn-danger">{{ T "monloader_pairing.remove_btn" }}</button>
     </form>
   </p>
   {{else}}
-  <p class="field-hint">Set up the pairing with monloader. In monloader click "connect to monbooru", then approve the request here.</p>
+  <p class="field-hint">{{ T "monloader_pairing.setup_msg" }}</p>
   {{end}}
 </div>
 {{end}}

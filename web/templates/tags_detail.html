@@ -6,48 +6,48 @@
 {{$csrf := .CSRFToken}}
 {{$kinds := .OriginKinds}}
 <div id="tag-detail-page">
-  <p class="tag-detail-crumb"><a href="/tags">‹ Tags</a> <span class="field-hint">/ #{{.Tag.ID}}</span></p>
+  <p class="tag-detail-crumb"><a href="/tags">‹ {{ T "tags_detail.tags_crumb" }}</a> <span class="field-hint">/ #{{.Tag.ID}}</span></p>
 
   <h2 id="tag-detail-header">
     <span id="tag-detail-name" style="color:{{.Tag.CategoryColor}}">{{.Tag.Name}}</span>
-    {{if .Tag.IsAlias}}<span class="alias-badge">alias</span>{{end}}
+    {{if .Tag.IsAlias}}<span class="alias-badge">{{ T "tags_detail.alias_badge" }}</span>{{end}}
     {{if .IsRating}}
-    <span class="field-hint">(built-in rating)</span>
+    <span class="field-hint">{{ T "tags_detail.built_in_rating" }}</span>
     {{else}}
     <span class="field-hint" id="tag-detail-cat">{{.Tag.CategoryName}}</span>
     {{end}}
     <span class="tag-detail-actions">
       {{if not .IsRating}}
-      <button type="button" id="btn-detail-rename" class="btn-sm" data-id="{{.Tag.ID}}" data-name="{{.Tag.Name}}">Rename</button>
-      <button type="button" id="btn-detail-category" class="btn-sm">Change category…</button>
-      <button type="button" id="btn-detail-alias" class="btn-sm">{{if .Tag.IsAlias}}Repoint to…{{else}}Alias to…{{end}}</button>
+      <button type="button" id="btn-detail-rename" class="btn-sm" data-id="{{.Tag.ID}}" data-name="{{.Tag.Name}}">{{ T "tags_detail.rename" }}</button>
+      <button type="button" id="btn-detail-category" class="btn-sm">{{ T "tags_detail.change_category" }}</button>
+      <button type="button" id="btn-detail-alias" class="btn-sm">{{if .Tag.IsAlias}}{{ T "tags_detail.repoint_to" }}{{else}}{{ T "tags_detail.alias_to" }}{{end}}</button>
       {{end}}
       {{if and .MonloaderPaired .MonloaderPTR (not .Tag.IsAlias) (not .IsRating)}}
       <button type="button" id="btn-detail-ptr" class="btn-sm monloader-accent"
-              title="Add this tag's aliases and implications from the Public Tag Repository">PTR lookup</button>
+              title="{{ T "tags_detail.ptr_lookup_title" }}">PTR lookup</button>
       {{end}}
       <button type="button" id="btn-detail-delete" class="btn-sm btn-danger"
               data-name="{{.Tag.Name}}" data-category="{{.Tag.CategoryName}}"
-              title="{{if .IsRating}}Strip this rating from every image (the catalog row stays){{else}}Delete this tag from every image{{end}}">Delete</button>
+              title="{{if .IsRating}}{{ T "tags_detail.strip_rating_title" }}{{else}}{{ T "tags_detail.delete_tag_title" }}{{end}}">{{ T "tags_detail.delete" }}</button>
     </span>
   </h2>
 
   <p class="tag-detail-meta">
-    usage <strong>{{.Tag.UsageCount}}</strong>
-    · origin
+    {{ T "tags_detail.usage" }} <strong>{{.Tag.UsageCount}}</strong>
+    · {{ T "tags_detail.origin" }}
     {{if .Tag.Origin}}
       {{$kind := index $kinds .Tag.Origin}}
       {{if eq $kind "user"}}<span class="origin-user">user</span>{{else}}<span class="origin-chip origin-{{$kind}}" title="{{.Tag.Origin}}">{{.Tag.Origin}}</span>{{end}}
     {{else}}<span class="origin-none">—</span>{{end}}
-    · created <strong>{{.Tag.CreatedAt.Format "2006-01-02"}}</strong>
-    · last used {{if .Tag.LastUsedAt.IsZero}}<span class="origin-none">—</span>{{else}}<strong>{{.Tag.LastUsedAt.Format "2006-01-02"}}</strong>{{end}}
+    · {{ T "tags_detail.created" }} <strong>{{.Tag.CreatedAt.Format "2006-01-02"}}</strong>
+    · {{ T "tags_detail.last_used" }} {{if .Tag.LastUsedAt.IsZero}}<span class="origin-none">—</span>{{else}}<strong>{{.Tag.LastUsedAt.Format "2006-01-02"}}</strong>{{end}}
   </p>
 
   <div id="tag-flash"></div>
 
   {{if .Tag.IsAlias}}
   <section class="tag-detail-section">
-    <h3>Resolves to</h3>
+    <h3>{{ T "tags_detail.resolves_to" }}</h3>
     {{with .Canonical}}
     <div class="tag-canonical-card">
       <span style="color:{{$.Tag.CategoryColor}}">{{$.Tag.Name}}</span>
@@ -56,12 +56,12 @@
       <span class="field-hint">{{.CategoryName}}</span>
       · usage {{.UsageCount}}
       · last used {{if .LastUsedAt.IsZero}}—{{else}}{{.LastUsedAt.Format "2006-01-02"}}{{end}}
-      · <a href="/tags/{{.ID}}">details →</a>
+      · <a href="/tags/{{.ID}}">{{ T "tags_detail.tag_details" }}</a>
     </div>
     {{else}}
-    <p class="field-hint">Canonical tag missing.</p>
+    <p class="field-hint">{{ T "tags_detail.canonical_missing" }}</p>
     {{end}}
-    <p class="field-hint">Searches for {{.Tag.Name}} and new adds of it land on the canonical. An alias row never carries images itself.</p>
+    <p class="field-hint">{{ T "tags_detail.alias_row_hint" (dict "name" .Tag.Name) }}</p>
   </section>
   {{else}}
   <!-- Inbound (aliases, implied by) left, outbound (implies) right; the
@@ -72,7 +72,7 @@
     <div>
       <div class="tag-detail-inbound" style="border-color:{{.Tag.CategoryColor}}">
         <section class="tag-detail-section">
-          <h3>Aliases pointing here</h3>
+          <h3>{{ T "tags_detail.aliases_pointing_here" }}</h3>
           {{if .Aliases}}
           <ul class="tag-list">
             {{range .Aliases}}
@@ -85,20 +85,20 @@
               <button class="tag-remove-btn"
                       hx-delete="/tags/{{.ID}}"
                       hx-headers='{"X-CSRF-Token":"{{$csrf}}"}'
-                      hx-confirm="Delete the alias {{.Name}}?"
-                      data-confirm-ok="Delete"
+                      hx-confirm="{{ T "tags_detail.delete_alias_confirm" (dict "name" .Name) }}"
+                      data-confirm-ok="{{ T "tags_detail.delete_btn" }}"
                       hx-on::after-request="if(event.detail.successful){this.closest('li').remove()}"
-                      title="Delete this alias">×</button>
+                      title="{{ T "tags_detail.delete_alias_title" }}">×</button>
             </li>
             {{end}}
           </ul>
           {{else}}
-          <p class="field-hint">No aliases point at this tag.</p>
+          <p class="field-hint">{{ T "tags_detail.no_aliases" }}</p>
           {{end}}
         </section>
 
         <section class="tag-detail-section">
-          <h3>Implied by</h3>
+          <h3>{{ T "tags_detail.implied_by" }}</h3>
           {{if .ImpliedBy}}
           <ul class="tag-list">
             {{range .ImpliedBy}}
@@ -112,12 +112,12 @@
                       hx-delete="/tags/{{.ParentID}}/implications/{{$.Tag.ID}}"
                       hx-headers='{"X-CSRF-Token":"{{$csrf}}"}'
                       hx-on::after-request="if(event.detail.successful){this.closest('li').remove()}"
-                      title="Remove this implication">×</button>
+                      title="{{ T "tags_detail.remove_implication_title" }}">×</button>
             </li>
             {{end}}
           </ul>
           {{else}}
-          <p class="field-hint">Nothing implies this tag.</p>
+          <p class="field-hint">{{ T "tags_detail.nothing_implies" }}</p>
           {{end}}
         </section>
       </div>
@@ -126,19 +126,19 @@
            carries - seconds on a monster tag - so they arrive as one
            lazy fragment after first paint. -->
       <section class="tag-detail-section"
-               hx-get="/tags/{{.Tag.ID}}/usage" hx-trigger="load" hx-swap="innerHTML">Loading…</section>
+               hx-get="/tags/{{.Tag.ID}}/usage" hx-trigger="load" hx-swap="innerHTML">{{ T "tags_detail.loading" }}</section>
 
       <section class="tag-detail-section">
-        <h3>Recent images</h3>
+        <h3>{{ T "tags_detail.recent_images" }}</h3>
         {{if .RecentImageIDs}}
         <div class="tag-recent-strip">
           {{range .RecentImageIDs}}
           <a href="/images/{{.}}"><img src="/thumbnails/{{$.ActiveGallery}}/{{.}}.jpg" alt="image {{.}}" loading="lazy"></a>
           {{end}}
         </div>
-        <p><a href="/?q={{.Tag.CategoryName}}:{{.Tag.Name}}">all {{.Tag.UsageCount}} in gallery →</a></p>
+        <p><a href="/?q={{.Tag.CategoryName}}:{{.Tag.Name}}">{{ T "tags_detail.all_in_gallery" (dict "count" .Tag.UsageCount) }}</a></p>
         {{else}}
-        <p class="field-hint">No visible images carry this tag.</p>
+        <p class="field-hint">{{ T "tags_detail.no_visible_images" }}</p>
         {{end}}
       </section>
     </div>
@@ -146,7 +146,7 @@
     <div>
       <div class="tag-detail-outbound" style="border-color:{{.Tag.CategoryColor}}">
         <section class="tag-detail-section">
-          <h3>Implies</h3>
+          <h3>{{ T "tags_detail.implies" }}</h3>
           <div id="implications-editor" data-tag-id="{{.Tag.ID}}">
             {{template "partials/implications_dialog.html" (dict "Parent" .Tag "Implications" .Implications "CSRFToken" $csrf)}}
           </div>
@@ -164,21 +164,21 @@
         hx-target="#rename-error"
         hx-swap="innerHTML">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <p>Rename <strong id="rename-src-name"></strong></p>
+    <p>{{ T "tags_detail.rename_tag" }} <strong id="rename-src-name"></strong></p>
     <div class="field">
-      <label>New name</label>
+      <label>{{ T "tags_detail.new_name" }}</label>
       <input type="text" name="name" id="rename-new-name" required autocomplete="off">
     </div>
     {{if not .Tag.IsAlias}}
     <label style="display:block;font-size:12px">
       <input type="checkbox" name="keep_alias" value="1" id="rename-keep-alias">
-      Keep the old name as an alias
+      {{ T "tags_detail.keep_alias" }}
     </label>
     {{end}}
     <div id="rename-error"></div>
     <div class="dialog-actions">
-      <button type="submit">Rename</button>
-      <button type="button" onclick="document.getElementById('rename-dialog').close()">Cancel</button>
+      <button type="submit">{{ T "tags_detail.rename_btn" }}</button>
+      <button type="button" onclick="document.getElementById('rename-dialog').close()">{{ T "tags_detail.cancel" }}</button>
     </div>
   </form>
 </dialog>
@@ -192,9 +192,9 @@
         hx-swap="innerHTML"
         hx-on::after-request="onDetailCategoryChanged(event)">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <p>Move <strong>{{.Tag.Name}}</strong> to:</p>
+    <p>{{ T "tags_detail.move_to" (dict "name" .Tag.Name) }}</p>
     <div class="field">
-      <label>Target category</label>
+      <label>{{ T "tags_detail.target_category" }}</label>
       <select name="category_id" id="detail-category-select">
         {{range .Categories}}
         <option value="{{.ID}}" data-color="{{.Color}}" {{if eq .ID $.Tag.CategoryID}}selected{{end}}>{{.Name}}</option>
@@ -202,8 +202,8 @@
       </select>
     </div>
     <div class="dialog-actions">
-      <button type="submit">Move</button>
-      <button type="button" onclick="document.getElementById('detail-category-dialog').close()">Cancel</button>
+      <button type="submit">{{ T "tags_detail.move_btn" }}</button>
+      <button type="button" onclick="document.getElementById('detail-category-dialog').close()">{{ T "tags_detail.cancel" }}</button>
     </div>
   </form>
 </dialog>
@@ -214,19 +214,19 @@
      create-alias dialog. -->
 <dialog id="detail-alias-dialog">
   <form onsubmit="event.preventDefault(); confirmDetailAlias()">
-    <p>{{if .Tag.IsAlias}}Repoint{{else}}Alias{{end}} <strong>{{.Tag.Name}}</strong> to:</p>
+    <p>{{if .Tag.IsAlias}}{{ T "tags_detail.repoint" }}{{else}}{{ T "tags_detail.alias" }}{{end}} <strong>{{.Tag.Name}}</strong> to:</p>
     <div class="field">
-      <label>Canonical tag</label>
+      <label>{{ T "tags_detail.canonical_tag" }}</label>
       {{template "tag_suggest_input" dict "Name" "canonical_id" "InputID" "detail-alias-canon" "SuggestID" "detail-alias-suggest" "Required" true}}
     </div>
     {{if not .Tag.IsAlias}}
-    <p style="color:var(--error);font-size:12px">Every image tagged {{.Tag.Name}} moves to the canonical and its implications go with it; the name stays as a zero-usage alias. This cannot be undone.</p>
+    <p style="color:var(--error);font-size:12px">{{ T "tags_detail.alias_warning" (dict "name" .Tag.Name) }}</p>
     {{end}}
-    <p style="color:var(--fg-dim);font-size:12px">The canonical is created if it doesn't exist yet.</p>
+    <p style="color:var(--fg-dim);font-size:12px">{{ T "tags_detail.canonical_hint" }}</p>
     <div id="detail-alias-flash"></div>
     <div class="dialog-actions">
-      <button type="submit" class="btn-danger">{{if .Tag.IsAlias}}Repoint{{else}}Alias{{end}}</button>
-      <button type="button" onclick="document.getElementById('detail-alias-dialog').close()">Cancel</button>
+      <button type="submit" class="btn-danger">{{if .Tag.IsAlias}}{{ T "tags_detail.repoint" }}{{else}}{{ T "tags_detail.alias_btn" }}{{end}}</button>
+      <button type="button" onclick="document.getElementById('detail-alias-dialog').close()">{{ T "tags_detail.cancel" }}</button>
     </div>
   </form>
 </dialog>

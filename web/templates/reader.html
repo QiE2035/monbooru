@@ -40,33 +40,33 @@
       {{end}}
     </div>
     <nav class="reader-bar">
-      <a class="reader-back" href="{{$detailHref}}" title="{{ T "reader_back_title" }} (Esc)">← {{ T "reader_back" }}</a>
+      <a class="reader-back" href="{{$detailHref}}" title="{{ T "reader.back_title" }} (Esc)">← {{ T "reader.back" }}</a>
       {{if gt .PageCount 1}}
-      <a class="reader-pages" href="{{$pagesHref}}" title="{{ T "reader_pages_title" }} (P)">≡ {{ T "reader_pages" }} <span class="btn-key-hint">(P)</span></a>
+      <a class="reader-pages" href="{{$pagesHref}}" title="{{ T "reader.pages_title" }} (P)">≡ {{ T "reader.pages" }} <span class="btn-key-hint">(P)</span></a>
       {{end}}
       {{if gt .Page 1}}
-      <a class="reader-nav reader-first" href="/images/{{.Image.ID}}/read?page=1{{.BackKVQS}}" title="{{ T "reader_first_page" }} (Home)">|&lt;</a>
-      <a class="reader-nav reader-prev" href="/images/{{.Image.ID}}/read?page={{sub .Page 1}}{{.BackKVQS}}" title="{{ T "reader_prev_page" }} (←)">&lt;</a>
+      <a class="reader-nav reader-first" href="/images/{{.Image.ID}}/read?page=1{{.BackKVQS}}" title="{{ T "reader.first_page" }} (Home)">|&lt;</a>
+      <a class="reader-nav reader-prev" href="/images/{{.Image.ID}}/read?page={{sub .Page 1}}{{.BackKVQS}}" title="{{ T "reader.prev_page" }} (←)">&lt;</a>
       {{else}}
       <span class="reader-nav reader-disabled" aria-hidden="true">|&lt;</span>
       <span class="reader-nav reader-disabled" aria-hidden="true">&lt;</span>
       {{end}}
-      <button type="button" class="reader-counter" id="reader-counter" title="{{ T "reader_jump_title" }} (p)">{{.Page}} / {{.PageCount}}</button>
+      <button type="button" class="reader-counter" id="reader-counter" title="{{ T "reader.jump_title" }} (p)">{{.Page}} / {{.PageCount}}</button>
       {{if lt .Page .PageCount}}
-      <a class="reader-nav reader-next" href="/images/{{.Image.ID}}/read?page={{add .Page 1}}{{.BackKVQS}}" title="{{ T "reader_next_page" }} (→)">&gt;</a>
-      <a class="reader-nav reader-last" href="/images/{{.Image.ID}}/read?page={{.PageCount}}{{.BackKVQS}}" title="{{ T "reader_last_page" }} (End)">&gt;|</a>
+      <a class="reader-nav reader-next" href="/images/{{.Image.ID}}/read?page={{add .Page 1}}{{.BackKVQS}}" title="{{ T "reader.next_page" }} (→)">&gt;</a>
+      <a class="reader-nav reader-last" href="/images/{{.Image.ID}}/read?page={{.PageCount}}{{.BackKVQS}}" title="{{ T "reader.last_page" }} (End)">&gt;|</a>
       {{else}}
       <span class="reader-nav reader-disabled" aria-hidden="true">&gt;</span>
       <span class="reader-nav reader-disabled" aria-hidden="true">&gt;|</span>
       {{end}}
-      <a class="reader-open" href="/images/{{.Image.ID}}/page/{{.Page}}" target="_blank" rel="noopener" title="{{ T "reader_open_new_tab" }} (o)">↗</a>
+      <a class="reader-open" href="/images/{{.Image.ID}}/page/{{.Page}}" target="_blank" rel="noopener" title="{{ T "reader.open_new_tab" }} (o)">↗</a>
     </nav>
   </main>
   {{template "partials/image_lightbox.html" .}}
   <dialog id="reader-jump-dialog">
     <form method="GET" action="/images/{{.Image.ID}}/read">
       {{if .BackToPages}}<input type="hidden" name="from" value="pages">{{end}}
-      <p>{{ T "reader_jump_to_page" }} (1 - {{.PageCount}})</p>
+      <p>{{ T "reader.jump_to_page" }} (1 - {{.PageCount}})</p>
       <div class="field">
         <input type="number" name="page" id="reader-jump-input" min="1" max="{{.PageCount}}" value="{{.Page}}" autocomplete="off">
       </div>

@@ -25,17 +25,17 @@ import (
 func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db().Read.Query(`SELECT id FROM images WHERE is_missing = 1`)
 	if err != nil {
-		writeInlineFlash(w, "err", "Error: "+err.Error())
+		writeInlineFlash(w, "err", localize("handler_flash.error_prefix", map[string]any{"error": err.Error()}))
 		return
 	}
 	ids, scanErr := db.ScanIDs(rows)
 	_ = rows.Close()
 	if scanErr != nil {
-		writeInlineFlash(w, "err", "Error: "+scanErr.Error())
+		writeInlineFlash(w, "err", localize("handler_flash.error_prefix", map[string]any{"error": scanErr.Error()}))
 		return
 	}
 	if len(ids) == 0 {
-		writeInlineFlash(w, "ok", "Removed 0 missing image(s).")
+		writeInlineFlash(w, "ok", localize("handler_flash.removed_missing_images_zero"))
 		return
 	}
 
@@ -86,7 +86,7 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 		}
 		s.finishJob(err, cancelled, fmt.Sprintf("prune cancelled (%d/%d removed)", removed, total), fmt.Sprintf("Removed %d missing image(s).", removed))
 	}()
-	writeInlineFlash(w, "ok", "Prune started.")
+	writeInlineFlash(w, "ok", localize("handler_flash.prune_started"))
 }
 
 // pruneOrphanedThumbnailsPost queues the orphan sweep as a background
@@ -97,7 +97,7 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 func (s *Server) pruneOrphanedThumbnailsPost(w http.ResponseWriter, r *http.Request) {
 	cx := s.Active()
 	if cx == nil {
-		writeInlineFlash(w, "err", "No active gallery.")
+		writeInlineFlash(w, "err", localize("handler_flash.no_active_gallery"))
 		return
 	}
 	if !s.startJob(w, models.JobTypePruneThumbs) {
@@ -116,17 +116,17 @@ func (s *Server) pruneOrphanedThumbnailsPost(w http.ResponseWriter, r *http.Requ
 		}
 		s.jobs.Complete(fmt.Sprintf("Removed %d orphaned thumbnail(s).", removed))
 	}()
-	writeInlineFlash(w, "ok", "Thumbnail prune started.")
+	writeInlineFlash(w, "ok", localize("handler_flash.thumbnail_prune_started"))
 }
 
 func (s *Server) recalcTagsPost(w http.ResponseWriter, r *http.Request) {
 	updated, err := s.tagSvc().RecalcCount()
 	s.Active().InvalidateCaches()
 	if err != nil {
-		writeInlineFlash(w, "err", fmt.Sprintf("Recalc partially completed (%d updated): %s", updated, err.Error()))
+		writeInlineFlash(w, "err", localize("handler_flash.recalc_partial", map[string]any{"updated": updated, "error": err.Error()}))
 		return
 	}
-	writeInlineFlash(w, "ok", fmt.Sprintf("Recalculated %d tag count(s).", updated))
+	writeInlineFlash(w, "ok", localize("handler_flash.recalc_completed", map[string]any{"count": updated}))
 }
 
 // tagCategoryConflictsPost counts tags whose name occupies more than one
@@ -137,16 +137,16 @@ func (s *Server) recalcTagsPost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) tagCategoryConflictsPost(w http.ResponseWriter, r *http.Request) {
 	n, err := s.tagSvc().ConflictsCount()
 	if err != nil {
-		writeInlineFlash(w, "err", "Error: "+err.Error())
+		writeInlineFlash(w, "err", localize("handler_flash.error_prefix", map[string]any{"error": err.Error()}))
 		return
 	}
 	if n == 0 {
-		writeInlineFlash(w, "ok", "No tags share a name across categories.")
+		writeInlineFlash(w, "ok", localize("handler_flash.no_tags_share_name"))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = fmt.Fprintf(w,
-		`<div class="flash flash-ok"><strong>%d</strong> tag name%s span multiple categories - <a href="/tags?conflicts=1">review them on the Tags page</a>.</div>`,
+		`<div class="flash flash-ok">`+localize("handler_flash.tag_name_conflicts", map[string]any{"count": n})+`</div>`,
 		n, plural(n))
 }
 
@@ -213,7 +213,7 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 	selected := r.Form["path_id"]
 	allFlag := r.FormValue("all") == "true"
 	if len(selected) == 0 && !allFlag {
-		writeInlineFlash(w, "err", "No duplicate paths selected.")
+		writeInlineFlash(w, "err", localize("handler_flash.no_duplicate_paths_selected"))
 		return
 	}
 
@@ -248,7 +248,7 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if len(ids) == 0 {
-			writeInlineFlash(w, "err", "No valid path_ids in request.")
+			writeInlineFlash(w, "err", localize("handler_flash.no_valid_path_ids"))
 			return
 		}
 		placeholders, args := db.InPlaceholders(ids)
@@ -283,7 +283,7 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(paths) == 0 {
-		writeInlineFlash(w, "ok", "Removed 0 duplicate path(s).")
+		writeInlineFlash(w, "ok", localize("handler_flash.removed_duplicate_paths_zero"))
 		return
 	}
 
@@ -330,7 +330,7 @@ func (s *Server) removeDuplicatesPost(w http.ResponseWriter, r *http.Request) {
 		})
 		s.finishJob(err, cancelled, fmt.Sprintf("remove duplicates cancelled (%d/%d)", removed, total), fmt.Sprintf("Removed %d duplicate path(s).", removed))
 	}()
-	writeInlineFlash(w, "ok", "Duplicate-path removal started.")
+	writeInlineFlash(w, "ok", localize("handler_flash.duplicate_removal_started"))
 }
 
 // promoteAliasPathPost flips an alias path to the canonical path for
@@ -346,7 +346,7 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 	pathID, err := strconv.ParseInt(pathIDRaw, 10, 64)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Invalid path id.")
+		writeInlineFlash(w, "err", localize("handler_flash.invalid_path_id"))
 		return
 	}
 	tx, err := s.db().Write.Begin()
@@ -361,16 +361,16 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 	var alreadyCanonical int
 	if err := tx.QueryRow(`SELECT image_id, path, is_canonical FROM image_paths WHERE id = ?`, pathID).Scan(&imageID, &newPath, &alreadyCanonical); err != nil {
 		w.WriteHeader(http.StatusNotFound)
-		writeInlineFlash(w, "err", "Path not found.")
+		writeInlineFlash(w, "err", localize("handler_flash.path_not_found"))
 		return
 	}
 	if alreadyCanonical == 1 {
-		writeInlineFlash(w, "ok", "Already canonical.")
+		writeInlineFlash(w, "ok", localize("handler_flash.already_canonical"))
 		return
 	}
 	if _, statErr := os.Stat(newPath); statErr != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Cannot promote: file is missing on disk.")
+		writeInlineFlash(w, "err", localize("handler_flash.cannot_promote_missing"))
 		return
 	}
 	if _, err := tx.Exec(`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ?`, imageID); err != nil {
@@ -393,7 +393,7 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", err.Error())
 		return
 	}
-	writeInlineFlash(w, "ok", "Promoted to canonical.")
+	writeInlineFlash(w, "ok", localize("handler_flash.promoted_to_canonical"))
 }
 
 func (s *Server) rebuildThumbnailsPost(w http.ResponseWriter, r *http.Request) {
@@ -401,7 +401,7 @@ func (s *Server) rebuildThumbnailsPost(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", err.Error())
 		return
 	}
-	writeInlineFlash(w, "ok", "Thumbnail rebuild started.")
+	writeInlineFlash(w, "ok", localize("handler_flash.thumbnail_rebuild_started"))
 }
 
 // startRebuildThumbsJob queues a rebuild-thumbs job against the supplied
@@ -511,7 +511,7 @@ func (s *Server) computePhashesPost(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jobs.Complete(fmt.Sprintf("Computed perceptual hashes for %d image(s) (%d updated).", processed, updated))
 	}()
-	writeInlineFlash(w, "ok", "Perceptual-hash backfill started.")
+	writeInlineFlash(w, "ok", localize("handler_flash.phash_backfill_started"))
 }
 
 func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
@@ -544,7 +544,7 @@ func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
 		freed := max(beforeSize-afterSize, 0)
 		s.jobs.Complete(fmt.Sprintf("Vacuumed (reclaimed %s).", humanBytesFmt(freed)))
 	}()
-	writeInlineFlash(w, "ok", "Vacuum started. Watch the status bar for the reclaimed-space report.")
+	writeInlineFlash(w, "ok", localize("handler_flash.vacuum_started"))
 }
 
 // freeMemoryPost runs the on-demand version of runMemoryReclaim: trims
@@ -557,10 +557,10 @@ func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) freeMemoryPost(w http.ResponseWriter, r *http.Request) {
 	if err := s.jobs.Start(models.JobTypeFreeMemory); err != nil {
 		w.WriteHeader(http.StatusConflict)
-		writeInlineFlash(w, "err", "A job is running; try again when it finishes.")
+		writeInlineFlash(w, "err", localize("handler_flash.job_running"))
 		return
 	}
-	defer s.jobs.Complete("Memory caches released.")
+	defer s.jobs.Complete(localize("handler_flash.memory_released"))
 	before := readVmRSS()
 	s.ctxMu.RLock()
 	ctxs := make([]*galleryCtx, 0, len(s.contexts))
@@ -577,10 +577,10 @@ func (s *Server) freeMemoryPost(w http.ResponseWriter, r *http.Request) {
 	tagger.ReleaseAll()
 	after := readVmRSS()
 	if before > 0 && after > 0 && before > after {
-		writeInlineFlash(w, "ok", "Freed "+humanBytesFmt(int64(before-after))+".")
+		writeInlineFlash(w, "ok", localize("handler_flash.freed_bytes", map[string]any{"bytes": humanBytesFmt(int64(before - after))}))
 		return
 	}
-	writeInlineFlash(w, "ok", "Memory caches released.")
+	writeInlineFlash(w, "ok", localize("handler_flash.memory_released"))
 }
 
 // dbFileSize returns the total on-disk footprint of the SQLite database -
@@ -739,7 +739,7 @@ func (s *Server) reExtractMetadataPost(w http.ResponseWriter, r *http.Request) {
 		s.jobs.Complete(fmt.Sprintf("Re-extracted metadata for %d image(s) (%d updated).", processed, updated))
 	}()
 
-	writeInlineFlash(w, "ok", "Re-extraction started.")
+	writeInlineFlash(w, "ok", localize("handler_flash.re_extraction_started"))
 }
 
 // reExtractApply commits a re-extracted image's source_type, deletes the
