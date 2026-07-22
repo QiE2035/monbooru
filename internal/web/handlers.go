@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"html"
 	"net/http"
@@ -31,13 +32,15 @@ func setFlashHeader(w http.ResponseWriter, text, kind string, extras map[string]
 	// supplied value spliced into the message (e.g. a folder name in the
 	// move flash) would land as live markup.
 	triggers := map[string]any{
-		"monbooru:flash": map[string]any{"text": html.EscapeString(text), "kind": kind},
+		"monbooru:flash": map[string]any{"text": text, "kind": kind},
 	}
 	for k, v := range extras {
 		triggers[k] = v
 	}
 	if b, err := json.Marshal(triggers); err == nil {
-		w.Header().Set("HX-Trigger", string(b))
+		// Use Base64 encoding to avoid UTF-8 issues in HTTP headers
+		encoded := base64.StdEncoding.EncodeToString(b)
+		w.Header().Set("HX-Trigger-Base64", encoded)
 	}
 }
 
@@ -66,6 +69,7 @@ func hxDone(w http.ResponseWriter, r *http.Request, flash, hxDest, fallback stri
 // taken verbatim and HTML-escaped here so every call site shares one
 // escape boundary.
 func writeInlineFlash(w http.ResponseWriter, kind, text string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if kind == "" {
 		kind = "ok"
 	}
@@ -77,6 +81,7 @@ func writeInlineFlash(w http.ResponseWriter, kind, text string) {
 // the few flashes that carry markup (e.g. links to affected rows) which
 // the plain-text escaper would render as literal angle brackets.
 func writeInlineFlashHTML(w http.ResponseWriter, kind, body string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if kind == "" {
 		kind = "ok"
 	}
@@ -87,6 +92,7 @@ func writeInlineFlashHTML(w http.ResponseWriter, kind, body string) {
 // polling fragment that would otherwise overwrite the region it sat in. Empty
 // text clears the slot.
 func writeFlashOOB(w http.ResponseWriter, id, kind, text string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	body := ""
 	if text != "" {
 		if kind == "" {

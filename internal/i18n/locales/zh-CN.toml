@@ -736,6 +736,7 @@ implied_and_aliases  = "蕴含标签与别名"
 implied_tags         = "蕴含标签"
 aliases              = "别名"
 remove_tag           = "移除标签"
+user_tags_title      = "用户添加的标签"
 just_added           = "刚刚添加"
 
 [sidebar]
@@ -960,6 +961,11 @@ err_url_must_start_with_http    = "URL 必须以 http:// 或 https:// 开头"
 err_coordinates_invalid         = "坐标必须为非负整数"
 inbox                           = "收件箱"
 err_collection_too_long         = "合集过长（最多 {{.max}} 字符）"
+tags_added              = "已添加：{{.tags}}"
+tags_promoted           = "已提升为用户标签：{{.tags}}"
+tags_already_on_image   = "已在图像上：{{.tags}}"
+tags_replaced_rating    = "已替换评分 {{.ratings}}"
+tags_rejected           = "已拒绝：{{.tags}}"
 
 [flash]
 category_created = "类别 {{.name}} 已创建。"

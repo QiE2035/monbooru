@@ -152,7 +152,7 @@ func templateFuncs() template.FuncMap {
 			if len(userTags) > 0 {
 				out = append(out, imageTagSourceGroup{
 					Source: "user",
-					Title:  "Tags added by the user",
+					Title:  localize("tag_list.user_tags_title"),
 					Tags:   userTags,
 				})
 			}

@@ -692,6 +692,11 @@ err_url_must_start_with_http    = "url must start with http:// or https://"
 err_coordinates_invalid         = "coordinates must be non-negative integers"
 inbox                           = "Inbox"
 err_collection_too_long         = "collection too long (max {{.max}} chars)"
+tags_added              = "added: {{.tags}}"
+tags_promoted           = "promoted to user tag: {{.tags}}"
+tags_already_on_image   = "already on image: {{.tags}}"
+tags_replaced_rating    = "replaced rating {{.ratings}}"
+tags_rejected           = "rejected: {{.tags}}"
 
 [tags_js]
 strip_confirm              = "Strip \"{0}\" from every image?"
@@ -949,6 +954,7 @@ implied_and_aliases  = "Implied tags and aliases"
 implied_tags         = "Implied tags"
 aliases              = "Aliases"
 remove_tag           = "Remove tag"
+user_tags_title      = "Tags added by the user"
 just_added           = "Just added"
 
 [sidebar]

@@ -1685,6 +1685,33 @@ document.body.addEventListener('monbooru:flash', function(e) {
   stashActionFlash(text, kind);
 });
 
+// Handle Base64-encoded HX-Trigger-Base64 header to avoid UTF-8 encoding issues in HTTP headers
+// Use htmx:beforeOnLoad to process before HX-Refresh triggers a full page reload
+document.body.addEventListener('htmx:beforeOnLoad', function(e) {
+  if (!e.detail || !e.detail.xhr) return;
+  var triggerBase64 = e.detail.xhr.getResponseHeader('HX-Trigger-Base64');
+  if (!triggerBase64) return;
+  try {
+    // Decode Base64 to UTF-8 correctly (atob returns Latin1, need to convert to UTF-8)
+    var binaryString = atob(triggerBase64);
+    var bytes = new Uint8Array(binaryString.length);
+    for (var i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    var decoded = new TextDecoder('utf-8').decode(bytes);
+    var triggers = JSON.parse(decoded);
+    // Manually trigger each event in the triggers object
+    for (var eventName in triggers) {
+      if (triggers.hasOwnProperty(eventName)) {
+        var event = new CustomEvent(eventName, {detail: triggers[eventName], bubbles: true});
+        document.body.dispatchEvent(event);
+      }
+    }
+  } catch (err) {
+    // Ignore decoding errors
+  }
+});
+
 // Handles the dialog response for /relations/add. The success-side flash
 // rides the shared monbooru:flash HX-Trigger so it lands in the page
 // slot via the common listener; this handler only owns the conflict

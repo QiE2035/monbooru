@@ -221,31 +221,31 @@ func (s *Server) addTagToImage(w http.ResponseWriter, r *http.Request) {
 	// only). Build the parts once, then route them.
 	addedPart := func() string {
 		if len(added) > 0 {
-			return "added: " + strings.Join(added, ", ")
+			return localize("handler_flash.tags_added", map[string]any{"tags": strings.Join(added, ", ")})
 		}
 		return ""
 	}()
 	promotedPart := func() string {
 		if len(promotedTokens) > 0 {
-			return "promoted to user tag: " + strings.Join(promotedTokens, ", ")
+			return localize("handler_flash.tags_promoted", map[string]any{"tags": strings.Join(promotedTokens, ", ")})
 		}
 		return ""
 	}()
 	dupesPart := func() string {
 		if mutated && len(dupes) > 0 {
-			return "already on image: " + strings.Join(dupes, ", ")
+			return localize("handler_flash.tags_already_on_image", map[string]any{"tags": strings.Join(dupes, ", ")})
 		}
 		return ""
 	}()
 	displacedPart := func() string {
 		if len(displacedRatings) > 0 {
-			return "replaced rating " + strings.Join(displacedRatings, ", ")
+			return localize("handler_flash.tags_replaced_rating", map[string]any{"ratings": strings.Join(displacedRatings, ", ")})
 		}
 		return ""
 	}()
 	rejectedPart := func() string {
 		if len(rejected) > 0 {
-			return "rejected: " + strings.Join(rejected, "; ")
+			return localize("handler_flash.tags_rejected", map[string]any{"tags": strings.Join(rejected, "; ")})
 		}
 		return ""
 	}()

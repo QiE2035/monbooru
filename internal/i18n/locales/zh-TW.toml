@@ -774,6 +774,7 @@ implied_and_aliases  = "蘊含標籤與別名"
 implied_tags         = "蘊含標籤"
 aliases              = "別名"
 remove_tag           = "移除標籤"
+user_tags_title      = "使用者新增的標籤"
 just_added           = "剛剛新增"
 
 [sidebar]
@@ -998,6 +999,11 @@ err_url_must_start_with_http    = "URL 必須以 http:// 或 https:// 開頭"
 err_coordinates_invalid         = "坐標必須為非負整數"
 inbox                           = "收件匣"
 err_collection_too_long         = "合集過長（最多 {{.max}} 字符）"
+tags_added              = "已新增：{{.tags}}"
+tags_promoted           = "已提升為使用者標籤：{{.tags}}"
+tags_already_on_image   = "已在圖像上：{{.tags}}"
+tags_replaced_rating    = "已取代評分 {{.ratings}}"
+tags_rejected           = "已拒絕：{{.tags}}"
 
 [flash]
 category_created = "類別 {{.name}} 已建立。"

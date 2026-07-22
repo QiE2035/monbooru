@@ -45,6 +45,7 @@ func setDialogSavedTrigger(w http.ResponseWriter, event, dialogID string) {
 // writeOOBSummaryFlash swaps a summary span and a flash slot out-of-band in
 // one fragment, the shared epilogue of the settings config dialogs.
 func writeOOBSummaryFlash(w http.ResponseWriter, spanID, summary, flashID, msg string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = fmt.Fprintf(w,
 		`<span id="%s" hx-swap-oob="true">%s</span><div id="%s" hx-swap-oob="true"><div class="flash flash-ok">%s</div></div>`,
 		html.EscapeString(spanID), html.EscapeString(summary), html.EscapeString(flashID), html.EscapeString(msg))
