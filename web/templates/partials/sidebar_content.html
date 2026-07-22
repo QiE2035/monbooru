@@ -21,9 +21,9 @@
           <li class="tag-entry" data-name="{{.Name}}">
             <a href="/?q={{$q}}" class="tag-link" data-tag="{{$q}}" style="color:{{.CategoryColor}}">{{.Name}}</a>
             {{if $active}}
-            <button class="tag-add-btn btn-tag-add active" data-tag="{{$q}}" title="{{ T "sidebar_remove_from_search" }}">-</button>
+            <button class="tag-add-btn btn-tag-add active" data-tag="{{$q}}" title="{{ T "sidebar.remove_from_search" }}">-</button>
             {{else}}
-            <button class="tag-add-btn btn-tag-add" data-tag="{{$q}}" title="{{ T "sidebar_add_to_search" }}">+</button>
+            <button class="tag-add-btn btn-tag-add" data-tag="{{$q}}" title="{{ T "sidebar.add_to_search" }}">+</button>
             {{end}}
             <span class="tag-count">{{.UsageCount}}</span>
           </li>
