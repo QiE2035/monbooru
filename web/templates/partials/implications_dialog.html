@@ -1,17 +1,17 @@
 {{define "partials/implications_dialog.html"}}
-<p>Tags implied by <strong style="color:{{.Parent.CategoryColor}}">{{.Parent.Name}}</strong>:</p>
+<p>{{ T "implications_dialog.implied_by" (dict "parent" .Parent.Name) }}</p>
 <ul class="tag-list">
   {{range .Implications}}
   <li class="tag-item" style="color:{{.ImpliedCategoryColor}}">
-    <a href="/tags/{{.ImpliedID}}" class="tag-chip-name" title="Tag details">{{.ImpliedName}}</a>
+    <a href="/tags/{{.ImpliedID}}" class="tag-chip-name" title="{{ T "implications_dialog.tag_details_title" }}">{{.ImpliedName}}</a>
     <button class="tag-remove-btn"
             hx-delete="/tags/{{.ParentID}}/implications/{{.ImpliedID}}"
             hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
             hx-on::after-request="if(event.detail.successful){this.closest('li').remove();}"
-            title="Remove this implication">×</button>
+            title="{{ T "implications_dialog.remove_implication_title" }}">×</button>
   </li>
   {{else}}
-  <li class="no-tags">No implications declared.</li>
+  <li class="no-tags">{{ T "implications_dialog.no_implications" }}</li>
   {{end}}
 </ul>
 <form id="implication-add-form" class="add-tag-form"
@@ -22,7 +22,7 @@
   <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
   <div class="add-tag-input-wrap">
     <input type="text" name="implied_id" id="implication-add-input"
-           placeholder="Imply tag(s)..." required autocomplete="off"
+           placeholder="{{ T "implications_dialog.imply_placeholder" }}" required autocomplete="off"
            data-multi-tags="1"
            hx-get="/internal/tags/suggest"
            hx-trigger="input changed delay:200ms"
@@ -32,7 +32,7 @@
            onkeydown="handleSuggestKey(event, 'implication-add-suggest', 'implication-add-input')">
     <div id="implication-add-suggest" class="suggest-dropdown tag-suggest-dropdown"></div>
   </div>
-  <button type="submit" class="btn-sm">Add</button>
+  <button type="submit" class="btn-sm">{{ T "implications_dialog.add_btn" }}</button>
 </form>
 <div id="implication-add-flash"></div>
 {{end}}

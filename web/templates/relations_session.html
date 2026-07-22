@@ -8,34 +8,34 @@
     <div class="detail-nav-group">
       <a class="back-link" href="/relations">‹ Relations</a>
       <span class="detail-nav-sep">/</span>
-      <strong class="walker-page-title">Relations session</strong>
+      <strong class="walker-page-title">{{ T "relations_session.title" }}</strong>
       {{if .Pair}}
       <span class="detail-nav-sep">·</span>
-      <span class="field-hint"><strong>{{.Remaining}}</strong> pair(s) remaining</span>
+      <span class="field-hint"><strong>{{.Remaining}}</strong> {{ T "relations_session.pairs_remaining" }}</span>
       {{end}}
     </div>
     <form method="get" action="/relations/session" class="session-order-form">
-      <span class="field-hint">Order</span>
-      <label><input type="radio" name="order" value="smallest_distance_first" onchange="this.form.submit()" {{if eq .Order "smallest_distance_first"}}checked{{end}}> Smallest distance</label>
-      <label><input type="radio" name="order" value="largest_file_first" onchange="this.form.submit()" {{if eq .Order "largest_file_first"}}checked{{end}}> Largest file</label>
-      <label><input type="radio" name="order" value="random" onchange="this.form.submit()" {{if eq .Order "random"}}checked{{end}}> Random</label>
+      <span class="field-hint">{{ T "relations_session.order_label" }}</span>
+      <label><input type="radio" name="order" value="smallest_distance_first" onchange="this.form.submit()" {{if eq .Order "smallest_distance_first"}}checked{{end}}> {{ T "relations_session.order_smallest_distance" }}</label>
+      <label><input type="radio" name="order" value="largest_file_first" onchange="this.form.submit()" {{if eq .Order "largest_file_first"}}checked{{end}}> {{ T "relations_session.order_largest_file" }}</label>
+      <label><input type="radio" name="order" value="random" onchange="this.form.submit()" {{if eq .Order "random"}}checked{{end}}> {{ T "relations_session.order_random" }}</label>
     </form>
   </div>
 
   {{if not .Pair}}
   <section class="session-empty">
     {{if gt .HiddenByCeiling 0}}
-    <h3>No pairs at your <strong>{{.Ceiling}}</strong> rating ceiling.</h3>
-    <p class="field-hint"><strong>{{.HiddenByCeiling}}</strong> pair(s) are hidden because one or both sides exceed the current ceiling.</p>
+    <h3>{{ T "relations_session.no_pairs_ceiling_heading" (dict "ceiling" .Ceiling) }}</h3>
+    <p class="field-hint">{{ T "relations_session.no_pairs_ceiling_hint" (dict "count" .HiddenByCeiling) }}</p>
     <form hx-post="/internal/rating-ceiling?level=explicit" hx-swap="none"
           hx-on::after-request="if(event.detail.successful){window.location.reload()}"
           style="display:inline">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <button type="submit" class="btn-sm btn-purple">Raise ceiling to explicit</button>
+      <button type="submit" class="btn-sm btn-purple">{{ T "relations_session.raise_ceiling_btn" }}</button>
     </form>
     {{else}}
-    <h3>No pairs to review.</h3>
-    <p class="field-hint">The queue is empty. Run <a href="/relations">Find new pairs</a> to surface more candidates.</p>
+    <h3>{{ T "relations_session.no_pairs_heading" }}</h3>
+    <p class="field-hint">{{ T "relations_session.no_pairs_hint" }}</p>
     {{end}}
   </section>
   {{else}}
@@ -53,7 +53,7 @@
            data-a-type="{{.Pair.A.FileType}}" data-b-type="{{.Pair.B.FileType}}">
     <div class="session-cells">
       <div class="session-cell" data-side="{{$firstSide}}">
-        <h4 class="session-role" data-role="left">Left</h4>
+        <h4 class="session-role" data-role="left">{{ T "relations_session.left" }}</h4>
         <a href="/images/{{$first.ID}}" target="_blank">
           {{template "partials/session_cell_media.html" (dict "ID" $first.ID "FileType" $first.FileType "ActiveGallery" $.ActiveGallery)}}
         </a>
@@ -65,16 +65,16 @@
       <div class="session-bridge">
         <div class="session-distance" aria-hidden="true">
           <span class="session-distance-line"></span>
-          <span class="session-distance-label">distance <strong>{{.Pair.Distance}}</strong></span>
+          <span class="session-distance-label">{{ T "relations_session.distance" }} <strong>{{.Pair.Distance}}</strong></span>
           <span class="session-distance-line"></span>
         </div>
         <div class="session-controls">
-          <button type="button" id="session-swap" title="Swap which side is left (W)">Swap sides (W)</button>
-          <button type="button" id="session-compare" title="Compare the two images (C)">Compare (C)</button>
+          <button type="button" id="session-swap" title="{{ T "relations_session.swap_title" }}">{{ T "relations_session.swap_btn" }}</button>
+          <button type="button" id="session-compare" title="{{ T "relations_session.compare_title" }}">{{ T "relations_session.compare_btn" }}</button>
         </div>
       </div>
       <div class="session-cell" data-side="{{$secondSide}}">
-        <h4 class="session-role" data-role="right">Right</h4>
+        <h4 class="session-role" data-role="right">{{ T "relations_session.right" }}</h4>
         <a href="/images/{{$second.ID}}" target="_blank">
           {{template "partials/session_cell_media.html" (dict "ID" $second.ID "FileType" $second.FileType "ActiveGallery" $.ActiveGallery)}}
         </a>
@@ -85,7 +85,7 @@
       </div>
     </div>
 
-    <p class="session-prompt"><span id="session-prompt-text" data-default="Hover a decision below to preview what it commits.">Hover a decision below to preview what it commits.</span></p>
+    <p class="session-prompt"><span id="session-prompt-text" data-default="{{ T "relations_session.prompt_default" }}">{{ T "relations_session.prompt_default" }}</span></p>
 
     <form id="session-decision-form" hx-post="/relations/session/decide" hx-swap="none"
           hx-on::after-request="onSessionDecideResponse(event)">
@@ -135,21 +135,21 @@
         </div>
       </div>
       <div class="dialog-actions">
-        <button type="button" id="compare-close">Close</button>
+        <button type="button" id="compare-close">{{ T "relations_session.close_btn" }}</button>
       </div>
     </dialog>
 
     <dialog id="session-postdecide-delete-dialog">
-      <h4><span id="postdecide-dup-id">#?</span> has been marked as a duplicate of <span id="postdecide-original-id">#?</span></h4>
-      <p>Delete <span id="postdecide-dup-id-body">#?</span> from disk now?</p>
-      <p class="field-hint">The original stays in the gallery; only this duplicate file is removed from disk.</p>
+      <h4><span id="postdecide-dup-id">#?</span> {{ T "relations_session.postdecide_heading" (dict "dupID" "#" "originalID" "#?") }}<span id="postdecide-original-id">#?</span></h4>
+      <p>{{ T "relations_session.postdecide_prompt" (dict "dupID" "#" ) }}<span id="postdecide-dup-id-body">#?</span>?</p>
+      <p class="field-hint">{{ T "relations_session.postdecide_hint" }}</p>
       <label id="postdecide-copy-tags-label" hidden>
         <input type="checkbox" id="postdecide-copy-tags">
-        Copy unique tags onto the original first
+        {{ T "relations_session.postdecide_copy_tags_label" }}
       </label>
       <div class="dialog-actions">
-        <button type="button" id="postdecide-keep" class="btn-sm" autofocus>Keep file</button>
-        <button type="button" id="postdecide-delete" class="btn-danger btn-sm">Delete now</button>
+        <button type="button" id="postdecide-keep" class="btn-sm" autofocus>{{ T "relations_session.postdecide_keep_btn" }}</button>
+        <button type="button" id="postdecide-delete" class="btn-danger btn-sm">{{ T "relations_session.postdecide_delete_btn" }}</button>
       </div>
     </dialog>
 

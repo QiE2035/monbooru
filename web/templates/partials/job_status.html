@@ -17,10 +17,10 @@
     {{end}}
   {{else if and . .Summary}}
     <span class="job-done" id="job-done-msg">✓ {{.Summary}}</span>
-    <button class="job-dismiss" onclick="dismissJobStatus()" title="Dismiss">×</button>
+    <button class="job-dismiss" onclick="dismissJobStatus()" title="{{ T "job_status.dismiss" }}">×</button>
   {{else if and . .Error}}
     <span class="job-error" id="job-error-msg">✗ {{.Error}}</span>
-    <button class="job-dismiss" onclick="dismissJobStatus()" title="Dismiss">×</button>
+    <button class="job-dismiss" onclick="dismissJobStatus()" title="{{ T "job_status.dismiss" }}">×</button>
   {{end}}
 </div>
 {{end}}

@@ -21,21 +21,21 @@
     <div class="detail-nav-group">
       <a href="/relations" class="back-link">‹ Relations</a>
       <span class="detail-nav-sep">/</span>
-      <strong class="walker-page-title">Browse relations</strong>
+      <strong class="walker-page-title">{{ T "relations_browse.title" }}</strong>
     </div>
   </div>
 
   <div id="flash-relations"></div>
 
   <nav class="browse-tabs">
-    <a href="/relations/browse?kind=duplicate"   class="browse-tab{{if eq .Kind "duplicate"}}   browse-tab-active{{end}}">Same image <span class="field-hint">({{.Counts.DupGroups}})</span></a>
-    <a href="/relations/browse?kind=alternate"   class="browse-tab{{if eq .Kind "alternate"}}   browse-tab-active{{end}}">Variants <span class="field-hint">({{.Counts.AltGroups}})</span></a>
-    <a href="/relations/browse?kind=version"     class="browse-tab{{if eq .Kind "version"}}     browse-tab-active{{end}}">Revision history <span class="field-hint">({{.Counts.VersionChains}})</span></a>
-    <a href="/relations/browse?kind=derivative"  class="browse-tab{{if eq .Kind "derivative"}}  browse-tab-active{{end}}">Based on <span class="field-hint">({{.Counts.DerivativeTrees}})</span></a>
-    <a href="/relations/browse?kind=not_related" class="browse-tab{{if eq .Kind "not_related"}} browse-tab-active{{end}}">Not related <span class="field-hint">({{.Counts.NotRelatedPairs}})</span></a>
+    <a href="/relations/browse?kind=duplicate"   class="browse-tab{{if eq .Kind "duplicate"}}   browse-tab-active{{end}}">{{ T "relations_browse.tab_same_image" }} <span class="field-hint">({{.Counts.DupGroups}})</span></a>
+    <a href="/relations/browse?kind=alternate"   class="browse-tab{{if eq .Kind "alternate"}}   browse-tab-active{{end}}">{{ T "relations_browse.tab_variants" }} <span class="field-hint">({{.Counts.AltGroups}})</span></a>
+    <a href="/relations/browse?kind=version"     class="browse-tab{{if eq .Kind "version"}}     browse-tab-active{{end}}">{{ T "relations_browse.tab_revision_history" }} <span class="field-hint">({{.Counts.VersionChains}})</span></a>
+    <a href="/relations/browse?kind=derivative"  class="browse-tab{{if eq .Kind "derivative"}}  browse-tab-active{{end}}">{{ T "relations_browse.tab_based_on" }} <span class="field-hint">({{.Counts.DerivativeTrees}})</span></a>
+    <a href="/relations/browse?kind=not_related" class="browse-tab{{if eq .Kind "not_related"}} browse-tab-active{{end}}">{{ T "relations_browse.tab_not_related" }} <span class="field-hint">({{.Counts.NotRelatedPairs}})</span></a>
     {{if gt (len .SortOptions) 1}}
     <div class="filter-group browse-sort">
-      <span class="filter-label">Sort</span>
+      <span class="filter-label">{{ T "relations_browse.sort_label" }}</span>
       {{range .SortOptions}}
       <a class="filter-btn{{if eq . $.Sort}} active{{end}}"
          href="/relations/browse?kind={{$.Kind}}&sort={{.}}">{{browseSortLabel .}}</a>
@@ -46,19 +46,19 @@
 
   {{if not .Cards}}
   {{if eq .Kind "not_related"}}
-  <p class="field-hint">You haven't rejected any pairs yet - pairs you mark Not related during a session will appear here so the queue stops resurfacing them.</p>
+  <p class="field-hint">{{ T "relations_browse.not_related_empty_hint" }}</p>
   {{else}}
-  <p class="field-hint">Nothing declared yet for this kind.</p>
+  <p class="field-hint">{{ T "relations_browse.nothing_declared_hint" }}</p>
   {{end}}
   {{else}}
   <div class="merge-toolbar" id="merge-toolbar">
-    <button type="button" class="btn-sm" id="merge-select-all-btn">Select all</button>
-    <button type="button" class="btn-sm" id="merge-clear-btn">Cancel</button>
-    <span class="merge-toolbar-count"><span id="merge-selected-count">0</span> selected</span>
+    <button type="button" class="btn-sm" id="merge-select-all-btn">{{ T "relations_browse.select_all_btn" }}</button>
+    <button type="button" class="btn-sm" id="merge-clear-btn">{{ T "relations_browse.cancel_btn" }}</button>
+    <span class="merge-toolbar-count"><span id="merge-selected-count">0</span> {{ T "relations_browse.selected_count" }}</span>
     {{if or (eq .Kind "duplicate") (eq .Kind "alternate")}}
-    <button type="button" class="btn-sm btn-purple" id="merge-selected-btn" disabled>Merge selected</button>
+    <button type="button" class="btn-sm btn-purple" id="merge-selected-btn" disabled>{{ T "relations_browse.merge_selected_btn" }}</button>
     {{end}}
-    <button type="button" class="btn-sm btn-danger" id="remove-selected-btn" disabled>Remove selected</button>
+    <button type="button" class="btn-sm btn-danger" id="remove-selected-btn" disabled>{{ T "relations_browse.remove_selected_btn" }}</button>
   </div>
   {{$pageBase := printf "/relations/browse?kind=%s&sort=%s" .Kind .Sort}}
   <ul class="relations-cards">
@@ -69,61 +69,61 @@
         <label class="merge-select" title="Select this group for merging">
           <input type="checkbox" name="group_id" value="{{.GroupID}}" class="merge-checkbox" data-original-id="{{.Original}}">
         </label>
-        <strong>Duplicate group #{{.GroupID}}</strong>
-        ({{len .Members}} member(s), original #{{.Original}})
+        <strong>{{ T "relations_browse.dup_group_label" (dict "groupID" .GroupID) }}</strong>
+        ({{ T "relations_browse.members_label" (dict "count" (len .Members) "originalID" .Original) }})
         <form hx-post="/relations/dup-group/{{.GroupID}}/copy-tags"
               hx-target="#flash-relations" hx-swap="innerHTML"
-              hx-confirm="Copy tags from the duplicates onto the original? Rating tags are excluded."
-              data-confirm-ok="Copy"
+              hx-confirm="{{ T "relations_browse.confirm_copy_tags" }}"
+              data-confirm-ok="{{ T "relations_browse.confirm_ok_copy" }}"
               style="display:inline">
           <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-          <button type="submit" class="btn-link-accent">[copy tags]</button>
+          <button type="submit" class="btn-link-accent">[{{ T "relations_browse.copy_tags_btn" }}]</button>
         </form>
-        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Dissolve this same-image group?" "OK" "Dissolve" "Label" "dissolve" "Reload" true "Fields" (dict "type" "dissolve-dup" "group_id" .GroupID)}}
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (T "relations_browse.confirm_dissolve_dup") "OK" (T "relations_browse.confirm_ok_dissolve") "Label" (T "relations_browse.dissolve_btn") "Reload" true "Fields" (dict "type" "dissolve-dup" "group_id" .GroupID)}}
         {{if eq (len .Members) 2}}
-        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Dissolve this group and queue the pair for the session?" "OK" "Review again" "Label" "review again" "Fields" (dict "type" "review-again" "kind" "duplicate" "group_id" .GroupID)}}
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (T "relations_browse.confirm_review_again_dup") "OK" (T "relations_browse.confirm_ok_review") "Label" (T "relations_browse.review_again_btn") "Fields" (dict "type" "review-again" "kind" "duplicate" "group_id" .GroupID)}}
         {{end}}
       {{else if eq .Kind "alternate"}}
         <label class="merge-select" title="Select this group for merging">
           <input type="checkbox" name="group_id" value="{{.GroupID}}" class="merge-checkbox">
         </label>
-        <strong>Alternate group #{{.GroupID}}</strong>
-        ({{len .Members}} member(s))
-        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Dissolve this variant group?" "OK" "Dissolve" "Label" "dissolve" "Reload" true "Fields" (dict "type" "dissolve-alt" "group_id" .GroupID)}}
+        <strong>{{ T "relations_browse.alt_group_label" (dict "groupID" .GroupID) }}</strong>
+        ({{ T "relations_browse.members_label" (dict "count" (len .Members) "originalID" "") }})
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (T "relations_browse.confirm_dissolve_alt") "OK" (T "relations_browse.confirm_ok_dissolve") "Label" (T "relations_browse.dissolve_btn") "Reload" true "Fields" (dict "type" "dissolve-alt" "group_id" .GroupID)}}
         {{if eq (len .Members) 2}}
-        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Dissolve this group and queue the pair for the session?" "OK" "Review again" "Label" "review again" "Fields" (dict "type" "review-again" "kind" "alternate" "group_id" .GroupID)}}
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (T "relations_browse.confirm_review_again_dup") "OK" (T "relations_browse.confirm_ok_review") "Label" (T "relations_browse.review_again_btn") "Fields" (dict "type" "review-again" "kind" "alternate" "group_id" .GroupID)}}
         {{end}}
       {{else if eq .Kind "version"}}
         <label class="merge-select" title="Select this chain for removal">
           <input type="checkbox" value="{{index .Members 0}}" class="merge-checkbox">
         </label>
-        <strong>Version chain #{{index .Members 0}}</strong>
-        ({{len .Members}} image(s), oldest #{{index .Members 0}} → newest #{{index .Members (sub (len .Members) 1)}})
-        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (printf "Dissolve this version chain? Every edge between the %d images is dropped." (len .Members)) "OK" "Dissolve" "Label" "dissolve" "Reload" true "Fields" (dict "type" "dissolve-version" "root_id" (index .Members 0))}}
+        <strong>{{ T "relations_browse.version_chain_label" (dict "rootID" (index .Members 0)) }}</strong>
+        ({{ T "relations_browse.version_chain_meta" (dict "count" (len .Members) "oldest" (index .Members 0) "newest" (index .Members (sub (len .Members) 1))) }})
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (T "relations_browse.confirm_dissolve_version" (dict "count" (len .Members))) "OK" (T "relations_browse.confirm_ok_dissolve") "Label" (T "relations_browse.dissolve_btn") "Reload" true "Fields" (dict "type" "dissolve-version" "root_id" (index .Members 0))}}
         {{if eq (len .Members) 2}}
-        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Unlink this revision edge and queue the pair for the session?" "OK" "Review again" "Label" "review again" "Fields" (dict "type" "review-again" "kind" "version" "a" (index .Members 0) "b" (index .Members 1))}}
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (T "relations_browse.confirm_review_again_version") "OK" (T "relations_browse.confirm_ok_review") "Label" (T "relations_browse.review_again_btn") "Fields" (dict "type" "review-again" "kind" "version" "a" (index .Members 0) "b" (index .Members 1))}}
         {{end}}
       {{else if eq .Kind "derivative"}}
         <label class="merge-select" title="Select this tree for removal">
           <input type="checkbox" value="{{index .Members 0}}" class="merge-checkbox">
         </label>
-        <strong>Derivative tree</strong>
-        ({{len .Members}} image(s), source #{{index .Members 0}})
-        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (printf "Dissolve this derivative tree? Every edge between the %d images is dropped." (len .Members)) "OK" "Dissolve" "Label" "dissolve" "Reload" true "Fields" (dict "type" "dissolve-derivative" "root_id" (index .Members 0))}}
+        <strong>{{ T "relations_browse.derivative_tree_label" }}</strong>
+        ({{ T "relations_browse.derivative_tree_meta" (dict "count" (len .Members) "source" (index .Members 0)) }})
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (T "relations_browse.confirm_dissolve_derivative" (dict "count" (len .Members))) "OK" (T "relations_browse.confirm_ok_dissolve") "Label" (T "relations_browse.dissolve_btn") "Reload" true "Fields" (dict "type" "dissolve-derivative" "root_id" (index .Members 0))}}
         {{if eq (len .Members) 2}}
-        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Unlink this derivative edge and queue the pair for the session?" "OK" "Review again" "Label" "review again" "Fields" (dict "type" "review-again" "kind" "derivative" "a" (index .Members 0) "b" (index .Members 1))}}
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (T "relations_browse.confirm_review_again_derivative") "OK" (T "relations_browse.confirm_ok_review") "Label" (T "relations_browse.review_again_btn") "Fields" (dict "type" "review-again" "kind" "derivative" "a" (index .Members 0) "b" (index .Members 1))}}
         {{end}}
       {{else if eq .Kind "not_related"}}
         <label class="merge-select" title="Select this pair for removal">
           <input type="checkbox" value="{{index .Members 0}}:{{index .Members 1}}" class="merge-checkbox">
         </label>
-        <strong>Not related</strong>
-        (#{{index .Members 0}} ↔ #{{index .Members 1}})
-        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Unlink this not-related pair? It can resurface in find-pairs." "OK" "Unlink" "Label" "unlink" "Reload" true "Fields" (dict "type" "not_related" "a" (index .Members 0) "b" (index .Members 1))}}
-        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Unlink this pair and queue it back into the session?" "OK" "Review again" "Label" "review again" "Fields" (dict "type" "review-again" "kind" "not_related" "a" (index .Members 0) "b" (index .Members 1))}}
+        <strong>{{ T "relations_browse.not_related_label" }}</strong>
+        ({{ T "relations_browse.not_related_meta" (dict "left" (index .Members 0) "right" (index .Members 1)) }})
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (T "relations_browse.confirm_unlink_not_related") "OK" (T "relations_browse.confirm_ok_unlink") "Label" "unlink" "Reload" true "Fields" (dict "type" "not_related" "a" (index .Members 0) "b" (index .Members 1))}}
+        {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" (T "relations_browse.confirm_review_again_not_related") "OK" (T "relations_browse.confirm_ok_review") "Label" (T "relations_browse.review_again_btn") "Fields" (dict "type" "review-again" "kind" "not_related" "a" (index .Members 0) "b" (index .Members 1))}}
       {{end}}
       {{if .CreatedAt}}
-      <div class="relations-card-meta field-hint">declared <time>{{.CreatedAt}}</time></div>
+      <div class="relations-card-meta field-hint">{{ T "relations_browse.declared_label" }} <time>{{.CreatedAt}}</time></div>
       {{end}}
       {{if eq .Kind "version"}}
       {{$first := index .Members 0}}{{$last := index .Members (sub (len .Members) 1)}}
@@ -132,7 +132,7 @@
           {{template "partials/relations_card_thumb.html" (dict "ID" $first "ActiveGallery" $.ActiveGallery "ExtraClass" "relations-card-summary-thumb" "Title" (printf "Image %d - added %s" $first (index $card.MemberIngestedAt $first)))}}
           <span class="relations-chain-arrow" aria-hidden="true">→</span>
           {{template "partials/relations_card_thumb.html" (dict "ID" $last "ActiveGallery" $.ActiveGallery "ExtraClass" "relations-card-summary-thumb" "Title" (printf "Image %d - added %s" $last (index $card.MemberIngestedAt $last)))}}
-          <span class="relations-card-summary-meta">{{len .Members}} images</span>
+          <span class="relations-card-summary-meta">{{ T "relations_browse.images_count" (dict "count" (len .Members)) }}</span>
         </summary>
         <div class="relations-card-chain">
           {{range $i, $id := .Members}}
@@ -146,7 +146,7 @@
       <details class="relations-card-expand">
         <summary class="relations-card-summary">
           {{template "partials/relations_card_thumb.html" (dict "ID" $source "ActiveGallery" $.ActiveGallery "ExtraClass" "relations-card-summary-thumb" "Title" (printf "Image %d - added %s" $source (index $card.MemberIngestedAt $source)))}}
-          <span class="relations-card-summary-meta">tree, {{len .Members}} images</span>
+          <span class="relations-card-summary-meta">{{ T "relations_browse.tree_images_count" (dict "count" (len .Members)) }}</span>
         </summary>
         <div class="relations-card-tree">
           {{range .TreeRows}}
@@ -195,12 +195,12 @@
 <dialog id="merge-dup-dialog">
   <form id="merge-dup-form" method="post" action="/relations/browse-groups/merge?kind=dup">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <h4>Merge same-image groups</h4>
-    <p class="field-hint">Which group's original wins on the merged row?</p>
+    <h4>{{ T "relations_browse.merge_dialog_title" }}</h4>
+    <p class="field-hint">{{ T "relations_browse.merge_dialog_hint" }}</p>
     <ul id="merge-dup-choices" class="merge-dup-choices"></ul>
     <div class="dialog-actions">
-      <button type="submit" class="btn-purple">Merge</button>
-      <button type="button" onclick="document.getElementById('merge-dup-dialog').close()">Cancel</button>
+      <button type="submit" class="btn-purple">{{ T "relations_browse.merge_btn" }}</button>
+      <button type="button" onclick="document.getElementById('merge-dup-dialog').close()">{{ T "relations_browse.cancel_btn" }}</button>
     </div>
   </form>
 </dialog>

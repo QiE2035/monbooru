@@ -8,18 +8,18 @@
     <div class="detail-nav-group">
       <a href="/relations#duplicates" class="back-link">‹ Relations</a>
       <span class="detail-nav-sep">/</span>
-      <strong class="walker-page-title">Duplicate files</strong>
+      <strong class="walker-page-title">{{ T "relations_dup_sha256.title" }}</strong>
     </div>
     {{if .Sha256Rows}}
     <div class="detail-topbar-right">
       <form hx-post="/relations/file-duplicates/remove"
             hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-            hx-confirm="Remove every non-canonical duplicate file and its bytes from disk? The canonical path stays."
-            data-confirm-ok="Remove all"
+            hx-confirm="{{ T "relations_dup_sha256.remove_all_confirm" }}"
+            data-confirm-ok="{{ T "relations_dup_sha256.remove_all_ok" }}"
             style="display:inline">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <input type="hidden" name="all" value="true">
-        <button type="submit" class="btn-danger btn-sm">Delete all duplicate files</button>
+        <button type="submit" class="btn-danger btn-sm">{{ T "relations_dup_sha256.delete_all_btn" }}</button>
       </form>
     </div>
     {{end}}
@@ -29,18 +29,18 @@
 
   {{if not .Sha256Rows}}
   <section class="session-empty">
-    <h3>No duplicate files left.</h3>
-    <p class="field-hint">Every image has a single path on disk. Drop in another sync or upload to surface more candidates.</p>
+    <h3>{{ T "relations_dup_sha256.empty_heading" }}</h3>
+    <p class="field-hint">{{ T "relations_dup_sha256.empty_hint" }}</p>
   </section>
   {{else}}
   <table class="browse-table">
     <thead>
       <tr>
-        <th>Image ID</th>
-        <th>Thumb</th>
-        <th>Canonical path</th>
-        <th>Duplicate path</th>
-        <th>Action</th>
+        <th>{{ T "relations_dup_sha256.col_image_id" }}</th>
+        <th>{{ T "relations_dup_sha256.col_thumb" }}</th>
+        <th>{{ T "relations_dup_sha256.col_canonical_path" }}</th>
+        <th>{{ T "relations_dup_sha256.col_duplicate_path" }}</th>
+        <th>{{ T "relations_dup_sha256.col_action" }}</th>
       </tr>
     </thead>
     <tbody>
@@ -56,11 +56,11 @@
         <td><code class="mono-small">{{.AliasPath}}</code></td>
         <td>
           <form hx-post="/relations/duplicates/sha256/remove-one" hx-swap="none"
-                hx-confirm="Delete this duplicate file from disk? The canonical path stays."
-                data-confirm-ok="Delete" style="display:inline">
+                hx-confirm="{{ T "relations_dup_sha256.delete_one_confirm" }}"
+                data-confirm-ok="{{ T "relations_dup_sha256.delete_btn" }}" style="display:inline">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="path_id" value="{{.PathID}}">
-            <button type="submit" class="btn-sm btn-danger">Delete</button>
+            <button type="submit" class="btn-sm btn-danger">{{ T "relations_dup_sha256.delete_btn" }}</button>
           </form>
         </td>
       </tr>

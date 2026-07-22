@@ -8,18 +8,18 @@
     <div class="detail-nav-group">
       <a href="/relations#duplicates" class="back-link">‹ Relations</a>
       <span class="detail-nav-sep">/</span>
-      <strong class="walker-page-title">Duplicate images</strong>
+      <strong class="walker-page-title">{{ T "relations_dup_marked.title" }}</strong>
     </div>
     {{if .MarkedRows}}
     <div class="detail-topbar-right">
       <form hx-post="/relations/duplicates/marked/delete-all"
             hx-target="#flash-walker-marked" hx-swap="innerHTML"
             hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-            hx-confirm="Delete every non-original member of every duplicate-image group? Files are removed from disk."
-            data-confirm-ok="Delete all"
+            hx-confirm="{{ T "relations_dup_marked.delete_all_confirm" }}"
+            data-confirm-ok="{{ T "relations_dup_marked.delete_all_ok" }}"
             style="display:inline">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <button type="submit" class="btn-danger btn-sm">Delete all duplicate images</button>
+        <button type="submit" class="btn-danger btn-sm">{{ T "relations_dup_marked.delete_all_btn" }}</button>
       </form>
     </div>
     {{end}}
@@ -29,19 +29,19 @@
 
   {{if not .MarkedRows}}
   <section class="session-empty">
-    <h3>No duplicate-image groups.</h3>
-    <p class="field-hint">Start a Relations session or use the detail-page Relations panel to declare a duplicate.</p>
+    <h3>{{ T "relations_dup_marked.empty_heading" }}</h3>
+    <p class="field-hint">{{ T "relations_dup_marked.empty_hint" }}</p>
   </section>
   {{else}}
   <table class="browse-table">
     <thead>
       <tr>
-        <th>Original ID</th>
-        <th>Original</th>
-        <th>Duplicate</th>
-        <th>Duplicate ID</th>
-        <th>Marked at</th>
-        <th>Action</th>
+        <th>{{ T "relations_dup_marked.col_original_id" }}</th>
+        <th>{{ T "relations_dup_marked.col_original" }}</th>
+        <th>{{ T "relations_dup_marked.col_duplicate" }}</th>
+        <th>{{ T "relations_dup_marked.col_duplicate_id" }}</th>
+        <th>{{ T "relations_dup_marked.col_marked_at" }}</th>
+        <th>{{ T "relations_dup_marked.col_action" }}</th>
       </tr>
     </thead>
     <tbody>
@@ -49,9 +49,9 @@
       <tr>
         <td><a href="/images/{{.OriginalID}}">#{{.OriginalID}}</a></td>
         <td>
-          <a href="/images/{{.OriginalID}}" class="browse-thumb relations-card-original" title="Original image #{{.OriginalID}}">
+          <a href="/images/{{.OriginalID}}" class="browse-thumb relations-card-original" title="{{ T "relations_dup_marked.original_image_title" (dict "id" .OriginalID) }}">
             <img src="/thumbnails/{{$.ActiveGallery}}/{{.OriginalID}}.jpg" alt="image {{.OriginalID}}" loading="lazy">
-            <span class="relations-card-tag">original</span>
+            <span class="relations-card-tag">{{ T "relations_dup_marked.original_badge" }}</span>
           </a>
         </td>
         <td>
@@ -64,14 +64,14 @@
         <td>
           {{if .HasTagsToCopy}}
           <button type="button" class="btn-link-accent btn-copy-tags-preview"
-                  data-group-id="{{.GroupID}}">[copy tags]</button>
+                  data-group-id="{{.GroupID}}">[{{ T "relations_dup_marked.copy_tags_btn" }}]</button>
           {{end}}
           <form hx-post="/relations/duplicates/marked/delete-one" hx-swap="none"
-                hx-confirm="Delete image {{.DuplicateID}} from the gallery? The file is removed from disk."
-                data-confirm-ok="Delete" style="display:inline">
+                hx-confirm="{{ T "relations_dup_marked.delete_one_confirm" (dict "duplicateID" .DuplicateID) }}"
+                data-confirm-ok="{{ T "relations_dup_marked.delete_btn" }}" style="display:inline">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="image_id" value="{{.DuplicateID}}">
-            <button type="submit" class="btn-sm btn-danger">Delete</button>
+            <button type="submit" class="btn-sm btn-danger">{{ T "relations_dup_marked.delete_btn" }}</button>
           </form>
         </td>
       </tr>
@@ -82,8 +82,8 @@
 </div>
 
 <dialog id="copy-tags-preview-dialog">
-  <h4>Copy tags to original</h4>
-  <div id="copy-tags-preview-body" class="copy-tags-preview-body">Loading...</div>
+  <h4>{{ T "relations_dup_marked.copy_tags_dialog_title" }}</h4>
+  <div id="copy-tags-preview-body" class="copy-tags-preview-body">{{ T "relations_dup_marked.loading" }}</div>
 </dialog>
 
 <script>
@@ -93,7 +93,7 @@ document.querySelectorAll('.btn-copy-tags-preview').forEach(function(btn) {
     var dlg = document.getElementById('copy-tags-preview-dialog');
     var body = document.getElementById('copy-tags-preview-body');
     if (!dlg || !body) return;
-    body.innerHTML = 'Loading...';
+    body.innerHTML = '{{ T "relations_dup_marked.loading" }}';
     if (window.htmx) {
       window.htmx.ajax('GET', '/relations/dup-group/' + gid + '/copy-tags/preview', {
         target: '#copy-tags-preview-body', swap: 'innerHTML',

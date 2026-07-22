@@ -217,29 +217,13 @@ func templateFuncs() template.FuncMap {
 		"cancelTitle": func(jobType string) string {
 			// Tooltip for the job-status × button. Only the job types that
 			// observe ctx.Done() in their worker loop appear here.
-			switch jobType {
-			case "autotag":
-				return "Stop auto-tagging"
-			case "sync":
-				return "Stop syncing"
-			case "delete":
-				return "Stop deleting"
-			case "re-extract":
-				return "Stop re-extraction"
-			case "rebuild-thumbs":
-				return "Stop thumbnail rebuild"
-			case "prune-thumbs":
-				return "Stop thumbnail prune"
-			case "phash":
-				return "Stop phash backfill"
-			case "relations":
-				return "Stop find-pairs"
-			case "move":
-				return "Stop moving"
-			case "tag":
-				return "Stop tagging"
+			key := "job_status.cancel_" + jobType
+			result := localize(key)
+			if result == key {
+				// Fallback if key not found
+				return localize("job_status.cancel_default")
 			}
-			return "Stop"
+			return result
 		},
 		"humanBytes": humanBytesFmt,
 		// localTime renders a stored-UTC timestamp in the process timezone
@@ -255,19 +239,7 @@ func templateFuncs() template.FuncMap {
 			return t.In(time.Local).Format("2006-01-02 15:04:05")
 		},
 		"browseSortLabel": func(s string) string {
-			switch s {
-			case "recent":
-				return "Recent"
-			case "size":
-				return "Size"
-			case "original_added":
-				return "Original added"
-			case "length":
-				return "Length"
-			case "newest_member":
-				return "Newest member"
-			}
-			return s
+			return localize("relations_browse.sort_" + s)
 		},
 		"isLongValue": func(s string) bool {
 			return len(s) > 200 || strings.ContainsAny(s, "\n\r")
