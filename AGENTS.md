@@ -2,7 +2,7 @@
 
 本文件面向在本仓库工作的 AI 编码 Agent。它汇总项目结构、构建/测试命令、目录约定和编码风格,作为高效协作的入口。面向人类使用者的信息请阅读 [README.md](README.md);面向用户的功能说明请阅读 [DOC.md](DOC.md);面向用户的版本变更请阅读 [CHANGELOG.md](CHANGELOG.md)。
 
-> **当前活跃分支**:`i18n-new`(基于 `main` + 两个 i18n 提交)。合并前请确认 `internal/i18n/` 与 `[i18n] language` 配置在主干上已经发布。
+> **当前活跃分支**:`i18n-new`(已完成全界面多语言、热切换与硬编码文本清理,仍在迭代翻译键命名)。合并前请确认 `internal/i18n/` 与 `[i18n] language` 配置在主干上已经发布。
 
 ## 1. 项目概述
 
@@ -154,11 +154,14 @@ level = "info"                     # debug / info / warn / error
 - **SQL**:`?` 参数化占位符,不要字符串拼接;所有 SQL 集中在 `internal/db` 与各包的 `queries.go` 中。
 - **日志**:使用 `internal/logx`(`slog` 封装);不要在库内直接 `log.Println`。
 - **前端**:`web/templates` 用 `html/template`,所有动态值经 `template.JSEscape` 或自动转义;**不要**引入 JS 框架或构建步骤,扩展用 htmx。
-- **i18n 模板用法**:
-  - 模板里通过 `{{ T "key" }}` 取翻译;占位符用 `{{ T "key" (dict "name" .User) }}`(go-i18n 要求 `TemplateData` 是 map 或 struct,裸标量会被丢弃并打 debug 日志)。
-  - 缺失键(主语言 + English 回退都未命中)时,`T` 返回 key 原文,方便发现漏译。
-  - 新增键时**同步**改 `internal/i18n/locales/en.toml` 和其它要支持的语言文件;英文是回退根,所有键至少要进 `en.toml`。
-  - HTML `<html lang="...">` 由 `layout.html` 根据当前 localizer 自动渲染;手动改 layout 时别覆盖。
+- **i18n 用法**:
+  - **模板渲染**:模板里通过 `{{ T "key" }}` 取翻译;占位符用 `{{ T "key" (dict "name" .User) }}`(go-i18n 要求 `TemplateData` 是 map 或 struct,裸标量会被丢弃并打 debug 日志)。
+  - **Go 代码**:处理器/服务中的提示、错误信息使用 `internal/web` 包内的 `localize("key")` 或 `localize("key", map[string]any{"count": n})`;它封装了 `i18n.Localizer().MustLocalize`,未命中键会 panic,因此新增键必须同步入 `en.toml`。
+  - **缺失键行为**:模板函数 `T` 在主语言 + English 回退都未命中时返回 key 原文,方便发现漏译;`localize` 使用 `MustLocalize`,缺 key 会直接 panic,所以 Go 代码路径更严格。
+  - **同步所有语言文件**:新增键时**同步**改 `internal/i18n/locales/en.toml` 和其它要支持的语言文件;英文是回退根,所有键至少要进 `en.toml`。
+  - **TOML 键名避坑**:翻译键名同时是 TOML 键,避免使用 TOML 保留字(如 `hash`、`id`)。若业务关键词与保留字冲突,在代码层做映射(参考 `internal/web/handlers_suggest.go` 的 `translateKeyName`: `hash` → `sha256_hash`、`id` → `image_id`),而不是在 toml 里硬写保留字。
+  - **长文本/带链接文本拆分**:一句完整提示中若需插入 `<a>` 等 HTML 链接或可变组件,可拆成前缀、中段、后缀多个 key(如 `pairing_hint_prefix` / `pairing_hint_link` / `pairing_hint_suffix`),在模板/代码中拼接,避免把 HTML 写进翻译值。
+  - **HTML `<html lang="...">`**:由 `layout.html` 根据当前 localizer 自动渲染;手动改 layout 时别覆盖。
 - **嵌入资源**:`web/embed.go` 列出要打包的目录;`internal/i18n/locales.go` 用 `//go:embed locales/*.toml`。新增静态文件或翻译文件后需确认 `//go:embed` 通配仍覆盖到。
 - **构建标签**:
   - `//go:build tagger` 用于 ONNX 推理相关代码。
@@ -187,6 +190,7 @@ level = "info"                     # debug / info / warn / error
   - 启动失败 `i18n: language "xx" is not available` → `[i18n] language` 在 `internal/i18n/locales/` 没有同名 `.toml`;要么改配置,要么补文件后重新编译。
   - 启动失败 `i18n: invalid language "xx"` → BCP-47 解析失败(常见:写成 `zh_CN` 用下划线、漏了大小写)。Use `-` 分隔,如 `zh-CN`。
   - 页面出现裸 key(如 `{{ T "..." }}` 直接渲染)→ 该 key 在主语言和 `en.toml` 都未定义;补翻译后无需重启,`SetLanguage` 下次切换会顺带覆盖。
+  - 请求 panic `message "..." not found` → Go 代码通过 `localize()` 调用 `MustLocalize`,该 key 在 `en.toml` 里不存在;补 key 后重新编译(因为 toml 是 embed 的)。
   - 热切换没生效 → 检查 Settings POST 是否带了 CSRF token;`SetLanguage` 写入的是进程级 Localizer,新请求立即可见。
   - `MONBOORU_I18N_LANGUAGE` 环境变量会覆盖 TOML,但**不会**触发 `SetLanguage`——它只在 `MustInit` 时生效,所以热切换仍要走 Settings 页面。
 
