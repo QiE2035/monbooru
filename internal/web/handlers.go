@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/monbooru/monbooru/internal/db"
 	"github.com/monbooru/monbooru/internal/logx"
@@ -116,41 +115,11 @@ func (s *Server) notFoundHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func loadImage(ctx context.Context, database *db.DB, id int64) (*models.Image, error) {
-	var img models.Image
-	var isMissing, isFav, isInbox int
-	var width, height, pageCount, seriesOrder *int
-	var durationSec *float64
-	var phash *int64
-	var autoTaggedAt *string
-	var ingestedAt string
-
-	err := database.Read.QueryRowContext(ctx,
-		`SELECT id, sha256, canonical_path, folder_path, file_type,
-		        width, height, file_size, is_missing, is_favorited,
-		        is_inbox, auto_tagged_at, source_type, origin, source, url, note, original_source, page_count, duration_seconds, series, series_order, phash, ingested_at
-		 FROM images WHERE id = ?`, id,
-	).Scan(
-		&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
-		&width, &height, &img.FileSize, &isMissing, &isFav,
-		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &img.Note, &img.OriginalSource, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt,
-	)
+	img, err := models.ScanImageRow(database.Read.QueryRowContext(ctx,
+		`SELECT `+models.ImageRowColumns+` FROM images i WHERE i.id = ?`, id))
 	if err != nil {
 		return nil, err
 	}
-	img.IsMissing = isMissing == 1
-	img.IsFavorited = isFav == 1
-	img.IsInbox = isInbox == 1
-	img.Width = width
-	img.Height = height
-	img.PageCount = pageCount
-	img.DurationSec = durationSec
-	img.SeriesOrder = seriesOrder
-	img.Phash = phash
-	if autoTaggedAt != nil {
-		t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
-		img.AutoTaggedAt = &t
-	}
-	img.IngestedAt, _ = time.Parse(time.RFC3339, ingestedAt)
 	return &img, nil
 }
 

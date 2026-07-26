@@ -55,7 +55,7 @@
       <div class="settings-cols">
         <div class="settings-sub">
           <h4>Files</h4>
-          {{template "partials/range_field.html" dict "Name" "max_file_size_mb" "Label" "Max file size (MB)" "Min" 1 "Max" 5120 "Value" $cfg.Gallery.MaxFileSizeMB "Ticks" (list 512 1024 2048 3072 4096 5120) "Hint" "Files larger than this are skipped on upload and during sync."}}
+          {{template "partials/range_field.html" dict "Name" "max_file_size_mb" "Label" "Max file size (MB)" "Min" 1 "Max" 5120 "Step" 1 "Value" $cfg.Gallery.MaxFileSizeMB "Ticks" (list 512 1024 2048 3072 4096 5120) "Hint" "Files larger than this are skipped on upload and during sync."}}
           <div class="field">
             <label for="default_upload_folder">Default upload folder</label>
             <input type="text" name="default_upload_folder" id="default_upload_folder" value="{{$cfg.Gallery.DefaultUploadFolder}}" placeholder="(gallery root)">
@@ -66,11 +66,12 @@
               <input type="checkbox" name="watch_enabled" {{if $cfg.Gallery.WatchEnabled}}checked{{end}}>
               Watch gallery for new files automatically
             </label>
+            <span class="field-hint">Takes effect after a restart.</span>
           </div>
         </div>
         <div class="settings-sub">
           <h4>UI</h4>
-          {{template "partials/range_field.html" dict "Name" "page_size" "Label" "Page size" "Min" 1 "Max" 100 "Value" $cfg.UI.PageSize "Ticks" (list 20 40 60 80 100)}}
+          {{template "partials/range_field.html" dict "Name" "page_size" "Label" "Page size" "Min" 1 "Max" 100 "Step" 1 "Value" $cfg.UI.PageSize "Ticks" (list 20 40 60 80 100)}}
           <div class="field">
             <label>Thumbnails</label>
             <div class="radio-row">
@@ -513,8 +514,8 @@
             <label><input type="checkbox" name="use_cuda"{{if $cfg.Tagger.UseCUDA}} checked{{end}}> Use GPU (CUDA)</label>
             <p class="field-hint">Requires a CUDA-capable image and a GPU passed into the container.</p>
           </div>
-          {{template "partials/range_field.html" dict "Name" "parallel" "Label" "Parallel workers" "Min" 1 "Max" 16 "Value" $cfg.Tagger.Parallel "Ticks" (list 1 2 4 8 12 16) "Hint" "Images tagged in parallel."}}
-          {{template "partials/range_field.html" dict "Name" "idle_release_after_minutes" "Label" "Tagger RAM/VRAM idle release (minutes)" "Min" 0 "Max" 60 "Value" $cfg.Tagger.IdleReleaseAfterMinutes "Ticks" (list 0 15 30 45 60) "Hint" "Use 0 to free it just after inference."}}
+          {{template "partials/range_field.html" dict "Name" "parallel" "Label" "Parallel workers" "Min" 1 "Max" 16 "Step" 1 "Value" $cfg.Tagger.Parallel "Ticks" (list 1 2 4 8 12 16) "Hint" "Images tagged in parallel."}}
+          {{template "partials/range_field.html" dict "Name" "idle_release_after_minutes" "Label" "Tagger RAM/VRAM idle release (minutes)" "Min" 0 "Max" 60 "Step" 1 "Value" $cfg.Tagger.IdleReleaseAfterMinutes "Ticks" (list 0 15 30 45 60) "Hint" "Use 0 to free it just after inference."}}
         </div>
         <div class="settings-actions"><button type="submit">Save</button></div>
       </div>
@@ -644,16 +645,29 @@
       <input type="hidden" name="_csrf" value="{{$csrf}}">
       <div class="settings-cols">
         <div class="settings-sub">
-          <h4>Find-pairs default distance</h4>
-          {{template "partials/range_field.html" dict "Name" "default_distance" "Label" "Hamming distance" "Min" 0 "Max" 12 "Value" $cfg.Relations.DefaultDistance "Ticks" (list 0 2 4 6 8 10 12)}}
-        </div>
-        <div class="settings-sub">
           <h4>Default session order</h4>
           <div class="field">
             <label><input type="radio" name="default_session_order" value="smallest_distance_first" {{if eq $cfg.Relations.DefaultSessionOrder "smallest_distance_first"}}checked{{end}}> Smallest distance first</label>
             <label><input type="radio" name="default_session_order" value="largest_file_first" {{if eq $cfg.Relations.DefaultSessionOrder "largest_file_first"}}checked{{end}}> Largest file first</label>
             <label><input type="radio" name="default_session_order" value="random" {{if eq $cfg.Relations.DefaultSessionOrder "random"}}checked{{end}}> Random</label>
           </div>
+        </div>
+        <div class="settings-sub">
+          <h4>Tag similarity pairs</h4>
+          <div class="field">
+            <label><input type="checkbox" name="tag_pairs" {{if $cfg.Relations.TagPairs}}checked{{end}}> Also queue pairs that share rare tags</label>
+            <p class="field-hint">Finds recolours, redraws and based-on work that image similarity cannot see. Adds a full pass over the library to every find-pairs run.</p>
+          </div>
+        </div>
+      </div>
+      <div class="settings-cols">
+        <div class="settings-sub">
+          <h4>pHash matching distance</h4>
+          {{template "partials/range_field.html" dict "Name" "default_distance" "Label" "Hamming distance" "Min" 0 "Max" 12 "Step" 1 "Value" $cfg.Relations.DefaultDistance "Ticks" (list 0 2 4 6 8 10 12)}}
+        </div>
+        <div class="settings-sub">
+          <h4>Tag similarity match strength</h4>
+          {{template "partials/range_field.html" dict "Name" "tag_pair_threshold" "Label" "Score" "Min" 0.5 "Max" 1 "Step" 0.01 "Value" $cfg.Relations.TagPairThreshold "Ticks" (list 0.5 0.6 0.7 0.8 0.9 1)}}
         </div>
       </div>
       <div class="settings-actions"><button type="submit">Save</button></div>
@@ -749,7 +763,7 @@
           <label><input type="checkbox" name="run_auto_taggers"{{if $sched.RunAutoTaggers}} checked{{end}}> Run enabled auto-taggers</label>
         </div>
         <div class="field">
-          <label><input type="checkbox" name="find_relation_pairs"{{if $sched.FindRelationPairs}} checked{{end}}> Find relation pairs (phash near-duplicates)</label>
+          <label><input type="checkbox" name="find_relation_pairs"{{if $sched.FindRelationPairs}} checked{{end}}> Find relation pairs</label>
         </div>
       </div>
       <div class="settings-actions"><button type="submit">Save</button></div>

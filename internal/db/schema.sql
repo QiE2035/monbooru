@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS image_sources (
     commentary TEXT    NOT NULL DEFAULT '', -- artist commentary from this source; operator-editable, overwritten by a re-pull
     original   TEXT    NOT NULL DEFAULT '', -- upstream artist source the booru post declared (usually a URL, newline-joined when several); operator-editable, overwritten by a re-pull
     similarity REAL    NOT NULL DEFAULT 0,  -- best similarity-service score (0-100) a lookup matched this origin with; 0 = exact or manual. A matched origin's file differs by design, so refetches skip the md5 verify
+    md5_match  TEXT    NOT NULL DEFAULT '', -- last claimed-md5 vs local-file verdict: '' unknown, 'match', 'differ'. Written where enrich already hashes the file; gates the [upgrade] action
     parent_url TEXT    NOT NULL DEFAULT '', -- canonical URL of the post this booru post declared as its parent; drives derivative-edge linking once both sides are in the gallery
     fetched_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     PRIMARY KEY (image_id, site, post_id)
@@ -314,6 +315,7 @@ CREATE TABLE IF NOT EXISTS not_related_pairs (
 CREATE TABLE IF NOT EXISTS relation_session (
     id         INTEGER PRIMARY KEY CHECK (id = 1),
     order_mode TEXT NOT NULL DEFAULT 'smallest_distance_first',
+    detector   TEXT NOT NULL DEFAULT 'both',
     started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     paused_at  TEXT
 );
@@ -324,12 +326,23 @@ CREATE TABLE IF NOT EXISTS relation_session (
 -- not_related_pairs), or skips (sets skipped_at so the row sorts to
 -- the back of the queue). Canonicalised a < b matches the rest of the
 -- symmetric tables.
+-- collection_hidden stores the collection opt-out verdict per row: 1
+-- when both images share a collection absent from
+-- collection_find_relations. max_rating_rank mirrors the higher of
+-- the two members' images.rating_rank. Both are stamped by the
+-- bootstrap triggers on insert and resweeped when the underlying
+-- state changes, so the session walk and the hub counters read
+-- stored values instead of probing memberships and ratings per row.
 CREATE TABLE IF NOT EXISTS potential_relation_pairs (
     a_image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
     b_image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
     distance   INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     skipped_at TEXT,
+    source     TEXT NOT NULL DEFAULT 'phash',
+    score      REAL,
+    collection_hidden INTEGER NOT NULL DEFAULT 0,
+    max_rating_rank   INTEGER NOT NULL DEFAULT -1,
     PRIMARY KEY (a_image_id, b_image_id)
 );
 
@@ -431,3 +444,6 @@ CREATE INDEX IF NOT EXISTS idx_alt_group_members_group ON alt_group_members(grou
 CREATE INDEX IF NOT EXISTS idx_derivative_edges_source ON derivative_edges(source_image_id);
 CREATE INDEX IF NOT EXISTS idx_not_related_b           ON not_related_pairs(b_image_id, a_image_id);
 CREATE INDEX IF NOT EXISTS idx_potential_pairs_distance ON potential_relation_pairs(skipped_at, distance, a_image_id);
+-- b-side seek for the collection_hidden resweep triggers; the a side
+-- rides the primary key prefix.
+CREATE INDEX IF NOT EXISTS idx_potential_pairs_b        ON potential_relation_pairs(b_image_id);

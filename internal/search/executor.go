@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
-	"time"
 
 	"github.com/monbooru/monbooru/internal/db"
 	"github.com/monbooru/monbooru/internal/models"
@@ -36,49 +36,6 @@ type Query struct {
 	// position drives the order-sort. Empty falls back to the home-mirror
 	// columns (i.series, i.series_order).
 	OrderCollection string
-}
-
-// imageRowColumns is the canonical SELECT list shared by Execute and
-// executeFromCachedIDs. Keeping the column order frozen here means
-// scanImageRow's Scan-and-coerce stays the single source of truth for
-// the image row shape.
-const imageRowColumns = `i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
-	        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
-	        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.note, i.original_source, i.page_count, i.duration_seconds, i.series, i.series_order, i.phash, i.ingested_at, i.upload_batch`
-
-// scanImageRow reads one row in the imageRowColumns shape and folds the
-// int-as-bool flags + RFC3339 timestamps back onto the typed Image
-// struct.
-func scanImageRow(rows *sql.Rows) (models.Image, error) {
-	var img models.Image
-	var isMissing, isFav, isInbox int
-	var width, height, pageCount, seriesOrder *int
-	var durationSec *float64
-	var autoTaggedAt *string
-	var phash *int64
-	var ingestedAt string
-	if err := rows.Scan(
-		&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
-		&width, &height, &img.FileSize, &isMissing, &isFav,
-		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &img.Note, &img.OriginalSource, &pageCount, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt, &img.UploadBatch,
-	); err != nil {
-		return models.Image{}, err
-	}
-	img.IsMissing = isMissing == 1
-	img.IsFavorited = isFav == 1
-	img.IsInbox = isInbox == 1
-	img.Width = width
-	img.Height = height
-	img.PageCount = pageCount
-	img.DurationSec = durationSec
-	img.SeriesOrder = seriesOrder
-	img.Phash = phash
-	if autoTaggedAt != nil {
-		t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
-		img.AutoTaggedAt = &t
-	}
-	img.IngestedAt, _ = time.Parse(time.RFC3339, ingestedAt)
-	return img, nil
 }
 
 // Execute runs the query against the DB and returns paginated results.
@@ -157,8 +114,13 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 
 	orderClause := buildOrder(q.Sort, q.Order, q.RandomSeed)
 	var orderArgs []any
-	if q.Sort == "order" && q.OrderCollection != "" {
+	switch {
+	case q.Sort == "order" && q.OrderCollection != "":
 		orderClause, orderArgs = collectionOrderClause(q.OrderCollection, q.Order)
+	case q.Sort == "similarity":
+		if seed, ok := similarityRankSeed(database, q.Expr); ok {
+			orderClause, orderArgs = similarityOrderClause(seed, q.Order)
+		}
 	}
 
 	offset := (page - 1) * limit
@@ -195,19 +157,27 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	// idx_images_missing and materialises a temp B-tree for ORDER BY.
 	indexHint := sortIndexHint(q.Expr, q.Sort, hasMissingFilter, ceilingRewrote)
 
+	// A multi-leg INTERSECT is the dominant filter and the planner
+	// drives from it even with the sort index pinned - the pin only
+	// downgrades each candidate probe to a skip-scan on the two-column
+	// partial. Unpinned, the same probes ride the rowid (7x on the
+	// popular-3-AND shape). The id-only fan below keeps the hint: with
+	// no LIMIT to stop early, its ordered covering scan is the win.
+	dataHint := indexHint
+	if len(driverLegs) >= 2 {
+		dataHint = ""
+	}
+
 	dataSQL := fmt.Sprintf(
-		"SELECT "+imageRowColumns+`
+		"SELECT "+models.ImageRowColumns+`
 		 FROM images i%s
 		 WHERE %s
 		 %s
 		 LIMIT ? OFFSET ?`,
-		indexHint, where, orderClause,
+		dataHint, where, orderClause,
 	)
 
-	dataArgs := make([]any, 0, len(args)+len(orderArgs)+2)
-	dataArgs = append(dataArgs, args...)
-	dataArgs = append(dataArgs, orderArgs...)
-	dataArgs = append(dataArgs, limit, offset)
+	dataArgs := append(slices.Concat(args, orderArgs), limit, offset)
 	rows, err := database.Read.Query(dataSQL, dataArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("data query: %w", err)
@@ -216,7 +186,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 
 	var images []models.Image
 	for rows.Next() {
-		img, scanErr := scanImageRow(rows)
+		img, scanErr := models.ScanImageRow(rows)
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -243,10 +213,11 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 	// read pool. Pages > 1 still skip the fan because the cache either
 	// settled on page 1's request or the operator jumped past it.
 	//
-	// The recent-id bound is deliberately not fanned: it holds only for
-	// the rows this page needs, so the fan would cache the recent slice
-	// as if it were the whole match set and every later page would serve
-	// off a truncated list with a shrunken Total.
+	// The recent-id bound holds only for the rows this page needs, so
+	// the fan rebuilds the WHERE without it - caching the bounded slice
+	// would serve a truncated list with a shrunken Total on every later
+	// page. A complete fan is the true match set: its length replaces
+	// the loose upper-bound total the fast counter reported.
 	if q.CacheKey != "" && total > 0 && total <= adjacencyCacheMaxIDs {
 		if len(images) == total {
 			ids := make([]int64, len(images))
@@ -254,11 +225,23 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 				ids[i] = img.ID
 			}
 			AdjacencyCacheSet(q.CacheKey, ids)
-		} else if page == 1 && !idBounded && AdjacencyCacheTryAcquireFan(q.CacheKey) {
+		} else if page == 1 && AdjacencyCacheTryAcquireFan(q.CacheKey) {
 			defer AdjacencyCacheReleaseFan(q.CacheKey)
-			ids := fetchSortedMatchIDs(database, indexHint, where, args, orderClause, orderArgs, total)
+			fanWhere, fanArgs := where, args
+			if idBounded {
+				for i := range driverLegs {
+					driverLegs[i].idBound = 0
+				}
+				fanWhere, fanArgs, _, _ = buildWhereDBDriverFull(q.Expr, database, driverLegs)
+				fanWhere, fanArgs = applyAndDriver(fanWhere, fanArgs, driverLegs)
+				fanWhere = andDefaultVisible(fanWhere, hasMissingFilter)
+			}
+			ids := fetchSortedMatchIDs(database, indexHint, fanWhere, fanArgs, orderClause, orderArgs, total)
 			if len(ids) > 0 {
 				AdjacencyCacheSet(q.CacheKey, ids)
+				if len(ids) < min(total, adjacencyCacheMaxIDs) {
+					total = len(ids)
+				}
 			}
 		}
 	}
@@ -288,7 +271,7 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 
 	placeholders, args := db.InPlaceholders(pageIDs)
 	sql := fmt.Sprintf(
-		"SELECT "+imageRowColumns+" FROM images i WHERE i.id IN (%s)", placeholders,
+		"SELECT "+models.ImageRowColumns+" FROM images i WHERE i.id IN (%s)", placeholders,
 	)
 	rows, err := database.Read.Query(sql, args...)
 	if err != nil {
@@ -298,7 +281,7 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 
 	byID := make(map[int64]models.Image, len(pageIDs))
 	for rows.Next() {
-		img, scanErr := scanImageRow(rows)
+		img, scanErr := models.ScanImageRow(rows)
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -336,16 +319,8 @@ func fetchSortedMatchIDs(database *db.DB, indexHint, where string, args []any, o
 		`SELECT i.id FROM images i%s WHERE %s %s LIMIT ?`,
 		indexHint, where, orderClause,
 	)
-	qargs := make([]any, 0, len(args)+len(orderArgs)+1)
-	qargs = append(qargs, args...)
-	qargs = append(qargs, orderArgs...)
-	qargs = append(qargs, n)
-	rows, err := database.Read.Query(sql, qargs...)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = rows.Close() }()
-	ids, err := db.ScanIDs(rows)
+	qargs := append(slices.Concat(args, orderArgs), n)
+	ids, err := db.QueryIDs(database.Read, sql, qargs...)
 	if err != nil {
 		return nil
 	}
@@ -599,6 +574,17 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		return prev, next, nil
 	}
 
+	// Similarity has no key column to seek on, so the neighbours come
+	// from a position scan of the ranked list instead of a cursor.
+	if q.Sort == "similarity" {
+		ids := similarityMatchIDs(database, q)
+		if len(ids) == 0 {
+			return nil, nil, nil
+		}
+		prev, next := findInAdjacencyList(ids, currentID)
+		return prev, next, nil
+	}
+
 	// Decide the bucket gate ahead of the AND-driver pick so the driver
 	// doesn't materialise legs the bucket would render redundant. With
 	// the bucket bounding the candidate range to a fixed window
@@ -652,7 +638,13 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		// otherwise pay ~30 tag_id seeks per each of 2 000 bucket
 		// rows; with the bucket bound the materialised set drops to
 		// whatever lives inside that 2 000-id window.
-		driverLegs, _ = pickAndDriverTag(database, q.Expr, q.Sort == "random")
+		//
+		// allowSingleLiteral=true so a lone popular wildcard still
+		// yields its leg: the usage-threshold bail assumes an
+		// unbounded materialisation, but the bucket bound below caps
+		// it, and without the leg the cursor re-evaluates the wildcard
+		// EXISTS along the whole sort-index walk (~0.9 s at 1M).
+		driverLegs, _ = pickAndDriverTag(database, q.Expr, true)
 		for i := range driverLegs {
 			driverLegs[i].idBound = bucketLo
 			driverLegs[i].idBoundHi = bucketHi
@@ -668,10 +660,7 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		var sql string
 		var qargs []any
 		if p.collOrder {
-			qargs = make([]any, 0, len(p.args)+len(cursorArgs)+1)
-			qargs = append(qargs, q.OrderCollection)
-			qargs = append(qargs, p.args...)
-			qargs = append(qargs, cursorArgs...)
+			qargs = slices.Concat([]any{q.OrderCollection}, p.args, cursorArgs)
 			sql = fmt.Sprintf(
 				"SELECT i.id FROM images i JOIN image_collections pc ON pc.image_id = i.id AND pc.name = ? WHERE %s AND %s %s LIMIT 1",
 				p.where, cursorCmp, sort)
@@ -687,19 +676,14 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 			sql = "SELECT id FROM (SELECT * FROM (" + fmt.Sprintf(legSQL, "i.folder_path = ? COLLATE NOCASE") +
 				") UNION ALL SELECT * FROM (" + fmt.Sprintf(legSQL, "i.folder_path >= ? COLLATE NOCASE AND i.folder_path < ? COLLATE NOCASE") +
 				")) " + outer + " LIMIT 1"
-			qargs = make([]any, 0, len(p.args)+8)
-			// Leg 1 (equality): folder val, plus the shared where/cursor args
-			qargs = append(qargs, p.folderEq)
-			qargs = append(qargs, p.args...)
-			qargs = append(qargs, cursorArgs...)
-			// Leg 2 (range): folder lo, folder hi, plus the shared args
-			qargs = append(qargs, p.folderLo, p.folderHi)
-			qargs = append(qargs, p.args...)
-			qargs = append(qargs, cursorArgs...)
+			// Leg 1 (equality) takes the folder value, leg 2 (range) the lo
+			// and hi bounds; each is followed by the shared where/cursor args.
+			qargs = slices.Concat(
+				[]any{p.folderEq}, p.args, cursorArgs,
+				[]any{p.folderLo, p.folderHi}, p.args, cursorArgs,
+			)
 		} else {
-			qargs = make([]any, 0, len(p.args)+len(cursorArgs))
-			qargs = append(qargs, p.args...)
-			qargs = append(qargs, cursorArgs...)
+			qargs = slices.Concat(p.args, cursorArgs)
 			sql = fmt.Sprintf("SELECT i.id FROM images i%s WHERE %s AND %s %s LIMIT 1",
 				p.indexHint, p.where, cursorCmp, sort)
 		}
@@ -727,6 +711,17 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 // sort with seed=0, ctx cancelled). The caller degrades to whatever
 // back_page came in on the URL.
 func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64) (int, error) {
+	// Similarity ranks off the same position scan prev/next uses; the
+	// cursor COUNT below has no score column to compare against.
+	if q.Sort == "similarity" {
+		for i, id := range similarityMatchIDs(database, q) {
+			if id == currentID {
+				return i, nil
+			}
+		}
+		return -1, nil
+	}
+
 	// Skip when the rank COUNT would walk a popular-tag candidate set
 	// large enough to peg the ctx ceiling. The COUNT cursor walks every
 	// matched row newer-than-currentID; for a 50 k-row materialised
@@ -762,10 +757,7 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 		sql = fmt.Sprintf(
 			"SELECT COUNT(*) FROM images i JOIN image_collections pc ON pc.image_id = i.id AND pc.name = ? WHERE %s AND %s",
 			p.where, p.prevCmp)
-		qargs = make([]any, 0, len(p.args)+len(p.prevArgs)+1)
-		qargs = append(qargs, q.OrderCollection)
-		qargs = append(qargs, p.args...)
-		qargs = append(qargs, p.prevArgs...)
+		qargs = slices.Concat([]any{q.OrderCollection}, p.args, p.prevArgs)
 	} else if p.folderActive {
 		legSQL := "SELECT 1 FROM images i INDEXED BY idx_images_folder_nocase_visible WHERE %s AND " + p.where + " AND " + p.prevCmp
 		sql = "SELECT COUNT(*) FROM (" +
@@ -773,21 +765,16 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 			" UNION ALL " +
 			fmt.Sprintf(legSQL, "i.folder_path >= ? COLLATE NOCASE AND i.folder_path < ? COLLATE NOCASE") +
 			")"
-		qargs = make([]any, 0, len(p.args)*2+8)
-		qargs = append(qargs, p.folderEq)
-		qargs = append(qargs, p.args...)
-		qargs = append(qargs, p.prevArgs...)
-		qargs = append(qargs, p.folderLo, p.folderHi)
-		qargs = append(qargs, p.args...)
-		qargs = append(qargs, p.prevArgs...)
+		qargs = slices.Concat(
+			[]any{p.folderEq}, p.args, p.prevArgs,
+			[]any{p.folderLo, p.folderHi}, p.args, p.prevArgs,
+		)
 	} else {
 		sql = fmt.Sprintf(
 			"SELECT COUNT(*) FROM images i%s WHERE %s AND %s",
 			p.indexHint, p.where, p.prevCmp,
 		)
-		qargs = make([]any, 0, len(p.args)+len(p.prevArgs))
-		qargs = append(qargs, p.args...)
-		qargs = append(qargs, p.prevArgs...)
+		qargs = slices.Concat(p.args, p.prevArgs)
 	}
 
 	var rank int
@@ -810,7 +797,7 @@ type DeleteTarget struct {
 // visit returning a non-nil error aborts iteration.
 func ExecuteForDeleteStream(database *db.DB, expr Expr, visit func(DeleteTarget) error) error {
 	driverLegs, _ := pickAndDriverTag(database, expr, false)
-	where, args, hasMissingFilter := buildWhereDBDriver(expr, database, driverLegs)
+	where, args, hasMissingFilter, _ := buildWhereDBDriverFull(expr, database, driverLegs)
 	where, args = applyAndDriver(where, args, driverLegs)
 	where = andDefaultVisible(where, hasMissingFilter)
 

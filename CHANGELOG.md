@@ -1,5 +1,36 @@
 # Changelog
 
+## [v1.16.0] - 2026-07-26
+### Added
+- `similar:<id>` search ranks images by shared tags, with scores on the thumbnails. ([#63](https://github.com/monbooru/monbooru/issues/63))
+- Find pairs can queue images sharing rare tags; sessions show and filter by detector. ([#63](https://github.com/monbooru/monbooru/issues/63))
+- The manga reader resumes at the page the last session stopped on. ([#56](https://github.com/monbooru/monbooru/issues/56))
+- Extract the page being read as its own image, related to its archive. ([#55](https://github.com/monbooru/monbooru/issues/55))
+- Replace an image's file in place when a source serves a different version. ([#58](https://github.com/monbooru/monbooru/issues/58))
+- Delete a whole source, alias, or implication group of tags at once.
+- The Tags page shows and filters by every source that has applied a tag.
+
+### Changed
+- Archives are paired by shared tags instead of their cover's pHash.
+- Changing the gallery sort or order applies immediately.
+- Dense multi-tag and wildcard searches are faster on large libraries.
+- The relations hub and sessions load faster on large pair queues.
+- PTR controls wait for the index sync instead of erroring or closing the panel.
+
+### Fixed
+- Pairs already linked or marked not-related no longer return to the pair queue.  ([#71](https://github.com/monbooru/monbooru/issues/71))
+- The copy-tags choice is honoured when a duplicate decision keeps the file.
+- Renaming a collection onto another no longer interleaves the merged reading order.
+- Removing tags or implications no longer strands implied tags without a justifying parent.
+- A search with no matches no longer redirect-loops on page 0.
+- A crafted GIF or EXIF block no longer crashes the server during ingest.
+
+### Removed
+- The image-level Original source field; per-source artist links replace it.
+
+Thanks to @gary-host-laptop for the suggestions (https://github.com/monbooru/monbooru/issues/55, https://github.com/monbooru/monbooru/issues/56) and bug report (https://github.com/monbooru/monbooru/issues/71)
+Thanks to @JustRoxy for the suggestions (https://github.com/monbooru/monbooru/issues/63, https://github.com/monbooru/monbooru/issues/58).
+
 ## [v1.15.0] - 2026-07-21
 ### Added
 - Rename image files from the detail page, in batch, or on the collection order tiles.  ([#60](https://github.com/monbooru/monbooru/issues/60))

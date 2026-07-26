@@ -100,61 +100,40 @@ func canonicalPair(a, b int64) (int64, int64) {
 	return b, a
 }
 
-// inWriteTx runs work inside a write transaction, committing on
-// success and rolling back via defer on any error path. work's first
-// error short-circuits the commit.
 func (s *Service) inWriteTx(work func(*sql.Tx) error) error {
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := work(tx); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return db.InWriteTx(s.db.Write, work)
 }
 
-// AddDuplicate marks images a and b as duplicates. Handles the five
-// cases from §6.4 in a single transaction: both singletons, one
-// existing member, the other existing member, same group already, and
-// two different groups (merge). Alternate-group state is left
-// untouched: §9.2 holds a pair to at most one relation type, so making
-// a and b duplicates must not also enrol them as alternates of each
-// other (which folding their alt groups together would do).
-func (s *Service) AddDuplicate(a, b int64) error {
+// addGroupRelation enrols a and b in a group of the given kind in a
+// single transaction. The other kind's group state is left untouched:
+// §9.2 holds a pair to at most one relation type, so making a and b
+// duplicates must not also enrol them as alternates of each other
+// (which folding their alt groups together would do).
+func (s *Service) addGroupRelation(a, b int64, label string, cfg groupMerge) error {
 	if a == b {
 		return ErrSelfRelation
 	}
 	return s.inWriteTx(func(tx *sql.Tx) error {
-		if conflict, err := pairHasOtherRelationTx(tx, a, b, "duplicate"); err != nil {
+		if conflict, err := pairHasOtherRelationTx(tx, a, b, label); err != nil {
 			return err
 		} else if conflict {
 			return ErrRelationConflict
 		}
-		if err := mergeIntoDupGroupTx(tx, a, b); err != nil {
+		if err := mergeIntoGroupTx(tx, a, b, cfg); err != nil {
 			return err
 		}
-		return pruneQueueForGroupTx(tx, "dup_group_members", a)
+		return pruneQueueForGroupTx(tx, cfg.membersTbl, a)
 	})
+}
+
+// AddDuplicate marks images a and b as duplicates.
+func (s *Service) AddDuplicate(a, b int64) error {
+	return s.addGroupRelation(a, b, "duplicate", dupGroupMerge)
 }
 
 // AddAlternate marks images a and b as alternates.
 func (s *Service) AddAlternate(a, b int64) error {
-	if a == b {
-		return ErrSelfRelation
-	}
-	return s.inWriteTx(func(tx *sql.Tx) error {
-		if conflict, err := pairHasOtherRelationTx(tx, a, b, "alternate"); err != nil {
-			return err
-		} else if conflict {
-			return ErrRelationConflict
-		}
-		if err := mergeIntoAltGroupTx(tx, a, b); err != nil {
-			return err
-		}
-		return pruneQueueForGroupTx(tx, "alt_group_members", a)
-	})
+	return s.addGroupRelation(a, b, "alternate", altGroupMerge)
 }
 
 // MaxVersionChainDepth is the maximum edge depth of a version chain or
@@ -215,14 +194,9 @@ func derivativeHeightTx(tx *sql.Tx, start int64) (int, error) {
 	for level := 0; level < MaxVersionChainDepth && len(frontier) > 0; level++ {
 		var next []int64
 		for _, parent := range frontier {
-			rows, err := tx.Query(`SELECT derivative_image_id FROM derivative_edges WHERE source_image_id = ?`, parent)
+			ids, err := db.QueryIDs(tx, `SELECT derivative_image_id FROM derivative_edges WHERE source_image_id = ?`, parent)
 			if err != nil {
 				return 0, err
-			}
-			ids, scanErr := db.ScanIDs(rows)
-			_ = rows.Close()
-			if scanErr != nil {
-				return 0, scanErr
 			}
 			next = append(next, ids...)
 		}
@@ -314,11 +288,13 @@ func (s *Service) AddVersionEdge(parent, child int64) error {
 		if up+down+1 > MaxVersionChainDepth {
 			return ErrChainTooDeep
 		}
-		_, err = tx.Exec(
+		if _, err := tx.Exec(
 			`INSERT INTO version_edges (child_image_id, parent_image_id, created_at) VALUES (?, ?, ?)`,
 			child, parent, nowISO(),
-		)
-		return err
+		); err != nil {
+			return err
+		}
+		return pruneQueuePairTx(tx, parent, child)
 	})
 }
 
@@ -378,11 +354,13 @@ func (s *Service) AddDerivativeEdge(source, derivative int64) error {
 		if up+height+1 > MaxVersionChainDepth {
 			return ErrChainTooDeep
 		}
-		_, err = tx.Exec(
+		if _, err := tx.Exec(
 			`INSERT INTO derivative_edges (derivative_image_id, source_image_id, created_at) VALUES (?, ?, ?)`,
 			derivative, source, nowISO(),
-		)
-		return err
+		); err != nil {
+			return err
+		}
+		return pruneQueuePairTx(tx, source, derivative)
 	})
 }
 
@@ -399,11 +377,13 @@ func (s *Service) AddNotRelated(a, b int64) error {
 			return ErrRelationConflict
 		}
 		lo, hi := canonicalPair(a, b)
-		_, err := tx.Exec(
+		if _, err := tx.Exec(
 			`INSERT OR IGNORE INTO not_related_pairs (a_image_id, b_image_id, created_at) VALUES (?, ?, ?)`,
 			lo, hi, nowISO(),
-		)
-		return err
+		); err != nil {
+			return err
+		}
+		return pruneQueuePairTx(tx, a, b)
 	})
 }
 
@@ -824,14 +804,9 @@ func collectDerivativeTreeMembersTx(tx *sql.Tx, anyMember int64) ([]int64, error
 	for level := 0; level < MaxVersionChainDepth && len(frontier) > 0; level++ {
 		var next []int64
 		for _, parent := range frontier {
-			rows, err := tx.Query(`SELECT derivative_image_id FROM derivative_edges WHERE source_image_id = ?`, parent)
+			ids, err := db.QueryIDs(tx, `SELECT derivative_image_id FROM derivative_edges WHERE source_image_id = ?`, parent)
 			if err != nil {
 				return nil, err
-			}
-			ids, scanErr := db.ScanIDs(rows)
-			_ = rows.Close()
-			if scanErr != nil {
-				return nil, scanErr
 			}
 			next = append(next, ids...)
 		}
@@ -1038,12 +1013,19 @@ func (s *Service) CopyTagsFromDuplicatesToOriginal(groupID int64) (int, error) {
 // BK-tree (if one is built) so subsequent phash queries don't surface
 // a stale id.
 func (s *Service) OnImageDelete(imageID int64) error {
-	if err := s.inWriteTx(func(tx *sql.Tx) error {
-		if err := handleDupGroupOnDeleteTx(tx, imageID); err != nil {
-			return err
-		}
-		return handleAltGroupOnDeleteTx(tx, imageID)
-	}); err != nil {
+	return s.inWriteTx(func(tx *sql.Tx) error { return s.OnImageDeleteTx(tx, imageID) })
+}
+
+// OnImageDeleteTx is OnImageDelete on a caller-held transaction, so the
+// image-delete path can commit the graph fixups alongside the row
+// delete. The BK-tree drop is an in-memory index update with no undo,
+// but it is rebuildable and the row it describes is on its way out
+// either way.
+func (s *Service) OnImageDeleteTx(tx *sql.Tx, imageID int64) error {
+	if err := handleDupGroupOnDeleteTx(tx, imageID); err != nil {
+		return err
+	}
+	if err := handleAltGroupOnDeleteTx(tx, imageID); err != nil {
 		return err
 	}
 	if tree := DefaultRegistry.Lookup(s.db); tree != nil && tree.Built() {
@@ -1158,6 +1140,18 @@ func pruneQueueForGroupTx(tx *sql.Tx, table string, anchor int64) error {
 	return err
 }
 
+// pruneQueuePairTx drops the canonical queue row for a pair that just
+// gained an edge relation. The group methods sweep via
+// pruneQueueForGroupTx; version and derivative edges have no group, so
+// they clear their own pair here.
+func pruneQueuePairTx(tx *sql.Tx, a, b int64) error {
+	lo, hi := canonicalPair(a, b)
+	_, err := tx.Exec(
+		`DELETE FROM potential_relation_pairs WHERE a_image_id = ? AND b_image_id = ?`, lo, hi,
+	)
+	return err
+}
+
 // pairShareGroupTx reports whether a and b sit in the same group of
 // the given membership table (dup_group_members or alt_group_members).
 func pairShareGroupTx(tx *sql.Tx, table string, a, b int64) (bool, error) {
@@ -1172,116 +1166,90 @@ func pairShareGroupTx(tx *sql.Tx, table string, a, b int64) (bool, error) {
 	return n > 0, nil
 }
 
-// mergeIntoDupGroupTx is the dup-group five-case merge. When both sides
-// already belong to distinct dup groups, the two are folded together
-// through mergeDupGroupsTx; the lower-id group survives and keeps its
-// existing original_image_id. The operator can flip that from the
-// browse-groups Merge dialog when a different original is wanted.
-func mergeIntoDupGroupTx(tx *sql.Tx, a, b int64) error {
-	groupA, err := lookupGroupIDTx(tx, "dup_group_members", a)
-	if err != nil {
-		return err
-	}
-	groupB, err := lookupGroupIDTx(tx, "dup_group_members", b)
-	if err != nil {
-		return err
-	}
-	switch {
-	case !groupA.Valid && !groupB.Valid:
-		// The caller has already decided which side is the original by
-		// passing it first; the session UI puts the bigger-filesize image
-		// in slot `a` by default. Existing-group cases below preserve
-		// whichever original is already in place.
-		var gid int64
-		if err := tx.QueryRow(
-			`INSERT INTO dup_groups (original_image_id, created_at) VALUES (?, ?) RETURNING id`,
-			a, nowISO(),
-		).Scan(&gid); err != nil {
-			return err
-		}
-		now := nowISO()
-		if _, err := tx.Exec(
-			`INSERT INTO dup_group_members (image_id, group_id, created_at) VALUES (?, ?, ?), (?, ?, ?)`,
-			a, gid, now, b, gid, now,
-		); err != nil {
-			return err
-		}
-	case groupA.Valid && !groupB.Valid:
-		if _, err := tx.Exec(
-			`INSERT INTO dup_group_members (image_id, group_id, created_at) VALUES (?, ?, ?)`,
-			b, groupA.Int64, nowISO(),
-		); err != nil {
-			return err
-		}
-	case !groupA.Valid && groupB.Valid:
-		if _, err := tx.Exec(
-			`INSERT INTO dup_group_members (image_id, group_id, created_at) VALUES (?, ?, ?)`,
-			a, groupB.Int64, nowISO(),
-		); err != nil {
-			return err
-		}
-	case groupA.Int64 == groupB.Int64:
-		// Already in the same group - idempotent no-op.
-	default:
-		lo, hi := groupA.Int64, groupB.Int64
-		if hi < lo {
-			lo, hi = hi, lo
-		}
-		// mergeDupGroupsTx requires ascending ids so the lowest survives.
-		return mergeDupGroupsTx(tx, []int64{lo, hi}, 0)
-	}
-	return nil
+// groupMerge names the per-kind pieces of the group merge: the
+// membership table, how a fresh group row is created (dup_groups carries
+// original_image_id, alt_groups does not), and how two existing groups
+// are folded together.
+type groupMerge struct {
+	membersTbl  string
+	insertGroup func(tx *sql.Tx, original int64) (int64, error)
+	mergeGroups func(tx *sql.Tx, ids []int64) error
 }
 
-// mergeIntoAltGroupTx is the alt-group equivalent. Alt groups carry no
-// original_image_id, so the singleton-start case just creates a row;
-// distinct-group merges defer to mergeAltGroupsTx so the same survivor-
-// id contract holds.
-func mergeIntoAltGroupTx(tx *sql.Tx, a, b int64) error {
-	groupA, err := lookupGroupIDTx(tx, "alt_group_members", a)
+// dupGroupMerge folds duplicates. The caller has already decided which
+// side is the original by passing it first; the session UI puts the
+// bigger-filesize image in slot `a` by default. Existing-group cases
+// preserve whichever original is already in place, and the operator can
+// flip it from the browse-groups Merge dialog.
+var dupGroupMerge = groupMerge{
+	membersTbl: "dup_group_members",
+	insertGroup: func(tx *sql.Tx, original int64) (int64, error) {
+		var gid int64
+		err := tx.QueryRow(
+			`INSERT INTO dup_groups (original_image_id, created_at) VALUES (?, ?) RETURNING id`,
+			original, nowISO(),
+		).Scan(&gid)
+		return gid, err
+	},
+	mergeGroups: func(tx *sql.Tx, ids []int64) error { return mergeDupGroupsTx(tx, ids, 0) },
+}
+
+// altGroupMerge folds variants. Alt groups carry no original.
+var altGroupMerge = groupMerge{
+	membersTbl: "alt_group_members",
+	insertGroup: func(tx *sql.Tx, _ int64) (int64, error) {
+		var gid int64
+		err := tx.QueryRow(`INSERT INTO alt_groups (created_at) VALUES (?) RETURNING id`, nowISO()).Scan(&gid)
+		return gid, err
+	},
+	mergeGroups: mergeAltGroupsTx,
+}
+
+// mergeIntoGroupTx is the five-case group merge from §6.4: both
+// singletons, one existing member, the other existing member, same group
+// already (idempotent no-op), and two different groups.
+func mergeIntoGroupTx(tx *sql.Tx, a, b int64, cfg groupMerge) error {
+	groupA, err := lookupGroupIDTx(tx, cfg.membersTbl, a)
 	if err != nil {
 		return err
 	}
-	groupB, err := lookupGroupIDTx(tx, "alt_group_members", b)
+	groupB, err := lookupGroupIDTx(tx, cfg.membersTbl, b)
 	if err != nil {
+		return err
+	}
+	addMember := func(gid, imageID int64) error {
+		_, err := tx.Exec(
+			`INSERT INTO `+cfg.membersTbl+` (image_id, group_id, created_at) VALUES (?, ?, ?)`,
+			imageID, gid, nowISO(),
+		)
 		return err
 	}
 	switch {
 	case !groupA.Valid && !groupB.Valid:
-		var gid int64
-		if err := tx.QueryRow(`INSERT INTO alt_groups (created_at) VALUES (?) RETURNING id`, nowISO()).Scan(&gid); err != nil {
+		gid, err := cfg.insertGroup(tx, a)
+		if err != nil {
 			return err
 		}
 		now := nowISO()
 		if _, err := tx.Exec(
-			`INSERT INTO alt_group_members (image_id, group_id, created_at) VALUES (?, ?, ?), (?, ?, ?)`,
+			`INSERT INTO `+cfg.membersTbl+` (image_id, group_id, created_at) VALUES (?, ?, ?), (?, ?, ?)`,
 			a, gid, now, b, gid, now,
 		); err != nil {
 			return err
 		}
 	case groupA.Valid && !groupB.Valid:
-		if _, err := tx.Exec(
-			`INSERT INTO alt_group_members (image_id, group_id, created_at) VALUES (?, ?, ?)`,
-			b, groupA.Int64, nowISO(),
-		); err != nil {
-			return err
-		}
+		return addMember(groupA.Int64, b)
 	case !groupA.Valid && groupB.Valid:
-		if _, err := tx.Exec(
-			`INSERT INTO alt_group_members (image_id, group_id, created_at) VALUES (?, ?, ?)`,
-			a, groupB.Int64, nowISO(),
-		); err != nil {
-			return err
-		}
+		return addMember(groupB.Int64, a)
 	case groupA.Int64 == groupB.Int64:
-		// Same group; no-op.
+		// Already in the same group.
 	default:
 		lo, hi := groupA.Int64, groupB.Int64
 		if hi < lo {
 			lo, hi = hi, lo
 		}
-		// mergeAltGroupsTx requires ascending ids so the lowest survives.
-		return mergeAltGroupsTx(tx, []int64{lo, hi})
+		// The merge helpers require ascending ids so the lowest survives.
+		return cfg.mergeGroups(tx, []int64{lo, hi})
 	}
 	return nil
 }

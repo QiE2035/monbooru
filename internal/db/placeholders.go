@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 )
@@ -36,6 +37,53 @@ func ScanIDs(rows *sql.Rows) ([]int64, error) {
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// InWriteTx runs work inside a write transaction, committing on success
+// and rolling back via defer on any error path. work's first error
+// short-circuits the commit.
+func InWriteTx(w *sql.DB, work func(*sql.Tx) error) error {
+	tx, err := w.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := work(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Querier is the read surface both *sql.DB and *sql.Tx satisfy, so a
+// helper can run against a pooled connection or an open transaction.
+type Querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// CtxQuerier is Querier's context-carrying twin.
+type CtxQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// QueryIDs runs query and collects its single int64 column, folding the
+// Query + error-guard + Close dance every id-list read repeats.
+func QueryIDs(q Querier, query string, args ...any) ([]int64, error) {
+	rows, err := q.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return ScanIDs(rows)
+}
+
+// QueryIDsContext is QueryIDs on a cancellable read.
+func QueryIDsContext(ctx context.Context, q CtxQuerier, query string, args ...any) ([]int64, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return ScanIDs(rows)
 }
 
 // InPlaceholders builds the `?,?,?` body for a SQL `IN (...)` clause and

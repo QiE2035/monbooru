@@ -1,7 +1,6 @@
 package metadata
 
 import (
-	"os"
 	"strconv"
 	"strings"
 
@@ -11,14 +10,8 @@ import (
 
 // extractSDFromJPEG reads A1111 metadata from a JPEG's EXIF UserComment.
 func extractSDFromJPEG(path string) (*models.SDMetadata, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, nil
-	}
-	defer func() { _ = f.Close() }()
-
-	x, err := exif.Decode(f)
-	if err != nil {
+	x := decodeJPEGEXIF(path)
+	if x == nil {
 		return nil, nil
 	}
 	return sdFromEXIF(x), nil

@@ -12,9 +12,9 @@ var chordTimeoutMs = 500;
 // no args; a nested map is a sub-chord whose own keys resolve the next
 // step. `g` leads navigation (`g c a` categories, `g c o` collections).
 // `e` leads detail-page field edits: `s` opens the add-source dialog, `c`
-// opens the add-to-collection dialog, `o` / `n` the original-source and
-// note dialogs, and a digit edits that Nth collection. On pages without
-// the matching control the chord no-ops.
+// opens the add-to-collection dialog, `n` the note dialog, and a digit
+// edits that Nth collection. On pages without the matching control the
+// chord no-ops.
 var chordMap = {
   g: {
     g: '/',
@@ -29,7 +29,6 @@ var chordMap = {
   e: {
     s: function () { var b = document.querySelector('.btn-add-source'); if (b) b.click(); },
     c: function () { var b = document.querySelector('.btn-add-collection'); if (b) b.click(); },
-    o: function () { var b = document.querySelector('.btn-edit-image-original'); if (b) b.click(); },
     n: function () { var b = document.querySelector('.btn-edit-note'); if (b) b.click(); },
   },
 };
@@ -230,6 +229,16 @@ function pruneRelationRow(btn) {
   }
 }
 
+// Group delete: drop the origin subheading the button sits in along with
+// the list under it, the group-scale counterpart of pruneRelationRow.
+function pruneRelationGroup(btn) {
+  var sub = btn.closest('.relation-origin-sub');
+  if (!sub) return;
+  var ul = sub.nextElementSibling;
+  if (ul && ul.classList.contains('tag-list')) ul.remove();
+  sub.remove();
+}
+
 // Cycle the rating ceiling level. delta=+1 picks a stricter level (less
 // permissive); delta=-1 picks a more permissive one. Fires the matching
 // inactive footer-rating-link form.
@@ -257,8 +266,7 @@ function cycleRatingCeiling(delta) {
 // Cycle the gallery sort select between newest -> filesize -> order -> random.
 function cycleSort() {
   var sortEl = document.getElementById('search-sort');
-  var form = document.getElementById('search-form');
-  if (!sortEl || !form) return false;
+  if (!sortEl) return false;
   var order = ['newest', 'filesize', 'order', 'random'];
   var i = order.indexOf(sortEl.value);
   var next = order[(i + 1) % order.length];
@@ -274,15 +282,22 @@ function cycleSort() {
     sortEl.appendChild(opt);
   }
   sortEl.value = next;
-  form.dispatchEvent(new Event('submit', { bubbles: true }));
-  return true;
+  return submitSearch();
 }
 
 function flipSortDirection() {
   var orderEl = document.querySelector('#search-form select[name="order"]');
-  var form = document.getElementById('search-form');
-  if (!orderEl || !form) return false;
+  if (!orderEl) return false;
   orderEl.value = orderEl.value === 'asc' ? 'desc' : 'asc';
+  return submitSearch();
+}
+
+// Re-runs the gallery search with whatever the form currently holds.
+// htmx binds the swap to the form's submit event, so dispatching it is
+// how any control outside the Search button applies its change.
+function submitSearch() {
+  var form = document.getElementById('search-form');
+  if (!form) return false;
   form.dispatchEvent(new Event('submit', { bubbles: true }));
   return true;
 }
@@ -610,6 +625,14 @@ function handleReaderKey(e) {
       var openLink = document.querySelector('.reader-open');
       if (openLink) openLink.click();
       return true;
+    case 'e':
+      var extractForm = document.querySelector('.reader-extract');
+      if (extractForm) {
+        e.preventDefault();
+        extractForm.submit();
+        return true;
+      }
+      return false;
     case 'v':
       var pageLink = document.querySelector('.reader-page-link');
       if (pageLink) {

@@ -10,12 +10,12 @@
     <div class="detail-nav-group">
       <a href="/images/{{.Image.ID}}{{.BackQS}}" class="back-link">‹ Image</a>
       <span class="detail-nav-sep">/</span>
-      <span class="detail-filename mono-small">{{.Filename}} ({{.PageCount}} pages)</span>
+      <span class="detail-filename mono-small">{{.Filename}} ({{.PageCount}} pages{{if .LastReadPage}}, read to {{.LastReadPage}}{{end}})</span>
     </div>
   </div>
   <ul class="manga-pages-grid">
     {{range $i := seq 1 .PageCount}}
-    <li class="manga-page-cell" id="page-{{$i}}">
+    <li class="manga-page-cell{{if lt $i $.LastReadPage}} manga-page-read{{else if eq $i $.LastReadPage}} manga-page-bookmark{{end}}" id="page-{{$i}}">
       <a href="/images/{{$.Image.ID}}/read?page={{$i}}{{$.BackKVQS}}&from=pages" class="manga-page-link">
         <img src="/images/{{$.Image.ID}}/page/{{$i}}/thumb" alt="Page {{$i}}" class="manga-page-thumb" loading="lazy">
         <span class="manga-page-num">{{$i}}</span>

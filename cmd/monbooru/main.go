@@ -45,6 +45,9 @@ func main() {
 		return
 	}
 
+	_, statErr := os.Stat(*configPath)
+	freshConfig := os.IsNotExist(statErr)
+
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("FATAL loading config: %v", err)
@@ -57,6 +60,10 @@ func main() {
 
 	srv, err := internalweb.NewServer(cfg, *configPath, jobManager)
 	if err != nil {
+		if freshConfig {
+			log.Printf("monbooru wrote %s with default settings meant for the docker image.", *configPath)
+			log.Printf("edit gallery_path (your images), paths.data_path (db + thumbnails) and paths.model_path (optional auto-taggers), then run it again. docs: %s", internalweb.DocURL)
+		}
 		log.Fatalf("FATAL creating web server: %v", err)
 	}
 	defer srv.Close()

@@ -47,20 +47,9 @@ func (s *Server) parseTagInput(tagInput string) ([]catTag, string) {
 		generalID = cx.GeneralCategoryID
 	}
 
-	// Preload every category in one read so a multi-token paste with
-	// category prefixes doesn't pay N read-pool round-trips. The
-	// tag_categories row count is tiny (single-digit builtins + a
-	// handful of user rows) so the map fits in a single small alloc.
-	categories := map[string]int64{}
-	if rows, err := s.db().Read.Query(`SELECT id, name FROM tag_categories`); err == nil {
-		for rows.Next() {
-			var id int64
-			var n string
-			if err := rows.Scan(&id, &n); err == nil {
-				categories[n] = id
-			}
-		}
-		_ = rows.Close()
+	categories, err := s.categoryIDsByName()
+	if err != nil {
+		return nil, err.Error()
 	}
 
 	var catTags []catTag
@@ -87,6 +76,31 @@ func (s *Server) parseTagInput(tagInput string) ([]catTag, string) {
 	}
 
 	return catTags, strings.Join(rejected, "; ")
+}
+
+// categoryIDsByName preloads every category in one read so a
+// multi-token paste with category prefixes doesn't pay N read-pool
+// round-trips. The tag_categories row count is tiny (single-digit
+// builtins + a handful of user rows) so the map fits in a single small
+// alloc. A truncated read would drop a category and silently reparse
+// `character:foo` as a literal general tag, so a cursor error is
+// surfaced rather than swallowed.
+func (s *Server) categoryIDsByName() (map[string]int64, error) {
+	rows, err := s.db().Read.Query(`SELECT id, name FROM tag_categories`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]int64{}
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		out[name] = id
+	}
+	return out, rows.Err()
 }
 
 // splitTagTokens splits tag-input into whitespace-separated tokens while
@@ -369,52 +383,42 @@ func (s *Server) renderTagListWithSidebar(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// removeAutoTagsFromImageHandler removes auto-tagged rows from one image,
-// optionally filtered by the caller-supplied `taggers` query parameter
-// (comma-separated tagger names). Empty filter removes every auto-tag.
-func (s *Server) removeAutoTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathInt64(w, r, "id")
-	if !ok {
-		return
-	}
-	raw := r.URL.Query().Get("taggers")
-	var names []string
-	for _, n := range strings.Split(raw, ",") {
-		if n = strings.TrimSpace(n); n != "" {
-			names = append(names, n)
+// trimmedValues normalises a repeated query parameter: whitespace is
+// stripped and empty entries drop out. Repeated rather than
+// comma-joined so a label carrying a comma survives the round trip.
+func trimmedValues(raw []string) []string {
+	var out []string
+	for _, v := range raw {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
 		}
 	}
-	if err := s.tagSvc().RemoveAutoTagsFromImage(id, names); err != nil {
-		s.renderTagListWithSidebar(w, r, id, err.Error(), "", "", false)
-		return
-	}
-	s.Active().InvalidateCaches()
-	w.Header().Set("HX-Trigger", "tags-changed")
-	s.renderTagListWithSidebar(w, r, id, "", "", "", false)
+	return out
+}
+
+// removeAutoTagsFromImageHandler removes auto-tagged rows from one image,
+// optionally filtered by repeated `taggers` query parameters. An absent
+// filter removes every auto-tag.
+func (s *Server) removeAutoTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
+	names := trimmedValues(r.URL.Query()["taggers"])
+	s.removeImageTagsHandler(w, r, func(id int64) (int, error) {
+		return s.tagSvc().RemoveAutoTagsFromImage(id, names)
+	})
 }
 
 // removeSourceTagsFromImageHandler removes the tags one or more external
-// sources contributed to one image, filtered by the caller-supplied `sources`
-// query parameter (comma-separated site labels).
+// sources contributed to one image, filtered by repeated `sources` query
+// parameters. The optional `stale` value ("1" / "0") narrows to one of
+// the source's two detail-page groups.
 func (s *Server) removeSourceTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathInt64(w, r, "id")
-	if !ok {
-		return
+	names := trimmedValues(r.URL.Query()["sources"])
+	stale := r.URL.Query().Get("stale")
+	if stale != "0" && stale != "1" {
+		stale = ""
 	}
-	raw := r.URL.Query().Get("sources")
-	var names []string
-	for _, n := range strings.Split(raw, ",") {
-		if n = strings.TrimSpace(n); n != "" {
-			names = append(names, n)
-		}
-	}
-	if err := s.tagSvc().RemoveSourceTagsFromImage(id, names); err != nil {
-		s.renderTagListWithSidebar(w, r, id, err.Error(), "", "", false)
-		return
-	}
-	s.Active().InvalidateCaches()
-	w.Header().Set("HX-Trigger", "tags-changed")
-	s.renderTagListWithSidebar(w, r, id, "", "", "", false)
+	s.removeImageTagsHandler(w, r, func(id int64) (int, error) {
+		return s.tagSvc().RemoveSourceTagsFromImage(id, names, stale)
+	})
 }
 
 func (s *Server) removeUserTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
@@ -422,28 +426,50 @@ func (s *Server) removeUserTagsFromImageHandler(w http.ResponseWriter, r *http.R
 }
 
 func (s *Server) removeAllTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
-	s.removeImageTagsHandler(w, r, s.tagSvc().RemoveAllTagsFromImage)
+	// RemoveAllTagsFromImage drops the rows in one statement (it is also the
+	// image-delete callback), so the count for the flash comes from a probe.
+	s.removeImageTagsHandler(w, r, func(id int64) (int, error) {
+		var n int
+		if err := s.db().Read.QueryRow(`SELECT COUNT(*) FROM image_tags WHERE image_id = ?`, id).Scan(&n); err != nil {
+			return 0, err
+		}
+		return n, s.tagSvc().RemoveAllTagsFromImage(id)
+	})
 }
 
 func (s *Server) removeStaleTagsFromImageHandler(w http.ResponseWriter, r *http.Request) {
 	s.removeImageTagsHandler(w, r, s.tagSvc().RemoveStaleTagsFromImage)
 }
 
+// removedTagsMsg is the removal counterpart of the add path's
+// "added: ..." flash. A removal that matched nothing says nothing.
+func removedTagsMsg(removed int) string {
+	switch removed {
+	case 0:
+		return ""
+	case 1:
+		return "removed 1 tag"
+	default:
+		return fmt.Sprintf("removed %d tags", removed)
+	}
+}
+
 // removeImageTagsHandler is the parse-id / call-remove / refresh body
 // shared by the bulk-remove tag handlers; remove names the underlying
 // service method.
-func (s *Server) removeImageTagsHandler(w http.ResponseWriter, r *http.Request, remove func(int64) error) {
+func (s *Server) removeImageTagsHandler(w http.ResponseWriter, r *http.Request, remove func(int64) (int, error)) {
 	id, ok := pathInt64(w, r, "id")
 	if !ok {
 		return
 	}
-	if err := remove(id); err != nil {
+	removed, err := remove(id)
+	if err != nil {
 		s.renderTagListWithSidebar(w, r, id, err.Error(), "", "", false)
 		return
 	}
 	s.Active().InvalidateCaches()
 	w.Header().Set("HX-Trigger", "tags-changed")
-	s.renderTagListWithSidebar(w, r, id, "", "", "", false)
+	s.renderTagListWithSidebar(w, r, id, "", "", removedTagsMsg(removed), false)
 }
 
 func (s *Server) removeTagFromImage(w http.ResponseWriter, r *http.Request) {
@@ -456,13 +482,22 @@ func (s *Server) removeTagFromImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read the name first: the flash names what the click removed, the way
+	// the add path names what it added.
+	var name string
+	_ = s.db().Read.QueryRow(`SELECT name FROM tags WHERE id = ?`, tagID).Scan(&name)
+
 	if err := s.tagSvc().RemoveTagFromImage(id, tagID); err != nil {
 		s.renderTagListWithSidebar(w, r, id, err.Error(), "", "", false)
 		return
 	}
 	s.Active().InvalidateCaches()
 	w.Header().Set("HX-Trigger", "tags-changed")
-	s.renderTagListWithSidebar(w, r, id, "", "", "", false)
+	okMsg := "removed 1 tag"
+	if name != "" {
+		okMsg = "removed: " + name
+	}
+	s.renderTagListWithSidebar(w, r, id, "", "", okMsg, false)
 }
 
 func (s *Server) changeTagCategory(w http.ResponseWriter, r *http.Request) {

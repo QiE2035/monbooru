@@ -238,16 +238,11 @@ func fastCountTag(database *db.DB, t TagExpr) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	rows, err := database.Read.Query(
+	canonIDs, err := db.QueryIDs(database.Read,
 		`SELECT DISTINCT COALESCE(canonical_tag_id, id) FROM tags WHERE `+pred,
 		arg,
 	)
 	if err != nil {
-		return 0, false
-	}
-	canonIDs, scanErr := db.ScanIDs(rows)
-	_ = rows.Close()
-	if scanErr != nil {
 		return 0, false
 	}
 	if len(canonIDs) == 0 {
@@ -688,12 +683,10 @@ func fastCountGenerated(database *db.DB, e FilterExpr) (int, bool) {
 	return n, true
 }
 
+// fastVisibleCount reads the shared per-DB cache so the count behind
+// the NOT / ceiling bounds, the driver's density gate and the
+// similarity weights is computed once per invalidation rather than
+// once per caller.
 func fastVisibleCount(database *db.DB) (int, bool) {
-	var n int
-	if err := database.Read.QueryRow(
-		`SELECT COUNT(*) FROM images WHERE is_missing = 0`,
-	).Scan(&n); err != nil {
-		return 0, false
-	}
-	return n, true
+	return database.VisibleCount()
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/monbooru/monbooru/internal/gallery"
 	"github.com/monbooru/monbooru/internal/logx"
 	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // sha256DuplicateRow is one alias path on the SHA-256 duplicates table:
@@ -240,7 +241,7 @@ func (s *Server) markedWalkerDeleteOnePost(w http.ResponseWriter, r *http.Reques
 		writeInlineFlash(w, "err", "Invalid image id.")
 		return
 	}
-	if _, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), imageID, s.tagSvc().RemoveAllTagsFromImage, s.onImageDeleteCallback()); err != nil {
+	if _, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), imageID, tags.RemoveAllTagsFromImageTx, s.onImageDeleteCallback()); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		writeInlineFlash(w, "err", err.Error())
 		return
@@ -273,17 +274,10 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 		q += ` AND ` + where
 		args = append(args, wargs...)
 	}
-	rows, err := cx.DB.Read.Query(q, args...)
+	victims, err := db.QueryIDs(cx.DB.Read, q, args...)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		writeInlineFlash(w, "err", err.Error())
-		return
-	}
-	victims, scanErr := db.ScanIDs(rows)
-	_ = rows.Close()
-	if scanErr != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", scanErr.Error())
 		return
 	}
 	if len(victims) == 0 {
@@ -298,7 +292,6 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 	}
 	galleryPath := s.galleryPath()
 	thumbnailsPath := s.thumbnailsPath()
-	tagSvc := s.tagSvc()
 	onDelete := s.onImageDeleteCallback()
 	go func() {
 		ctx := s.jobs.Context()
@@ -311,7 +304,7 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 				s.Active().InvalidateCaches()
 				return
 			}
-			if _, err := gallery.DeleteImage(s.db(), galleryPath, thumbnailsPath, id, tagSvc.RemoveAllTagsFromImage, onDelete); err != nil {
+			if _, err := gallery.DeleteImage(s.db(), galleryPath, thumbnailsPath, id, tags.RemoveAllTagsFromImageTx, onDelete); err != nil {
 				logx.Warnf("marked delete-all image %d: %v", id, err)
 				continue
 			}

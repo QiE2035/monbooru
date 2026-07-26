@@ -121,6 +121,11 @@ type DB struct {
 	// image_tags membership write.
 	untaggedVisible     atomic.Pointer[int]
 	autoUntaggedVisible atomic.Pointer[int]
+	// visibleCount caches the non-missing image total. Cheap on its own
+	// - an index scan of idx_images_missing - but it is the divisor
+	// behind every tag-similarity weight, so the tag-pairs pass would
+	// otherwise re-run it once per image in the library.
+	visibleCount atomic.Pointer[int]
 }
 
 // Open opens both connection pools pointing at the same SQLite file.
@@ -231,12 +236,14 @@ func Bootstrap(db *DB) error {
 	b.ensureColumn("image_sources", "original", `ALTER TABLE image_sources ADD COLUMN original TEXT NOT NULL DEFAULT ''`)
 	b.ensureColumn("image_sources", "similarity", `ALTER TABLE image_sources ADD COLUMN similarity REAL NOT NULL DEFAULT 0`)
 	b.ensureColumn("image_sources", "parent_url", `ALTER TABLE image_sources ADD COLUMN parent_url TEXT NOT NULL DEFAULT ''`)
+	b.ensureColumn("image_sources", "md5_match", `ALTER TABLE image_sources ADD COLUMN md5_match TEXT NOT NULL DEFAULT ''`)
 	// Created here rather than in schema.sql so the ALTER above runs first on
 	// libraries that predate the column. Covers the child-side probe of the
 	// derivative-edge linking; partial since most origins declare no parent.
 	b.exec("create idx_image_sources_parent_url", `CREATE INDEX IF NOT EXISTS idx_image_sources_parent_url ON image_sources(parent_url) WHERE parent_url != ''`)
 	b.ensureColumn("image_annotations", "manual", `ALTER TABLE image_annotations ADD COLUMN manual INTEGER NOT NULL DEFAULT 0`)
 	b.ensureColumn("images", "page_count", `ALTER TABLE images ADD COLUMN page_count INTEGER`)
+	b.ensureColumn("images", "last_read_page", `ALTER TABLE images ADD COLUMN last_read_page INTEGER`)
 	b.ensureColumn("images", "duration_seconds", `ALTER TABLE images ADD COLUMN duration_seconds REAL`)
 	// Partial visible duration index for the duration: filter. Excludes
 	// NULL so non-video rows don't carry an entry.
@@ -298,6 +305,18 @@ func Bootstrap(db *DB) error {
 	b.ensureColumn("saved_searches", "seed", `ALTER TABLE saved_searches ADD COLUMN seed TEXT NOT NULL DEFAULT ''`)
 	b.ensureColumn("image_paths", "mtime_unix", `ALTER TABLE image_paths ADD COLUMN mtime_unix INTEGER NOT NULL DEFAULT 0`)
 	b.ensureColumn("images", "phash", `ALTER TABLE images ADD COLUMN phash INTEGER`)
+	// Which detector queued a pair, and the tag score behind it. The
+	// default keeps every row an existing library already holds on the
+	// only source that could have created it.
+	b.ensureColumn("potential_relation_pairs", "source", `ALTER TABLE potential_relation_pairs ADD COLUMN source TEXT NOT NULL DEFAULT 'phash'`)
+	b.ensureColumn("potential_relation_pairs", "score", `ALTER TABLE potential_relation_pairs ADD COLUMN score REAL`)
+	// The stored collection opt-out verdict (see schema.sql). Backfilled
+	// once on upgrade; the triggers below keep it current after that.
+	b.backfillIfFreshColumn("potential_relation_pairs", "collection_hidden",
+		`ALTER TABLE potential_relation_pairs ADD COLUMN collection_hidden INTEGER NOT NULL DEFAULT 0`,
+		`UPDATE potential_relation_pairs SET collection_hidden = 1 WHERE `+pairHiddenProbe("a_image_id", "b_image_id"),
+		"backfill potential_relation_pairs.collection_hidden")
+	b.ensureColumn("relation_session", "detector", `ALTER TABLE relation_session ADD COLUMN detector TEXT NOT NULL DEFAULT 'both'`)
 	// Per-upload batch token stamped on web-UI uploads; NULL elsewhere. No
 	// index - it is only read for the page of rows the inbox cluster view
 	// already loaded, never filtered or sorted on.
@@ -404,6 +423,59 @@ func Bootstrap(db *DB) error {
 			UPDATE collection_counts SET visible_count = MAX(0, visible_count - 1)
 			WHERE name IN (SELECT name FROM image_collections WHERE image_id = OLD.id);
 		END`)
+	// Maintain potential_relation_pairs.collection_hidden. The insert
+	// trigger stamps new rows (WHEN keeps the common visible case to a
+	// probe with no write); the membership and opt-in triggers resweep
+	// the affected images' rows, one indexed UPDATE per pair side. The
+	// tag-pass admission probe applies the same rule before queueing
+	// (internal/relations/job_tagpairs.go).
+	b.exec("create trg_potential_pairs_hidden_ai", `CREATE TRIGGER IF NOT EXISTS trg_potential_pairs_hidden_ai
+		AFTER INSERT ON potential_relation_pairs
+		WHEN `+pairHiddenProbe("NEW.a_image_id", "NEW.b_image_id")+`
+		BEGIN
+			UPDATE potential_relation_pairs SET collection_hidden = 1
+			WHERE a_image_id = NEW.a_image_id AND b_image_id = NEW.b_image_id;
+		END`)
+	b.exec("create trg_image_collections_pairs_ai", `CREATE TRIGGER IF NOT EXISTS trg_image_collections_pairs_ai
+		AFTER INSERT ON image_collections
+		BEGIN
+			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
+			WHERE a_image_id = NEW.image_id;
+			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
+			WHERE b_image_id = NEW.image_id;
+		END`)
+	b.exec("create trg_image_collections_pairs_ad", `CREATE TRIGGER IF NOT EXISTS trg_image_collections_pairs_ad
+		AFTER DELETE ON image_collections
+		BEGIN
+			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
+			WHERE a_image_id = OLD.image_id;
+			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
+			WHERE b_image_id = OLD.image_id;
+		END`)
+	b.exec("create trg_image_collections_pairs_au", `CREATE TRIGGER IF NOT EXISTS trg_image_collections_pairs_au
+		AFTER UPDATE OF name ON image_collections
+		BEGIN
+			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
+			WHERE a_image_id = NEW.image_id;
+			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
+			WHERE b_image_id = NEW.image_id;
+		END`)
+	b.exec("create trg_collection_find_relations_pairs_ai", `CREATE TRIGGER IF NOT EXISTS trg_collection_find_relations_pairs_ai
+		AFTER INSERT ON collection_find_relations
+		BEGIN
+			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
+			WHERE a_image_id IN (SELECT image_id FROM image_collections WHERE name = NEW.name);
+			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
+			WHERE b_image_id IN (SELECT image_id FROM image_collections WHERE name = NEW.name);
+		END`)
+	b.exec("create trg_collection_find_relations_pairs_ad", `CREATE TRIGGER IF NOT EXISTS trg_collection_find_relations_pairs_ad
+		AFTER DELETE ON collection_find_relations
+		BEGIN
+			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
+			WHERE a_image_id IN (SELECT image_id FROM image_collections WHERE name = OLD.name);
+			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
+			WHERE b_image_id IN (SELECT image_id FROM image_collections WHERE name = OLD.name);
+		END`)
 	// Reading-order index for per-collection member walks (preview
 	// samples, the reorder dialog). The `position IS NULL` expression
 	// key mirrors the ORDER BY exactly, so a LIMIT stops after the
@@ -504,6 +576,12 @@ func Bootstrap(db *DB) error {
 		 JOIN tags t ON t.id = it.tag_id
 		 WHERE it.is_implied = 0`,
 		"backfill image_tag_sources from tagger_name")
+	// The PK leads on image_id, so every read keyed by source scans the
+	// table. This one lets the /tags Used-by surfaces ride index seeks:
+	// the label list off a skip-ahead DISTINCT, the per-row chips off one
+	// EXISTS probe per (tag, label), the filter off a covering lookup.
+	b.exec("create idx_image_tag_sources_source",
+		`CREATE INDEX IF NOT EXISTS idx_image_tag_sources_source ON image_tag_sources(source, tag_id)`)
 	// Removing a tag from an image drops its ledger rows. A trigger
 	// instead of per-call cleanup because image_tags rows die through
 	// many shapes (single remove, implied sweep, batch strip, tag
@@ -577,6 +655,39 @@ func Bootstrap(db *DB) error {
 				JOIN tag_categories tc ON tc.id = t.category_id
 				WHERE it.image_id = OLD.image_id AND tc.name = 'rating'
 			), -1) WHERE id = OLD.image_id;
+		END`)
+	// potential_relation_pairs.max_rating_rank mirrors the higher of
+	// the two members' rating_rank so the ceiling-aware queue reads
+	// compare one stored integer instead of probing image_tags twice
+	// per row. Stamped on insert; when a rating edit moves a member's
+	// rating_rank, the image_tags triggers above cascade into the
+	// images-side trigger below. Sits after the rating_rank block so a
+	// from-scratch upgrade has the column before these reference it.
+	b.backfillIfFreshColumn("potential_relation_pairs", "max_rating_rank",
+		`ALTER TABLE potential_relation_pairs ADD COLUMN max_rating_rank INTEGER NOT NULL DEFAULT -1`,
+		`UPDATE potential_relation_pairs SET max_rating_rank = max(
+			(SELECT rating_rank FROM images WHERE id = a_image_id),
+			(SELECT rating_rank FROM images WHERE id = b_image_id))`,
+		"backfill potential_relation_pairs.max_rating_rank")
+	b.exec("create trg_potential_pairs_rank_ai", `CREATE TRIGGER IF NOT EXISTS trg_potential_pairs_rank_ai
+		AFTER INSERT ON potential_relation_pairs
+		BEGIN
+			UPDATE potential_relation_pairs SET max_rating_rank = max(
+				(SELECT rating_rank FROM images WHERE id = NEW.a_image_id),
+				(SELECT rating_rank FROM images WHERE id = NEW.b_image_id))
+			WHERE a_image_id = NEW.a_image_id AND b_image_id = NEW.b_image_id;
+		END`)
+	b.exec("create trg_images_pairs_rank_au", `CREATE TRIGGER IF NOT EXISTS trg_images_pairs_rank_au
+		AFTER UPDATE OF rating_rank ON images
+		BEGIN
+			UPDATE potential_relation_pairs SET max_rating_rank = max(
+				NEW.rating_rank,
+				(SELECT rating_rank FROM images WHERE id = b_image_id))
+			WHERE a_image_id = NEW.id;
+			UPDATE potential_relation_pairs SET max_rating_rank = max(
+				NEW.rating_rank,
+				(SELECT rating_rank FROM images WHERE id = a_image_id))
+			WHERE b_image_id = NEW.id;
 		END`)
 	// FTS5 trigram virtual tables for the name: filter. The outer leg's
 	// `i.basename_lower LIKE '%val%'` cannot ride the existing
@@ -698,6 +809,19 @@ func (b *bootstrapper) exec(label, sql string) {
 	}
 }
 
+// pairHiddenProbe returns the EXISTS clause deciding a queue pair's
+// collection_hidden flag: true when the two images share a collection
+// that has not opted into relation finding. aCol / bCol name the pair
+// columns of the row under test; unqualified names correlate to the
+// UPDATE target inside a trigger body.
+func pairHiddenProbe(aCol, bCol string) string {
+	return `EXISTS (
+		SELECT 1 FROM image_collections ca
+		JOIN image_collections cb ON cb.name = ca.name AND cb.image_id = ` + bCol + `
+		WHERE ca.image_id = ` + aCol + `
+		  AND NOT EXISTS (SELECT 1 FROM collection_find_relations f WHERE f.name = ca.name))`
+}
+
 func (b *bootstrapper) ensureColumn(table, column, alterSQL string) {
 	if b.err != nil {
 		return
@@ -806,6 +930,12 @@ func (db *DB) UntaggedVisibleCount() (int, bool) {
 		   AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = i.id)`)
 }
 
+// VisibleCount returns the cached count of non-missing images, or
+// queries it on demand.
+func (db *DB) VisibleCount() (int, bool) {
+	return db.cachedCount(&db.visibleCount, `SELECT COUNT(*) FROM images WHERE is_missing = 0`)
+}
+
 // AutoUntaggedVisibleCount is UntaggedVisibleCount restricted to
 // image_tags rows carrying is_auto = 1 - the subtrahend behind
 // autotagged:true. There is no covering (image_id, is_auto) index, so
@@ -824,10 +954,11 @@ func (db *DB) AutoUntaggedVisibleCount() (int, bool) {
 // write that changes image_tags membership (tag add/remove, batch tag,
 // implication propagation, autotag ingest, image delete) so the next
 // reader recomputes the slow subtrahends from current state. Cheap to
-// call - just two atomic stores - so over-invalidating costs nothing.
+// call - just a few atomic stores - so over-invalidating costs nothing.
 func (db *DB) InvalidateCachedCounts() {
 	db.untaggedVisible.Store(nil)
 	db.autoUntaggedVisible.Store(nil)
+	db.visibleCount.Store(nil)
 }
 
 // ShrinkMemory runs `PRAGMA shrink_memory` on every connection in

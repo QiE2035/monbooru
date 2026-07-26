@@ -6,7 +6,7 @@
 <div id="gallery-header">
   <form id="search-form" hx-get="/" hx-target="#gallery-grid" hx-push-url="true" hx-swap="innerHTML">
     <div class="search-input-wrap">
-      <input type="text" name="q" id="search-input" value="{{.Query}}" placeholder="Search tags…" autocomplete="off"
+      <input type="text" name="q" id="search-input" value="{{.Query}}" placeholder="Search tags… (system: lists filters)" autocomplete="off"
              hx-get="/internal/search/suggest"
              hx-trigger="input changed delay:200ms"
              hx-target="#search-suggest"
@@ -16,20 +16,23 @@
              onkeydown="handleSuggestKey(event, 'search-suggest', 'search-input')">
       <div id="search-suggest" class="suggest-dropdown search-suggest-dropdown"></div>
     </div>
-    <select name="sort" id="search-sort">
+    {{/* Applied on change: the select showing a sort the grid is not in
+         reads as a broken grid, not as a pending edit. */}}
+    <select name="sort" id="search-sort" onchange="submitSearch()">
       <option value="newest"   {{if eq .Sort "newest"}}selected{{end}}>Newest</option>
       <option value="filesize" {{if eq .Sort "filesize"}}selected{{end}}>File size</option>
       <option value="order"    {{if eq .Sort "order"}}selected{{end}}>Collection order</option>
       {{if eq .Sort "random"}}<option value="random" selected>Random</option>{{end}}
+      {{if eq .Sort "similarity"}}<option value="similarity" selected>Similarity</option>{{end}}
     </select>
-    <select name="order">
+    <select name="order" onchange="submitSearch()">
       <option value="desc" {{if eq .Order "desc"}}selected{{end}}>↓</option>
       <option value="asc"  {{if eq .Order "asc"}}selected{{end}}>↑</option>
     </select>
     {{if .RandomSeed}}<input type="hidden" name="seed" value="{{.RandomSeed}}">{{end}}
     <button type="submit">Search</button>
     <button type="button" id="fav-filter-btn" class="{{if hasFavFilter .Query}}active{{end}}"
-            onclick="toggleFavFilter()" title="Show favorites (F)">♥</button>
+            onclick="toggleFavFilter()" title="Show favorites (F)">♥&#xFE0E;</button>
     <button type="button" id="random-sort-btn" class="{{if eq .Sort "random"}}active{{end}}"
             onclick="applyRandomSort()" title="{{if eq .Sort "random"}}Re-shuffle{{else}}Random order{{end}} (R)">⇄</button>
   </form>
@@ -52,8 +55,8 @@
     {{if .EnabledTaggers}}<button type="button" class="btn-autotag" onclick="openBatchAutotagDialog('selection')">Auto-tag</button>{{end}}
     {{if .MonloaderUsable}}<button type="button" class="monloader-accent" onclick="openBatchLookupDialog('selection')">Find tags</button>{{end}}
     <span class="batch-bar-sep" aria-hidden="true"></span>
-    <button type="button" onclick="openBatchInboxDialog('selection')">Toggle inbox</button>
-    <button type="button" onclick="openBatchFavoriteDialog('selection')">Toggle favorite</button>
+    <button type="button" onclick="openBatchInboxDialog('selection')">Inbox</button>
+    <button type="button" onclick="openBatchFavoriteDialog('selection')">Favorite</button>
     <button type="button" onclick="openBatchCollectionDialog('selection')">Set collection</button>
     <span class="batch-bar-sep" aria-hidden="true"></span>
     {{if gt (len .Galleries) 1}}<button type="button" onclick="openBatchTransferDialog('selection')">Transfer</button>{{end}}
@@ -315,7 +318,7 @@
 <dialog id="batch-inbox-dialog">
   <input type="hidden" id="batch-inbox-scope">
   <p>
-    Toggle inbox state for
+    Archive or unarchive
     {{template "batch_count" "batch-inbox"}}?
   </p>
   <p style="color:var(--fg-dim);font-size:12px">Inbox images become archived; archived become inbox.</p>

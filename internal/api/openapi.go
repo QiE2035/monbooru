@@ -126,6 +126,14 @@ func buildSpec(baseURL string) map[string]any {
 						"source_added":  map[string]any{"type": "boolean"},
 					},
 				},
+				"ReplaceFileResponse": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"replaced":     map[string]any{"type": "boolean", "description": "False when the uploaded bytes already matched the stored file; the metadata merge still applied"},
+						"merge":        map[string]any{"$ref": "#/components/schemas/MergeSummary"},
+						"tag_warnings": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "nullable": true},
+					},
+				},
 				"EnrichResponse": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -187,7 +195,7 @@ func buildSpec(baseURL string) map[string]any {
 							},
 						},
 						"note":            map[string]any{"type": "string", "description": "Operator's freeform note. Never written by a push, enrich, or import."},
-						"original_source": map[string]any{"type": "string", "description": "Operator's image-level original source URL. Never written by a push, enrich, or import."},
+						"original_source": map[string]any{"type": "string", "description": "Legacy image-level original source URL. Read-only: only a gallery transfer still carries it."},
 						"annotations": map[string]any{
 							"type":        "array",
 							"description": "Positional note boxes pulled per source, in original-image pixel coordinates. Omitted when empty.",
@@ -411,7 +419,7 @@ func buildSpec(baseURL string) map[string]any {
 					"responses": map[string]any{
 						"200": resp("Metadata applied", "#/components/schemas/EnrichResponse"),
 						"404": resp("Not found", "#/components/schemas/Error"),
-						"409": resp("Hash mismatch: the source no longer serves this file; nothing was changed. Not raised for a similarity-matched origin", "#/components/schemas/Error"),
+						"409": resp("Hash mismatch: the source returned a different file; nothing was changed. Not raised for a similarity-matched origin", "#/components/schemas/Error"),
 						"500": resp("A merge write failed (recorded as an error fetch status)", "#/components/schemas/Error"),
 					},
 				},
@@ -515,6 +523,40 @@ func buildSpec(baseURL string) map[string]any {
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Original file bytes", "content": binaryContent("application/octet-stream")},
 						"404": resp("Not found", "#/components/schemas/Error"),
+					},
+				},
+				"post": map[string]any{
+					"summary":     "Replace the image's file in place",
+					"description": "The file-carrying sibling of enrich: the uploaded bytes replace the existing row's file while the row and everything attached to it survive. Content-derived state (sha256, dimensions, size, type, embedded metadata, thumbnail, phash) is re-derived, annotation boxes scale to the new dimensions, and the accompanying metadata fields land through the same merge as a push. The driving origin is marked exact (similarity reset, md5 refreshed). An upload whose sha256 matches the stored file applies the metadata only and answers replaced=false. Image and animated rows only.",
+					"operationId": "replaceImageFile",
+					"parameters":  []map[string]any{pathParam("id", "Image ID"), galleryParam()},
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"multipart/form-data": map[string]any{
+								"schema": map[string]any{
+									"type":     "object",
+									"required": []string{"file"},
+									"properties": map[string]any{
+										"file":       map[string]any{"type": "string", "format": "binary"},
+										"tags":       map[string]any{"type": "string", "description": "JSON array of tag names, merged like an enrich"},
+										"source":     map[string]any{"type": "string"},
+										"post_id":    map[string]any{"type": "string"},
+										"url":        map[string]any{"type": "string"},
+										"md5":        map[string]any{"type": "string", "description": "md5 the source claims; recorded on the origin row"},
+										"parent_url": map[string]any{"type": "string"},
+										"commentary": map[string]any{"type": "string"},
+										"original":   map[string]any{"type": "string"},
+										"notes":      map[string]any{"type": "string", "description": "JSON array of positional note boxes"},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"200": resp("Replace outcome", "#/components/schemas/ReplaceFileResponse"),
+						"404": resp("Not found", "#/components/schemas/Error"),
+						"409": resp("wrong_type for an archive/video row or a non-image upload; already_exists when the uploaded bytes are another image (the pair is recorded as potential duplicates)", "#/components/schemas/Error"),
 					},
 				},
 			},

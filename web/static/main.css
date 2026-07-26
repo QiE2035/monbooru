@@ -184,6 +184,10 @@ button.footer-rating-link:hover { color: var(--fg); }
   align-items: center;
   gap: 8px;
 }
+#topbar-right form button {
+  height: 28px;
+  box-sizing: border-box;
+}
 
 #job-status {
   font-size: 12px;
@@ -609,6 +613,19 @@ button.footer-rating-link:hover { color: var(--fg); }
   width: auto;
 }
 
+.badge-similarity {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  font-size: 10px;
+  line-height: 1;
+  width: auto;
+  color: var(--tagger);
+  z-index: 1;
+}
+.thumb-card:hover .badge-similarity,
+.batch-active .badge-similarity { opacity: 0; }
+
 /* Pagination */
 .pagination {
   display: flex;
@@ -782,7 +799,16 @@ details summary:hover { color: var(--fg); }
 }
 .origin-chip.origin-ptr { color: var(--indigo); border-color: var(--indigo); }
 .origin-chip.origin-auto { color: var(--tagger); border-color: var(--tagger); }
+.origin-chip.origin-user { color: var(--fg-dim); }
 .origin-user { color: var(--fg-dim); }
+.tag-usedby-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tag-usedby-cell .origin-chip {
+  display: inline;
+  border: 0;
+  padding: 0;
+  max-width: none;
+  overflow: visible;
+}
 .tag-date { color: var(--fg-dim); font-size: 12px; white-space: nowrap; }
 .tag-name-cell a { text-decoration: none; }
 .tag-name-cell a:hover { text-decoration: underline; }
@@ -792,8 +818,9 @@ details summary:hover { color: var(--fg); }
 .tag-table th:nth-child(4), .tag-table td:nth-child(4) { width: 110px; }
 .tag-table th:nth-child(5), .tag-table td:nth-child(5) { width: 60px; }
 .tag-table th:nth-child(6), .tag-table td:nth-child(6) { width: 85px; }
-.tag-table th:nth-child(7), .tag-table td:nth-child(7) { width: 90px; }
-.tag-table th:nth-child(8), .tag-table td:nth-child(8) { width: 100px; white-space: nowrap; }
+.tag-table th:nth-child(7), .tag-table td:nth-child(7) { width: 85px; max-width: 85px; }
+.tag-table th:nth-child(8), .tag-table td:nth-child(8) { width: 90px; }
+.tag-table th:nth-child(9), .tag-table td:nth-child(9) { width: 100px; white-space: nowrap; }
 #tag-batch-bar {
   position: sticky;
   top: 0;
@@ -860,7 +887,8 @@ details summary:hover { color: var(--fg); }
 .tag-implied-cell a { text-decoration: none; }
 .tag-implied-cell a:hover { text-decoration: underline; }
 .tag-row:hover { background: var(--bg-surface); }
-.no-results { color: var(--fg-dim); font-style: italic; padding: 8px; }
+.no-results { color: var(--fg-dim); font-style: italic; padding: 8px; grid-column: 1 / -1; }
+.empty-gallery-hint { font-size: 12px; }
 /* Bordered data tables */
 .tag-table, .cat-table, .help-table {
   width: 100%;
@@ -1057,10 +1085,8 @@ dialog p { margin-bottom: 16px; }
 #commentary-dialog .field input[type="text"],
 #commentary-dialog .field textarea { width: 100%; max-width: none; }
 
-#original-dialog, #image-original-dialog { min-width: 480px; }
-#original-dialog .field textarea,
-#image-original-dialog .field input[type="url"] { width: 100%; max-width: none; }
-#original-dialog .field textarea { height: 2.2em; }
+#original-dialog { min-width: 480px; }
+#original-dialog .field textarea { width: 100%; max-width: none; height: 2.2em; }
 
 /* Source type badge */
 .source-badge {
@@ -1126,7 +1152,7 @@ dialog p { margin-bottom: 16px; }
   gap: 8px;
 }
 .detail-topbar-right {
-  width: 500px;
+  width: 460px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -1189,6 +1215,13 @@ dialog p { margin-bottom: 16px; }
   cursor: pointer;
   font-size: 13px;
   line-height: 1.4;
+}
+.btn-fav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 2px 0;
 }
 .btn-fav:hover { color: var(--fav); border-color: var(--fav); }
 .btn-fav.active { color: var(--fav); border-color: var(--fav); }
@@ -1284,10 +1317,7 @@ dialog p { margin-bottom: 16px; }
 
 .mono-small { font-family: monospace; font-size: 11px; }
 .sha-truncated { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: baseline; }
-.meta-table tr:has(> th) td:has(.sha-truncated),
-.meta-table tr:has(> th) td.meta-path { flex: 1 1 auto; min-width: 0; }
-.meta-table tr:has(> th) td:has(.sha-truncated) { display: flex; align-items: baseline; }
-.meta-table tr:has(> th) td.meta-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta-table tr:has(> th) td:has(.sha-truncated) { display: flex; align-items: baseline; flex: 1 1 auto; min-width: 0; }
 .meta-table tr:has(> th) td:has(.sha-truncated) .copy-flash { flex: 0 0 auto; }
 .sha-copyable {
   background: none;
@@ -1568,7 +1598,7 @@ a.btn-sm:hover { text-decoration: none; }
 
 /* Metadata column: wraps prev/next nav + metadata panel */
 .detail-meta-col {
-  width: 500px;
+  width: 460px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -1621,7 +1651,13 @@ details.tag-source-group[data-source="implied"][open] > summary::before { conten
 .meta-editable { margin-top: 4px; }
 
 .meta-table tr:has(> th) td:has(.source-list) { flex: 1 1 auto; width: 0; min-width: 0; }
-.source-list .collection-item { display: flex; align-items: baseline; gap: 4px; white-space: nowrap; }
+
+.source-list .collection-item { display: flex; flex-direction: column; gap: 1px; }
+.source-list .collection-item + .collection-item { margin-top: 4px; }
+.source-line { display: flex; align-items: baseline; gap: 4px; min-width: 0; white-space: nowrap; }
+.source-line-sp { flex: 1 1 auto; }
+.source-actions { display: flex; align-items: baseline; gap: 6px; padding-left: 2ch; white-space: nowrap; }
+.source-list + .btn-add-source { display: inline-block; margin-top: 6px; }
 .source-list .meta-source-value, .source-list .meta-url-value { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; word-break: normal; }
 
 .maintenance-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
@@ -1747,6 +1783,7 @@ dialog .field input[type="text"].upload-wide-input { width: 100%; min-width: 420
 .upload-file-list li { padding: 1px 0; }
 .related-images { margin-top: 12px; }
 .related-images h3 { font-size: 13px; margin: 0 0 6px; color: var(--fg-dim); }
+.related-images-more { font-weight: normal; margin-left: 4px; }
 .related-entries-header {
   display: flex;
   align-items: baseline;
@@ -1922,7 +1959,8 @@ details[open] > .relations-card-summary::before { content: "▼"; }
 }
 
 .relations-session { padding: 16px; }
-.session-order-form { display: inline-flex; gap: 12px; align-items: center; margin-left: auto; }
+.session-order-form { display: inline-flex; gap: 12px; align-items: center; margin-left: 16px; }
+.session-detector-form { margin-left: auto; }
 .session-order-form > .field-hint,
 .session-order-form > label { display: inline-flex; align-items: center; gap: 4px; line-height: 1; }
 .session-order-form label { font-size: 13px; color: var(--fg-dim); }
@@ -1972,7 +2010,10 @@ details[open] > .relations-card-summary::before { content: "▼"; }
   color: var(--fg-dim);
 }
 .session-distance-line { display: block; width: 100%; border-top: 1px dashed var(--border); }
-.session-distance-label { align-self: center; white-space: nowrap; }
+.session-distance-label { align-self: center; white-space: nowrap; text-align: center; }
+.session-distance-sub { align-self: center; font-size: 11px; color: var(--fg-dim); }
+.session-source-tags { color: var(--tagger); }
+.session-source-review { color: var(--warning); }
 .session-prompt { text-align: center; color: var(--fg-dim); font-size: 13px; margin: 0 0 8px; }
 .session-hint { text-align: center; color: var(--fg-dim); font-size: 12px; margin: 0 0 6px; }
 .session-buttons {
@@ -2082,6 +2123,12 @@ details[open] > .relations-card-summary::before { content: "▼"; }
 .relations-compare-table .cmp-win { background: color-mix(in srgb, var(--success) 12%, transparent); color: var(--fg); }
 .relations-compare-table .cmp-match { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--fg); }
 .relations-compare-table .cmp-tag-cell { word-break: break-word; }
+.relations-compare-table .cmp-shared-row th,
+.relations-compare-table .cmp-shared-row td { border-color: var(--tagger); }
+.relations-compare-table tr:has(+ .cmp-shared-row) th,
+.relations-compare-table tr:has(+ .cmp-shared-row) td { border-bottom-color: var(--tagger); }
+.cmp-shared-tag { display: inline-block; margin-right: 10px; white-space: nowrap; }
+.cmp-shared-weight { color: var(--tagger); }
 .session-empty { padding: 16px; }
 @media (max-width: 720px) {
   .session-cells { grid-template-columns: 1fr; }
@@ -2197,10 +2244,6 @@ details[open] > .relations-card-summary::before { content: "▼"; }
 
 @media (max-width: 480px) {
   #topbar { flex-wrap: wrap; height: auto; padding: 4px 8px; gap: 8px; row-gap: 4px; }
-  /* When the bar wraps, the nav takes its own row(s). Give each item a
-     baseline and butt them together so the active-page underline sits on a
-     continuous rule, as it does on the topbar's bottom rule at full width,
-     instead of floating under a single label. */
   #nav { flex-basis: 100%; margin-left: 0; justify-content: flex-start; flex-wrap: wrap; column-gap: 0; }
   #nav a { border-bottom-color: var(--border); padding-left: 8px; padding-right: 8px; }
   #topbar-right { margin-left: auto; }
@@ -2215,11 +2258,7 @@ details[open] > .relations-card-summary::before { content: "▼"; }
 }
 
 .cat-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-/* Reset the field-hint margin so the "(built-in)" label doesn't inflate the
-   flex line and stretch the recolor button taller than other rows. */
 .cat-actions .field-hint { margin: 0; }
-/* Invisible Rename-width spacer that keeps the recolor button on built-in
-   rows aligned with the one on renamable rows. */
 .cat-action-spacer { visibility: hidden; }
 
 .tag-actions {
@@ -2390,7 +2429,7 @@ body.reader-body #gallery-status { display: none; }
 .reader-disabled { opacity: 0.3; padding: 2px 6px; }
 .reader-back { margin-right: 0; }
 .reader-pages { margin-right: auto; }
-.reader-open { margin-left: auto; }
+.reader-extract { margin-left: auto; }
 
 .lightbox-dialog {
   width: 100vw;
@@ -2457,6 +2496,9 @@ body.reader-body #gallery-status { display: none; }
 }
 .manga-page-thumb { width: 100%; height: auto; display: block; max-height: 180px; object-fit: contain; background: #000; }
 .manga-page-num { display: block; font-size: 11px; color: var(--fg-dim); padding: 2px; }
+.manga-page-read .manga-page-thumb { opacity: 0.4; }
+.manga-page-bookmark .manga-page-link { border-color: var(--accent); }
+.manga-page-bookmark .manga-page-num { background: var(--accent); color: var(--bg); }
 #relations-image-page .manga-pages-grid {
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
 }
@@ -2553,8 +2595,6 @@ label.ptr-row:hover { background: var(--bg-input); }
 .ptr-gut::before { content: " "; white-space: pre; }
 .ptr-mark::before { content: "[ ]"; color: var(--fg-dim); }
 .ptr-note { color: var(--fg-dim); font-size: 12px; }
-/* A long PTR spelling drops onto its own line under the tag rather than
-   cramming the narrow trailing column. */
 .ptr-note-under { grid-column: 3 / -1; grid-row: 2; }
 .ptr-row-ctx { color: var(--fg-dim); }
 .ptr-row-ctx .ptr-mark::before { content: "   "; white-space: pre; }

@@ -2,7 +2,14 @@
 <p>Tags implied by <strong style="color:{{.Parent.CategoryColor}}">{{.Parent.Name}}</strong>:</p>
 {{if .Implications}}
 {{range groupImplicationsByOrigin .Implications}}
-{{if $.OriginKinds}}<p class="relation-origin-sub">{{if .Stale}}stale, {{end}}added by {{originLabel $.OriginKinds .Origin}}</p>{{end}}
+{{if $.OriginKinds}}<p class="relation-origin-sub">{{if .Stale}}stale, {{end}}added by {{originLabel $.OriginKinds .Origin}}
+  {{if gt (len .Implications) 1}}<button type="button" class="btn-link-accent"
+          hx-delete="/tags/{{$.Parent.ID}}/implications/group?origin={{urlQ .Origin}}&stale={{if .Stale}}1{{else}}0{{end}}"
+          hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+          hx-confirm="Remove all {{len .Implications}} {{if .Stale}}stale {{end}}implications added by {{originLabel $.OriginKinds .Origin}}?"
+          data-confirm-ok="Remove"
+          hx-on::after-request="if(event.detail.successful){pruneRelationGroup(this)}"
+          title="Remove every implication in this group">[×]</button>{{end}}</p>{{end}}
 <ul class="tag-list">
   {{range .Implications}}
   <li class="tag-item" style="color:{{.ImpliedCategoryColor}}">

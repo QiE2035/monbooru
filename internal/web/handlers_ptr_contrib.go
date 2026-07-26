@@ -243,6 +243,7 @@ func (s *Server) ptrContribPanel(w http.ResponseWriter, r *http.Request) {
 		"NewTip":        strings.Join(newTags, "\n"),
 		"PetitionTip":   strings.Join(petitionTags, "\n"),
 		"CanContribute": canContribute,
+		"CanPull":       s.ptrPullOpen(),
 		"ContribHint":   contribHint,
 		"Provisional":   preview.Provisional,
 		"FailedUploads": s.monloaderContribFailedSeed(),
@@ -443,29 +444,37 @@ func (s *Server) contribGateOpen() bool {
 	if !s.pairedWith("monloader") {
 		return false
 	}
-	_, _, ptrEnabled, _, contrib := s.monloaderStatusSeed()
-	return ptrEnabled && contrib
+	_, _, ptrReady, _, contrib := s.monloaderStatusSeed()
+	return ptrReady && contrib
 }
 
-// contribReadOpen reports whether the read-only diff and the Pull action
-// may render: paired and PTR enabled. Contributing additionally needs a
-// personal account (contribGateOpen).
+// contribReadOpen reports whether the read-only diff may render: paired and
+// the PTR index enabled. A still-building index answers diffs (marked
+// provisional), so syncing counts; contributing additionally needs a synced
+// index and a personal account (contribGateOpen).
 func (s *Server) contribReadOpen() bool {
 	if !s.pairedWith("monloader") {
 		return false
 	}
-	_, _, ptrEnabled, _, _ := s.monloaderStatusSeed()
-	return ptrEnabled
+	_, _, ptrReady, ptrSyncing, _ := s.monloaderStatusSeed()
+	return ptrReady || ptrSyncing
+}
+
+// ptrPullOpen reports whether the PTR pull actions may render: they ride the
+// lookup path, which monloader refuses until the index is caught up.
+func (s *Server) ptrPullOpen() bool {
+	_, _, ptrReady, _, _ := s.monloaderStatusSeed()
+	return ptrReady
 }
 
 // contribHint reports whether the panel's Contribute button may act and,
 // when it cannot, why. The diff and Pull stay live either way.
 func (s *Server) contribHint() (bool, string) {
-	_, _, ptrEnabled, ptrSyncing, ptrContrib := s.monloaderStatusSeed()
+	_, _, _, ptrSyncing, ptrContrib := s.monloaderStatusSeed()
 	switch {
 	case ptrContrib:
 		return true, ""
-	case ptrEnabled && ptrSyncing:
+	case ptrSyncing:
 		return false, "the Public Tag Repository is still syncing"
 	case s.monloaderContribBannedSeed():
 		return false, "the contribution account is banned"
@@ -744,7 +753,7 @@ func (s *Server) tagPtrContribPanel(w http.ResponseWriter, r *http.Request) {
 		"TagID":         id,
 		"NewCount":      len(newTags),
 		"PetitionCount": len(petitionTags),
-		"Pullable":      pullable,
+		"Pullable":      pullable && s.ptrPullOpen(),
 		"NewTip":        strings.Join(newTags, "\n"),
 		"PetitionTip":   strings.Join(petitionTags, "\n"),
 		"CanContribute": canContribute,

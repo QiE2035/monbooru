@@ -59,6 +59,10 @@
       <span class="reader-nav reader-disabled" aria-hidden="true">&gt;</span>
       <span class="reader-nav reader-disabled" aria-hidden="true">&gt;|</span>
       {{end}}
+      <form class="reader-extract" method="POST" action="/images/{{.Image.ID}}/page/{{.Page}}/extract">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <button type="submit" title="Extract page as image (e)">Extract</button>
+      </form>
       <a class="reader-open" href="/images/{{.Image.ID}}/page/{{.Page}}" target="_blank" rel="noopener" title="Open page in new tab (o)">↗</a>
     </nav>
   </main>

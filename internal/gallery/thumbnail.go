@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
-	"image/gif"
+	_ "image/gif"
 	"image/jpeg"
 	_ "image/png"
 	"io"
@@ -80,7 +80,7 @@ func Generate(srcPath, dstDir string, imageID int64, fileType string) error {
 	if fileType == "cbz" {
 		return generateMangaThumbnails(srcPath, dstDir, imageID)
 	}
-	if err := generateImageThumb(srcPath, dstPath, fileType); err != nil {
+	if err := generateImageThumb(srcPath, dstPath); err != nil {
 		return err
 	}
 	if fileType == "gif" {
@@ -201,27 +201,16 @@ func generateOneMangaPageThumb(archive *Manga, idx int, dstPath string) error {
 	return writeJPEGAtomic(scaleImage(src, thumbMaxDim), dstPath, thumbQuality)
 }
 
-func generateImageThumb(srcPath, dstPath, fileType string) error {
+func generateImageThumb(srcPath, dstPath string) error {
 	f, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("opening source: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
-	var src image.Image
-
-	if fileType == "gif" {
-		g, err := gif.Decode(f)
-		if err != nil {
-			return fmt.Errorf("decoding gif: %w", err)
-		}
-		src = g
-	} else {
-		img, err := DecodeImageWithCap(f)
-		if err != nil {
-			return fmt.Errorf("decoding image: %w", err)
-		}
-		src = img
+	src, err := DecodeImageWithCap(f)
+	if err != nil {
+		return fmt.Errorf("decoding image: %w", err)
 	}
 
 	thumb := scaleImage(src, thumbMaxDim)

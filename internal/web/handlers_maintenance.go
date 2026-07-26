@@ -23,15 +23,9 @@ import (
 // already running" path the other long maintenance handlers use, and
 // progress flows through the same status bar.
 func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db().Read.Query(`SELECT id FROM images WHERE is_missing = 1`)
+	ids, err := db.QueryIDs(s.db().Read, `SELECT id FROM images WHERE is_missing = 1`)
 	if err != nil {
 		writeInlineFlash(w, "err", "Error: "+err.Error())
-		return
-	}
-	ids, scanErr := db.ScanIDs(rows)
-	_ = rows.Close()
-	if scanErr != nil {
-		writeInlineFlash(w, "err", "Error: "+scanErr.Error())
 		return
 	}
 	if len(ids) == 0 {

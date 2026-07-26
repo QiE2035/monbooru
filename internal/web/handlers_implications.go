@@ -202,6 +202,106 @@ func (s *Server) removeImplicationDelete(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// removeImplicationsDelete and removeImpliedByDelete remove every edge in one
+// origin subgroup of the detail page's outbound / inbound implication lists.
+func (s *Server) removeImplicationsDelete(w http.ResponseWriter, r *http.Request) {
+	s.removeImplicationGroup(w, r, s.tagSvc().ListImplications)
+}
+
+func (s *Server) removeImpliedByDelete(w http.ResponseWriter, r *http.Request) {
+	s.removeImplicationGroup(w, r, s.tagSvc().ImpliedBy)
+}
+
+// removeImplicationGroup drops the edges list reports for the named origin
+// subgroup, then sweeps the image side for the whole group in one job: the
+// per-edge job removeImplicationDelete starts is refused for every edge after
+// the first, which would leave implied rows behind.
+func (s *Server) removeImplicationGroup(w http.ResponseWriter, r *http.Request, list func(int64) ([]models.Implication, error)) {
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
+		return
+	}
+	origin, stale := relationGroupFilter(r)
+	edges, err := list(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var removed []models.Implication
+	for _, im := range edges {
+		if im.Origin != origin || im.Stale != stale {
+			continue
+		}
+		if err := s.tagSvc().RemoveImplication(im.ParentID, im.ImpliedID); err != nil {
+			logx.Warnf("remove implication %d -> %d: %v", im.ParentID, im.ImpliedID, err)
+			continue
+		}
+		removed = append(removed, im)
+	}
+	if len(removed) > 0 {
+		s.startImplicationGroupSweep(removed)
+	}
+	noun := "implication"
+	if len(removed) != 1 {
+		noun = "implications"
+	}
+	setFlashHeader(w, strconv.Itoa(len(removed))+" "+noun+" removed.", "ok",
+		map[string]any{"tag-relations-changed": ""})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) startImplicationGroupSweep(edges []models.Implication) {
+	if err := s.jobs.Start(models.JobTypeTag); err != nil {
+		logx.Warnf("implication group sweep skipped: %v", err)
+		return
+	}
+	go s.runImplicationGroupSweep(edges)
+}
+
+// runImplicationGroupSweep drops the implied rows the removed edges no longer
+// justify, reusing one closure per distinct implied tag, then reconciles the
+// counts of those tags.
+func (s *Server) runImplicationGroupSweep(edges []models.Implication) {
+	ctx := s.jobs.Context()
+	total := len(edges)
+	closures := map[int64][]int64{}
+	processed := 0
+	cancelled := false
+
+	s.jobs.Update(0, total, "removing implications…")
+	for i, im := range edges {
+		if ctx.Err() != nil {
+			cancelled = true
+			break
+		}
+		if _, ok := closures[im.ImpliedID]; !ok {
+			closure, err := s.resolveRemoveClosure(im.ImpliedID)
+			if err != nil {
+				s.jobs.Fail(err.Error())
+				return
+			}
+			closures[im.ImpliedID] = closure
+		}
+		if err := s.sweepImplicationRemovalInline(ctx, im.ParentID, closures[im.ImpliedID]); err != nil {
+			logx.Warnf("implication sweep %d -> %d: %v", im.ParentID, im.ImpliedID, err)
+		}
+		processed = i + 1
+		s.jobs.Update(processed, total, "removing implications…")
+	}
+
+	implied := make([]int64, 0, len(closures))
+	for tagID := range closures {
+		implied = append(implied, tagID)
+	}
+	if err := s.tagSvc().RecalcIDs(implied); err != nil {
+		logx.Warnf("implication group sweep recalc: %v", err)
+	}
+	s.Active().InvalidateCaches()
+	s.finishJob(nil, cancelled,
+		fmt.Sprintf("implication sweep cancelled (%d/%d)", processed, total),
+		fmt.Sprintf("swept %d removed implication(s)", processed))
+}
+
 // startImplicationPropagation kicks off the background job that fans
 // out (op="add") or sweeps (op="remove") the parent → implied edge
 // across every image carrying parent. Skipped when a job is already
@@ -237,17 +337,8 @@ func (s *Server) resolveRemoveClosure(tagID int64) ([]int64, error) {
 // imageIDsWithTag returns the ids of every image carrying tagID, in id
 // order.
 func (s *Server) imageIDsWithTag(ctx context.Context, tagID int64) ([]int64, error) {
-	rows, err := s.db().Read.QueryContext(ctx,
+	return db.QueryIDsContext(ctx, s.db().Read,
 		`SELECT image_id FROM image_tags WHERE tag_id = ? ORDER BY image_id`, tagID)
-	if err != nil {
-		return nil, err
-	}
-	ids, err := db.ScanIDs(rows)
-	_ = rows.Close()
-	if err != nil {
-		return nil, err
-	}
-	return ids, nil
 }
 
 // chunkImageTagsByParent runs perImage for every image carrying
@@ -365,46 +456,53 @@ func propagateAddImplication(tx *sql.Tx, imageID, parentID, ratingCatID int64) e
 // implied by another parent on the image are preserved. The closure
 // (impliedID plus its transitive children) is resolved once by the
 // caller and reused across every image carrying the parent.
+// A row in the closure can be the only justification for another one, and
+// the closure is walked in an arbitrary order within a level, so sweep
+// until a pass drops nothing.
 func propagateRemoveImplication(tx *sql.Tx, imageID int64, closure []int64) error {
-	for _, id := range closure {
-		var rowImplied int
-		err := tx.QueryRow(
-			`SELECT is_implied FROM image_tags WHERE image_id = ? AND tag_id = ?`, imageID, id,
-		).Scan(&rowImplied)
-		if err == sql.ErrNoRows {
-			continue
-		} else if err != nil {
-			return err
+	for {
+		dropped := false
+		for _, id := range closure {
+			var rowImplied int
+			err := tx.QueryRow(
+				`SELECT is_implied FROM image_tags WHERE image_id = ? AND tag_id = ?`, imageID, id,
+			).Scan(&rowImplied)
+			if err == sql.ErrNoRows {
+				continue
+			} else if err != nil {
+				return err
+			}
+			if rowImplied != 1 {
+				continue
+			}
+			// Still implied by another parent on the image? Keep it.
+			var alt int64
+			err = tx.QueryRow(
+				`SELECT ti.parent_tag_id
+				 FROM tag_implications ti
+				 JOIN image_tags it ON it.tag_id = ti.parent_tag_id
+				 WHERE ti.implied_tag_id = ? AND it.image_id = ?
+				 LIMIT 1`,
+				id, imageID,
+			).Scan(&alt)
+			if err == nil {
+				continue
+			}
+			if err != sql.ErrNoRows {
+				return err
+			}
+			if _, err := tx.Exec(
+				`DELETE FROM image_tags WHERE image_id = ? AND tag_id = ?`, imageID, id,
+			); err != nil {
+				return err
+			}
+			if err := tags.DropTagUsageTx(tx, id, imageID); err != nil {
+				return err
+			}
+			dropped = true
 		}
-		if rowImplied != 1 {
-			continue
-		}
-		// Still implied by another parent on the image? Keep it.
-		var alt int64
-		err = tx.QueryRow(
-			`SELECT ti.parent_tag_id
-			 FROM tag_implications ti
-			 JOIN image_tags it ON it.tag_id = ti.parent_tag_id
-			 WHERE ti.implied_tag_id = ? AND it.image_id = ?
-			 LIMIT 1`,
-			id, imageID,
-		).Scan(&alt)
-		if err == nil {
-			continue
-		}
-		if err != sql.ErrNoRows {
-			return err
-		}
-		if _, err := tx.Exec(
-			`DELETE FROM image_tags WHERE image_id = ? AND tag_id = ?`, imageID, id,
-		); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(
-			`UPDATE tags SET usage_count = MAX(0, usage_count - 1) WHERE id = ?`, id,
-		); err != nil {
-			return err
+		if !dropped {
+			return nil
 		}
 	}
-	return nil
 }

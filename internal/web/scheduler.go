@@ -197,10 +197,16 @@ func (s *Server) scheduledFindRelationPairs(cx *galleryCtx) error {
 		return err
 	}
 	ctx := s.jobs.Context()
+	s.cfgMu.Lock()
+	tagPairs := s.cfg.Relations.TagPairs
+	tagPairThreshold := s.cfg.Relations.TagPairThreshold
+	s.cfgMu.Unlock()
 	opts := relations.FindPairsOptions{
-		Distance:       int(relations.IncrementalProbeDistance.Load()),
-		Replace:        false,
-		ThumbnailsPath: cx.ThumbnailsPath,
+		Distance:         int(relations.IncrementalProbeDistance.Load()),
+		Replace:          false,
+		ThumbnailsPath:   cx.ThumbnailsPath,
+		TagPairs:         tagPairs,
+		TagPairThreshold: config.ClampTagPairThreshold(tagPairThreshold),
 	}
 	added, err := relations.FindPairs(ctx, cx.DB, cx.bkTree, opts, s.jobs.Update)
 	if err == context.Canceled || ctx.Err() != nil {
@@ -280,14 +286,9 @@ func (s *Server) runOrphanSweep(ctx context.Context, cx *galleryCtx) (removed, p
 		return 0, 0, 0, fmt.Errorf("read thumbnails dir: %w", err)
 	}
 	total = len(entries)
-	rows, err := cx.DB.Read.QueryContext(ctx, `SELECT id FROM images`)
+	ids, err := db.QueryIDsContext(ctx, cx.DB.Read, `SELECT id FROM images`)
 	if err != nil {
 		return 0, 0, total, err
-	}
-	ids, scanErr := db.ScanIDs(rows)
-	_ = rows.Close()
-	if scanErr != nil {
-		return 0, 0, total, fmt.Errorf("cursor: %w", scanErr)
 	}
 	known := make(map[int64]struct{}, len(ids))
 	for _, id := range ids {
@@ -331,19 +332,13 @@ func (s *Server) runOrphanSweep(ctx context.Context, cx *galleryCtx) (removed, p
 }
 
 func (s *Server) scheduledAutotag(cx *galleryCtx) error {
-	rows, err := cx.DB.Read.Query(
+	ids, err := db.QueryIDs(cx.DB.Read,
 		`SELECT i.id FROM images i WHERE i.is_missing = 0
 		 AND NOT EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = i.id AND it.is_auto = 1)`,
 	)
 	if err != nil {
 		logx.Warnf("scheduler autotag %q: %v", cx.Name, err)
 		return err
-	}
-	ids, scanErr := db.ScanIDs(rows)
-	_ = rows.Close()
-	if scanErr != nil {
-		logx.Warnf("scheduler autotag %q: %v", cx.Name, scanErr)
-		return scanErr
 	}
 	if len(ids) == 0 {
 		return nil

@@ -36,9 +36,11 @@
       {{if not .Degraded}}
       {{/* Sits before the form so its zero-width flex item doesn't push an
            8px gap to the right of the sync button; the button ends up flush
-           with the topbar padding, matching the gallery grid's right edge. */}}
+           with the topbar padding, matching the gallery grid's right edge.
+           The refusal bodies /internal/sync answers with are writeInlineFlash
+           fragments, already escaped server-side, so they swap in as markup. */}}
       <span id="sync-flash"></span>
-      <form hx-post="/internal/sync" hx-swap="none"
+      <form id="sync-form" hx-post="/internal/sync" hx-swap="none"
             hx-on:htmx:before-request="document.getElementById('job-status').innerHTML='<span class=&quot;job-running&quot;>syncing…</span>'"
             hx-on:sync-started="document.getElementById('job-status').setAttribute('hx-trigger','every 2s');htmx.process('#job-status')"
             hx-on:htmx:response-error="document.getElementById('sync-flash').innerHTML=event.detail.xhr.responseText;refreshJobStatus();setTimeout(function(){var el=document.getElementById('sync-flash');if(el)el.innerHTML='';},5000)"
@@ -96,7 +98,7 @@
       <span id="footer-hidden" class="footer-hidden">{{with .HiddenByCeiling}}<span class="footer-sep-strong">::</span>{{.}} hidden {{plural . "image" "images"}} in the current search{{end}}</span>
     </div>
     <div id="footer-right">
-      {{if .MonloaderPaired}}{{template "partials/monloader_light.html" .}} · {{end}}page loaded in <span id="page-load-ms">{{pageLoadMs .RequestStart}}</span> ms · <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="{{.DocURL}}" target="_blank" rel="noopener">help</a> · <a href="/api/v1/docs" target="_blank" rel="noopener">API</a>
+      {{if .MonloaderPaired}}{{template "partials/monloader_light.html" .}} · {{end}}page loaded in <span id="page-load-ms">{{pageLoadMs .RequestStart}}</span> ms · <a href="{{.RepoURL}}" target="_blank" rel="noopener">monbooru{{if .Variant}} ({{.Variant}}){{end}}</a> {{.Version}} · <a href="#" id="footer-shortcuts" onclick="document.getElementById('shortcuts-help').showModal();return false">shortcuts</a> · <a href="{{.DocURL}}" target="_blank" rel="noopener">help</a> · <a href="/api/v1/docs" target="_blank" rel="noopener">API</a>
     </div>
   </footer>
   <dialog id="confirm-dialog">
@@ -157,7 +159,7 @@
             <tr><td><kbd>r</kbd></td><td>Remove tags</td></tr>
             <tr><td><kbd>t</kbd></td><td>Auto-tag</td></tr>
             <tr><td><kbd>m</kbd></td><td>Move</td></tr>
-            <tr><td><kbd>i</kbd></td><td>Toggle inbox / archive</td></tr>
+            <tr><td><kbd>i</kbd></td><td>Toggle archive</td></tr>
             <tr><td><kbd>f</kbd></td><td>Toggle favorite</td></tr>
             <tr><td><kbd>L</kbd></td><td>Find tags (monloader)</td></tr>
             <tr><td><kbd>Delete</kbd></td><td>Delete</td></tr>
@@ -181,7 +183,6 @@
             <tr><td><kbd>Space</kbd></td><td>Play / pause</td></tr>
             <tr><td><kbd>e s</kbd></td><td>Edit Source</td></tr>
             <tr><td><kbd>e c</kbd></td><td>Add to collection</td></tr>
-            <tr><td><kbd>e o</kbd></td><td>Edit Original source</td></tr>
             <tr><td><kbd>e n</kbd></td><td>Edit Note</td></tr>
             <tr><td><kbd>e 1</kbd>-<kbd>e 9</kbd></td><td>Edit Nth collection</td></tr>
             <tr><td><kbd>L</kbd></td><td>Lookup online boorus</td></tr>
@@ -250,6 +251,7 @@
             <tr><td><kbd>p</kbd></td><td>Jump to page</td></tr>
             <tr><td><kbd>P</kbd></td><td>See all pages</td></tr>
             <tr><td><kbd>o</kbd></td><td>Open page in new tab</td></tr>
+            <tr><td><kbd>e</kbd></td><td>Extract page as image</td></tr>
             <tr><td>Click page / <kbd>v</kbd></td><td>Zoom page in viewer</td></tr>
             <tr><td><kbd>Esc</kbd> / <kbd>Backspace</kbd></td><td>Back</td></tr>
           </tbody>

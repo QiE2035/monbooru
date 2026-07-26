@@ -13,6 +13,7 @@ import (
 	"github.com/monbooru/monbooru/internal/gallery"
 	"github.com/monbooru/monbooru/internal/logx"
 	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // ratingCeilingPost sets or clears the monbooru_rating_ceiling cookie.
@@ -64,9 +65,12 @@ func (s *Server) toggleBoolColumn(w http.ResponseWriter, r *http.Request, column
 	}
 }
 
+// toggleFavorite returns the swap HTML for the favorite button. The
+// FE0E after the filled heart pins it to text presentation; bare U+2665
+// falls back to a colour-emoji font and outsizes the outline heart.
 func (s *Server) toggleFavorite(w http.ResponseWriter, r *http.Request) {
 	s.toggleBoolColumn(w, r, "is_favorited",
-		`<button type="submit" id="fav-btn" class="btn-fav active" title="Unfavorite">♥</button>`,
+		`<button type="submit" id="fav-btn" class="btn-fav active" title="Unfavorite">♥&#xFE0E;</button>`,
 		`<button type="submit" id="fav-btn" class="btn-fav" title="Favorite">♡</button>`,
 		nil,
 	)
@@ -144,7 +148,7 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 		prevID, nextID = s.findAdjacentImages(id, back.Q, sortStr, orderStr, back.Seed, resolveCeiling(r, s.Active()))
 	}
 
-	_, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), id, s.tagSvc().RemoveAllTagsFromImage, s.onImageDeleteCallback())
+	_, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), id, tags.RemoveAllTagsFromImageTx, s.onImageDeleteCallback())
 	if err != nil {
 		// ErrNoRows on the initial canonical-path lookup is the genuine
 		// "no such image id" case; everything else (write-pool busy,
@@ -473,6 +477,59 @@ func (s *Server) lookupImage(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/images/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
+// replaceImage enqueues a replace job on monloader: download the origin's
+// post file and push it back over this image's bytes. Offered per origin
+// when its file is known (recorded hash mismatch) or presumed (similarity
+// match with no hash claim) to differ from the local one; the gate is
+// re-checked here so a stale page can't fire a replace the row no longer
+// justifies. Rides the same pending pill / fetch-status flow as a refetch.
+// Replacing bytes is the strongest fetch action, so a request while any
+// fetch is pending on the image is refused instead of stacked.
+func (s *Server) replaceImage(w http.ResponseWriter, r *http.Request) {
+	id, ok := imageIDForm(w, r)
+	if !ok {
+		return
+	}
+	site := strings.TrimSpace(r.FormValue("site"))
+	postID := strings.TrimSpace(r.FormValue("post_id"))
+	// This route bypasses ContextMiddleware so the outbound call never runs
+	// under ctxMu; snapshot the gallery once so the row read and the enqueue
+	// name can't straddle a concurrent switch.
+	cx := s.Active()
+	if cx == nil {
+		externalErr(w, r, "no active gallery", http.StatusServiceUnavailable)
+		return
+	}
+	galleryName := cx.Name
+	src := models.ImageSource{Site: site, PostID: postID}
+	if err := cx.DB.Read.QueryRow(
+		`SELECT url, similarity, md5_match FROM image_sources WHERE image_id = ? AND site = ? AND post_id = ?`,
+		id, site, postID,
+	).Scan(&src.URL, &src.Similarity, &src.MD5Match); err != nil {
+		externalErr(w, r, "source not found", http.StatusNotFound)
+		return
+	}
+	if !src.UpgradeEligible() {
+		externalErr(w, r, "this source's file is not known to differ from the local one", http.StatusConflict)
+		return
+	}
+	if e, ok := s.loadFetchStatus(galleryName, id); ok && e.State == "pending" {
+		externalErr(w, r, "a fetch is already running for this image; wait for it to finish", http.StatusConflict)
+		return
+	}
+	s.recordFetchStatus(galleryName, id, "pending", "")
+	if err := s.EnqueueReplace(r.Context(), id, galleryName, src.URL); err != nil {
+		s.clearFetchStatus(galleryName, id)
+		externalErr(w, r, "could not reach monloader: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if isHTMXRequest(r) {
+		writeFetchPending(w, id, 0)
+		return
+	}
+	http.Redirect(w, r, "/images/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
 // imageIDForm parses the {id} path segment plus the form body shared by the
 // detail-page editor handlers, rendering the failure inline for HTMX callers.
 func imageIDForm(w http.ResponseWriter, r *http.Request) (int64, bool) {
@@ -528,38 +585,6 @@ func (s *Server) setNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hxDone(w, r, "Note updated.", "", "/images/"+strconv.FormatInt(id, 10))
-}
-
-// setImageOriginalSource writes the operator's image-level original source URL.
-// Distinct from a per-origin original (image_sources.original) a booru pull
-// fills; an import never touches this. An empty value clears it.
-func (s *Server) setImageOriginalSource(w http.ResponseWriter, r *http.Request) {
-	id, ok := imageIDForm(w, r)
-	if !ok {
-		return
-	}
-	original := strings.TrimSpace(r.FormValue("original"))
-	if len(original) > maxImageOriginalLen {
-		externalErr(w, r, fmt.Sprintf("original source too long (max %d chars)", maxImageOriginalLen), http.StatusBadRequest)
-		return
-	}
-	if original != "" {
-		lower := strings.ToLower(original)
-		if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
-			externalErr(w, r, "original source must start with http:// or https://", http.StatusBadRequest)
-			return
-		}
-	}
-	res, err := s.db().Write.Exec(`UPDATE images SET original_source = ? WHERE id = ?`, original, id)
-	if err != nil {
-		externalErr(w, r, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		externalErr(w, r, "image not found", http.StatusNotFound)
-		return
-	}
-	hxDone(w, r, "Original source updated.", "", "/images/"+strconv.FormatInt(id, 10))
 }
 
 // setSourceText sets one text field (commentary or original) on an origin,

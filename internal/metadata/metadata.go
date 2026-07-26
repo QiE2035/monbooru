@@ -70,13 +70,8 @@ func genericFromPNG(path string) []models.SDParam {
 }
 
 func genericFromEXIF(path string) []models.SDParam {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = f.Close() }()
-	x, err := exif.Decode(f)
-	if err != nil {
+	x := decodeJPEGEXIF(path)
+	if x == nil {
 		return nil
 	}
 	return collectEXIFTags(x)

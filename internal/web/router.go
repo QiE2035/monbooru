@@ -71,9 +71,14 @@ type imageTagGroup struct {
 // manual ("user") and one group per distinct auto-tagger name.
 type imageTagSourceGroup struct {
 	Source string // "user" or tagger name
-	Title  string
-	Stale  bool // the source's latest fetch no longer carried these tags
-	Tags   []models.ImageTag
+	// Kind tells the template which bulk-remove route covers the group:
+	// "user", "source" or "auto". Empty when no route can target it, which
+	// Source alone can't express (a source labelled "user", an auto group
+	// whose rows carry no tagger name).
+	Kind  string
+	Title string
+	Stale bool // the source's latest fetch no longer carried these tags
+	Tags  []models.ImageTag
 }
 
 // Server holds all shared state for the HTTP server.
@@ -316,6 +321,7 @@ func contextMiddlewareBypass(path string) bool {
 	}
 	if (strings.HasPrefix(path, "/images/") || strings.HasPrefix(path, "/tags/")) &&
 		(strings.HasSuffix(path, "/sources/fetch") || strings.HasSuffix(path, "/lookup") ||
+			strings.HasSuffix(path, "/replace") ||
 			strings.HasSuffix(path, "/ptr-contrib-panel") || strings.HasSuffix(path, "/ptr-contrib-dialog") ||
 			strings.HasSuffix(path, "/ptr-contrib")) {
 		// These proxy to monloader over HTTP; holding the request read lock
@@ -386,6 +392,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /images/{id}/file", s.serveImageFile)
 	mux.HandleFunc("GET /images/{id}/page/{n}", s.serveMangaPage)
 	mux.HandleFunc("GET /images/{id}/page/{n}/thumb", s.serveMangaPageThumb)
+	mux.HandleFunc("POST /images/{id}/page/{n}/extract", s.extractMangaPage)
 	mux.HandleFunc("GET /images/{id}/read", s.readerHandler)
 	mux.HandleFunc("GET /images/{id}/pages", s.pagesGridHandler)
 	mux.HandleFunc("POST /images/{id}/tags", s.addTagToImage)
@@ -406,11 +413,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /images/{id}/annotations/remove", s.removeAnnotation)
 	mux.HandleFunc("POST /images/{id}/sources/fetch", s.fetchSource)
 	mux.HandleFunc("POST /images/{id}/lookup", s.lookupImage)
+	mux.HandleFunc("POST /images/{id}/replace", s.replaceImage)
 	mux.HandleFunc("GET /images/{id}/ptr-contrib-panel", s.ptrContribPanel)
 	mux.HandleFunc("GET /images/{id}/ptr-contrib-dialog", s.ptrContribDialog)
 	mux.HandleFunc("POST /images/{id}/ptr-contrib", s.ptrContribSend)
 	mux.HandleFunc("POST /images/{id}/note", s.setNote)
-	mux.HandleFunc("POST /images/{id}/original-source", s.setImageOriginalSource)
 	mux.HandleFunc("POST /images/{id}/commentary/set", s.setSourceCommentary)
 	mux.HandleFunc("POST /images/{id}/commentary/remove", s.removeSourceCommentary)
 	mux.HandleFunc("POST /images/{id}/original/set", s.setSourceOriginal)
@@ -438,6 +445,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /tags/{id}/implications", s.addImplicationPost)
 	mux.HandleFunc("POST /tags/{id}/implied-by", s.addImpliedByPost)
 	mux.HandleFunc("POST /tags/{id}/aliases", s.addTagAliasPost)
+	// The group deletes carry the /group suffix because a bare
+	// `DELETE /tags/{id}/aliases` overlaps `DELETE /tags/categories/{id}`
+	// with neither pattern more specific, which the mux refuses.
+	mux.HandleFunc("DELETE /tags/{id}/implications/group", s.removeImplicationsDelete)
+	mux.HandleFunc("DELETE /tags/{id}/implied-by/group", s.removeImpliedByDelete)
+	mux.HandleFunc("DELETE /tags/{id}/aliases/group", s.removeTagAliasesDelete)
 	mux.HandleFunc("DELETE /tags/{id}/implications/{impliedID}", s.removeImplicationDelete)
 	mux.HandleFunc("POST /tags/categories", s.createCategoryPost)
 	mux.HandleFunc("POST /tags/categories/{id}/rename", s.renameCategoryPost)
@@ -752,8 +765,9 @@ type baseData struct {
 	MonloaderConn    string
 	MonloaderVersion string
 	// MonloaderPTR gates the PTR-backed lookup controls: true when the last
-	// cached probe saw monloader report its PTR index enabled. Stale reads
-	// are fine - monloader answers 409 and the UI degrades in place.
+	// cached probe saw monloader report its PTR index enabled and caught up,
+	// the only state it answers a read in. Stale reads are fine - monloader
+	// answers 409 and the UI degrades in place.
 	MonloaderPTR bool
 	// MonloaderContrib gates every PTR contribution surface: true when the
 	// last cached probe saw monloader report a usable personal account
@@ -836,11 +850,11 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 	if active == "" {
 		active = "explicit"
 	}
-	conn, connVer, ptrEnabled, ptrSyncing, ptrContrib := s.monloaderStatusSeed()
+	conn, connVer, ptrReady, ptrSyncing, ptrContrib := s.monloaderStatusSeed()
 	if s.monloaderPaused() {
 		// A paused link renders as paused everywhere and hides the
 		// PTR-gated surfaces, regardless of the last probe's cache.
-		conn, connVer, ptrEnabled, ptrSyncing, ptrContrib = "paused", "", false, false, false
+		conn, connVer, ptrReady, ptrSyncing, ptrContrib = "paused", "", false, false, false
 	}
 	paired := s.pairedWith("monloader")
 	// The monloader-backed actions only make sense when the link is actually
@@ -867,7 +881,7 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 		MonloaderUsable:     monloaderUsable,
 		MonloaderConn:       conn,
 		MonloaderVersion:    connVer,
-		MonloaderPTR:        ptrEnabled,
+		MonloaderPTR:        ptrReady,
 		MonloaderPTRSyncing: ptrSyncing,
 		MonloaderContrib:    ptrContrib,
 		ActiveGallery:       s.activeName,
@@ -940,33 +954,30 @@ func (s *Server) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, fullPath)
 }
 
-// serveCustomCSS serves the operator-supplied stylesheet pointed at by
-// server.custom_css. An empty config 404s so the layout's gated <link>
-// degrades cleanly when the knob is not set. Path scope is enforced at
-// config load (see customCSSPathAllowed) so any leak vector is closed
-// before this handler ever runs.
-func (s *Server) serveCustomCSS(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.Server.CustomCSS == "" {
+// serveConfiguredFile serves an operator-supplied file (the
+// server.custom_css stylesheet, the server.logo logo/favicon). An empty
+// config 404s so the layout's gated <link> and the bundled-asset
+// fallbacks degrade cleanly when the knob is not set. Path scope is
+// enforced at config load (see customCSSPathAllowed) so any leak vector
+// is closed before this handler ever runs. The cache tag revalidates
+// against the file mtime so an edited file is picked up at once; a bare
+// Last-Modified would go heuristically stale until the operator
+// disabled the browser cache.
+func (s *Server) serveConfiguredFile(w http.ResponseWriter, r *http.Request, path, kind string) {
+	if path == "" {
 		http.NotFound(w, r)
 		return
 	}
-	// Revalidate against the file mtime so an edited stylesheet is picked
-	// up at once; a bare Last-Modified would go heuristically stale until
-	// the operator disabled the browser cache.
-	setGalleryScopedCache(w, "custom", "css", s.cfg.Server.CustomCSS)
-	http.ServeFile(w, r, s.cfg.Server.CustomCSS)
+	setGalleryScopedCache(w, "custom", kind, path)
+	http.ServeFile(w, r, path)
 }
 
-// serveCustomLogo serves the operator-supplied logo/favicon pointed at by
-// server.logo. Same shape and trust gate as serveCustomCSS - an empty
-// config 404s so the layout falls back to the bundled logo and favicon.
+func (s *Server) serveCustomCSS(w http.ResponseWriter, r *http.Request) {
+	s.serveConfiguredFile(w, r, s.cfg.Server.CustomCSS, "css")
+}
+
 func (s *Server) serveCustomLogo(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.Server.BooruLogo == "" {
-		http.NotFound(w, r)
-		return
-	}
-	setGalleryScopedCache(w, "custom", "logo", s.cfg.Server.BooruLogo)
-	http.ServeFile(w, r, s.cfg.Server.BooruLogo)
+	s.serveConfiguredFile(w, r, s.cfg.Server.BooruLogo, "logo")
 }
 
 // booruName resolves server.name with a "Monbooru" fallback so every

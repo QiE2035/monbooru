@@ -150,6 +150,7 @@ func templateFuncs() template.FuncMap {
 						userSourceOrder = append(userSourceOrder, key)
 						byUserSource[key] = &imageTagSourceGroup{
 							Source: t.TaggerName,
+							Kind:   "source",
 							Title:  title,
 							Stale:  t.Stale,
 						}
@@ -163,8 +164,15 @@ func templateFuncs() template.FuncMap {
 				}
 				if _, ok := byTagger[key]; !ok {
 					order = append(order, key)
+					kind := "auto"
+					if t.TaggerName == "" {
+						// The `taggers` filter matches on the stored name, so
+						// nameless auto rows have no group-scoped removal.
+						kind = ""
+					}
 					byTagger[key] = &imageTagSourceGroup{
 						Source: key,
+						Kind:   kind,
 						Title:  "Tags added by the " + key + " auto-tagger",
 					}
 				}
@@ -174,6 +182,7 @@ func templateFuncs() template.FuncMap {
 			if len(userTags) > 0 {
 				out = append(out, imageTagSourceGroup{
 					Source: "user",
+					Kind:   "user",
 					Title:  "Tags added by the user",
 					Tags:   userTags,
 				})

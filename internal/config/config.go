@@ -40,10 +40,35 @@ type Config struct {
 // the on-ingest incremental probe; default_session_order picks which mode
 // the Start-session CTA preselects; incremental_on_ingest toggles the
 // on-ingest BK-tree probe that fans new pairs into the queue.
+// DefaultTagPairThreshold is the admission score for tag-similarity
+// pairs, clamped to [MinTagPairThreshold, 1]. Stricter than any search
+// default: the search operator is looking for something and can discard
+// a weak match, a queued pair costs a decision.
+const (
+	DefaultTagPairThreshold = 0.85
+	MinTagPairThreshold     = 0.5
+)
+
+// ClampTagPairThreshold keeps a hand-edited or form-posted threshold
+// inside the usable band.
+func ClampTagPairThreshold(v float64) float64 {
+	switch {
+	case v < MinTagPairThreshold:
+		return MinTagPairThreshold
+	case v > 1:
+		return 1
+	}
+	return v
+}
+
+// tag_pairs adds the tag-similarity pass to find-pairs;
+// tag_pair_threshold is the score a pair must reach to be queued.
 type RelationsConfig struct {
-	DefaultDistance     int    `toml:"default_distance"`
-	DefaultSessionOrder string `toml:"default_session_order"`
-	IncrementalOnIngest bool   `toml:"incremental_on_ingest"`
+	DefaultDistance     int     `toml:"default_distance"`
+	DefaultSessionOrder string  `toml:"default_session_order"`
+	IncrementalOnIngest bool    `toml:"incremental_on_ingest"`
+	TagPairs            bool    `toml:"tag_pairs"`
+	TagPairThreshold    float64 `toml:"tag_pair_threshold"`
 }
 
 type ServerConfig struct {
@@ -383,6 +408,8 @@ func Default() *Config {
 			DefaultDistance:     4,
 			DefaultSessionOrder: "smallest_distance_first",
 			IncrementalOnIngest: true,
+			TagPairs:            true,
+			TagPairThreshold:    DefaultTagPairThreshold,
 		},
 	}
 }
@@ -495,33 +522,24 @@ func fillDerivedPaths(cfg *Config) {
 	}
 }
 
-// envInt / envBool read an override, keeping cur on an empty var and warning
+// envParse reads an override, keeping cur on an empty var and warning
 // (rather than silently keeping cur) on an unparseable value.
-func envInt(key string, cur int) int {
+func envParse[T any](key string, cur T, parse func(string) (T, error)) T {
 	v := os.Getenv(key)
 	if v == "" {
 		return cur
 	}
-	n, err := strconv.Atoi(v)
+	parsed, err := parse(v)
 	if err != nil {
 		logx.Warnf("config: ignoring %s=%q: %v", key, v, err)
 		return cur
 	}
-	return n
+	return parsed
 }
 
-func envBool(key string, cur bool) bool {
-	v := os.Getenv(key)
-	if v == "" {
-		return cur
-	}
-	b, err := strconv.ParseBool(v)
-	if err != nil {
-		logx.Warnf("config: ignoring %s=%q: %v", key, v, err)
-		return cur
-	}
-	return b
-}
+func envInt(key string, cur int) int { return envParse(key, cur, strconv.Atoi) }
+
+func envBool(key string, cur bool) bool { return envParse(key, cur, strconv.ParseBool) }
 
 // envStr returns the override value, or cur when the var is unset/empty.
 func envStr(key, cur string) string {

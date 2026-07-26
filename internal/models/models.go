@@ -31,6 +31,9 @@ const (
 	// OriginUpload is recorded for web-UI uploads and is the default for
 	// multipart API uploads.
 	OriginUpload = "upload"
+	// OriginExtract is recorded for rows created by extracting a page out
+	// of a cbz archive from the reader.
+	OriginExtract = "extract"
 )
 
 type Image struct {
@@ -47,12 +50,13 @@ type Image struct {
 	IsInbox        bool // 1 = needs triage; 0 = archived/curated
 	AutoTaggedAt   *time.Time
 	SourceType     string   // "a1111" | "comfyui" | "none" | "a1111,comfyui"
-	Origin         string   // "ingest" | "upload" | caller-supplied string (app name, URL...)
+	Origin         string   // "ingest" | "upload" | "extract" | caller-supplied string (app name, URL...)
 	Source         string   // free-form provenance label (site name, scraper, ...); operator-edited
 	URL            string   // canonical web URL the image came from; http(s) only
 	Note           string   // operator's freeform note; never set by an import
-	OriginalSource string   // operator's image-level original source URL; never set by an import
+	OriginalSource string   // legacy image-level original source URL; read-only, no writer left
 	PageCount      *int     // page entry count for cbz manga rows; NULL otherwise
+	LastReadPage   *int     // 1-based reader resume page for cbz rows; NULL = unstarted or finished. Only the primary-key image load populates it
 	DurationSec    *float64 // video duration in seconds; NULL for non-video rows and for videos that pre-date the column or whose probe failed
 	Series         string   // operator-edited free-form series label (max 200 chars); '' when unset
 	SeriesOrder    *int     // operator-edited position within Series; NULL = unspecified
@@ -78,6 +82,19 @@ type ImageSource struct {
 	Commentary string  // artist commentary from this source; "" when none
 	Original   string  // upstream artist source the post declared (usually a URL, newline-joined when several); "" when none
 	Similarity float64 // best similarity-service score a lookup matched this origin with; 0 = exact or manual
+	MD5        string  // md5 the source last claimed; "" when it never claimed one
+	MD5Match   string  // last claimed-md5 vs local-file verdict: "" unknown, "match", "differ"
+}
+
+// UpgradeEligible reports whether this origin's file is known (recorded
+// hash mismatch) or presumed (similarity match with no hash claim to
+// compare) to differ from the local one - the gate for the [upgrade]
+// action. A verified match withholds it: an upgrade would no-op.
+func (s ImageSource) UpgradeEligible() bool {
+	if s.URL == "" {
+		return false
+	}
+	return s.MD5Match == "differ" || (s.Similarity > 0 && s.MD5Match == "")
 }
 
 // Annotation is one positional note box overlaid on an image, in original-image
@@ -314,4 +331,56 @@ type SearchResult struct {
 	Limit   int
 	Total   int
 	Results []Image
+}
+
+// RowScanner is the Scan surface *sql.Row and *sql.Rows share, so one
+// scanner serves both the single-row primary-key reads and the search
+// cursor.
+type RowScanner interface {
+	Scan(dest ...any) error
+}
+
+// ImageRowColumns is the canonical SELECT list ScanImageRow reads, in
+// the order it scans them. Callers alias the images table as `i`. The
+// column order is load-bearing: the Scan is positional.
+const ImageRowColumns = `i.id, i.sha256, i.canonical_path, i.folder_path, i.file_type,
+	        i.width, i.height, i.file_size, i.is_missing, i.is_favorited,
+	        i.is_inbox, i.auto_tagged_at, i.source_type, i.origin, i.source, i.url, i.note, i.original_source,
+	        i.page_count, i.last_read_page, i.duration_seconds, i.series, i.series_order, i.phash, i.ingested_at, i.upload_batch`
+
+// ScanImageRow reads one row in the ImageRowColumns shape and folds the
+// int-as-bool flags and RFC3339 timestamps onto the typed struct. The
+// single source of truth for the image row shape.
+func ScanImageRow(row RowScanner) (Image, error) {
+	var img Image
+	var isMissing, isFav, isInbox int
+	var width, height, pageCount, lastReadPage, seriesOrder *int
+	var durationSec *float64
+	var autoTaggedAt *string
+	var phash *int64
+	var ingestedAt string
+	if err := row.Scan(
+		&img.ID, &img.SHA256, &img.CanonicalPath, &img.FolderPath, &img.FileType,
+		&width, &height, &img.FileSize, &isMissing, &isFav,
+		&isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &img.Note, &img.OriginalSource,
+		&pageCount, &lastReadPage, &durationSec, &img.Series, &seriesOrder, &phash, &ingestedAt, &img.UploadBatch,
+	); err != nil {
+		return Image{}, err
+	}
+	img.IsMissing = isMissing == 1
+	img.IsFavorited = isFav == 1
+	img.IsInbox = isInbox == 1
+	img.Width = width
+	img.Height = height
+	img.PageCount = pageCount
+	img.LastReadPage = lastReadPage
+	img.DurationSec = durationSec
+	img.SeriesOrder = seriesOrder
+	img.Phash = phash
+	if autoTaggedAt != nil {
+		t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
+		img.AutoTaggedAt = &t
+	}
+	img.IngestedAt, _ = time.Parse(time.RFC3339, ingestedAt)
+	return img, nil
 }

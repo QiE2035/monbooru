@@ -47,6 +47,9 @@
       <img src="/thumbnails/{{$.ActiveGallery}}/{{.ID}}.jpg" alt="image {{.ID}}" loading="lazy"
            class="thumb-img"
            onerror="this.parentElement.innerHTML='<div class=thumb-placeholder title=&quot;preview unavailable&quot;>?</div>'">
+      {{with index $.SimilarityPercent .ID}}
+        <span class="badge badge-similarity" title="Tag similarity to the seed image">{{.}}%</span>
+      {{end}}
       <div class="thumb-overlay">
         {{if or (eq .FileType "mp4") (eq .FileType "webm")}}
           <span class="badge badge-video" title="Video"></span>
@@ -80,7 +83,15 @@
     </a>
   </div>
   {{else}}
-  <div class="no-results">No images found.</div>
+  <div class="no-results">No images found.
+    {{if and (not $.Query) (not $.Degraded)}}
+    <p class="field-hint empty-gallery-hint">
+      <button type="button" class="btn-link-accent" onclick="document.getElementById('sync-form').requestSubmit()">[Sync gallery]</button>
+      scans the gallery folder for existing files.<br>
+      Drop files on the <a href="/?q=inbox:true">Inbox</a> page to upload.
+    </p>
+    {{end}}
+  </div>
   {{end}}
 </div>
 

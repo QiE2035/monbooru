@@ -1,7 +1,10 @@
 package api
 
 import (
+	"crypto/md5"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +18,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	_ "golang.org/x/image/webp" // register webp decoder for canDecodeImage
 
@@ -25,6 +27,7 @@ import (
 	"github.com/monbooru/monbooru/internal/models"
 	"github.com/monbooru/monbooru/internal/search"
 	"github.com/monbooru/monbooru/internal/tagger"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // applyCreateProvenance writes the supplied provenance fields onto a
@@ -191,8 +194,9 @@ func (h *Handler) mergeSource(g Gallery, imageID int64, source, postID, url, md5
 // push, used by monloader's source refetch. It shares mergeSource with the
 // duplicate branch for tags + provenance. When verify is set and a
 // source_md5 is supplied, the image's stored bytes are md5'd on demand and
-// compared first; a mismatch means the post no longer serves the same file,
-// so nothing changes (409 hash_mismatch).
+// compared first; a mismatch means the source returned a different file -
+// a repointed post, or a page URL that resolves to some other file - so
+// nothing changes (409 hash_mismatch).
 func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 	g, id, ok := h.galleryAndID(w, r)
 	if !ok {
@@ -250,6 +254,7 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	verified := true
+	md5Verdict := ""
 	if body.Verify {
 		if sourceMD5 == "" {
 			verified = false // asked to verify, but the source reported no md5
@@ -261,6 +266,7 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if !strings.EqualFold(got, sourceMD5) {
+				md5Verdict = "differ"
 				// A similarity-matched origin serves a different file by
 				// design, so its mismatch is expected rather than a repointed
 				// post; apply the fetch and report it unverified. The flag may
@@ -268,11 +274,18 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 				// yet, so both keys are checked.
 				if body.Similarity <= 0 && !gallery.SourceSimilarityMatched(g.DB, id, source, postID) &&
 					!gallery.SourceSimilarityMatched(g.DB, id, source, "") {
-					g.recordFetch(id, "mismatch", "the source no longer serves this file (hash mismatch); no tags applied")
-					apiError(w, http.StatusConflict, "hash_mismatch", "the source no longer serves this file")
+					// The verdict is exactly what the [upgrade] gate needs, so
+					// it lands even though the fetch itself is refused.
+					if err := gallery.SetSourceMD5Match(g.DB, id, source, postID, md5Verdict); err != nil {
+						logx.Warnf("api enrich: record md5 verdict: %v", err)
+					}
+					g.recordFetch(id, "mismatch", "the source returned a different file (hash mismatch); no tags applied")
+					apiError(w, http.StatusConflict, "hash_mismatch", "the source returned a different file")
 					return
 				}
 				verified = false
+			} else {
+				md5Verdict = "match"
 			}
 		}
 	}
@@ -287,6 +300,15 @@ func (h *Handler) enrichImage(w http.ResponseWriter, r *http.Request) {
 		g.recordFetch(id, "error", "fetch failed while recording the match score")
 		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
+	}
+	// Recorded after the merge so a first enrich's fresh origin row exists
+	// to carry it.
+	if md5Verdict != "" {
+		if err := gallery.SetSourceMD5Match(g.DB, id, source, postID, md5Verdict); err != nil {
+			g.recordFetch(id, "error", "fetch failed while recording the hash verdict")
+			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
 	}
 	// Artist commentary and positional notes are attributed to the same
 	// source, so a refetch pulls them in alongside the tags. Both replace what
@@ -349,6 +371,232 @@ func (h *Handler) fetchStatusReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// replaceImageFile handles POST /api/v1/images/{id}/file: the file-carrying
+// sibling of enrich. The uploaded bytes replace the image's file in place -
+// the row and everything attached to it survive while every content-derived
+// column and artifact is re-derived - and the accompanying metadata lands
+// through the same merge as a push. The uploaded original already existing
+// as another row is a refusal, never an implicit merge or delete; the pair
+// is recorded as potential duplicates for the standing dup workflow.
+func (h *Handler) replaceImageFile(w http.ResponseWriter, r *http.Request) {
+	g, id, ok := h.galleryAndID(w, r)
+	if !ok {
+		return
+	}
+	var curSHA, fileType string
+	var oldW, oldH *int
+	var oldSize int64
+	switch err := g.DB.Read.QueryRow(
+		`SELECT sha256, file_type, width, height, file_size FROM images WHERE id = ?`, id,
+	).Scan(&curSHA, &fileType, &oldW, &oldH, &oldSize); {
+	case errors.Is(err, sql.ErrNoRows):
+		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		return
+	case err != nil:
+		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if gallery.IsVideoType(fileType) || fileType == models.FileTypeCBZ {
+		g.recordFetch(id, "error", "this file type cannot be replaced")
+		apiError(w, http.StatusConflict, "wrong_type", "only image rows can have their file replaced")
+		return
+	}
+	if !isMultipart(r.Header.Get("Content-Type")) {
+		apiError(w, http.StatusBadRequest, "invalid_request", "multipart body required")
+		return
+	}
+	if maxBytes := int64(h.cfg.Gallery.MaxFileSizeMB) * 1024 * 1024; maxBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes+4096)
+	}
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		apiError(w, http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds max size")
+		return
+	}
+	file, fh, err := r.FormFile("file")
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", "missing file field")
+		return
+	}
+	defer func() { _ = file.Close() }()
+
+	source := strings.TrimSpace(r.FormValue("source"))
+	postID := strings.TrimSpace(r.FormValue("post_id"))
+	url := strings.TrimSpace(r.FormValue("url"))
+	claimedMD5 := strings.TrimSpace(r.FormValue("md5"))
+	parentURL := strings.TrimSpace(r.FormValue("parent_url"))
+	commentary := strings.TrimSpace(r.FormValue("commentary"))
+	original := strings.TrimSpace(r.FormValue("original"))
+	notes := parseNotesField(r.FormValue("notes"))
+	var tags []string
+	if tagsJSON := r.FormValue("tags"); tagsJSON != "" {
+		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+			apiError(w, http.StatusBadRequest, "invalid_request", "tags must be a JSON array of names")
+			return
+		}
+	}
+	if err := validateCreateProvenance(source, postID, url, claimedMD5, parentURL, "", commentary, original, nil); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	// Staged under the thumbnails dir - outside the watched gallery tree, so
+	// the watcher never sees a half-written intermediate. sha256 and md5 come
+	// from the same streaming pass.
+	staged, err := os.CreateTemp(g.ThumbnailsPath, "replace-*"+filepath.Ext(fh.Filename))
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "internal_error", "failed to stage upload")
+		return
+	}
+	stagedPath := staged.Name()
+	discardStaged := func() { _ = os.Remove(stagedPath) }
+	shaH, md5H := sha256.New(), md5.New()
+	if _, err := io.Copy(io.MultiWriter(staged, shaH, md5H), file); err != nil {
+		_ = staged.Close()
+		discardStaged()
+		apiError(w, http.StatusInternalServerError, "internal_error", "failed to save upload")
+		return
+	}
+	_ = staged.Close()
+	newSHA := hex.EncodeToString(shaH.Sum(nil))
+	newMD5 := hex.EncodeToString(md5H.Sum(nil))
+
+	applyMeta := func() (mergeSummary, []string, bool) {
+		sum, tagWarnings, err := h.mergeSource(g, id, source, postID, url, claimedMD5, parentURL, tags)
+		if err != nil {
+			g.recordFetch(id, "error", "replace failed while applying tags")
+			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return sum, nil, false
+		}
+		linkParentRelations(g, id, url, parentURL)
+		if step, err := applySourceProvenance(g, id, source, postID, commentary, original, notes); err != nil {
+			g.recordFetch(id, "error", "replace failed while applying "+step)
+			apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return sum, tagWarnings, false
+		}
+		// The origin now serves exactly the local bytes: similarity and the
+		// md5 ledger reset so the [upgrade] gate closes.
+		if source != "" {
+			if err := gallery.MarkSourceExact(g.DB, id, source, postID, newMD5); err != nil {
+				g.recordFetch(id, "error", "replace failed while recording the source state")
+				apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+				return sum, tagWarnings, false
+			}
+		}
+		return sum, tagWarnings, true
+	}
+
+	if strings.EqualFold(newSHA, curSHA) {
+		// The local file already is the original; only the metadata lands.
+		discardStaged()
+		sum, tagWarnings, ok := applyMeta()
+		if !ok {
+			return
+		}
+		g.invalidate()
+		msg := "The file already matches the source."
+		if source != "" {
+			msg += " " + fetchSummary(sum, len(tags))
+		}
+		g.recordFetch(id, "ok", msg)
+		resp := map[string]any{"replaced": false, "merge": sum}
+		if len(tagWarnings) > 0 {
+			resp["tag_warnings"] = tagWarnings
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	var otherID int64
+	if err := g.DB.Read.QueryRow(
+		`SELECT id FROM images WHERE sha256 = ? AND id != ?`, newSHA, id,
+	).Scan(&otherID); err == nil {
+		discardStaged()
+		// Record the pair so the existing pair-decide workflow takes over;
+		// an existing relation or a not-related mark wins, like the
+		// parent-url auto-link.
+		if g.RelationsSvc != nil {
+			if err := g.RelationsSvc.AddDuplicate(id, otherID); err != nil {
+				logx.Debugf("api replace: duplicate link %d - %d skipped: %v", id, otherID, err)
+			}
+		}
+		g.recordFetch(id, "already_exists",
+			fmt.Sprintf("You already hold the original as image %d.", otherID))
+		apiError(w, http.StatusConflict, "already_exists",
+			fmt.Sprintf("the original already exists as image %d", otherID))
+		return
+	}
+
+	newType, ftErr := gallery.DetectFileType(stagedPath)
+	if ftErr != nil {
+		discardStaged()
+		g.recordFetch(id, "error", "the source served an unsupported file type")
+		apiError(w, http.StatusBadRequest, "unsupported_type", "unsupported or unrecognised file type")
+		return
+	}
+	if gallery.IsVideoType(newType) || newType == models.FileTypeCBZ {
+		discardStaged()
+		g.recordFetch(id, "error", "the source serves a video or archive; only image files can replace an image")
+		apiError(w, http.StatusConflict, "wrong_type", "the replacement must be an image file")
+		return
+	}
+	if !canDecodeImage(stagedPath) {
+		rescued := newType == models.FileTypeJPEG &&
+			gallery.NormalizeImage(stagedPath) == nil && canDecodeImage(stagedPath)
+		if !rescued {
+			discardStaged()
+			g.recordFetch(id, "error", "the downloaded file does not decode as an image")
+			apiError(w, http.StatusUnsupportedMediaType, "unsupported_type", "file does not decode as an image")
+			return
+		}
+		// The rescue re-encoded the staged bytes, so the hashes moved.
+		if reSHA, err := gallery.HashFile(stagedPath); err == nil {
+			newSHA = reSHA
+		}
+		if reMD5, err := gallery.Md5File(stagedPath); err == nil {
+			newMD5 = reMD5
+		}
+	}
+
+	if err := gallery.ApplyReplacedFile(g.DB, g.ThumbnailsPath, id, stagedPath, newSHA, newType); err != nil {
+		discardStaged()
+		logx.Warnf("api replace image %d: %v", id, err)
+		g.recordFetch(id, "error", "the file replacement failed")
+		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
+	sum, tagWarnings, ok := applyMeta()
+	if !ok {
+		return
+	}
+	g.invalidate()
+
+	var newW, newH *int
+	var newSize int64
+	_ = g.DB.Read.QueryRow(`SELECT width, height, file_size FROM images WHERE id = ?`, id).
+		Scan(&newW, &newH, &newSize)
+	msg := fmt.Sprintf("Replaced the file (%s -> %s, %d kB -> %d kB).",
+		dimsLabel(oldW, oldH), dimsLabel(newW, newH), (oldSize+512)/1024, (newSize+512)/1024)
+	if source != "" {
+		msg += " " + fetchSummary(sum, len(tags))
+	}
+	g.recordFetch(id, "ok", msg)
+	resp := map[string]any{"replaced": true, "merge": sum}
+	if len(tagWarnings) > 0 {
+		resp["tag_warnings"] = tagWarnings
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// dimsLabel renders WxH for the replace summary, tolerating rows whose
+// dimensions never probed.
+func dimsLabel(w, h *int) string {
+	if w == nil || h == nil {
+		return "?x?"
+	}
+	return fmt.Sprintf("%dx%d", *w, *h)
+}
+
 // canDecodeImage opens path and runs image.DecodeConfig on the first
 // few bytes. Used as a fast post-DetectFileType guard so a text file
 // with an image extension is rejected before the row reaches the DB
@@ -369,32 +617,10 @@ func canDecodeImage(path string) bool {
 // buildImageResponse fetches an image plus its tags and assembles the
 // JSON response struct.
 func (h *Handler) buildImageResponse(g Gallery, imageID int64) (*imageResponse, error) {
-	var img models.Image
-	var isMissing, isFavorited, isInbox int
-	var autoTaggedAt *string
-	var ingestedAt string
-
-	var pageCount, seriesOrder *int
-	var phash *int64
-	err := g.DB.Read.QueryRow(`
-		SELECT id, sha256, canonical_path, file_type, width, height, file_size,
-		       is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, note, original_source, page_count, series, series_order, phash, ingested_at
-		FROM images WHERE id = ?`, imageID,
-	).Scan(&img.ID, &img.SHA256, &img.CanonicalPath, &img.FileType, &img.Width, &img.Height,
-		&img.FileSize, &isMissing, &isFavorited, &isInbox, &autoTaggedAt, &img.SourceType, &img.Origin, &img.Source, &img.URL, &img.Note, &img.OriginalSource, &pageCount, &img.Series, &seriesOrder, &phash, &ingestedAt)
+	img, err := models.ScanImageRow(g.DB.Read.QueryRow(
+		`SELECT `+models.ImageRowColumns+` FROM images i WHERE i.id = ?`, imageID))
 	if err != nil {
 		return nil, err
-	}
-	img.PageCount = pageCount
-	img.SeriesOrder = seriesOrder
-	img.Phash = phash
-	img.IsMissing = isMissing == 1
-	img.IsFavorited = isFavorited == 1
-	img.IsInbox = isInbox == 1
-	img.IngestedAt, _ = time.Parse(time.RFC3339, ingestedAt)
-	if autoTaggedAt != nil {
-		t, _ := time.Parse(time.RFC3339, *autoTaggedAt)
-		img.AutoTaggedAt = &t
 	}
 
 	var aliases []string
@@ -821,8 +1047,8 @@ func (h *Handler) parseCreateJSON(w http.ResponseWriter, r *http.Request, g Gall
 // createImage handles POST /api/v1/images. Accepts either multipart
 // (with `file`, `tags`, `folder`, `autotag`, `tagger_name`, `via`) or
 // JSON (with `path`, `tags`, `folder`, `autotag`, `tagger_name`,
-// `via`). In JSON mode `folder` only applies to relative paths;
-// absolute paths are used verbatim. `via` lands on `images.origin` and
+// `via`). In JSON mode `folder` only applies to relative paths; either
+// form must resolve inside the gallery root. `via` lands on `images.origin` and
 // is attached to each initial tag's `image_tags.tagger_name`. The
 // optional provenance fields `source`, `url`, `collection`, and
 // `collection_order` are written onto the new row; a duplicate-SHA
@@ -1086,7 +1312,7 @@ func (h *Handler) deleteImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := gallery.DeleteImage(g.DB, g.GalleryPath, g.ThumbnailsPath, id, g.TagSvc.RemoveAllTagsFromImage, relationsOnDelete(g.RelationsSvc))
+	result, err := gallery.DeleteImage(g.DB, g.GalleryPath, g.ThumbnailsPath, id, tags.RemoveAllTagsFromImageTx, relationsOnDelete(g.RelationsSvc))
 	if err != nil {
 		apiError(w, http.StatusNotFound, "not_found", "image not found")
 		return
@@ -1528,7 +1754,7 @@ func (h *Handler) resolveImageTagID(g Gallery, imageID int64, tagName string) (i
 		}
 	}
 
-	rows, err := g.DB.Read.Query(
+	ids, err := db.QueryIDs(g.DB.Read,
 		`SELECT t.id FROM image_tags it
 		 JOIN tags t ON t.id = it.tag_id
 		 WHERE it.image_id = ? AND t.name = ?`,
@@ -1536,11 +1762,6 @@ func (h *Handler) resolveImageTagID(g Gallery, imageID int64, tagName string) (i
 	)
 	if err != nil {
 		return 0, fmt.Errorf("tag lookup failed: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	ids, err := db.ScanIDs(rows)
-	if err != nil {
-		return 0, err
 	}
 	switch len(ids) {
 	case 0:

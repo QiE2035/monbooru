@@ -208,6 +208,12 @@ func tagFilterWhere(filter TagFilter) (string, []any) {
 	case "tag":
 		where += " AND t.is_alias = 0"
 	}
+	if filter.UsedBy != "" {
+		// EXISTS stops at the first ledger row; the IN-subquery form
+		// materialises every row the source ever wrote instead.
+		where += ` AND EXISTS (SELECT 1 FROM image_tag_sources s WHERE s.source = ? AND s.tag_id = t.id)`
+		args = append(args, filter.UsedBy)
+	}
 	if filter.CreatedAfter != "" {
 		where += " AND t.created_at >= ?"
 		args = append(args, filter.CreatedAfter)
@@ -397,6 +403,18 @@ func (s *Service) StaleUsageCount() (int, error) {
 	return n, err
 }
 
+// FullyStaleCount reports how many tags have nothing but stale usage left,
+// for the /tags Stale filter's second badge. The predicate mirrors
+// tagFilterWhere's `full` branch so badge and listing can't disagree.
+func (s *Service) FullyStaleCount() (int, error) {
+	var n int
+	err := s.db.Read.QueryRow(`SELECT COUNT(*) FROM tags t
+		WHERE t.usage_count > 0 AND t.id IN (SELECT tag_id FROM image_tags WHERE stale = 1)
+		  AND (SELECT COUNT(*) FROM image_tags it JOIN images mi ON mi.id = it.image_id AND mi.is_missing = 0
+		       WHERE it.tag_id = t.id AND it.stale = 1) = t.usage_count`).Scan(&n)
+	return n, err
+}
+
 // OriginCount pairs a stored creation-origin label with how many tags
 // carry it.
 type OriginCount struct {
@@ -475,12 +493,7 @@ func (s *Service) AutoTaggerLabels(labels []string) (map[string]struct{}, error)
 // the dialog count and the actual delete set agree.
 func (s *Service) ListTagIDs(filter TagFilter) ([]int64, error) {
 	where, args := tagFilterWhere(filter)
-	rows, err := s.db.Read.Query(`SELECT t.id FROM tags t WHERE `+where+` ORDER BY t.id`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	return db.ScanIDs(rows)
+	return db.QueryIDs(s.db.Read, `SELECT t.id FROM tags t WHERE `+where+` ORDER BY t.id`, args...)
 }
 
 // AdjacentTags returns the ids neighbouring id in the filter's listing

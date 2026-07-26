@@ -12,6 +12,7 @@ import (
 	"github.com/monbooru/monbooru/internal/gallery"
 	"github.com/monbooru/monbooru/internal/logx"
 	"github.com/monbooru/monbooru/internal/models"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // batchTransfer copies every image in the resolved scope into another gallery:
@@ -238,7 +239,7 @@ func (s *Server) transferOneImage(srcCx, dstCx *galleryCtx, id int64, removeAfte
 
 	if removeAfter {
 		if _, err := gallery.DeleteImage(srcCx.DB, srcCx.GalleryPath, srcCx.ThumbnailsPath, id,
-			srcCx.TagSvc.RemoveAllTagsFromImage, s.onImageDeleteCallback()); err != nil {
+			tags.RemoveAllTagsFromImageTx, s.onImageDeleteCallback()); err != nil {
 			return fmt.Errorf("remove source: %w", err)
 		}
 	}

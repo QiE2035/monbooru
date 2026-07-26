@@ -158,18 +158,13 @@ func (s *Service) MergeTags(aliasID, canonicalID int64) error {
 		// image already had it, so no double-count. Capture the image_ids
 		// that didn't already carry the canonical so step (e) below can fan
 		// out the canonical's implications onto them.
-		rows, err := tx.Query(
+		newCarrierIDs, err := db.QueryIDs(tx,
 			`SELECT image_id FROM image_tags WHERE tag_id = ?
 			 AND image_id NOT IN (SELECT image_id FROM image_tags WHERE tag_id = ?)`,
 			aliasID, canonicalID,
 		)
 		if err != nil {
 			return fmt.Errorf("merge enumerate alias-only images: %w", err)
-		}
-		newCarrierIDs, scanErr := db.ScanIDs(rows)
-		_ = rows.Close()
-		if scanErr != nil {
-			return fmt.Errorf("merge scan alias-only images: %w", scanErr)
 		}
 
 		if _, err := tx.Exec(

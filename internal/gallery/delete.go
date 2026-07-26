@@ -1,6 +1,7 @@
 package gallery
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 
@@ -30,7 +31,7 @@ type DeleteImageResult struct {
 // edited DB, a renamed mount) can't trick the handler into removing
 // arbitrary filesystem paths; sibling unlink paths in handlers_image_
 // actions.go and handlers_maintenance.go already carry the same gate.
-func DeleteImage(database *db.DB, galleryPath, thumbnailsPath string, id int64, removeAllTags func(int64) error, onImageDelete func(int64) error) (*DeleteImageResult, error) {
+func DeleteImage(database *db.DB, galleryPath, thumbnailsPath string, id int64, removeAllTags func(*sql.Tx, int64) error, onImageDelete func(*sql.Tx, int64) error) (*DeleteImageResult, error) {
 	var canonPath, folderPath, fileType string
 	var isMissing int
 	if err := database.Read.QueryRow(
@@ -39,23 +40,30 @@ func DeleteImage(database *db.DB, galleryPath, thumbnailsPath string, id int64, 
 		return nil, fmt.Errorf("image not found: %w", err)
 	}
 
-	// removeAllTags prunes zero-usage tags scoped to this image's own tag
-	// set, so we don't need a follow-up unscoped prune that could touch
-	// unrelated rows. Surface the error rather than logging-and-continuing:
-	// a partial removal would let the FK cascade clear image_tags while
-	// leaving tags.usage_count drifting until the next RecalcCount.
-	if err := removeAllTags(id); err != nil {
+	// One transaction for all three writes: a failure between them would
+	// otherwise leave the row with its tags stripped and usage_count
+	// decremented, drifting until the next RecalcCount. removeAllTags
+	// prunes zero-usage tags scoped to this image's own tag set, so no
+	// follow-up unscoped prune (which could touch unrelated rows) is
+	// needed.
+	tx, err := database.Write.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin delete image %d: %w", id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := removeAllTags(tx, id); err != nil {
 		return nil, fmt.Errorf("remove tags for image %d: %w", id, err)
 	}
-
 	if onImageDelete != nil {
-		if err := onImageDelete(id); err != nil {
+		if err := onImageDelete(tx, id); err != nil {
 			return nil, fmt.Errorf("relations cleanup for image %d: %w", id, err)
 		}
 	}
-
-	if _, err := database.Write.Exec(`DELETE FROM images WHERE id = ?`, id); err != nil {
+	if _, err := tx.Exec(`DELETE FROM images WHERE id = ?`, id); err != nil {
 		return nil, fmt.Errorf("delete image row: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit delete image %d: %w", id, err)
 	}
 
 	_ = os.Remove(ThumbnailPath(thumbnailsPath, id))

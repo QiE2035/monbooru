@@ -245,20 +245,28 @@ const driverIDBoundDensityCutoff = 20
 // semantics.
 func collectAndedTags(expr Expr) []TagExpr {
 	var out []TagExpr
+	walkAndedLeaves(expr, func(e Expr) {
+		if v, ok := e.(TagExpr); ok && v.Tag != "" {
+			out = append(out, v)
+		}
+	})
+	return out
+}
+
+// walkAndedLeaves visits every leaf reachable from expr through AndExpr
+// nodes only. Descending into Or / Not would change what the caller's
+// driver predicate means, so the walk stops at them.
+func walkAndedLeaves(expr Expr, visit func(Expr)) {
 	var walk func(Expr)
 	walk = func(e Expr) {
-		switch v := e.(type) {
-		case AndExpr:
+		if v, ok := e.(AndExpr); ok {
 			walk(v.Left)
 			walk(v.Right)
-		case TagExpr:
-			if v.Tag != "" {
-				out = append(out, v)
-			}
+			return
 		}
+		visit(e)
 	}
 	walk(expr)
-	return out
 }
 
 // expensiveAdjacencyTags reports whether expr's tag predicate forces the
@@ -303,20 +311,13 @@ func expensiveAdjacencyTags(expr Expr) bool {
 // obvious non-tag keywords.
 func collectAndedFilterLeaves(expr Expr) []FilterExpr {
 	var out []FilterExpr
-	var walk func(Expr)
-	walk = func(e Expr) {
-		switch v := e.(type) {
-		case AndExpr:
-			walk(v.Left)
-			walk(v.Right)
-		case FilterExpr:
-			if v.Val == "" || searchkw.IsKeyword(v.Key) {
-				return
-			}
-			out = append(out, v)
+	walkAndedLeaves(expr, func(e Expr) {
+		v, ok := e.(FilterExpr)
+		if !ok || v.Val == "" || searchkw.IsKeyword(v.Key) {
+			return
 		}
-	}
-	walk(expr)
+		out = append(out, v)
+	})
 	return out
 }
 
@@ -341,7 +342,7 @@ type andDriverLeg struct {
 // `i.id IN (SELECT image_id FROM image_tags WHERE tag_id IN (...))`
 // predicate that bounds the candidate set before the outer query runs.
 // Each chosen leaf has its correlated EXISTS suppressed in
-// buildWhereDBDriver so the predicate isn't paid twice. Returns
+// buildWhereDBDriverFull so the predicate isn't paid twice. Returns
 // ok=false when nothing can be picked.
 //
 // Two shapes:
@@ -361,10 +362,12 @@ type andDriverLeg struct {
 // by default: the planner already handles a single EXISTS via
 // idx_images_missing or the partial idx_images_ingested_visible (when
 // isPureTagExpr) and materialising would just shift the same work.
-// allowSingleLiteral=true overrides this for the random-sort and the
-// COUNT-cursor callers, where there is no covering index for the
-// synthetic random key (random sort) or no LIMIT to short-circuit the
-// per-row EXISTS scan (rank COUNT).
+// allowSingleLiteral=true overrides this for the random-sort, the
+// COUNT-cursor and the bucketed-adjacency callers, where there is no
+// covering index for the synthetic random key (random sort), no LIMIT
+// to short-circuit the per-row EXISTS scan (rank COUNT), or a bucket
+// bound that caps the materialisation a lone popular leaf would
+// otherwise be refused for (adjacency).
 func pickAndDriverTag(database *db.DB, expr Expr, allowSingleLiteral bool) ([]andDriverLeg, bool) {
 	if database == nil {
 		return nil, false
@@ -456,14 +459,16 @@ func pickAndDriverTag(database *db.DB, expr Expr, allowSingleLiteral bool) ([]an
 		return []andDriverLeg{{leaf: legs[smallestIdx].leaf, ids: legs[smallestIdx].ids}}, true
 	}
 
-	// Random sort with a single popular leaf: the data SELECT's
-	// ORDER BY ((id * mixed) & ...) has no covering index, so the slow
-	// path TEMP-B-TREEs every visible row carrying the predicate. The
-	// IN-driver materialisation walks the same row count via
-	// idx_image_tags_tag_image and feeds the temp sort a bounded id
-	// stream instead of EXISTS-probing every visible image - the gate
-	// stays scoped to random sort so indexed-sort callers keep their
-	// existing planner choice on a single popular literal.
+	// Single popular leaf for an allowSingleLiteral caller: under
+	// random sort the data SELECT's ORDER BY ((id * mixed) & ...) has
+	// no covering index, so the slow path TEMP-B-TREEs every visible
+	// row carrying the predicate; the IN-driver materialisation walks
+	// the same row count via idx_image_tags_tag_image and feeds the
+	// temp sort a bounded id stream instead of EXISTS-probing every
+	// visible image. The bucketed-adjacency caller rides the same
+	// branch for a lone popular wildcard, capping the materialisation
+	// with the bucket's id bounds. Indexed-sort Execute callers keep
+	// their existing planner choice on a single popular literal.
 	if allowSingleLiteral && len(legs) == 1 {
 		return []andDriverLeg{{leaf: legs[0].leaf, ids: legs[0].ids}}, true
 	}
@@ -482,7 +487,7 @@ func pickAndDriverTag(database *db.DB, expr Expr, allowSingleLiteral bool) ([]an
 	// leg adds ~smallestUsage rows to the read pool's working set; under
 	// c>1 contention every thread pays that cost in parallel and the
 	// extra narrowing past two legs no longer offsets it. Leaves dropped
-	// here keep their correlated EXISTS via buildWhereDBDriver, which
+	// here keep their correlated EXISTS via buildWhereDBDriverFull, which
 	// runs against the candidate set the INTERSECT already bounded.
 	sort.Slice(legs, func(i, j int) bool { return legs[i].usage < legs[j].usage })
 	const maxIntersectLegs = 2
@@ -679,6 +684,30 @@ type whereBuilder struct {
 	// the relPresenceResolved bool gates re-query.
 	relPresence         relationPresence
 	relPresenceResolved bool
+	// similarSeeds caches one resolved seed per image id so repeated
+	// similar: terms against the same seed share the read.
+	similarSeeds map[int64]tags.SimilaritySeed
+}
+
+// similaritySeed resolves and caches the weighted tag set for one seed
+// image. A nil db (test path) has no seed to read, so the caller emits
+// the no-match predicate.
+func (b *whereBuilder) similaritySeed(imageID int64) (tags.SimilaritySeed, bool) {
+	if seed, ok := b.similarSeeds[imageID]; ok {
+		return seed, true
+	}
+	if b.db == nil {
+		return tags.SimilaritySeed{}, false
+	}
+	seed, err := tags.LoadSimilaritySeed(b.db, imageID)
+	if err != nil {
+		return tags.SimilaritySeed{}, false
+	}
+	if b.similarSeeds == nil {
+		b.similarSeeds = map[int64]tags.SimilaritySeed{}
+	}
+	b.similarSeeds[imageID] = seed
+	return seed, true
 }
 
 // resolveRatingIDs queries the four canonical rating tag rows and caches
@@ -733,18 +762,13 @@ func (b *whereBuilder) resolveCategoryTagByName(category, name string) ([]int64,
 	if b.db == nil || category == "" || name == "" {
 		return nil, false
 	}
-	rows, err := b.db.Read.Query(
+	ids, err := db.QueryIDs(b.db.Read,
 		`SELECT DISTINCT COALESCE(t.canonical_tag_id, t.id)
 		   FROM tags t
 		   JOIN tag_categories tc ON tc.id = t.category_id
 		  WHERE t.name = ? AND tc.name = ?`,
 		name, category,
 	)
-	if err != nil {
-		return nil, false
-	}
-	defer func() { _ = rows.Close() }()
-	ids, err := db.ScanIDs(rows)
 	if err != nil {
 		return nil, false
 	}
@@ -793,22 +817,16 @@ func (b *whereBuilder) imageTagsPredicate(where string, negate bool) string {
 	return b.imageIDExists("image_tags it", "it", where, negate)
 }
 
-// buildWhereDBDriver is buildWhereDB with a driver-leaves hint: leaves
-// (TagExpr or category-qualified FilterExpr) present in the set emit
-// no SQL, because the caller has prepended a non-correlated IN(...)
-// (or IN INTERSECT) predicate covering the same rows. An empty/nil
-// set leaves the regular build path untouched.
-func buildWhereDBDriver(expr Expr, database *db.DB, legs []andDriverLeg) (string, []any, bool) {
-	where, args, hasMissing, _ := buildWhereDBDriverFull(expr, database, legs)
-	return where, args, hasMissing
-}
-
-// buildWhereDBDriverFull mirrors buildWhereDBDriver but exposes the
-// ceiling-rewrote signal. Callers that pick a sort-axis INDEXED BY
-// hint check the bool to switch to the rating-aware partial covering
-// index (idx_images_ingested_rating_visible /
-// idx_images_filesize_rating_visible) so the deep-page cursor walks
-// the rating-rank-filtered set entirely off the index.
+// buildWhereDBDriverFull is buildWhereDB with a driver-leaves hint:
+// leaves (TagExpr or category-qualified FilterExpr) present in the set
+// emit no SQL, because the caller has prepended a non-correlated IN(...)
+// (or IN INTERSECT) predicate covering the same rows. An empty/nil set
+// leaves the regular build path untouched. The last return is the
+// ceiling-rewrote signal: callers that pick a sort-axis INDEXED BY hint
+// check it to switch to the rating-aware partial covering index
+// (idx_images_ingested_rating_visible /
+// idx_images_filesize_rating_visible) so the deep-page cursor walks the
+// rating-rank-filtered set entirely off the index.
 func buildWhereDBDriverFull(expr Expr, database *db.DB, legs []andDriverLeg) (string, []any, bool, bool) {
 	var leaves map[Expr]bool
 	if len(legs) > 0 {
@@ -938,6 +956,18 @@ func (b *whereBuilder) buildTagExpr(e TagExpr) string {
 
 // scalarComp emits template with op spliced in and n bound. ok=false
 // collapses to "1=0" so each scalar filter case stays one expression.
+// buildCompFilter emits a numeric filter from its column template:
+// an X..Y range when the value carries one, otherwise a single
+// comparison. parseVal reads one half of a range, parseComp an
+// operator-plus-value.
+func (b *whereBuilder) buildCompFilter(template, val string, parseVal func(string) (any, bool), parseComp func(string) (string, any, bool)) string {
+	if s, ok := b.tryRangeComp(template, val, parseVal); ok {
+		return s
+	}
+	op, n, ok := parseComp(val)
+	return b.scalarComp(template, op, n, ok)
+}
+
 func (b *whereBuilder) scalarComp(template, op string, n any, ok bool) string {
 	if !ok {
 		return "1=0"
@@ -1015,6 +1045,7 @@ var filterBuilders = map[string]func(*whereBuilder, FilterExpr) string{
 	"id":         (*whereBuilder).buildIDFilter,
 	"phash":      (*whereBuilder).buildPhashFilter,
 	"relation":   (*whereBuilder).buildRelationFilter,
+	"similar":    (*whereBuilder).buildSimilarFilter,
 	"prompt":     (*whereBuilder).buildPromptFilter,
 	"model":      (*whereBuilder).buildModelFilter,
 	"sampler":    (*whereBuilder).buildSamplerFilter,
@@ -1115,19 +1146,11 @@ func (b *whereBuilder) buildCatFilter(e FilterExpr) string {
 }
 
 func (b *whereBuilder) buildWidthFilter(e FilterExpr) string {
-	if s, ok := b.tryRangeComp("i.width %s ?", e.Val, parseIntValue); ok {
-		return s
-	}
-	op, n, ok := parseIntComp(e.Val)
-	return b.scalarComp("i.width %s ?", op, n, ok)
+	return b.buildCompFilter("i.width %s ?", e.Val, parseIntValue, parseIntComp)
 }
 
 func (b *whereBuilder) buildHeightFilter(e FilterExpr) string {
-	if s, ok := b.tryRangeComp("i.height %s ?", e.Val, parseIntValue); ok {
-		return s
-	}
-	op, n, ok := parseIntComp(e.Val)
-	return b.scalarComp("i.height %s ?", op, n, ok)
+	return b.buildCompFilter("i.height %s ?", e.Val, parseIntValue, parseIntComp)
 }
 
 // buildMissingFilter sets a flag so any explicit `missing:` opts out
@@ -1196,14 +1219,10 @@ func (b *whereBuilder) buildCollectionFilter(e FilterExpr) string {
 	return "i.id IN (SELECT image_id FROM image_collections WHERE name = ?)"
 }
 
+// COALESCE so non-manga rows (NULL page_count) compare as 0; matches
+// the contract that `pages:>=1` excludes images.
 func (b *whereBuilder) buildPagesFilter(e FilterExpr) string {
-	if s, ok := b.tryRangeComp("COALESCE(i.page_count, 0) %s ?", e.Val, parseIntValue); ok {
-		return s
-	}
-	op, n, ok := parseIntComp(e.Val)
-	// COALESCE so non-manga rows (NULL page_count) compare as 0;
-	// matches the spec contract that `pages:>=1` excludes images.
-	return b.scalarComp("COALESCE(i.page_count, 0) %s ?", op, n, ok)
+	return b.buildCompFilter("COALESCE(i.page_count, 0) %s ?", e.Val, parseIntValue, parseIntComp)
 }
 
 // buildNameFilter does substring match against the filename segment
@@ -1251,11 +1270,7 @@ func (b *whereBuilder) buildNameFilter(e FilterExpr) string {
 }
 
 func (b *whereBuilder) buildSizeFilter(e FilterExpr) string {
-	if s, ok := b.tryRangeComp("i.file_size %s ?", e.Val, parseSizeValueAny); ok {
-		return s
-	}
-	op, n, ok := parseSizeComp(e.Val)
-	return b.scalarComp("i.file_size %s ?", op, n, ok)
+	return b.buildCompFilter("i.file_size %s ?", e.Val, parseSizeValueAny, parseSizeComp)
 }
 
 // buildMimeFilter accepts either the bare file_type bucket ("png") or
@@ -1282,41 +1297,27 @@ func (b *whereBuilder) buildMimeFilter(e FilterExpr) string {
 	return fileTypeInClause(seen, nil)
 }
 
+// Width and height are nullable on edge cases (a cbz cover that failed
+// to decode); NULLIF guards the divide so the row drops out instead of
+// erroring.
 func (b *whereBuilder) buildRatioFilter(e FilterExpr) string {
-	tmpl := "(CAST(i.width AS REAL) / NULLIF(i.height, 0)) %s ?"
-	if s, ok := b.tryRangeComp(tmpl, e.Val, parseFloatValue); ok {
-		return s
-	}
-	op, n, ok := parseFloatComp(e.Val)
-	// Width and height are nullable on edge cases (cbz cover failed to
-	// decode); guard against division-by-zero with NULLIF so the row
-	// drops out instead of erroring.
-	return b.scalarComp(tmpl, op, n, ok)
+	return b.buildCompFilter("(CAST(i.width AS REAL) / NULLIF(i.height, 0)) %s ?", e.Val, parseFloatValue, parseFloatComp)
 }
 
+// images.tag_count is a stored column maintained by triggers on
+// image_tags (db.Bootstrap). The indexed range seek over
+// idx_images_tag_count_visible is one primary-table read per visible
+// row.
 func (b *whereBuilder) buildTagcountFilter(e FilterExpr) string {
-	if s, ok := b.tryRangeComp("i.tag_count %s ?", e.Val, parseIntValue); ok {
-		return s
-	}
-	op, n, ok := parseIntComp(e.Val)
-	// images.tag_count is a stored column maintained by triggers on
-	// image_tags (db.Bootstrap). The indexed range seek over
-	// idx_images_tag_count_visible is one primary-table read per
-	// visible row.
-	return b.scalarComp("i.tag_count %s ?", op, n, ok)
+	return b.buildCompFilter("i.tag_count %s ?", e.Val, parseIntValue, parseIntComp)
 }
 
+// NULL duration_seconds (non-videos and pre-migration rows) drops out of
+// any comparison via the IS NOT NULL guard; the COALESCE form pages:
+// uses would force them into "0 seconds" matches, which silently
+// advertises every image as a 0-second clip.
 func (b *whereBuilder) buildDurationFilter(e FilterExpr) string {
-	tmpl := "(i.duration_seconds IS NOT NULL AND i.duration_seconds %s ?)"
-	if s, ok := b.tryRangeComp(tmpl, e.Val, parseFloatValue); ok {
-		return s
-	}
-	op, n, ok := parseFloatComp(e.Val)
-	// NULL duration_seconds (non-videos and pre-migration rows) drops
-	// out of any comparison via the IS NOT NULL guard; the COALESCE
-	// form pages: uses would force them into "0 seconds" matches,
-	// which silently advertises every image as a 0-second clip.
-	return b.scalarComp(tmpl, op, n, ok)
+	return b.buildCompFilter("(i.duration_seconds IS NOT NULL AND i.duration_seconds %s ?)", e.Val, parseFloatValue, parseFloatComp)
 }
 
 func (b *whereBuilder) buildHashFilter(e FilterExpr) string {
@@ -1685,22 +1686,22 @@ func parseCompOp(val string) (string, string) {
 // values like `width:>=abc` produce ok=false (and an explicit empty
 // result via `1=0`) instead of SQLite silently coercing the operand to
 // 0 and returning everything wider than 0.
-func parseIntComp(val string) (string, int64, bool) {
+func parseIntComp(val string) (string, any, bool) {
 	op, raw := parseCompOp(val)
 	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return op, 0, false
+		return op, int64(0), false
 	}
 	return op, n, true
 }
 
 // parseFloatComp is the float-arg twin of parseIntComp. Used by ratio:
 // and duration:. Rejects empty / non-numeric input the same way.
-func parseFloatComp(val string) (string, float64, bool) {
+func parseFloatComp(val string) (string, any, bool) {
 	op, raw := parseCompOp(val)
 	n, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		return op, 0, false
+		return op, float64(0), false
 	}
 	return op, n, true
 }
@@ -1711,7 +1712,7 @@ func parseFloatComp(val string) (string, float64, bool) {
 // MiB, ...). All resolve to powers of 1024 for parity with the rest of
 // the UI (humanBytes uses 1024-based MiB). Bare numbers are bytes.
 // Returns ok=false on parse failures so callers emit `1=0`.
-func parseSizeComp(val string) (string, int64, bool) {
+func parseSizeComp(val string) (string, any, bool) {
 	op, raw := parseCompOp(val)
 	n, ok := parseSizeValue(raw)
 	return op, n, ok

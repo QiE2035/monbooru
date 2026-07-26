@@ -11,6 +11,7 @@ import (
 	"github.com/monbooru/monbooru/internal/db"
 	"github.com/monbooru/monbooru/internal/gallery"
 	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/models"
 )
 
 // IncrementalProbeDistance is the Hamming distance the on-ingest
@@ -35,6 +36,10 @@ type FindPairsOptions struct {
 	Distance       int
 	Replace        bool
 	ThumbnailsPath string
+	// TagPairs runs the tag-similarity pass after the phash walk.
+	// TagPairThreshold is the admission score it applies.
+	TagPairs         bool
+	TagPairThreshold float64
 }
 
 // FindPairsProgress is the per-row callback the caller's job manager
@@ -64,20 +69,27 @@ func FindPairs(ctx context.Context, database *db.DB, tree *BKTree, opts FindPair
 
 	// Pull the full id + phash list. NULL phashes get computed inline
 	// during the walk; the tree picks them up via the OnStored hook.
+	// Archives ride the tree (search still probes them) but stay out of
+	// the pair queue: their phash is only the cover page.
 	type row struct {
 		id    int64
 		phash sql.NullInt64
 	}
-	rows, err := database.Read.Query(`SELECT id, phash FROM images WHERE is_missing = 0 ORDER BY id`)
+	rows, err := database.Read.Query(`SELECT id, phash, file_type FROM images WHERE is_missing = 0 ORDER BY id`)
 	if err != nil {
 		return 0, fmt.Errorf("load image ids: %w", err)
 	}
 	var entries []row
+	archives := make(map[int64]bool)
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.id, &r.phash); err != nil {
+		var fileType string
+		if err := rows.Scan(&r.id, &r.phash, &fileType); err != nil {
 			_ = rows.Close()
 			return 0, err
+		}
+		if fileType == models.FileTypeCBZ {
+			archives[r.id] = true
 		}
 		entries = append(entries, r)
 	}
@@ -169,6 +181,9 @@ func FindPairs(ctx context.Context, database *db.DB, tree *BKTree, opts FindPair
 		if !e.phash.Valid {
 			continue // phash compute failed in pass 1
 		}
+		if archives[e.id] {
+			continue // archives are paired by tag similarity, not phash
+		}
 		if progress != nil && idx%64 == 0 {
 			progress(idx, total, "probing")
 		}
@@ -176,6 +191,9 @@ func FindPairs(ctx context.Context, database *db.DB, tree *BKTree, opts FindPair
 		for _, cid := range candidates {
 			if cid <= e.id {
 				continue // canonicalise a < b; the symmetric pair surfaces when we reach a
+			}
+			if archives[cid] {
+				continue
 			}
 			// Skip if pair already carries a real relation or is on
 			// the not-related list. Cheap correlated COUNTs that ride
@@ -203,6 +221,13 @@ func FindPairs(ctx context.Context, database *db.DB, tree *BKTree, opts FindPair
 	}
 	if progress != nil {
 		progress(total, total, "probing")
+	}
+	if opts.TagPairs {
+		tagAdded, err := findTagPairs(ctx, database, opts.TagPairThreshold, progress)
+		added += tagAdded
+		if err != nil {
+			return added, err
+		}
 	}
 	return added, nil
 }
@@ -237,6 +262,20 @@ func pairAlreadyKnown(ctx context.Context, database *db.DB, a, b int64) (bool, e
 	return n > 0, nil
 }
 
+// imageIsArchive reports whether the image is a cbz/zip archive. The
+// batch walk reads file_type in bulk instead; this single-row lookup
+// serves the on-ingest probe, which sees one id at a time.
+func imageIsArchive(database *db.DB, id int64) (bool, error) {
+	var fileType string
+	if err := database.Read.QueryRow(`SELECT file_type FROM images WHERE id = ?`, id).Scan(&fileType); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return fileType == models.FileTypeCBZ, nil
+}
+
 // lookupPhashFromTree retrieves an image's phash through the tree's
 // id->phash index. Used to compute the stored Hamming distance for
 // queue rows without re-querying SQLite per candidate.
@@ -252,6 +291,11 @@ func lookupPhashFromTree(tree *BKTree, id int64) int64 {
 // error short-circuits the rest of the candidates rather than
 // failing the surrounding ingest.
 func incrementalProbe(database *db.DB, tree *BKTree, id, phash int64, distance int) error {
+	// Archives are paired by tag similarity, not phash: the stored hash is
+	// only the cover page, so a cover match says nothing about the book.
+	if archive, err := imageIsArchive(database, id); err != nil || archive {
+		return err
+	}
 	candidates := tree.SearchWithinDistance(phash, distance)
 	if len(candidates) == 0 {
 		return nil
@@ -260,6 +304,11 @@ func incrementalProbe(database *db.DB, tree *BKTree, id, phash int64, distance i
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, cid := range candidates {
 		if cid == id {
+			continue
+		}
+		if archive, err := imageIsArchive(database, cid); err != nil {
+			return err
+		} else if archive {
 			continue
 		}
 		lo, hi := canonicalPair(id, cid)

@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/monbooru/monbooru/internal/db"
+	"github.com/monbooru/monbooru/internal/logx"
 	"github.com/monbooru/monbooru/internal/search"
 	"github.com/monbooru/monbooru/internal/tags"
 )
@@ -16,13 +17,13 @@ const ratingCeilingCookieName = "monbooru_rating_ceiling"
 
 // Ceiling carries the resolved rating-ceiling state for one request.
 // Construct via resolveCeiling so callers share the per-request cache of
-// excluded tag ids and the optional tainted-image set.
+// excluded tag ids.
 //
 // A Ceiling is safe to share across goroutines for one request. The
 // sidebar handlers fan out worker goroutines that all consult the same
-// *Ceiling; the mutex below guards the lazy caches against the resulting
+// *Ceiling; the mutex below guards the lazy cache against the resulting
 // concurrent first-access. The hot path (cache hit) reads the cached
-// slice / map directly under a single sync.Mutex acquire.
+// slice directly under a single sync.Mutex acquire.
 type Ceiling struct {
 	level string
 	cx    *galleryCtx
@@ -30,15 +31,12 @@ type Ceiling struct {
 	mu             sync.Mutex
 	excludedIDs    []int64
 	excludedLoaded bool
-	tainted        map[int64]bool
-	taintedLoaded  bool
-	taintedErr     error
 }
 
 // resolveCeiling reads the cookie and returns a Ceiling bound to cx.
 // cx may be nil (no active gallery) - the resolver still works for AST
-// shapes that don't need the tag-id resolution. ExcludedTagIDs and
-// TaintedImageIDs return nil when cx is nil.
+// shapes that don't need the tag-id resolution. ExcludedTagIDs returns
+// nil and AnyTainted reports false when cx is nil.
 func resolveCeiling(r *http.Request, cx *galleryCtx) *Ceiling {
 	return &Ceiling{level: readRatingCookie(r), cx: cx}
 }
@@ -208,77 +206,46 @@ func (c *Ceiling) WhereGroupClean(membersTable, groupCol string) (string, []any)
 	)`, args
 }
 
-// TaintedImageIDs returns the set of image ids whose tag list intersects
-// the excluded rating ids. Used to drop whole relation chains / trees
-// when any member exceeds the ceiling. Lazy - the SELECT runs only on
-// first call, then is cached for the rest of the request. Returns nil
-// when the ceiling is inactive.
-//
-// The mutex is held only around the cache-slot read and the result
-// commit - the SELECT runs unlocked so a sidebar fan-out's six
-// goroutines don't serialise behind it on a cache miss. A race that
-// runs the SELECT twice is harmless (last writer wins, both reads
-// see the same DB state).
-func (c *Ceiling) TaintedImageIDs() (map[int64]bool, error) {
+// RankCeiling returns the numeric images.rating_rank ceiling for
+// queries that read a stored rank column, and whether a ceiling is
+// active at all. Rows pass with `rank_col <= rank`; the -1 unrated
+// sentinel passes every level.
+func (c *Ceiling) RankCeiling() (int, bool) {
 	if c == nil || !c.IsActive() {
-		return nil, nil
+		return 0, false
 	}
-	ids := c.ExcludedTagIDs()
-	c.mu.Lock()
-	if c.taintedLoaded {
-		t, err := c.tainted, c.taintedErr
-		c.mu.Unlock()
-		return t, err
-	}
-	c.mu.Unlock()
-	if len(ids) == 0 || c.cx == nil || c.cx.DB == nil {
-		c.mu.Lock()
-		c.taintedLoaded = true
-		c.mu.Unlock()
-		return nil, nil
-	}
-	in, args := db.InPlaceholders(ids)
-	rows, err := c.cx.DB.Read.Query(
-		`SELECT DISTINCT image_id FROM image_tags WHERE tag_id IN (`+in+`)`,
-		args...,
-	)
-	if err != nil {
-		c.mu.Lock()
-		c.taintedLoaded = true
-		c.taintedErr = err
-		c.mu.Unlock()
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	ids, scanErr := db.ScanIDs(rows)
-	if scanErr != nil {
-		c.mu.Lock()
-		c.taintedLoaded = true
-		c.taintedErr = scanErr
-		c.mu.Unlock()
-		return nil, scanErr
-	}
-	tainted := make(map[int64]bool, len(ids))
-	for _, id := range ids {
-		tainted[id] = true
-	}
-	c.mu.Lock()
-	c.tainted = tainted
-	c.taintedLoaded = true
-	c.mu.Unlock()
-	return tainted, nil
+	return tags.RatingRank(c.level), true
 }
 
-// AnyTainted reports whether any id in ids is tainted under c. A nil
-// map (inactive ceiling) makes the check a no-op so call sites can
-// treat the helper as policy-aware without an extra IsActive guard.
+// AnyTainted reports whether any id in ids carries a rating above the
+// ceiling. One bounded EXISTS over the stored rating_rank per call -
+// relation chains and trees hold a handful of members, so probing the
+// ids at hand beats preloading every over-ceiling image in the
+// library. An inactive ceiling is a no-op so call sites can treat the
+// helper as policy-aware without an extra IsActive guard; a read
+// error keeps the row visible rather than failing the page.
 func (c *Ceiling) AnyTainted(ids []int64) bool {
-	tainted, _ := c.TaintedImageIDs()
-	if tainted == nil {
+	rank, active := c.RankCeiling()
+	if !active || len(ids) == 0 || c.cx == nil || c.cx.DB == nil {
 		return false
 	}
-	for _, id := range ids {
-		if tainted[id] {
+	const chunk = 500
+	for start := 0; start < len(ids); start += chunk {
+		end := start + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		in, args := db.InPlaceholders(ids[start:end])
+		var tainted int
+		err := c.cx.DB.Read.QueryRow(
+			`SELECT EXISTS (SELECT 1 FROM images WHERE id IN (`+in+`) AND rating_rank > ?)`,
+			append(args, rank)...,
+		).Scan(&tainted)
+		if err != nil {
+			logx.Debugf("ceiling tainted probe: %v", err)
+			return false
+		}
+		if tainted != 0 {
 			return true
 		}
 	}

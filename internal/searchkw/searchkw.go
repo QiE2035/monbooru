@@ -47,6 +47,7 @@ var Keywords = []string{
 	"via",
 	"phash",
 	"relation",
+	"similar",
 	"id",
 }
 
@@ -186,6 +187,7 @@ var Descriptions = map[string]string{
 	"via":        "added via",
 	"phash":      "perceptual hash (16-hex; ~d for Hamming distance)",
 	"relation":   "declared relation",
+	"similar":    "tag similarity to image id (~score 0..1 for a threshold)",
 	"id":         "image id",
 }
 

@@ -1,7 +1,7 @@
 # Monbooru
 
 Your own private, lightweight and fast booru.  
-Designed for organizing your local media collection, including AI-generated images (Stable Diffusion, ComfyUI, A1111/Forge). Supports ONNX models for local auto-tagging of your collection (WD14, JoyTag...). The app itself never touches the internet; online features (downloading from boorus or reverse image lookup) are handled by [monloader](https://github.com/monbooru/monloader), an optional companion.
+Designed for organizing your local media collection, including AI-generated images (Stable Diffusion, ComfyUI, A1111/Forge). Supports ONNX models for local auto-tagging of your collection (WD14, JoyTag...). The app itself never touches the internet; online features (downloading from boorus or reverse image lookup) are handled by monloader, an optional companion.
 
 <table>
   <tr>
@@ -36,14 +36,14 @@ Designed for organizing your local media collection, including AI-generated imag
 - **Inbox workflow** : new images land in the inbox for review
 - **Multiple galleries** in one instance, each with its own filesystem and database; per-gallery export/import; import data from supported booru applications
 - **REST API** for third-party integrations, with scoped bearer tokens, an OpenAPI spec, and built-in docs
-- **Monloader integration (optional)** ([monloader](https://github.com/monbooru/monloader)) pulls images and tags from supported boorus and galleries, and reverse-looks up your own images against boorus, similarity services (IQDB, SauceNAO), and the Hydrus Public Tag Repository to backfill tags and sources; the PTR connection can also pull tag aliases and implications into your catalog
+- **Monloader integration (optional)** ([monloader](https://github.com/monbooru/monloader)) pulls images and tags from supported boorus and galleries, and reverse-looks up your own images against boorus, similarity services (IQDB, SauceNAO), and the Hydrus Public Tag Repository to backfill tags and sources; when a matched post serves a better file than your local copy, one click replaces it in place; the PTR connection can also pull tag aliases and implications into your catalog
 - **Optional password login**
 
 ---
 
 ## Technical overview
 
-Monbooru compiles to a single self-contained binary (~18 MB, web assets embedded) with a handful of Go dependencies. Storage is one SQLite file per gallery (no database server, no cache layer, nothing else to run). Your collection stays ordinary files and folders on disk, the database and thumbnails live in a separate data directory, so removing monbooru leaves your images exactly where they were. The UI is server-rendered with no JS framework, no frontend build step, ~300 KB of static assets total. Memory scales with the library: a fresh instance starts around 25 MB of RAM, a small library idles around 50 MB, and a million-image library settles around 500 MB, flat over time, with typical pages still rendering in a few milliseconds at that scale. The heavy features stay out of the core process: ONNX auto-tagging is disabled by default and runs in a separate worker that unloads itself when idle, and everything online (downloading, reverse lookup) lives in the optional [monloader](https://github.com/monbooru/monloader) companion, so monbooru itself never touches the internet. The only external tool is ffmpeg, optional, for video and animated previews.
+Monbooru compiles to a single self-contained binary (~20 MB, web assets embedded) with a handful of Go dependencies. Storage is one SQLite file per gallery (no database server, no cache layer, nothing else to run). Your collection stays ordinary files and folders on disk, the database and thumbnails live in a separate data directory, so removing monbooru leaves your images exactly where they were. The UI is server-rendered with no JS framework, no frontend build step, ~300 KB of static assets total. Memory scales with the library: a fresh instance starts around 25 MB of RAM, a small library idles around 50 MB, and a million-image library settles around 500 MB, flat over time, with typical pages still rendering in a few milliseconds at that scale. The heavy features stay out of the core process: ONNX auto-tagging is disabled by default and runs in a separate worker that unloads itself when idle, and everything online (downloading, reverse lookup) lives in the optional monloader companion, so monbooru itself never touches the internet. The only external tool is ffmpeg, optional, for video and animated previews.
 
 ---
 
@@ -87,7 +87,7 @@ flowchart LR
 
 Edit the volume paths in [`docker/docker-compose.yml`](docker/docker-compose.yml), then `docker compose up -d`. The app is available at `http://localhost:8080`.
 
-See the [monbooru documentation](https://monbooru.github.io/mondocs/index.html) for help. In-app, type `system:` in the search bar for the syntax cheat-sheet and press `?` for the keyboard shortcuts; the footer's `help` link opens the documentation.
+See the monbooru documentation for help. In-app, type `system:` in the search bar for the syntax cheat-sheet and press `?` for the keyboard shortcuts; the footer's `help` link opens the documentation.
 
 ---
 

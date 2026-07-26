@@ -16,6 +16,7 @@ import (
 	"github.com/monbooru/monbooru/internal/search"
 	"github.com/monbooru/monbooru/internal/searchkw"
 	"github.com/monbooru/monbooru/internal/tagger"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // galleryHiddenIndicatorBudget caps the time the first gallery
@@ -65,6 +66,10 @@ type galleryData struct {
 	// while the operator is still triaging the inbox.
 	InboxUploadActive bool
 	AcceptFileTypes   string // upload-zone accept= attribute; mirrors the value /upload uses
+	// SimilarityPercent keys the page's own ids to their score against
+	// the query's similar: seed. Nil for every other query; a missing
+	// id scored nothing and gets no badge.
+	SimilarityPercent map[int64]int
 }
 
 // inboxCluster describes one batch of time-adjacent inbox entries
@@ -91,6 +96,13 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	sortStr := q.Get("sort")
 	orderStr := q.Get("order")
+	// A similar: term asks for a ranking, so it picks the sort the way a
+	// collection: term picks collection order below. An explicit sort
+	// still wins, which leaves `similar:1 sort=newest` a plain filtered
+	// browse.
+	if sortStr == "" && search.HasSimilarTerm(expr) {
+		sortStr = "similarity"
+	}
 	// Collection shortcut links carry no sort/order; read them in series
 	// order instead of ingest order. An explicit sort/order still wins.
 	if sortStr == "" && orderStr == "" && collectionFilterActive(expr) {
@@ -218,6 +230,12 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if page < 1 {
+			// An empty result set leaves totalPages at 0, so the clamp
+			// above can't lift a `?page=0` off itself and the redirect
+			// would target the URL that triggered it.
+			page = 1
+		}
 		clampedQ := r.URL.Query()
 		clampedQ.Set("page", strconv.Itoa(page))
 		clampedURL := "/?" + clampedQ.Encode()
@@ -296,6 +314,15 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		SavedSearches:     sb.Saved,
 		EnabledTaggers:    tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
 		ActiveTagTerms:    computeActiveTagTerms(queryStr),
+	}
+	// A similar: query ranks by a number the grid otherwise never shows;
+	// scoring the page's own ids puts it on the thumbnails.
+	if seedID, ok := search.SimilaritySeedID(expr); ok {
+		scores, err := tags.ScorePercentsAgainst(s.db(), seedID, ids)
+		if err != nil {
+			logx.Debugf("gallery similarity scores: %v", err)
+		}
+		data.SimilarityPercent = scores
 	}
 	if inboxClustersActive(sortStr, orderStr, expr) {
 		data.InboxClusterAtIdx = computeInboxClusters(result.Results, queryStr)

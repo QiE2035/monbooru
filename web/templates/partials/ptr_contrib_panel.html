@@ -18,7 +18,7 @@
       {{else}}<p class="field-hint">nothing to contribute for this image.</p>{{end}}
     </div>
     <div class="ptr-contrib-actions">
-      {{if gt .PetitionCount 0}}
+      {{if and (gt .PetitionCount 0) .CanPull}}
       <button type="button" class="btn-ptr-pull monloader-accent"
               hx-post="/images/{{.ImageID}}/lookup" hx-vals='{"backend":"ptr"}'
               hx-target="#fetch-pending" hx-swap="innerHTML"

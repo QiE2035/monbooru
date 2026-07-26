@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"os"
@@ -500,12 +501,12 @@ func (s *Server) relationsSvc() *relations.Service {
 // into the gallery.DeleteImage signature. Returns nil when the
 // service isn't available (e.g. mid-switch), so DeleteImage skips the
 // relations cleanup step rather than crashing.
-func (s *Server) onImageDeleteCallback() func(int64) error {
+func (s *Server) onImageDeleteCallback() func(*sql.Tx, int64) error {
 	svc := s.relationsSvc()
 	if svc == nil {
 		return nil
 	}
-	return svc.OnImageDelete
+	return svc.OnImageDeleteTx
 }
 
 func (s *Server) thumbnailsPath() string {

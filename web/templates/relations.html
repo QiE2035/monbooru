@@ -10,7 +10,7 @@
   <div class="relations-hub-cols">
     <section id="find" class="settings-section">
       <h3>Find relations</h3>
-      <p class="field-hint">Walk a queue of candidate pairs surfaced by perceptual-hash similarity. Decide one pair at a time as same image, variant, newer revision, based on, or not related.</p>
+      <p class="field-hint">Walk a queue of candidate pairs surfaced by image similarity and, when enabled, tag similarity. Decide one pair at a time as same image, variant, newer revision, based on, or not related.</p>
       {{- $emptyQueue := and (eq .Counts.QueueOpen 0) (eq .Counts.QueueSkipped 0) -}}
       <div class="relations-header-row">
         <form hx-post="/relations/find-pairs" hx-target="#flash-relations" hx-swap="innerHTML"
@@ -37,6 +37,12 @@
         Queue: <strong>{{.Counts.QueueOpen}}</strong> unresolved, <strong>{{.Counts.QueueSkipped}}</strong> skipped
         {{if gt .Counts.PhashMissing 0}}· <a href="/?q=-phash:" title="Search images without a phash"><strong>{{.Counts.PhashMissing}}</strong></a> image(s) without a phash{{end}}
       </p>
+      {{if .Counts.QueueBySource}}
+      <p class="field-hint">
+        Found by:
+        {{range $i, $s := .Counts.QueueBySource}}{{if $i}} ·{{end}} <strong>{{$s.Count}}</strong> {{$s.Label}}{{end}}
+      </p>
+      {{end}}
       {{if and (eq .Counts.QueueOpen 0) (eq .Counts.QueueSkipped 0)}}
       <p class="field-hint">The queue is empty. Click <strong>Find new pairs</strong> to surface candidates with similar perceptual hashes.</p>
       {{end}}

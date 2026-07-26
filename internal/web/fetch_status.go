@@ -5,6 +5,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -151,6 +152,13 @@ func (s *Server) fetchStatusHandler(w http.ResponseWriter, r *http.Request) {
 		s.clearFetchStatus(s.activeName, id)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		writeFetchOutcome(w, "warn", lookupMissBody(e.Msg, e.Hashes))
+	case "already_exists":
+		// A replace found its original already in the library as another
+		// image; the pair was recorded as potential duplicates. A standing
+		// state the operator resolves in the dup workflow, not an error.
+		s.clearFetchStatus(s.activeName, id)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		writeFetchOutcome(w, "warn", alreadyExistsBody(e.Msg))
 	default:
 		// Any other state is terminal: a hash mismatch or apply error from
 		// enrich, or a code monloader reported for a fetch that failed before
@@ -159,6 +167,16 @@ func (s *Server) fetchStatusHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		writeFetchOutcome(w, "err", html.EscapeString(fetchFailureMessage(e.State, e.Msg)))
 	}
+}
+
+// imageRefRe matches the "image N" reference the already-exists refusal
+// names.
+var imageRefRe = regexp.MustCompile(`image (\d+)`)
+
+// alreadyExistsBody renders the already-exists refusal with the image it
+// names linked, so the operator can jump straight to the recorded pair.
+func alreadyExistsBody(msg string) string {
+	return imageRefRe.ReplaceAllString(html.EscapeString(msg), `<a href="/images/$1">image $1</a>`)
 }
 
 // ptrTrailName is how monloader's trail entries name its local PTR backend.

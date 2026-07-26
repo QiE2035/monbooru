@@ -40,16 +40,23 @@ type tagsPageData struct {
 	Conflicts      bool
 	ConflictsTotal int
 	// Stale narrows to tags with source-dropped usage ("has" / "full");
-	// StaleTotal is the sidebar badge count.
-	Stale      string
-	StaleTotal int
+	// StaleTotal and FullyStaleTotal are the two sidebar badge counts.
+	Stale           string
+	StaleTotal      int
+	FullyStaleTotal int
 	// Folded narrows to the folded originals from the last scan; FoldedTotal
 	// is the sidebar badge count.
 	Folded       bool
 	FoldedTotal  int
 	OriginCounts []tags.OriginCount
-	// OriginKinds classifies each origin label on the page for chip
-	// coloring: "user", "auto", "ptr", or "site".
+	// UsedBy narrows to tags a source has applied; UsedByLabels is the
+	// sidebar's label set and UsedBySources the per-row column, keyed by
+	// tag id.
+	UsedBy        string
+	UsedByLabels  []string
+	UsedBySources map[int64][]string
+	// OriginKinds classifies each origin and used-by label on the page for
+	// chip coloring: "user", "auto", "ptr", or "site".
 	OriginKinds map[string]string
 	ShowZero    bool
 	ZeroOnly    bool
@@ -185,6 +192,11 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	fullyStaleTotal, err := s.tagSvc().FullyStaleCount()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	foldedTotal, err := s.tagSvc().FoldedDuplicatesCount()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -195,40 +207,59 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	pageLabels := make([]string, 0, len(tagList))
+	usedByLabels, err := s.tagSvc().UsedByLabels()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rowIDs := make([]int64, 0, len(tagList))
+	for _, t := range tagList {
+		rowIDs = append(rowIDs, t.ID)
+	}
+	usedBySources, err := s.tagSvc().UsedByForTags(rowIDs, usedByLabels)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	pageLabels := make([]string, 0, len(tagList)+len(originCounts)+len(usedByLabels))
 	for _, t := range tagList {
 		pageLabels = append(pageLabels, t.Origin)
 	}
 	for _, oc := range originCounts {
 		pageLabels = append(pageLabels, oc.Label)
 	}
+	pageLabels = append(pageLabels, usedByLabels...)
 
 	data := tagsPageData{
-		baseData:       s.base(r, "tags", "Tags - "+s.booruName()),
-		Tags:           tagList,
-		Categories:     cats,
-		Implications:   imps,
-		Total:          total,
-		Page:           p.Page,
-		TotalPages:     totalPages,
-		CategoryID:     p.CatID,
-		Prefix:         p.Prefix,
-		Sort:           p.Sort,
-		Order:          p.Order,
-		Origin:         p.Origin,
-		Type:           p.Type,
-		CreatedAfter:   p.CreatedAfter,
-		Conflicts:      p.Conflicts,
-		ConflictsTotal: conflictsTotal,
-		Stale:          p.Stale,
-		StaleTotal:     staleTotal,
-		Folded:         p.Folded,
-		FoldedTotal:    foldedTotal,
-		OriginCounts:   originCounts,
-		OriginKinds:    s.originKinds(pageLabels),
-		ShowZero:       p.ShowZero,
-		ZeroOnly:       p.ZeroOnly,
-		BackQS:         p.backQS(),
+		baseData:        s.base(r, "tags", "Tags - "+s.booruName()),
+		Tags:            tagList,
+		Categories:      cats,
+		Implications:    imps,
+		Total:           total,
+		Page:            p.Page,
+		TotalPages:      totalPages,
+		CategoryID:      p.CatID,
+		Prefix:          p.Prefix,
+		Sort:            p.Sort,
+		Order:           p.Order,
+		Origin:          p.Origin,
+		Type:            p.Type,
+		CreatedAfter:    p.CreatedAfter,
+		Conflicts:       p.Conflicts,
+		ConflictsTotal:  conflictsTotal,
+		Stale:           p.Stale,
+		StaleTotal:      staleTotal,
+		FullyStaleTotal: fullyStaleTotal,
+		Folded:          p.Folded,
+		FoldedTotal:     foldedTotal,
+		OriginCounts:    originCounts,
+		UsedBy:          p.UsedBy,
+		UsedByLabels:    usedByLabels,
+		UsedBySources:   usedBySources,
+		OriginKinds:     s.originKinds(pageLabels),
+		ShowZero:        p.ShowZero,
+		ZeroOnly:        p.ZeroOnly,
+		BackQS:          p.backQS(),
 	}
 	s.renderTemplate(w, "tags.html", data)
 }
@@ -237,9 +268,9 @@ func (s *Server) tagsHandler(w http.ResponseWriter, r *http.Request) {
 // defaulting rules. The detail page re-resolves its back context
 // through the same struct so prev/next walk the exact listing order.
 type tagListingParams struct {
-	CatID, Prefix, Sort, Order, Origin, Type, CreatedAfter, ZeroParam, Stale string
-	HasType, Conflicts, ShowZero, ZeroOnly, Folded                           bool
-	Page                                                                     int
+	CatID, Prefix, Sort, Order, Origin, Type, CreatedAfter, ZeroParam, Stale, UsedBy string
+	HasType, Conflicts, ShowZero, ZeroOnly, Folded                                   bool
+	Page                                                                             int
 }
 
 func tagListingParamsFrom(q url.Values) tagListingParams {
@@ -249,6 +280,7 @@ func tagListingParamsFrom(q url.Values) tagListingParams {
 		Sort:         q.Get("sort"),
 		Order:        q.Get("order"),
 		Origin:       q.Get("origin"),
+		UsedBy:       q.Get("used_by"),
 		Type:         q.Get("type"),
 		HasType:      q.Has("type"),
 		CreatedAfter: q.Get("created_after"),
@@ -296,6 +328,7 @@ func (s *Server) tagListingFilter(p tagListingParams) tags.TagFilter {
 	f.ConflictsOnly = p.Conflicts
 	f.Stale = p.Stale
 	f.FoldedOnly = p.Folded
+	f.UsedBy = p.UsedBy
 	return f
 }
 
@@ -318,6 +351,9 @@ func (p tagListingParams) backQS() string {
 	}
 	if p.Origin != "" {
 		v.Set("origin", p.Origin)
+	}
+	if p.UsedBy != "" {
+		v.Set("used_by", p.UsedBy)
 	}
 	if p.CreatedAfter != "" {
 		v.Set("created_after", p.CreatedAfter)
@@ -407,12 +443,7 @@ func (s *Server) resolveCanonicalTagInput(input string, create bool) (int64, str
 		}
 		return tag.ID, ""
 	}
-	rows, err := s.db().Read.Query(`SELECT id FROM tags WHERE name = ?`, input)
-	if err != nil {
-		return 0, "Tag lookup failed: " + err.Error()
-	}
-	defer func() { _ = rows.Close() }()
-	ids, err := db.ScanIDs(rows)
+	ids, err := db.QueryIDs(s.db().Read, `SELECT id FROM tags WHERE name = ?`, input)
 	if err != nil {
 		return 0, "Tag lookup failed: " + err.Error()
 	}
@@ -531,6 +562,43 @@ func (s *Server) addTagAliasPost(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeInlineFlash(w, "err", strings.Join(failures, "; "))
 	}
+}
+
+// removeTagAliasesDelete deletes every alias in one origin subgroup of the
+// detail page's "Aliases pointing here" list. Alias rows carry no images, so
+// the deletes run inline.
+func (s *Server) removeTagAliasesDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(w, r, "id")
+	if !ok {
+		return
+	}
+	origin, stale := relationGroupFilter(r)
+	byCanonical, err := s.tagSvc().AliasesForTagIDs([]int64{id})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	removed := 0
+	for _, a := range byCanonical[id] {
+		if a.Origin != origin || a.Stale != stale {
+			continue
+		}
+		if err := s.tagSvc().DeleteTag(a.ID); err != nil {
+			logx.Warnf("delete alias %d: %v", a.ID, err)
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		s.Active().InvalidateCaches()
+	}
+	noun := "alias"
+	if removed != 1 {
+		noun = "aliases"
+	}
+	setFlashHeader(w, strconv.Itoa(removed)+" "+noun+" removed.", "ok",
+		map[string]any{"tag-relations-changed": ""})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) deleteTagHandler(w http.ResponseWriter, r *http.Request) {

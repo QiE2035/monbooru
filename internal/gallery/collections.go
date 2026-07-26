@@ -537,11 +537,6 @@ func CollectionCeilingHidden(database *db.DB, name string, excludeIDs []int64) (
 // insensitive), missing rows included, so a rename or dissolve reaches
 // the whole collection rather than only its visible members.
 func CollectionMemberIDs(database *db.DB, name string) ([]int64, error) {
-	rows, err := database.Read.Query(
+	return db.QueryIDs(database.Read,
 		`SELECT image_id FROM image_collections WHERE name = ? COLLATE NOCASE`, name)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	return db.ScanIDs(rows)
 }

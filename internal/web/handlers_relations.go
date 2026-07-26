@@ -870,9 +870,13 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) {
 	if lo > hi {
 		lo, hi = hi, lo
 	}
+	// source='review' rather than a detector: the operator asking to see
+	// the pair again is its whole provenance, and claiming a phash match
+	// that never happened would misread on the session card.
 	if _, err := cx.DB.Write.Exec(
-		`INSERT OR IGNORE INTO potential_relation_pairs (a_image_id, b_image_id, distance, created_at) VALUES (?, ?, 0, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`,
-		lo, hi,
+		`INSERT OR IGNORE INTO potential_relation_pairs (a_image_id, b_image_id, distance, created_at, source)
+		 VALUES (?, ?, 0, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?)`,
+		lo, hi, relations.SourceReview,
 	); err != nil {
 		writeRelationError(w, err)
 		return

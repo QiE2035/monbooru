@@ -49,6 +49,15 @@
       </td>
     </tr>
     {{end}}
+    {{if .SharedTags}}
+    <tr class="cmp-shared-row">
+      <th>Shared tags</th>
+      <td colspan="2" class="cmp-tag-cell">
+        {{range .SharedTags}}<span class="cmp-shared-tag">{{.Name}} <span class="cmp-shared-weight">{{printf "%.1f" .Weight}}</span></span>{{end}}
+        {{if gt .SharedTagsTotal (len .SharedTags)}}<span class="field-hint">+{{sub .SharedTagsTotal (len .SharedTags)}} more</span>{{end}}
+      </td>
+    </tr>
+    {{end}}
     {{if ne $L.Format $R.Format}}
     <tr>
       <th>Format</th>

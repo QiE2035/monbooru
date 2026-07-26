@@ -15,7 +15,7 @@
   <div id="gallery-header">
     <form id="search-form" action="/" method="GET">
       <div class="search-input-wrap">
-        <input type="text" name="q" id="search-input" value="{{.BackQuery}}" placeholder="Search tags…" autocomplete="off"
+        <input type="text" name="q" id="search-input" value="{{.BackQuery}}" placeholder="Search tags… (system: lists filters)" autocomplete="off"
                hx-get="/internal/search/suggest"
                hx-trigger="input changed delay:200ms"
                hx-target="#search-suggest"
@@ -101,7 +101,7 @@
               hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}' style="display:inline">
           <button type="submit" id="fav-btn" class="btn-fav{{if .Image.IsFavorited}} active{{end}}"
                   title="{{if .Image.IsFavorited}}Unfavorite (f){{else}}Favorite (f){{end}}">
-            {{if .Image.IsFavorited}}♥{{else}}♡{{end}}
+            {{if .Image.IsFavorited}}♥&#xFE0E;{{else}}♡{{end}}
           </button>
         </form>
         {{if and (not (or (eq .Image.FileType "mp4") (eq .Image.FileType "webm"))) (not .IsManga) (not .Image.IsMissing)}}
@@ -254,24 +254,6 @@
     </form>
   </dialog>
 
-  <dialog id="image-original-dialog">
-    <form id="image-original-form" hx-post="/images/{{.Image.ID}}/original-source"
-          hx-target="#image-original-error"
-          hx-swap="innerHTML"
-          hx-on::after-request="onExternalEditResponse(event, 'image-original-dialog')">
-      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <p>Original source</p>
-      <div class="field">
-        <label>Where the artist first posted it (a URL; max 2048 chars)</label>
-        <input id="image-original-body" type="url" name="original" maxlength="2048" placeholder="https://...">
-      </div>
-      <div id="image-original-error"></div>
-      <div class="dialog-actions">
-        <button type="submit">Save</button>
-        <button type="button" onclick="document.getElementById('image-original-dialog').close()">Cancel</button>
-      </div>
-    </form>
-  </dialog>
   <script>
   document.addEventListener('click', function(e) {
     if (!e.target.closest) return;
@@ -300,13 +282,6 @@
       document.getElementById('note-body').value = en.dataset.note || '';
       clearSlots('note-error');
       document.getElementById('note-dialog').showModal();
-      return;
-    }
-    var eio = e.target.closest('.btn-edit-image-original');
-    if (eio) {
-      document.getElementById('image-original-body').value = eio.dataset.original || '';
-      clearSlots('image-original-error');
-      document.getElementById('image-original-dialog').showModal();
     }
   });
   </script>
@@ -501,7 +476,7 @@
           Your browser does not support video.
         </video>
         {{else if .IsManga}}
-        <a href="/images/{{.Image.ID}}/read?page=1" title="Open in reader">
+        <a href="/images/{{.Image.ID}}/read?page={{if .ResumePage}}{{.ResumePage}}{{else}}1{{end}}" title="Open in reader">
           <img src="/images/{{.Image.ID}}/page/1" alt="Cover of manga {{.Image.ID}}" class="detail-img"
                onerror="if(!this.dataset.fallback){this.dataset.fallback='1';this.src='/thumbnails/{{.ActiveGallery}}/{{.Image.ID}}.jpg';}else{this.onerror=null;}">
         </a>
@@ -527,7 +502,7 @@
 
       {{if .IsManga}}
       <div class="manga-actions">
-        <a href="/images/{{.Image.ID}}/read?page=1{{.BackKVQS}}" class="btn-manga-action btn-read" title="Open in reader (R)">Open in reader <span class="btn-key-hint">(R)</span></a>
+        <a href="/images/{{.Image.ID}}/read?page={{if .ResumePage}}{{.ResumePage}}{{else}}1{{end}}{{.BackKVQS}}" class="btn-manga-action btn-read" title="Open in reader (R)">Open in reader{{if .ResumePage}} (p. {{.ResumePage}}){{end}} <span class="btn-key-hint">(R)</span></a>
         {{if .Image.PageCount}}{{if gt (deref .Image.PageCount) 1}}
         <a href="/images/{{.Image.ID}}/pages{{.BackQS}}" class="btn-manga-action btn-pages" title="See all pages (P)">See all pages <span class="btn-key-hint">(P)</span></a>
         {{end}}{{end}}
@@ -796,7 +771,11 @@
                       data-copy="{{.Image.ID}}" title="Click to copy">{{.Image.ID}}</button>
               <span class="copy-flash" hidden>copied</span>
             </td></tr>
-            <tr><th>Path</th><td class="mono-small meta-path" title="{{.Image.CanonicalPath}}">{{.Image.CanonicalPath}}</td></tr>
+            <tr><th>Path</th><td>
+              <button type="button" class="mono-small sha-truncated sha-copyable"
+                      data-copy="{{.Image.CanonicalPath}}" title="{{.Image.CanonicalPath}} (click to copy)">{{.Image.CanonicalPath}}</button>
+              <span class="copy-flash" hidden>copied</span>
+            </td></tr>
             <tr><th>Type</th><td>{{.Image.FileType}}
               {{if and .Image.SourceType (ne .Image.SourceType "none")}}
                 <span class="source-badge">AI</span>
@@ -859,7 +838,13 @@
               <ul class="collection-list source-list">
                 {{range $i, $src := .Sources}}
                 <li class="collection-item">
-                  {{if .Site}}<a href="/?q={{urlQ (printf "source:\"%s\"" (qval .Site))}}" class="meta-source-value" title="Search this source">{{.Site}}</a>{{if gt .Similarity 0.0}} <span class="field-hint" title="Found by image similarity at {{printf "%.0f" .Similarity}}%">~{{printf "%.0f" .Similarity}}%</span>{{end}}{{if .URL}} <a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="btn-link-accent" title="{{.URL}}">[open]</a>{{end}}{{else}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="meta-url-value">{{.URL}}</a>{{if gt .Similarity 0.0}} <span class="field-hint" title="Found by image similarity at {{printf "%.0f" .Similarity}}%">~{{printf "%.0f" .Similarity}}%</span>{{end}}{{end}}
+                  {{/* Line one: label and evidence, [open] pinned right; the
+                       verbs sit indented on their own line so no origin ever
+                       has to ellipsize actions away. */}}
+                  <span class="source-line">
+                    {{if .Site}}<a href="/?q={{urlQ (printf "source:\"%s\"" (qval .Site))}}" class="meta-source-value" title="Search this source">{{.Site}}</a>{{else}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="meta-url-value">{{.URL}}</a>{{end}}{{if gt .Similarity 0.0}} <span class="field-hint" title="Found by image similarity at {{printf "%.0f" .Similarity}}%">~{{printf "%.0f" .Similarity}}%</span>{{end}}{{if eq .MD5Match "differ"}} <span class="field-hint" title="The source serves a different file (md5 {{.MD5}})">file differs</span>{{end}}<span class="source-line-sp"></span>{{if and .Site .URL}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="btn-link-accent" title="{{.URL}}">[open]</a>{{end}}
+                  </span>
+                  <span class="source-actions">
                   {{if gt $i 0}}<form method="POST" action="/images/{{$.Image.ID}}/sources/primary"
                         hx-post="/images/{{$.Image.ID}}/sources/primary" hx-swap="none"
                         hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
@@ -883,6 +868,16 @@
                     <input type="hidden" name="backend" value="ptr">
                     <button type="submit" class="btn-link-accent monloader-accent" title="Refresh tags from the Public Tag Repository via monloader">[refresh]</button>
                   </form>{{end}}
+                  {{if and $.MonloaderUsable .UpgradeEligible}}<form hx-post="/images/{{$.Image.ID}}/replace"
+                        hx-target="#fetch-status" hx-swap="innerHTML"
+                        hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
+                        hx-confirm="Replace the file with the {{if gt .Similarity 0.0}}original from {{if .Site}}{{.Site}}{{else}}this source{{end}} (~{{printf "%.0f" .Similarity}}% match){{else}}one {{if .Site}}{{.Site}}{{else}}this source{{end}} serves now{{end}}? The current file is overwritten."
+                        data-confirm-ok="Upgrade" style="display:inline">
+                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="site" value="{{.Site}}">
+                    <input type="hidden" name="post_id" value="{{.PostID}}">
+                    <button type="submit" class="btn-link-accent monloader-accent" title="Replace the local file with the one this source serves via monloader">[upgrade]</button>
+                  </form>{{end}}
                   <form method="POST" action="/images/{{$.Image.ID}}/sources/remove"
                         hx-post="/images/{{$.Image.ID}}/sources/remove" hx-swap="none"
                         hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
@@ -893,24 +888,12 @@
                     <input type="hidden" name="post_id" value="{{.PostID}}">
                     <button type="submit" class="btn-link-accent" title="Remove this source">[×]</button>
                   </form>
+                  </span>
                 </li>
                 {{end}}
               </ul>
               {{else}}<span class="field-hint">(none)</span>{{end}}
               <button type="button" class="btn-link-accent btn-add-source" title="Add a source">[+ add]</button>
-            </td></tr>
-            <tr><th>Original</th><td>
-              {{if .Image.OriginalSource}}<a href="{{.Image.OriginalSource}}" target="_blank" rel="noopener noreferrer" class="meta-url-value" title="{{.Image.OriginalSource}}">{{urlDomain .Image.OriginalSource}}</a>{{else}}<span class="field-hint">(none)</span>{{end}}
-              <button type="button" class="btn-link-accent btn-edit-image-original" data-original="{{.Image.OriginalSource}}" title="{{if .Image.OriginalSource}}Edit original source{{else}}Add original source{{end}}">{{if .Image.OriginalSource}}[edit]{{else}}[+ add]{{end}}</button>
-              {{if .Image.OriginalSource}}<form method="POST" action="/images/{{.Image.ID}}/original-source"
-                    hx-post="/images/{{.Image.ID}}/original-source" hx-swap="none"
-                    hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
-                    hx-confirm="Remove the original source?" data-confirm-ok="Remove"
-                    style="display:inline">
-                <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-                <input type="hidden" name="original" value="">
-                <button type="submit" class="btn-link-accent" title="Remove original source">[×]</button>
-              </form>{{end}}
             </td></tr>
             <tr><th>Collections</th><td>
               {{if .Collections}}

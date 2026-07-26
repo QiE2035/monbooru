@@ -2,6 +2,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -58,11 +59,11 @@ func (g Gallery) recordFetch(imageID int64, state, message string) {
 // relationsOnDelete returns the OnImageDelete callback for the given
 // service, or nil when the gallery has no relations service wired (the
 // test harness). gallery.DeleteImage treats a nil callback as a no-op.
-func relationsOnDelete(svc *relations.Service) func(int64) error {
+func relationsOnDelete(svc *relations.Service) func(*sql.Tx, int64) error {
 	if svc == nil {
 		return nil
 	}
-	return svc.OnImageDelete
+	return svc.OnImageDeleteTx
 }
 
 // ResolverFunc resolves a gallery by name. Empty name = active gallery.
@@ -141,6 +142,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/images/{id}/fetch-status", h.auth(h.fetchStatusReport))
 
 	mux.HandleFunc("GET /api/v1/images/{id}/file", h.auth(h.serveImageFile))
+	mux.HandleFunc("POST /api/v1/images/{id}/file", h.auth(h.replaceImageFile))
 	mux.HandleFunc("GET /api/v1/images/{id}/thumbnail", h.auth(h.serveThumbnail))
 	mux.HandleFunc("GET /api/v1/images/{id}/page/{n}", h.auth(h.serveMangaPage))
 	mux.HandleFunc("GET /api/v1/images/{id}/page/{n}/thumb", h.auth(h.serveMangaPageThumb))

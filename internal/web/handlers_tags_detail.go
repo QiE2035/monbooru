@@ -112,13 +112,7 @@ func (s *Server) tagDetailHandler(w http.ResponseWriter, r *http.Request) {
 			recentQ += ` AND ` + where
 			recentArgs = append(recentArgs, wargs...)
 		}
-		rows, err := s.db().Read.Query(recentQ+` ORDER BY it.image_id DESC LIMIT 8`, recentArgs...)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		data.RecentImageIDs, err = db.ScanIDs(rows)
-		_ = rows.Close()
+		data.RecentImageIDs, err = db.QueryIDs(s.db().Read, recentQ+` ORDER BY it.image_id DESC LIMIT 8`, recentArgs...)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -135,6 +129,14 @@ func (s *Server) tagDetailHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	data.OriginKinds = s.originKinds(labels)
 	s.renderTemplate(w, "tags_detail.html", data)
+}
+
+// relationGroupFilter reads the origin subgroup a detail-page [×] button
+// names: the exact provenance label (empty selects the unrecorded-source
+// group) and whether it is that label's stale half.
+func relationGroupFilter(r *http.Request) (origin string, stale bool) {
+	q := r.URL.Query()
+	return q.Get("origin"), q.Get("stale") == "1"
 }
 
 // usageBar is one row of the detail page's usage histogram, with the

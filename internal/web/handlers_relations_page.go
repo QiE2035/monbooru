@@ -49,8 +49,9 @@ func applyRelationsConfig(rc config.RelationsConfig) {
 
 // settingsRelationsPost reads the form, persists to TOML, then
 // re-applies the atomics. IncrementalOnIngest stays true (the
-// on-ingest probe is always on); only the find-pairs default
-// distance and the default session order are operator-tunable.
+// on-ingest probe is always on). The tag-pairs switch is the
+// exception: it is opt-in by design, so off is a state the operator
+// keeps until they say otherwise.
 func (s *Server) settingsRelationsPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
@@ -67,10 +68,23 @@ func (s *Server) settingsRelationsPost(w http.ResponseWriter, r *http.Request) {
 		writeInlineFlash(w, "err", "Unknown session order.")
 		return
 	}
+	threshold := config.DefaultTagPairThreshold
+	if raw := r.FormValue("tag_pair_threshold"); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeInlineFlash(w, "err", "Match strength must be a number between 0.5 and 1.")
+			return
+		}
+		threshold = config.ClampTagPairThreshold(v)
+	}
+	tagPairs := r.FormValue("tag_pairs") == "on"
 	s.cfgMu.Lock()
 	s.cfg.Relations.DefaultDistance = d
 	s.cfg.Relations.DefaultSessionOrder = order
 	s.cfg.Relations.IncrementalOnIngest = true
+	s.cfg.Relations.TagPairs = tagPairs
+	s.cfg.Relations.TagPairThreshold = threshold
 	rc := s.cfg.Relations
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
@@ -79,8 +93,10 @@ func (s *Server) settingsRelationsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	applyRelationsConfig(rc)
-	logx.Infof("settings: relations { distance=%d order=%s }", d, order)
-	_, _ = fmt.Fprintf(w, `<div class="flash flash-ok">Saved. distance=%d order=%s</div>`, d, order)
+	logx.Infof("settings: relations { distance=%d order=%s tag_pairs=%v threshold=%.2f }", d, order, tagPairs, threshold)
+	_, _ = fmt.Fprintf(w,
+		`<div class="flash flash-ok">Saved. distance=%d order=%s tag pairs=%v (%.2f)</div>`,
+		d, order, tagPairs, threshold)
 }
 
 // relationsCounts is the cheap rollup the Relations page header
@@ -91,14 +107,76 @@ func (s *Server) settingsRelationsPost(w http.ResponseWriter, r *http.Request) {
 // renders: the same `AnyTainted` whole-group filter that drops a card
 // also drops a chain / tree from the counter.
 type relationsCounts struct {
-	PhashMissing    int
-	QueueOpen       int
-	QueueSkipped    int
+	PhashMissing int
+	QueueOpen    int
+	QueueSkipped int
+	// QueueBySource splits the open queue by which detector filed each
+	// pair. Nil when one detector produced every row - the total
+	// already says everything there is to say.
+	QueueBySource   []queueSourceCount
 	DupGroups       int
 	AltGroups       int
 	VersionChains   int
 	DerivativeTrees int
 	NotRelatedPairs int
+}
+
+// queueSourceCount is one bucket of the hub's by-detector breakdown.
+type queueSourceCount struct {
+	Label string
+	Count int
+}
+
+// queueSourceLabels names each stored source in operator language, in
+// the order the hub lists them.
+var queueSourceLabels = []struct{ source, label string }{
+	{relations.SourcePhash, "image similarity"},
+	{relations.SourceTags, "tag similarity"},
+	{relations.SourceBoth, "both"},
+	{relations.SourceReview, "reopened"},
+}
+
+// queueCounts runs the grouped scan behind the hub's three queue
+// numbers and returns the open / skipped totals plus the open rows'
+// non-empty by-detector buckets in label order. A single bucket means
+// one detector filed everything, and the breakdown would just restate
+// the total, so the split is nil. Errors degrade to zeroes - the page
+// still renders the rest.
+func queueCounts(cx *galleryCtx, query string, args ...any) (open, skipped int, bySource []queueSourceCount) {
+	rows, err := cx.DB.Read.Query(query, args...)
+	if err != nil {
+		logx.Debugf("relations queue counts: %v", err)
+		return 0, 0, nil
+	}
+	defer func() { _ = rows.Close() }()
+	counts := map[string]int{}
+	for rows.Next() {
+		var source string
+		var isSkipped bool
+		var n int
+		if err := rows.Scan(&source, &isSkipped, &n); err != nil {
+			return 0, 0, nil
+		}
+		if isSkipped {
+			skipped += n
+			continue
+		}
+		open += n
+		counts[source] += n
+	}
+	if rows.Err() != nil {
+		return 0, 0, nil
+	}
+	if len(counts) < 2 {
+		return open, skipped, nil
+	}
+	bySource = make([]queueSourceCount, 0, len(counts))
+	for _, s := range queueSourceLabels {
+		if n := counts[s.source]; n > 0 {
+			bySource = append(bySource, queueSourceCount{Label: s.label, Count: n})
+		}
+	}
+	return open, skipped, bySource
 }
 
 // browseCard is one row of the unified /relations/browse page. Group
@@ -159,7 +237,7 @@ func (s *Server) relationsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ceiling := resolveCeiling(r, cx)
-	counts := loadRelationsCounts(cx, ceiling)
+	counts := loadRelationsCounts(cx, ceiling, "")
 	s.renderTemplate(w, "relations.html", relationsPageData{
 		baseData:      s.base(r, "relations", "Relations - "+s.booruName()),
 		Counts:        counts,
@@ -200,7 +278,10 @@ func (s *Server) browseGroupsRedirect(w http.ResponseWriter, r *http.Request) {
 // side is hidden, PhashMissing skips hidden rows. This keeps the
 // /relations hub consistent with /relations/browse, whose cards apply
 // the same filters.
-func loadRelationsCounts(cx *galleryCtx, ceiling *Ceiling) relationsCounts {
+// skipKind names a relation kind whose count the caller will supply from
+// its own card walk, so the counter can skip an in-Go walk of the same
+// edge table. Empty counts everything.
+func loadRelationsCounts(cx *galleryCtx, ceiling *Ceiling, skipKind string) relationsCounts {
 	var c relationsCounts
 	get := func(q string, dst *int, args ...any) {
 		if err := cx.DB.Read.QueryRow(q, args...).Scan(dst); err != nil {
@@ -210,17 +291,19 @@ func loadRelationsCounts(cx *galleryCtx, ceiling *Ceiling) relationsCounts {
 	if n, err := cx.PhashMissingUnder(ceiling); err == nil {
 		c.PhashMissing = n
 	}
-	// Both queue counters share the session's collection opt-out filter so
-	// the hub's numbers match what a session will actually walk.
-	openQ := `SELECT COUNT(*) FROM potential_relation_pairs p WHERE p.skipped_at IS NULL AND ` + collectionPairExcl
-	skipQ := `SELECT COUNT(*) FROM potential_relation_pairs p WHERE p.skipped_at IS NOT NULL AND ` + collectionPairExcl
-	if where, args := ceiling.WhereTwo("p.a_image_id", "p.b_image_id"); where != "" {
-		get(openQ+` AND `+where, &c.QueueOpen, args...)
-		get(skipQ+` AND `+where, &c.QueueSkipped, args...)
-	} else {
-		get(openQ, &c.QueueOpen)
-		get(skipQ, &c.QueueSkipped)
+	// One grouped scan yields the open and skipped totals plus the
+	// by-detector split; the collection opt-out is the stored
+	// collection_hidden flag, so no counter pays a per-row membership
+	// probe. The numbers still match what a session will actually walk.
+	queueQ := `SELECT p.source, p.skipped_at IS NOT NULL, COUNT(*)
+		FROM potential_relation_pairs p WHERE ` + collectionPairExcl
+	var queueArgs []any
+	if rank, active := ceiling.RankCeiling(); active {
+		queueQ += ` AND p.max_rating_rank <= ?`
+		queueArgs = append(queueArgs, rank)
 	}
+	queueQ += ` GROUP BY p.source, p.skipped_at IS NOT NULL`
+	c.QueueOpen, c.QueueSkipped, c.QueueBySource = queueCounts(cx, queueQ, queueArgs...)
 	if where, args := ceiling.WhereGroupClean("dup_group_members", "dup_groups.id"); where != "" {
 		get(`SELECT COUNT(*) FROM dup_groups WHERE `+where, &c.DupGroups, args...)
 	} else {
@@ -231,15 +314,19 @@ func loadRelationsCounts(cx *galleryCtx, ceiling *Ceiling) relationsCounts {
 	} else {
 		get(`SELECT COUNT(*) FROM alt_groups`, &c.AltGroups)
 	}
-	if _, total, err := loadVersionChainCards(cx, 0, ceiling); err == nil {
-		c.VersionChains = total
-	} else {
-		logx.Debugf("relations counts version chains: %v", err)
+	if skipKind != "version" {
+		if _, total, err := loadVersionChainCards(cx, 0, ceiling); err == nil {
+			c.VersionChains = total
+		} else {
+			logx.Debugf("relations counts version chains: %v", err)
+		}
 	}
-	if _, total, err := loadDerivativeTreeCards(cx, 0, ceiling); err == nil {
-		c.DerivativeTrees = total
-	} else {
-		logx.Debugf("relations counts derivative trees: %v", err)
+	if skipKind != "derivative" {
+		if _, total, err := loadDerivativeTreeCards(cx, 0, ceiling); err == nil {
+			c.DerivativeTrees = total
+		} else {
+			logx.Debugf("relations counts derivative trees: %v", err)
+		}
 	}
 	if where, args := ceiling.WhereTwo("a_image_id", "b_image_id"); where != "" {
 		get(`SELECT COUNT(*) FROM not_related_pairs WHERE `+where, &c.NotRelatedPairs, args...)
@@ -590,9 +677,6 @@ func loadVersionChainCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]brows
 	if err := rows.Err(); err != nil {
 		return nil, 0, err
 	}
-	if _, err := ceiling.TaintedImageIDs(); err != nil {
-		return nil, 0, err
-	}
 	rootSet := map[int64]bool{}
 	for _, em := range edges {
 		if _, hasParent := edges[em.parent]; !hasParent {
@@ -669,9 +753,6 @@ func loadDerivativeTreeCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]bro
 		sort.Slice(derivativesOf[src], func(i, j int) bool {
 			return derivativesOf[src][i] < derivativesOf[src][j]
 		})
-	}
-	if _, err := ceiling.TaintedImageIDs(); err != nil {
-		return nil, 0, err
 	}
 	rootSet := map[int64]bool{}
 	for src := range derivativesOf {
@@ -761,12 +842,7 @@ func extendAncestorTrunks(ancestorTrunks []string, depth int, isLast bool) []str
 // group in id order. Reused across dup_group_members and
 // alt_group_members.
 func scanGroupMembers(cx *galleryCtx, table string, groupID int64) ([]int64, error) {
-	rows, err := cx.DB.Read.Query(`SELECT image_id FROM `+table+` WHERE group_id = ? ORDER BY image_id`, groupID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	return db.ScanIDs(rows)
+	return db.QueryIDs(cx.DB.Read, `SELECT image_id FROM `+table+` WHERE group_id = ? ORDER BY image_id`, groupID)
 }
 
 // validBrowseKinds is the closed vocabulary the /relations/browse page
@@ -837,13 +913,26 @@ func (s *Server) browseRelationsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	sort := resolveBrowseSort(kind, r.URL.Query().Get("sort"))
 	ceiling := resolveCeiling(r, cx)
-	// Counts drive both the kind-tab labels and the page divisor.
-	// Compute them first so a past-end ?page= can clamp to the last
-	// valid page before the loader does its slice. For
-	// version/derivative kinds the kind-total override lands after
-	// the loader finishes its in-Go walk (the same walk drives the
-	// card list, so the count rides the same data).
-	counts := loadRelationsCounts(cx, ceiling)
+	// The version and derivative loaders walk their whole edge table in
+	// Go and hand back its post-ceiling total, so the counter skips the
+	// active kind and takes the number from the card walk instead of
+	// repeating it. That means the cards load before the page clamp; an
+	// out-of-range page only pays a second slice on the htmx path, since
+	// a full request redirects out of here first.
+	counts := loadRelationsCounts(cx, ceiling, kind)
+	offset := (page - 1) * browseRelationsPageSize
+	cards, walkedTotal, err := loadBrowseCardsByKind(cx, kind, sort, browseRelationsPageSize, offset, ceiling)
+	if err != nil {
+		logx.Warnf("browse cards %s: %v", kind, err)
+		http.Error(w, "load cards", http.StatusInternalServerError)
+		return
+	}
+	switch kind {
+	case "version":
+		counts.VersionChains = walkedTotal
+	case "derivative":
+		counts.DerivativeTrees = walkedTotal
+	}
 	total := kindTotal(counts, kind)
 	totalPages := 1
 	if total > 0 {
@@ -865,19 +954,12 @@ func (s *Server) browseRelationsPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	offset := (page - 1) * browseRelationsPageSize
-	cards, walkedTotal, err := loadBrowseCardsByKind(cx, kind, sort, browseRelationsPageSize, offset, ceiling)
-	if err != nil {
-		logx.Warnf("browse cards %s: %v", kind, err)
-		http.Error(w, "load cards", http.StatusInternalServerError)
-		return
-	}
-	if walkedTotal > 0 {
-		switch kind {
-		case "version":
-			counts.VersionChains = walkedTotal
-		case "derivative":
-			counts.DerivativeTrees = walkedTotal
+	if clamped := (page - 1) * browseRelationsPageSize; clamped != offset {
+		cards, _, err = loadBrowseCardsByKind(cx, kind, sort, browseRelationsPageSize, clamped, ceiling)
+		if err != nil {
+			logx.Warnf("browse cards %s (clamped): %v", kind, err)
+			http.Error(w, "load cards", http.StatusInternalServerError)
+			return
 		}
 	}
 	s.renderTemplate(w, "relations_browse.html", browseRelationsData{

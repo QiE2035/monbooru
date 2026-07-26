@@ -123,6 +123,10 @@ type TagFilter struct {
 	// Type narrows structurally: "alias" = alias rows only, "tag" =
 	// non-alias rows only, "" = both.
 	Type string
+	// UsedBy keeps tags this source applied to at least one image, per the
+	// image_tag_sources ledger. Independent of Origin: a source that only
+	// re-confirmed a tag someone else created still matches.
+	UsedBy string
 	// CreatedAfter keeps rows whose created_at is >= it (ISO 8601).
 	CreatedAfter string
 	// ConflictsOnly narrows to non-alias tags whose name occupies more
@@ -180,19 +184,8 @@ func New(database *db.DB) *Service {
 // when the category is missing (only possible on a pre-bootstrap DB).
 func (s *Service) RatingCategoryID() int64 { return s.ratingCatID }
 
-// inWriteTx runs work inside a write transaction, committing on
-// success and rolling back via defer on any error path. work's first
-// error short-circuits the commit.
 func (s *Service) inWriteTx(work func(*sql.Tx) error) error {
-	tx, err := s.db.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := work(tx); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return db.InWriteTx(s.db.Write, work)
 }
 
 // RecalcDB recomputes usage_count from image_tags (non-missing images

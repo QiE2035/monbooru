@@ -95,6 +95,7 @@ type detailData struct {
 	GenericMeta       []models.SDParam
 	MangaMeta         *models.MangaMetadata // populated for cbz rows when ComicInfo.xml was parsed
 	IsManga           bool                  // shorthand for FileType == "cbz" so the template doesn't string-compare
+	ResumePage        int                   // reader bookmark for manga rows, 0 when unstarted or finished
 	Collections       []models.Collection   // every collection this image belongs to, ordered for display
 	Sources           []models.ImageSource  // every origin this image came from, primary first
 	Annotations       []annotationView      // positional note boxes overlaid on the media
@@ -390,6 +391,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		GenericMeta:       genericMeta,
 		MangaMeta:         mangaMeta,
 		IsManga:           isManga,
+		ResumePage:        resumePage(img),
 		Collections:       collections,
 		Sources:           sources,
 		Annotations:       buildAnnotationViews(img, annotations),

@@ -62,9 +62,6 @@ jobs:
           username: leqwin
           password: ${{ secrets.GHCR_LEGACY_TOKEN }}
 
-      # Copy the manifest rather than build again: a second build embeds a new
-      # creation timestamp, so the legacy tag would carry a different digest and
-      # stop being the artifact that was released.
       - name: Push ${{ matrix.variant }} to legacy namespace
         continue-on-error: true
         run: |

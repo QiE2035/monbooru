@@ -2,6 +2,9 @@ package tags
 
 import (
 	"database/sql"
+	"strings"
+
+	"github.com/monbooru/monbooru/internal/db"
 )
 
 // image_tag_sources is the per-tag provenance ledger: one row per
@@ -30,6 +33,72 @@ func RecordTagSourceTx(tx *sql.Tx, imageID, tagID int64, source string) error {
 		imageID, tagID, source,
 	)
 	return err
+}
+
+// UsedByLabels returns every source that has applied a tag, sorted, for
+// the /tags Used-by filter. Free at any catalog size: SQLite skips ahead
+// per distinct value over idx_image_tag_sources_source rather than
+// walking the ledger.
+func (s *Service) UsedByLabels() ([]string, error) {
+	rows, err := s.db.Read.Query(`SELECT DISTINCT source FROM image_tag_sources ORDER BY source`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var label string
+		if err := rows.Scan(&label); err != nil {
+			return nil, err
+		}
+		out = append(out, label)
+	}
+	return out, rows.Err()
+}
+
+// UsedByForTags reports which of labels applied each of tagIDs, keyed by
+// tag id, for the /tags Used-by column. One EXISTS probe per (tag,
+// label) pair: grouping the ledger by (tag_id, source) would instead
+// walk every row a heavily-applied tag carries.
+func (s *Service) UsedByForTags(tagIDs []int64, labels []string) (map[int64][]string, error) {
+	out := make(map[int64][]string, len(tagIDs))
+	if len(tagIDs) == 0 || len(labels) == 0 {
+		return out, nil
+	}
+	labelValues := strings.TrimSuffix(strings.Repeat("(?),", len(labels)), ",")
+	labelArgs := make([]any, 0, len(labels))
+	for _, l := range labels {
+		labelArgs = append(labelArgs, l)
+	}
+	err := db.Chunked(tagIDs, 500, func(batch []int64) error {
+		placeholders, args := db.InPlaceholders(batch)
+		rows, err := s.db.Read.Query(
+			`WITH src(label) AS (VALUES `+labelValues+`)
+			 SELECT t.id, src.label
+			 FROM tags t, src
+			 WHERE t.id IN (`+placeholders+`)
+			   AND EXISTS (SELECT 1 FROM image_tag_sources s WHERE s.source = src.label AND s.tag_id = t.id)
+			 ORDER BY t.id, src.label`,
+			append(append([]any{}, labelArgs...), args...)...,
+		)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var id int64
+			var label string
+			if err := rows.Scan(&id, &label); err != nil {
+				return err
+			}
+			out[id] = append(out[id], label)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // TagSourcesForImage returns the ledger rows for one image keyed by

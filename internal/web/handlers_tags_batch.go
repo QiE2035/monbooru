@@ -52,6 +52,7 @@ func (s *Server) resolveTagScope(r *http.Request) ([]int64, error) {
 		filter.Stale = s
 	}
 	filter.FoldedOnly = q.Get("folded") == "1"
+	filter.UsedBy = q.Get("used_by")
 	return s.tagSvc().ListTagIDs(filter)
 }
 

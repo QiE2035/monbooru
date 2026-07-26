@@ -88,7 +88,14 @@
           <h3>Aliases pointing here</h3>
           {{if .Aliases}}
           {{range groupTagsByOrigin .Aliases}}
-          <p class="relation-origin-sub">{{if .Stale}}stale, {{end}}added by {{originLabel $kinds .Origin}}</p>
+          <p class="relation-origin-sub">{{if .Stale}}stale, {{end}}added by {{originLabel $kinds .Origin}}
+            {{if gt (len .Tags) 1}}<button type="button" class="btn-link-accent"
+                    hx-delete="/tags/{{$.Tag.ID}}/aliases/group?origin={{urlQ .Origin}}&stale={{if .Stale}}1{{else}}0{{end}}"
+                    hx-headers='{"X-CSRF-Token":"{{$csrf}}"}'
+                    hx-confirm="Delete all {{len .Tags}} {{if .Stale}}stale {{end}}aliases added by {{originLabel $kinds .Origin}}?"
+                    data-confirm-ok="Delete"
+                    hx-on::after-request="if(event.detail.successful){pruneRelationGroup(this)}"
+                    title="Delete every alias in this group">[×]</button>{{end}}</p>
           <ul class="tag-list">
             {{range .Tags}}
             <li class="tag-item">
@@ -120,7 +127,14 @@
           <h3>Implied by</h3>
           {{if .ImpliedBy}}
           {{range groupImplicationsByOrigin .ImpliedBy}}
-          <p class="relation-origin-sub">{{if .Stale}}stale, {{end}}added by {{originLabel $kinds .Origin}}</p>
+          <p class="relation-origin-sub">{{if .Stale}}stale, {{end}}added by {{originLabel $kinds .Origin}}
+            {{if gt (len .Implications) 1}}<button type="button" class="btn-link-accent"
+                    hx-delete="/tags/{{$.Tag.ID}}/implied-by/group?origin={{urlQ .Origin}}&stale={{if .Stale}}1{{else}}0{{end}}"
+                    hx-headers='{"X-CSRF-Token":"{{$csrf}}"}'
+                    hx-confirm="Remove all {{len .Implications}} {{if .Stale}}stale {{end}}implications added by {{originLabel $kinds .Origin}}?"
+                    data-confirm-ok="Remove"
+                    hx-on::after-request="if(event.detail.successful){pruneRelationGroup(this)}"
+                    title="Remove every implication in this group">[×]</button>{{end}}</p>
           <ul class="tag-list">
             {{range .Implications}}
             <li class="tag-item">

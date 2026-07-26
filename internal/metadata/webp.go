@@ -39,7 +39,7 @@ func decodeWebPEXIF(path string) (*exif.Exif, error) {
 	if err != nil || exifData == nil {
 		return nil, err
 	}
-	return exif.Decode(io.MultiReader(bytes.NewReader(exifMagic), bytes.NewReader(exifData)))
+	return decodeEXIF(exifData)
 }
 
 // readWebPEXIF returns the raw EXIF chunk bytes from a WebP RIFF

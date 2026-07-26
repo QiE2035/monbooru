@@ -629,6 +629,17 @@ func (s *Server) runBatchStrip(ids []int64, mode, filterName string) {
 		return
 	}
 
+	// The predicate DELETE only touches the rows it matches, so implied rows
+	// whose last parent it just took have to be swept after it.
+	if !cancelled {
+		orphanTags, orphans, err := s.tagSvc().PruneOrphanedImplied(ctx, ids)
+		if err != nil {
+			logx.Warnf("batch-strip prune implied: %v", err)
+		}
+		affectedTags = append(affectedTags, orphanTags...)
+		removed += int64(orphans)
+	}
+
 	if len(affectedTags) > 0 {
 		s.jobs.Update(processed, total, "reconciling tag counts…")
 		if err := s.tagSvc().RecalcIDs(affectedTags); err != nil {

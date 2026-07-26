@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/monbooru/monbooru/internal/config"
 	"github.com/monbooru/monbooru/internal/logx"
 	"github.com/monbooru/monbooru/internal/models"
 	"github.com/monbooru/monbooru/internal/relations"
@@ -28,6 +29,8 @@ func (s *Server) findRelationPairsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfgMu.Lock()
 	distance := s.cfg.Relations.DefaultDistance
+	tagPairs := s.cfg.Relations.TagPairs
+	tagPairThreshold := s.cfg.Relations.TagPairThreshold
 	s.cfgMu.Unlock()
 	if distance < 0 || distance > maxPhashDistance {
 		distance = 4
@@ -54,9 +57,11 @@ func (s *Server) findRelationPairsPost(w http.ResponseWriter, r *http.Request) {
 	thumbnailsPath := cx.ThumbnailsPath
 	tree := cx.bkTree
 	opts := relations.FindPairsOptions{
-		Distance:       distance,
-		Replace:        replace,
-		ThumbnailsPath: thumbnailsPath,
+		Distance:         distance,
+		Replace:          replace,
+		ThumbnailsPath:   thumbnailsPath,
+		TagPairs:         tagPairs,
+		TagPairThreshold: config.ClampTagPairThreshold(tagPairThreshold),
 	}
 	go func() {
 		ctx := s.jobs.Context()

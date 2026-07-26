@@ -31,7 +31,7 @@ func updateSourceField(database *db.DB, imageID int64, site, postID, col string,
 // SourcesForImage returns every origin of imageID, primary first.
 func SourcesForImage(database *db.DB, imageID int64) ([]models.ImageSource, error) {
 	rows, err := database.Read.Query(
-		`SELECT site, post_id, url, commentary, original, similarity FROM image_sources WHERE image_id = ? ORDER BY rowid`, imageID)
+		`SELECT site, post_id, url, commentary, original, similarity, md5, md5_match FROM image_sources WHERE image_id = ? ORDER BY rowid`, imageID)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func SourcesForImage(database *db.DB, imageID int64) ([]models.ImageSource, erro
 	var out []models.ImageSource
 	for rows.Next() {
 		var s models.ImageSource
-		if err := rows.Scan(&s.Site, &s.PostID, &s.URL, &s.Commentary, &s.Original, &s.Similarity); err != nil {
+		if err := rows.Scan(&s.Site, &s.PostID, &s.URL, &s.Commentary, &s.Original, &s.Similarity, &s.MD5, &s.MD5Match); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -148,6 +148,42 @@ func SetSourceSimilarity(database *db.DB, imageID int64, site, postID string, sc
 		return nil
 	}
 	return updateSourceField(database, imageID, site, postID, "similarity", score)
+}
+
+// SetSourceMD5Match records the verdict of comparing one origin's claimed
+// md5 against the local file: "match", "differ", or "" (unknown). The
+// verify may see the origin under its exact key or, before the merge
+// adopts the post id, under (site, ""), so a miss on the exact key falls
+// back to the id-less row - the same dual key SourceSimilarityMatched
+// checks.
+func SetSourceMD5Match(database *db.DB, imageID int64, site, postID, verdict string) error {
+	site = strings.TrimSpace(site)
+	res, err := database.Write.Exec(
+		`UPDATE image_sources SET md5_match = ? WHERE image_id = ? AND site = ? AND post_id = ?`,
+		verdict, imageID, site, strings.TrimSpace(postID))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 || strings.TrimSpace(postID) == "" {
+		return nil
+	}
+	_, err = database.Write.Exec(
+		`UPDATE image_sources SET md5_match = ? WHERE image_id = ? AND site = ? AND post_id = ''`,
+		verdict, imageID, site)
+	return err
+}
+
+// MarkSourceExact records that one origin now serves exactly the local
+// bytes: similarity cleared, the claimed md5 replaced by the file's own,
+// and the verdict set to match. A successful replace lands here; the
+// unconditional writes bypass the keep-stored guards on the individual
+// setters by design.
+func MarkSourceExact(database *db.DB, imageID int64, site, postID, md5 string) error {
+	_, err := database.Write.Exec(
+		`UPDATE image_sources SET similarity = 0, md5 = ?, md5_match = 'match'
+		 WHERE image_id = ? AND site = ? AND post_id = ?`,
+		strings.TrimSpace(md5), imageID, strings.TrimSpace(site), strings.TrimSpace(postID))
+	return err
 }
 
 // SourceSimilarityMatched reports whether one origin was recorded by a

@@ -164,17 +164,13 @@ func EnsureMangaPageThumb(thumbnailsPath, canonPath string, imageID int64, n int
 }
 
 // generateImageThumbFromAny decodes any of the supported page formats
-// and writes a 300-px-longest-side JPEG thumbnail. Mirrors
-// generateImageThumb but uses image.Decode (not the file-type-keyed
-// branch) so we don't need to round-trip the extension.
+// and writes a 300-px-longest-side JPEG thumbnail. Adds the per-image
+// cache dir generateImageThumb's own callers already hold.
 func generateImageThumbFromAny(srcPath, dstPath string) error {
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 		return fmt.Errorf("create thumb dir: %w", err)
 	}
-	if err := generateImageThumb(srcPath, dstPath, ""); err != nil {
-		return err
-	}
-	return nil
+	return generateImageThumb(srcPath, dstPath)
 }
 
 // RemoveMangaCache removes the per-image cache directory. Called from

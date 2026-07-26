@@ -285,7 +285,9 @@ func (s *Server) dissolveCollectionPost(w http.ResponseWriter, r *http.Request) 
 // runRenameCollection relabels old to new across ids in chunks. An image
 // already holding new keeps its existing membership (the old one is
 // dropped so the relabel can't collide on the (image_id, name) key); the
-// home mirror follows for rows homed on the old label.
+// home mirror follows for rows homed on the old label. On a merge the
+// incoming members are renumbered past the target's last position, so the
+// two reading orders append instead of interleaving.
 func (s *Server) runRenameCollection(ids []int64, oldName, newName string) {
 	ctx := s.jobs.Context()
 	const chunkSize = 500
@@ -294,6 +296,17 @@ func (s *Server) runRenameCollection(ids []int64, oldName, newName string) {
 	// there is nothing to merge; the collision delete below would otherwise
 	// drop the very rows the relabel is meant to recase.
 	merging := !strings.EqualFold(oldName, newName)
+
+	// Read once, before any chunk relabels: the target's own members are
+	// never renumbered, so the offset stays valid for the whole job.
+	var posOffset int
+	if merging {
+		if err := s.db().Read.QueryRow(
+			`SELECT COALESCE(MAX(position), 0) FROM image_collections WHERE name = ?`, newName,
+		).Scan(&posOffset); err != nil {
+			logx.Debugf("rename collection position offset: %v", err)
+		}
+	}
 
 	processed, cancelled, err := chunkedJob(ctx, s.jobs, ids, chunkSize, "renaming collection", func(chunk []int64) error {
 		placeholders, chunkArgs := db.InPlaceholders(chunk)
@@ -313,8 +326,9 @@ func (s *Server) runRenameCollection(ids []int64, oldName, newName string) {
 			}
 		}
 		if _, err := tx.Exec(
-			`UPDATE image_collections SET name = ? WHERE name = ? AND image_id IN (`+placeholders+`)`,
-			append([]any{newName, oldName}, chunkArgs...)...,
+			`UPDATE image_collections SET name = ?, position = position + ?
+			 WHERE name = ? AND image_id IN (`+placeholders+`)`,
+			append([]any{newName, posOffset, oldName}, chunkArgs...)...,
 		); err != nil {
 			return err
 		}

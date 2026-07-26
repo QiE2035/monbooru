@@ -71,16 +71,11 @@ func LoadImageRelations(database *db.DB, imageID int64) (*ImageRelations, error)
 		).Scan(&dg.Original); err != nil {
 			return nil, err
 		}
-		rows, err := database.Read.Query(
+		members, err := db.QueryIDs(database.Read,
 			`SELECT image_id FROM dup_group_members WHERE group_id = ? ORDER BY image_id`, dg.ID,
 		)
 		if err != nil {
 			return nil, err
-		}
-		members, scanErr := db.ScanIDs(rows)
-		_ = rows.Close()
-		if scanErr != nil {
-			return nil, scanErr
 		}
 		dg.Members = members
 		out.DupGroup = &dg
@@ -95,17 +90,12 @@ func LoadImageRelations(database *db.DB, imageID int64) (*ImageRelations, error)
 	}
 	if altGroupID.Valid {
 		out.AltGroupID = &altGroupID.Int64
-		rows, err := database.Read.Query(
+		members, err := db.QueryIDs(database.Read,
 			`SELECT image_id FROM alt_group_members WHERE group_id = ? ORDER BY image_id`,
 			altGroupID.Int64,
 		)
 		if err != nil {
 			return nil, err
-		}
-		members, scanErr := db.ScanIDs(rows)
-		_ = rows.Close()
-		if scanErr != nil {
-			return nil, scanErr
 		}
 		out.AltGroupMembers = members
 	}
@@ -140,16 +130,11 @@ func LoadImageRelations(database *db.DB, imageID int64) (*ImageRelations, error)
 	if sourceID.Valid {
 		out.DerivativeSource = &sourceID.Int64
 	}
-	rows, err := database.Read.Query(
+	derivatives, err := db.QueryIDs(database.Read,
 		`SELECT derivative_image_id FROM derivative_edges WHERE source_image_id = ? ORDER BY derivative_image_id`, imageID,
 	)
 	if err != nil {
 		return nil, err
-	}
-	derivatives, scanErr := db.ScanIDs(rows)
-	_ = rows.Close()
-	if scanErr != nil {
-		return nil, scanErr
 	}
 	out.Derivatives = derivatives
 	return out, nil

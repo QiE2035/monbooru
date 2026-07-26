@@ -14,6 +14,12 @@
       <span class="field-hint"><strong>{{.Remaining}}</strong> pair(s) remaining</span>
       {{end}}
     </div>
+    <form method="get" action="/relations/session" class="session-order-form session-detector-form">
+      <span class="field-hint">Found by</span>
+      <label><input type="radio" name="detector" value="both" onchange="this.form.submit()" {{if eq .Detector "both"}}checked{{end}}> Both</label>
+      <label><input type="radio" name="detector" value="phash" onchange="this.form.submit()" {{if eq .Detector "phash"}}checked{{end}}> Near duplicate (pHash)</label>
+      <label><input type="radio" name="detector" value="tags" onchange="this.form.submit()" {{if eq .Detector "tags"}}checked{{end}}> Tags similarity</label>
+    </form>
     <form method="get" action="/relations/session" class="session-order-form">
       <span class="field-hint">Order</span>
       <label><input type="radio" name="order" value="smallest_distance_first" onchange="this.form.submit()" {{if eq .Order "smallest_distance_first"}}checked{{end}}> Smallest distance</label>
@@ -33,6 +39,9 @@
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <button type="submit" class="btn-sm btn-purple">Raise ceiling to explicit</button>
     </form>
+    {{else if ne .Detector "both"}}
+    <h3>No pairs from this detector.</h3>
+    <p class="field-hint">Nothing in the queue was found by {{if eq .Detector "phash"}}image{{else}}tag{{end}} similarity. Switch <strong>Found by</strong> back to <a href="/relations/session?detector=both">Both</a>, or run <a href="/relations">Find new pairs</a>.</p>
     {{else}}
     <h3>No pairs to review.</h3>
     <p class="field-hint">The queue is empty. Run <a href="/relations">Find new pairs</a> to surface more candidates.</p>
@@ -65,7 +74,18 @@
       <div class="session-bridge">
         <div class="session-distance" aria-hidden="true">
           <span class="session-distance-line"></span>
+          {{if eq .Pair.Source "tags"}}
+          <span class="session-distance-label">tags similarity <strong class="session-source-tags">~{{.Pair.ScorePercent}}%</strong></span>
+          <span class="session-distance-sub">{{.SharedTagsTotal}} shared tag(s)</span>
+          {{else if eq .Pair.Source "both"}}
+          <span class="session-distance-label">phash distance <strong>{{.Pair.Distance}}</strong> &middot;</span>
+          <span class="session-distance-label">tags similarity <strong class="session-source-tags">~{{.Pair.ScorePercent}}%</strong></span>
+          <span class="session-distance-sub">both detectors agree</span>
+          {{else if eq .Pair.Source "review"}}
+          <span class="session-distance-label">reopened <strong class="session-source-review">by you</strong></span>
+          {{else}}
           <span class="session-distance-label">distance <strong>{{.Pair.Distance}}</strong></span>
+          {{end}}
           <span class="session-distance-line"></span>
         </div>
         <div class="session-controls">
@@ -120,7 +140,7 @@
       </div>
     </form>
 
-    {{template "partials/relations_comparison.html" (dict "Left" .Left "Right" .Right)}}
+    {{template "partials/relations_comparison.html" (dict "Left" .Left "Right" .Right "SharedTags" .SharedTags "SharedTagsTotal" .SharedTagsTotal)}}
 
     <dialog id="session-compare-dialog" class="compare-dialog">
       <div class="compare-captions" aria-hidden="true">
@@ -367,48 +387,53 @@
       window.location.reload();
     }
   };
+  // URL-encoded bodies so the handlers' r.ParseForm() actually reads
+  // the fields; FormData lands as multipart and Go's ParseForm leaves
+  // r.Form empty for non-urlencoded posts.
+  var pdHeaders = {
+    'HX-Request': 'true',
+    'X-CSRF-Token': pdCSRFValue,
+    'Content-Type': 'application/x-www-form-urlencoded',
+  };
+  function pdCopyTags() {
+    var copyBox = document.getElementById('postdecide-copy-tags');
+    if (!copyBox || !copyBox.checked || pdState.groupID <= 0) return Promise.resolve();
+    var copyParams = new URLSearchParams();
+    copyParams.append('_csrf', pdCSRFValue);
+    return fetch('/relations/dup-group/' + pdState.groupID + '/copy-tags', {
+      method: 'POST', headers: pdHeaders, body: copyParams.toString(),
+    });
+  }
   var pdKeep = document.getElementById('postdecide-keep');
   if (pdKeep) pdKeep.addEventListener('click', function() {
-    if (postdecideDlg) postdecideDlg.close();
-    window.location.reload();
+    // Keeping the file honours the copy box too: the choice is about the
+    // tags, not about which button ends the dialog.
+    pdCopyTags().then(function() {
+      if (postdecideDlg) postdecideDlg.close();
+      window.location.reload();
+    });
   });
   var pdDelete = document.getElementById('postdecide-delete');
   if (pdDelete) pdDelete.addEventListener('click', function() {
-    var copyBox = document.getElementById('postdecide-copy-tags');
-    // URL-encoded body so the handler's r.ParseForm() actually reads
-    // the fields; FormData lands as multipart and Go's ParseForm
-    // leaves r.Form empty for non-urlencoded posts.
-    var headers = {
-      'HX-Request': 'true',
-      'X-CSRF-Token': pdCSRFValue,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    };
-    var promise = Promise.resolve();
-    if (copyBox && copyBox.checked && pdState.groupID > 0) {
-      var copyParams = new URLSearchParams();
-      copyParams.append('_csrf', pdCSRFValue);
-      promise = fetch('/relations/dup-group/' + pdState.groupID + '/copy-tags', {
-        method: 'POST', headers: headers, body: copyParams.toString(),
-      });
-    }
-    promise.then(function() {
+    pdCopyTags().then(function() {
       var delParams = new URLSearchParams();
       delParams.append('_csrf', pdCSRFValue);
       delParams.append('image_id', String(pdState.dupID));
       return fetch('/relations/duplicates/marked/delete-one', {
-        method: 'POST', headers: headers, body: delParams.toString(),
+        method: 'POST', headers: pdHeaders, body: delParams.toString(),
       });
     }).then(function() {
       if (postdecideDlg) postdecideDlg.close();
       window.location.reload();
     });
   });
-  // Esc on the post-decide dialog must default to Keep (the safer
-  // path); the native dialog cancel event fires before close, and
-  // Keep just reloads.
+  // Esc on the post-decide dialog must default to keeping the file (the
+  // safer path). It is a cancel, so it skips the tag copy the Keep
+  // button honours.
   if (postdecideDlg) postdecideDlg.addEventListener('cancel', function(e) {
     e.preventDefault();
-    if (pdKeep) pdKeep.click();
+    postdecideDlg.close();
+    window.location.reload();
   });
   // Dialog-scoped shortcuts: D commits the delete; Enter keeps the
   // file (matches the autofocused Keep button). Both run only while

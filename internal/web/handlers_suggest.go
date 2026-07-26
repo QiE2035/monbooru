@@ -183,6 +183,9 @@ func (s *Server) queryDistinctLabels(table, col, prefix string, limit int, logLa
 		}
 		out = append(out, sv)
 	}
+	if err := rows.Err(); err != nil {
+		logx.Warnf("%s suggest: %v", logLabel, err)
+	}
 	return out
 }
 
@@ -236,6 +239,9 @@ func (s *Server) queryNameBasenames(prefix string, limit int) []string {
 			continue
 		}
 		out = append(out, base)
+	}
+	if err := rows.Err(); err != nil {
+		logx.Warnf("name suggest: %v", err)
 	}
 	return out
 }
@@ -298,6 +304,9 @@ func (s *Server) querySDStringField(sdField, comfyField, prefix string, limit in
 			}
 			seen[v] = struct{}{}
 			out = append(out, v)
+		}
+		if err := rows.Err(); err != nil {
+			logx.Warnf("%s suggest: %v", t.field, err)
 		}
 		_ = rows.Close()
 		if len(out) >= limit {
@@ -698,6 +707,9 @@ func (s *Server) systemCategoryRows() []systemCategoryRow {
 			return out
 		}
 		out = append(out, systemCategoryRow{Name: name, Color: tags.SafeCategoryColor(color)})
+	}
+	if err := dbrows.Err(); err != nil {
+		logx.Warnf("system category rows: %v", err)
 	}
 	return out
 }
