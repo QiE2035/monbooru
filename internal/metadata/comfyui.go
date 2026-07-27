@@ -148,9 +148,9 @@ func parseComfyPromptChunk(raw string) *models.ComfyUIMetadata {
 		}
 	}
 
-	if meta.Prompt == "" && meta.ModelCheckpoint == "" && meta.Seed == nil {
-		return nil
-	}
+	//if meta.Prompt == "" && meta.ModelCheckpoint == "" && meta.Seed == nil {
+	//	return nil
+	//}
 	meta.RawWorkflow = raw
 	meta.GenerationHash = computeGenerationHash(
 		meta.Prompt, "", meta.ModelCheckpoint, meta.Sampler, meta.Steps, meta.CFGScale,
