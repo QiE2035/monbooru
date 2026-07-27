@@ -5,6 +5,8 @@ go 1.25.12
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/itchyny/gojq v0.12.19
+	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 	github.com/yalue/onnxruntime_go v1.19.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/image v0.44.0
@@ -14,6 +16,7 @@ require (
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/itchyny/timefmt-go v0.1.8 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

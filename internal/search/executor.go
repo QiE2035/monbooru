@@ -59,6 +59,10 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 		}
 	}
 
+	if HasJQFilters(q.Expr) {
+		return executeWithJQFilters(context.Background(), database, q)
+	}
+
 	driverLegs, _ := pickAndDriverTag(database, q.Expr, q.Sort == "random")
 
 	// Push a recent-id bound into each multi-leg INTERSECT subquery for
@@ -262,6 +266,147 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 					total = len(ids)
 				}
 			}
+		}
+	}
+
+	return &models.SearchResult{
+		Page:    page,
+		Limit:   limit,
+		Total:   total,
+		Results: images,
+	}, nil
+}
+
+func loadWorkflowsForIDs(ctx context.Context, database *db.DB, ids []int64) (map[int64]string, error) {
+	result := make(map[int64]string)
+
+	err := db.Chunked(ids, 900, func(chunk []int64) error {
+		placeholders, args := db.InPlaceholders(chunk)
+		rows, err := database.Read.QueryContext(ctx,
+			"SELECT image_id, raw_workflow FROM comfyui_metadata WHERE image_id IN ("+placeholders+")",
+			args...,
+		)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var id int64
+			var wf string
+			if err := rows.Scan(&id, &wf); err != nil {
+				return err
+			}
+			result[id] = wf
+		}
+		return rows.Err()
+	})
+
+	return result, err
+}
+
+func executeWithJQFilters(ctx context.Context, database *db.DB, q Query) (*models.SearchResult, error) {
+	page := q.Page
+	if page < 1 {
+		page = 1
+	}
+	limit := q.Limit
+	if limit < 1 {
+		limit = 40
+	}
+
+	driverLegs, _ := pickAndDriverTag(database, q.Expr, q.Sort == "random")
+
+	where, args, hasMissingFilter, ceilingRewrote := buildWhereDBDriverFull(q.Expr, database, driverLegs)
+	where, args = applyAndDriver(where, args, driverLegs)
+	where = andDefaultVisible(where, hasMissingFilter)
+
+	orderClause := buildOrder(q.Sort, q.Order, q.RandomSeed)
+	var orderArgs []any
+	switch {
+	case q.Sort == "order" && q.OrderCollection != "":
+		orderClause, orderArgs = collectionOrderClause(q.OrderCollection, q.Order)
+	case q.Sort == "similarity":
+		if seed, ok := similarityRankSeed(database, q.Expr); ok {
+			orderClause, orderArgs = similarityOrderClause(seed, q.Order)
+		}
+	}
+
+	indexHint := sortIndexHint(q.Expr, q.Sort, hasMissingFilter, ceilingRewrote)
+
+	sql := fmt.Sprintf("SELECT i.id FROM images i%s WHERE %s %s", indexHint, where, orderClause)
+	allIDs, err := db.QueryIDsContext(ctx, database.Read, sql, slices.Concat(args, orderArgs)...)
+	if err != nil {
+		return nil, fmt.Errorf("candidate id query: %w", err)
+	}
+
+	if len(allIDs) == 0 {
+		return &models.SearchResult{Page: page, Limit: limit, Total: 0}, nil
+	}
+
+	workflows, err := loadWorkflowsForIDs(ctx, database, allIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load workflows: %w", err)
+	}
+
+	var filteredIDs []int64
+	var jqCompileErrors []string
+	for _, id := range allIDs {
+		match, err := EvalJQExpr(ctx, q.Expr, workflows[id])
+		if err != nil {
+			// Collect compile errors but continue processing other images
+			jqCompileErrors = append(jqCompileErrors, err.Error())
+			continue
+		}
+		if match {
+			filteredIDs = append(filteredIDs, id)
+		}
+	}
+
+	// If there are jq compile errors, return the first one as the error
+	if len(jqCompileErrors) > 0 {
+		return nil, fmt.Errorf("jq error: %s", jqCompileErrors[0])
+	}
+
+	total := len(filteredIDs)
+	if q.SkipCount {
+		total = 0
+	}
+
+	if q.CacheKey != "" && total > 0 && total <= adjacencyCacheMaxIDs {
+		AdjacencyCacheSet(q.CacheKey, filteredIDs)
+	}
+
+	offset := (page - 1) * limit
+	if offset >= total {
+		return &models.SearchResult{Page: page, Limit: limit, Total: total}, nil
+	}
+	end := min(offset+limit, total)
+	pageIDs := filteredIDs[offset:end]
+
+	placeholders, args := db.InPlaceholders(pageIDs)
+	dataSQL := fmt.Sprintf("SELECT "+models.ImageRowColumns+" FROM images i WHERE i.id IN (%s)", placeholders)
+	rows, err := database.Read.Query(dataSQL, args...)
+	if err != nil {
+		return nil, fmt.Errorf("data query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	byID := make(map[int64]models.Image, len(pageIDs))
+	for rows.Next() {
+		img, scanErr := models.ScanImageRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		byID[img.ID] = img
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	images := make([]models.Image, 0, len(pageIDs))
+	for _, id := range pageIDs {
+		if img, ok := byID[id]; ok {
+			images = append(images, img)
 		}
 	}
 
@@ -841,6 +986,83 @@ func ExecuteForDeleteStream(database *db.DB, expr Expr, visit func(DeleteTarget)
 		}
 	}
 	return rows.Err()
+}
+
+// ExecuteForDeleteStreamWithJQ is like ExecuteForDeleteStream but supports jq filters.
+// If the expression contains no jq filters, it falls back to ExecuteForDeleteStream.
+// Otherwise, it loads workflows for candidate images and applies jq filtering.
+func ExecuteForDeleteStreamWithJQ(database *db.DB, expr Expr, visit func(DeleteTarget) error) error {
+	if !HasJQFilters(expr) {
+		return ExecuteForDeleteStream(database, expr, visit)
+	}
+
+	driverLegs, _ := pickAndDriverTag(database, expr, false)
+	where, args, hasMissingFilter, _ := buildWhereDBDriverFull(expr, database, driverLegs)
+	where, args = applyAndDriver(where, args, driverLegs)
+	where = andDefaultVisible(where, hasMissingFilter)
+
+	rows, err := database.Read.Query(
+		"SELECT i.id, i.canonical_path, i.folder_path, i.is_missing FROM images i WHERE "+where+" ORDER BY i.id",
+		args...,
+	)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	// Collect candidates
+	type candidate struct {
+		t         DeleteTarget
+		id        int64
+		isMissing int
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.t.CanonicalPath, &c.t.FolderPath, &c.isMissing); err != nil {
+			return err
+		}
+		c.t.ID = c.id
+		c.t.IsMissing = c.isMissing == 1
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// Batch load workflows
+	ids := make([]int64, len(candidates))
+	for i, c := range candidates {
+		ids[i] = c.id
+	}
+	workflows, err := loadWorkflowsForIDs(context.Background(), database, ids)
+	if err != nil {
+		return err
+	}
+
+	// Filter and visit
+	ctx := context.Background()
+	var jqCompileErrors []string
+	for _, c := range candidates {
+		match, err := EvalJQExpr(ctx, expr, workflows[c.id])
+		if err != nil {
+			jqCompileErrors = append(jqCompileErrors, err.Error())
+			continue
+		}
+		if match {
+			if err := visit(c.t); err != nil {
+				return err
+			}
+		}
+	}
+	if len(jqCompileErrors) > 0 {
+		return fmt.Errorf("jq error: %s", jqCompileErrors[0])
+	}
+	return nil
 }
 
 // sidebarMaxPerCategory caps the sidebar tag list per category so the
