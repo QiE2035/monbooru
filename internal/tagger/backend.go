@@ -103,6 +103,7 @@ type RunRequest struct {
 type BackendImageRequest struct {
 	ID            int64
 	FramePaths    []string
+	FrameBytes    [][]byte
 	MangaProgress bool
 }
 

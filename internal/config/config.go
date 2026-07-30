@@ -149,9 +149,24 @@ type TaggerConfig struct {
 	// IdleReleaseAfterMinutes is how long the cached ORT session may sit
 	// idle before the reclaim loop tears it down. 0 disables caching, so
 	// every run loads the model fresh. Default 15.
-	IdleReleaseAfterMinutes int                  `toml:"idle_release_after_minutes"`
-	Aggregation             TaggerAggregationCfg `toml:"aggregation"`
-	Taggers                 []TaggerInstance     `toml:"taggers"`
+	IdleReleaseAfterMinutes int                      `toml:"idle_release_after_minutes"`
+	Aggregation             TaggerAggregationCfg     `toml:"aggregation"`
+	Taggers                 []TaggerInstance         `toml:"taggers"`
+	RemoteServer            RemoteTaggerServerConfig `toml:"remote_server,omitempty"`
+	RemoteClient            RemoteTaggerClientConfig `toml:"remote_client,omitempty"`
+}
+
+// RemoteTaggerServerConfig controls whether this instance accepts remote
+// auto-tagging requests from other monbooru instances.
+type RemoteTaggerServerConfig struct {
+	AllowRemote bool `toml:"allow_remote"`
+}
+
+// RemoteTaggerClientConfig holds the credentials to send tagging jobs to
+// a remote monbooru instance that has a GPU and a tagger.
+type RemoteTaggerClientConfig struct {
+	URL   string `toml:"url,omitempty"`
+	Token string `toml:"token,omitempty"`
 }
 
 // ValidExecutionProviders lists the ONNX Runtime execution providers the
@@ -237,10 +252,11 @@ const (
 	ScopeRead   = "read"
 	ScopeWrite  = "write"
 	ScopeDelete = "delete"
+	ScopeTag    = "tag"
 )
 
 // AllScopes is every scope a monbooru token can hold.
-var AllScopes = []string{ScopeRead, ScopeWrite, ScopeDelete}
+var AllScopes = []string{ScopeRead, ScopeWrite, ScopeDelete, ScopeTag}
 
 // Token is a named API credential. Only the secret's hash is stored; the
 // plaintext is shown once at creation. Paired is set by the monloader pairing

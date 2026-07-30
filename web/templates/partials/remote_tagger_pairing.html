@@ -1,0 +1,28 @@
+{{define "partials/remote_tagger_pairing.html"}}
+<div id="remote-tagger-pairing"
+  {{if .Pairing}}hx-get="/internal/remote-tagger/status" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
+  {{$csrf := .CSRFToken}}
+  {{if .Pairing}}
+  <p class="field-hint">Pairing with remote tagger server{{if .PeerURL}} at <code>{{.PeerURL}}</code>{{end}}… waiting for approval on the server side.</p>
+  {{else if .Paired}}
+  <p class="field-hint">Paired with remote tagger server{{if .PeerURL}} at <code>{{.PeerURL}}</code>{{end}}.
+    <form hx-post="/settings/remote-tagger/unpair" hx-target="#remote-tagger-pairing" hx-swap="outerHTML"
+          hx-confirm="Remove the remote tagger pairing?" style="display:inline">
+      <input type="hidden" name="_csrf" value="{{$csrf}}">
+      <button type="submit" class="btn-sm btn-danger">Remove pairing</button>
+    </form>
+  </p>
+  {{else}}
+  <form hx-post="/settings/remote-tagger/pair" hx-target="#remote-tagger-pairing" hx-swap="outerHTML">
+    <input type="hidden" name="_csrf" value="{{$csrf}}">
+    <div class="field">
+      <label for="remote_tagger_url">Remote tagger server URL</label>
+      <input type="text" name="server_url" id="remote_tagger_url"
+             value="{{.PeerURL}}" placeholder="http://device-a:8080">
+    </div>
+    <button type="submit" class="btn-primary">Pair with Remote Tagger</button>
+    {{if .PairError}}<p class="field-err">{{.PairError}}</p>{{end}}
+  </form>
+  {{end}}
+</div>
+{{end}}

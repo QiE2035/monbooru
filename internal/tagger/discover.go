@@ -137,6 +137,15 @@ func EnabledTaggers(cfg *config.Config) []TaggerStatus {
 // on `stock` and vice versa.
 func EnabledTaggersForGallery(cfg *config.Config, gallery string) []TaggerStatus {
 	if !buildSupportsInference() {
+		if cfg.Tagger.RemoteClient.URL != "" && cfg.Tagger.RemoteClient.Token != "" {
+			return []TaggerStatus{{
+				TaggerInstance: config.TaggerInstance{
+					Name:    "remote",
+					Enabled: true,
+				},
+				Available: true,
+			}}
+		}
 		return nil
 	}
 	var out []TaggerStatus

@@ -178,6 +178,7 @@ func (s *Server) settingsTaggerPost(w http.ResponseWriter, r *http.Request) {
 			s.cfg.Tagger.IdleReleaseAfterMinutes = n
 		}
 	}
+	s.cfg.Tagger.RemoteServer.AllowRemote = r.FormValue("allow_remote") == "on"
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
 		writeInlineFlash(w, "err", "Could not save: "+err.Error())

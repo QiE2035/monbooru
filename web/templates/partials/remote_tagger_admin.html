@@ -1,0 +1,47 @@
+{{define "partials/remote_tagger_admin.html"}}
+<div id="remote-tagger-admin"{{if not .Paired}} hx-get="/internal/remote-tagger/pending" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
+  {{$csrf := .CSRFToken}}
+  {{if .Pending}}
+  <div class="pairing-pending">
+  <p class="pairing-pending-msg">Remote tagger instance(s) requesting pairing. Approve or deny below.</p>
+  <div class="table-scroll">
+  <table class="gallery-table">
+    <thead><tr><th>App</th><th>Source</th><th>Scopes</th><th>Approve</th><th>Deny</th></tr></thead>
+    <tbody>
+      {{range .Pending}}
+      <tr>
+        <td>{{.App}}</td>
+        <td>{{.Source}}</td>
+        <td>{{range $i, $s := .Scopes}}{{if $i}} {{end}}{{$s}}{{end}}</td>
+        <td>
+          <form hx-post="/settings/remote-tagger/pair/{{.ID}}/approve" hx-target="#remote-tagger-admin" hx-swap="outerHTML" style="display:inline">
+            <input type="hidden" name="_csrf" value="{{$csrf}}">
+            <button type="submit" class="btn-sm btn-success">Approve</button>
+          </form>
+        </td>
+        <td>
+          <form hx-post="/settings/remote-tagger/pair/{{.ID}}/deny" hx-target="#remote-tagger-admin" hx-swap="outerHTML" style="display:inline">
+            <input type="hidden" name="_csrf" value="{{$csrf}}">
+            <button type="submit" class="btn-sm">Deny</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  </div>
+  </div>
+  {{end}}
+  {{if .Paired}}
+  <p class="field-hint">Paired with a remote tagger instance. The instance can send tagging jobs to this server.
+    <form hx-post="/settings/remote-tagger/admin/unpair" hx-target="#remote-tagger-admin" hx-swap="outerHTML"
+          hx-confirm="Remove the remote tagger pairing?" style="display:inline">
+      <input type="hidden" name="_csrf" value="{{$csrf}}">
+      <button type="submit" class="btn-sm btn-danger">Remove pairing</button>
+    </form>
+  </p>
+  {{else if not .Pending}}
+  <p class="field-hint">No pending remote tagger pairing requests.</p>
+  {{end}}
+</div>
+{{end}}

@@ -136,6 +136,11 @@ type Server struct {
 	// tags show up (or the failure surfaces) without a manual reload.
 	fetchStatusMu sync.Mutex
 	fetchStatus   map[string]fetchStatusEntry
+
+	// remoteTaggerPairMu guards the outbound remote tagger pairing state.
+	remoteTaggerPairMu    sync.Mutex
+	remoteTaggerRequestID string
+	remoteTaggerServerURL string
 }
 
 // NewServer creates the HTTP server with all routes wired. One *db.DB is
@@ -594,12 +599,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/pair/request", s.pairRequest)
 	mux.HandleFunc("GET /api/v1/pair/status", s.pairStatus)
 	mux.HandleFunc("POST /api/v1/pair/remove", s.pairTeardown)
+	mux.HandleFunc("POST /api/v1/tagger/remote-run", s.taggerRemoteRun)
 	mux.HandleFunc("GET /internal/monloader-pairing", s.monloaderPairingFragment)
 	mux.HandleFunc("POST /settings/monloader/pair/{id}/approve", s.monloaderPairApprove)
 	mux.HandleFunc("POST /settings/monloader/pair/{id}/deny", s.monloaderPairDeny)
 	mux.HandleFunc("POST /settings/monloader/pair/remove", s.monloaderPairRemove)
 	mux.HandleFunc("POST /internal/monloader/disconnect", s.monloaderLightDisconnect)
 	mux.HandleFunc("POST /internal/monloader/reconnect", s.monloaderLightReconnect)
+
+	mux.HandleFunc("GET /internal/remote-tagger/status", s.remoteTaggerPairStatus)
+	mux.HandleFunc("POST /settings/remote-tagger/pair", s.remoteTaggerPairPost)
+	mux.HandleFunc("POST /settings/remote-tagger/unpair", s.remoteTaggerUnpairPost)
+	mux.HandleFunc("GET /internal/remote-tagger/pending", s.remoteTaggerPendingFragment)
+	mux.HandleFunc("POST /settings/remote-tagger/pair/{id}/approve", s.remoteTaggerPendingApprove)
+	mux.HandleFunc("POST /settings/remote-tagger/pair/{id}/deny", s.remoteTaggerPendingDeny)
+	mux.HandleFunc("POST /settings/remote-tagger/admin/unpair", s.remoteTaggerAdminUnpairPost)
 
 	api.New(s.cfg, &s.cfgMu, s.jobs, s.apiResolver, Version).Mount(mux)
 
