@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -232,8 +231,15 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 	emitStatus := func(workerIdx int, msg string) {
 		statusMu.Lock()
 		defer statusMu.Unlock()
-		workerStatus[workerIdx] = msg
-		active := slices.DeleteFunc(slices.Clone(workerStatus), func(s string) bool { return s == "" })
+		if workerIdx >= 0 && workerIdx < len(workerStatus) {
+			workerStatus[workerIdx] = msg
+		}
+		var active []string
+		for _, s := range workerStatus {
+			if s != "" {
+				active = append(active, s)
+			}
+		}
 		out := "tagging images"
 		if len(active) > 0 {
 			shown := active

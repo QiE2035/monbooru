@@ -377,9 +377,8 @@ func (b *ipcBackend) Run(ctx context.Context, req RunRequest) (RunResponse, erro
 		sub.Images = req.Images[i : i+1]
 		var callOnProgress func(int, string)
 		if req.OnProgress != nil {
-			idx := i
 			orig := req.OnProgress
-			callOnProgress = func(_ int, msg string) { orig(idx, msg) }
+			callOnProgress = func(workerIdx int, msg string) { orig(workerIdx, msg) }
 		}
 		resp, err := b.call(ctx, ipcRequest{Method: ipcMethodRun, Run: &sub}, callOnProgress)
 		if err != nil {
