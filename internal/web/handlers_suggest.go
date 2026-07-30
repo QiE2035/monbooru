@@ -190,6 +190,60 @@ func (s *Server) queryDistinctLabels(table, col, prefix string, limit int, logLa
 	return out
 }
 
+// queryDistinctLabelsWhere is like queryDistinctLabels but accepts an
+// extra WHERE condition (without the WHERE keyword) that is AND-ed into
+// the filter. Used when the column alone is not enough (e.g. tagger_name
+// on is_auto = 1 rows only).
+func (s *Server) queryDistinctLabelsWhere(table, col, extraWhere, prefix string, limit int, logLabel string) []string {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if prefix == "" {
+		rows, err = s.db().Read.Query(
+			`SELECT DISTINCT `+col+` FROM `+table+` WHERE `+col+` != '' AND `+extraWhere+`
+			 ORDER BY `+col+` LIMIT ?`, limit)
+	} else {
+		lo, hi := nocasePrefixRange(prefix)
+		rows, err = s.db().Read.Query(
+			`SELECT DISTINCT `+col+` FROM `+table+`
+			 WHERE `+col+` >= ? AND `+col+` < ? AND `+extraWhere+`
+			 ORDER BY `+col+` LIMIT ?`, lo, hi, limit)
+	}
+	if err != nil {
+		logx.Warnf("%s suggest: %v", logLabel, err)
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var sv string
+		if err := rows.Scan(&sv); err != nil {
+			continue
+		}
+		out = append(out, sv)
+	}
+	if err := rows.Err(); err != nil {
+		logx.Warnf("%s suggest: %v", logLabel, err)
+	}
+	return out
+}
+
+// queryTaggerLabels drives the `tagged:` autocomplete in the search-bar
+// `system:` level-2 dropdown. Returns every distinct tagger_name from
+// the image_tags table (both auto and manual-sourced entries) so the
+// user can filter by any tagger/source label.
+func (s *Server) queryTaggerLabels(prefix string, limit int) []string {
+	return s.queryDistinctLabels("image_tags", "tagger_name", prefix, limit, "tagger")
+}
+
+// queryAutotaggerLabels drives the `autotagged:` autocomplete. It only
+// returns tagger_name values that appear on auto-tag rows (is_auto = 1),
+// riding the idx_image_tags_auto_tagger partial index for efficiency.
+func (s *Server) queryAutotaggerLabels(prefix string, limit int) []string {
+	return s.queryDistinctLabelsWhere("image_tags", "tagger_name", "is_auto = 1", prefix, limit, "autotagger")
+}
+
 // querySourceLabels drives the `source:` autocomplete in the search-bar
 // `system:` level-2 dropdown and the detail / batch source dialogs.
 func (s *Server) querySourceLabels(prefix string, limit int) []string {
@@ -421,7 +475,7 @@ func (s *Server) searchSuggest(w http.ResponseWriter, r *http.Request) {
 				// keeps matching while the user is mid-quote.
 				vp := strings.ToLower(val)
 				switch key {
-				case "collection", "source", "name", "prompt", "model", "sampler":
+				case "collection", "source", "name", "prompt", "model", "sampler", "tagged", "autotagged":
 					vp = strings.TrimPrefix(val, `"`)
 				}
 				rows := s.systemSuggestLevel2(key, vp)
@@ -605,6 +659,23 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []suggestItem {
 	if key == "source" {
 		return append(expansionRows(key, valPrefix),
 			quotedSDLabelRows("source", s.querySourceLabels(valPrefix, 10))...)
+	}
+	// tagged: / autotagged: take boolean shortcuts (true/false) or a
+	// tagger_name from image_tags. tagger names are short unquoted
+	// identifiers, returned bare like the expansionRows entries.
+	if key == "tagged" {
+		rows := expansionRows(key, valPrefix)
+		for _, lbl := range s.queryTaggerLabels(valPrefix, 10) {
+			rows = append(rows, suggestItem{Name: key + ":" + lbl})
+		}
+		return rows
+	}
+	if key == "autotagged" {
+		rows := expansionRows(key, valPrefix)
+		for _, lbl := range s.queryAutotaggerLabels(valPrefix, 10) {
+			rows = append(rows, suggestItem{Name: key + ":" + lbl})
+		}
+		return rows
 	}
 	// name: surfaces distinct file basenames whose substring matches
 	// the prefix, mirroring the executor's `canonical_path LIKE '%/<val>%'`

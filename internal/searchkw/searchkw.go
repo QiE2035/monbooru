@@ -87,7 +87,7 @@ var Expansions = map[string][]string{
 	"height":     {">=", "<=", ">", "<", "=", ".."},
 	"date":       {">", "<", ">=", "<=", "=", ".."},
 	"missing":    {"true", "false"},
-	"tagged":     {"true", "false"},
+	"tagged":     {"true", "false", "user"},
 	"autotagged": {"true", "false"},
 	"stale":      {"any", "none"},
 	"rating":     {"general", "sensitive", "questionable", "explicit"},
@@ -111,6 +111,7 @@ var rangeKeys = map[string]bool{
 	"width": true, "height": true, "date": true, "size": true,
 	"ratio": true, "tagcount": true, "duration": true, "pages": true,
 	"stale": true, "source": true,
+	"tagged": true, "autotagged": true,
 }
 
 // closedVocab is the membership-test view of Expansions for the keys
@@ -167,8 +168,8 @@ var Descriptions = map[string]string{
 	"height":     "image height",
 	"date":       "ingestion date",
 	"missing":    "files gone from disk",
-	"tagged":     "has any tag",
-	"autotagged": "has auto-tag",
+	"tagged":     "filter by tag presence or source",
+	"autotagged": "filter by auto-tag presence or tagger name",
 	"stale":      "tags a source dropped",
 	"folder":     "folder (recursive)",
 	"folderonly": "folder (exact)",
