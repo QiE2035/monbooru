@@ -204,11 +204,11 @@
         </select>
       </div>
       {{end}}
-      {{if .EnabledTaggers}}
+      {{if .TaggerNames}}
       <label style="display:block"><input type="radio" name="mode" value="auto-specific"> Specific auto-tagger</label>
       <div class="field" style="margin: 4px 0 8px 22px" id="batch-strip-tagger-row">
         <select name="tagger_name" id="batch-strip-tagger" class="upload-wide-input">
-          {{range .EnabledTaggers}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+          {{range .TaggerNames}}<option value="{{.}}">{{.}}</option>{{end}}
         </select>
       </div>
       {{end}}

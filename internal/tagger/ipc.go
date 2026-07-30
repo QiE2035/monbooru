@@ -357,9 +357,6 @@ const shortCallTimeout = 30 * time.Second
 // terminal response. ctx cancellation unwedges the IPC reader and
 // returns ctx.Err to the caller; the next Run respawns.
 func (b *ipcBackend) Run(ctx context.Context, req RunRequest) (RunResponse, error) {
-	// gob can't encode the OnProgress func, so we strip it from the
-	// wire payload and forward progress over the response stream
-	// instead.
 	wire := req
 	wire.OnProgress = nil
 	b.inFlight.Add(1)
@@ -372,17 +369,33 @@ func (b *ipcBackend) Run(ctx context.Context, req RunRequest) (RunResponse, erro
 		return RunResponse{}, err
 	}
 
-	resp, err := b.call(ctx, ipcRequest{Method: ipcMethodRun, Run: &wire}, req.OnProgress)
-	if err != nil {
-		return RunResponse{}, err
+	// Send one IPC call per image so the gob-encoded frame never
+	// exceeds maxFrameBytes regardless of image size.
+	var merged RunResponse
+	for i := range req.Images {
+		sub := wire
+		sub.Images = req.Images[i : i+1]
+		var callOnProgress func(int, string)
+		if req.OnProgress != nil {
+			idx := i
+			orig := req.OnProgress
+			callOnProgress = func(_ int, msg string) { orig(idx, msg) }
+		}
+		resp, err := b.call(ctx, ipcRequest{Method: ipcMethodRun, Run: &sub}, callOnProgress)
+		if err != nil {
+			return RunResponse{}, err
+		}
+		if resp.Err != "" {
+			merged.Results = append(merged.Results, BackendImageResult{ID: req.Images[i].ID, Err: resp.Err})
+			continue
+		}
+		if resp.Run == nil || len(resp.Run.Results) == 0 {
+			merged.Results = append(merged.Results, BackendImageResult{ID: req.Images[i].ID, Err: "tagger-worker returned empty response"})
+			continue
+		}
+		merged.Results = append(merged.Results, resp.Run.Results[0])
 	}
-	if resp.Err != "" {
-		return RunResponse{}, errors.New(resp.Err)
-	}
-	if resp.Run == nil {
-		return RunResponse{}, errors.New("tagger-worker returned empty response")
-	}
-	return *resp.Run, nil
+	return merged, nil
 }
 
 // Status returns the child's cache state. While a Run is in flight,

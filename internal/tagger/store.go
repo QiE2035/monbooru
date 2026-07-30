@@ -192,41 +192,76 @@ func storeResults(
 func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, ids []int64, taggers []TaggerStatus, mgr *jobs.Manager, provider string, mangaCacheDir string) (int, error) {
 	remote := newRemoteBackend(cfg.Tagger.RemoteClient.URL, cfg.Tagger.RemoteClient.Token)
 
-	var requests []BackendImageRequest
-	for _, id := range ids {
-		var canonPath, fileType string
-		if err := database.Read.QueryRowContext(ctx,
-			`SELECT canonical_path, file_type FROM images WHERE id = ?`, id,
-		).Scan(&canonPath, &fileType); err != nil {
-			continue
-		}
-		if !isStaticImageType(fileType) {
-			continue
-		}
-		data, err := os.ReadFile(canonPath)
-		if err != nil {
-			continue
-		}
-		requests = append(requests, BackendImageRequest{
-			ID: id, FrameBytes: [][]byte{data},
-		})
-	}
-
-	resp, err := remote.Run(ctx, RunRequest{Images: requests})
-	if err != nil {
-		return 0, err
-	}
-
+	// Batch size scales with the configured parallel workers so the A-side
+	// never receives more work per request than it can keep up with.
+	batchSize := max(1, cfg.Tagger.Parallel)
+	total := len(ids)
+	done := 0
 	var skipped int
-	for _, r := range resp.Results {
-		if r.Err != "" {
-			skipped++
+	batchNum := 0
+	batchCount := (total + batchSize - 1) / batchSize
+
+	for start := 0; start < total; start += batchSize {
+		if ctx.Err() != nil {
+			return skipped, ctx.Err()
+		}
+		end := start + batchSize
+		if end > total {
+			end = total
+		}
+		batch := ids[start:end]
+		batchNum++
+
+		mgr.Update(done, total, fmt.Sprintf("remote tagging: batch %d/%d", batchNum, batchCount))
+
+		requests := make([]BackendImageRequest, 0, len(batch))
+		for _, id := range batch {
+			var canonPath, fileType string
+			if err := database.Read.QueryRowContext(ctx,
+				`SELECT canonical_path, file_type FROM images WHERE id = ?`, id,
+			).Scan(&canonPath, &fileType); err != nil {
+				skipped++
+				done++
+				continue
+			}
+			if !isStaticImageType(fileType) {
+				skipped++
+				done++
+				continue
+			}
+			data, err := os.ReadFile(canonPath)
+			if err != nil {
+				skipped++
+				done++
+				continue
+			}
+			requests = append(requests, BackendImageRequest{
+				ID: id, FrameBytes: [][]byte{data},
+			})
+		}
+
+		if len(requests) == 0 {
 			continue
 		}
-		if err := storeResults(ctx, database, r.ID, r.Tags, nil, 0); err != nil {
-			skipped++
+
+		resp, err := remote.Run(ctx, RunRequest{Images: requests})
+		if err != nil {
+			return skipped + done, fmt.Errorf("batch around image %d: %w", start, err)
+		}
+
+		for _, r := range resp.Results {
+			if r.Err != "" {
+				skipped++
+			} else {
+				if err := storeResults(ctx, database, r.ID, r.Tags, nil, 0); err != nil {
+					skipped++
+				}
+			}
+			done++
 		}
 	}
+
+	mgr.Update(done, total, "remote tagging: done")
 	return skipped, nil
 }
 
