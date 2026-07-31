@@ -207,6 +207,17 @@ func walkGalleryFiles(ctx context.Context, galleryPath string, maxBytes int64, k
 			return ctx.Err()
 		}
 		if d.IsDir() {
+			// The gallery root is always scanned even when it carries a
+			// dot prefix (a nested gallery pointed at Pictures/.H); every
+			// other dot-prefixed directory is skipped wholesale so a
+			// nested gallery's content can't bleed into its parent.
+			if path != galleryPath && IsHiddenName(path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Dot-prefixed files are excluded everywhere below the root.
+		if IsHiddenName(path) {
 			return nil
 		}
 		if _, typeErr := DetectFileType(path); typeErr != nil {

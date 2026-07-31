@@ -86,6 +86,9 @@ func NewWatcher(galleryName, galleryPath, thumbnailsPath string, maxFileSizeMB i
 		if err != nil || !d.IsDir() || path == galleryPath {
 			return nil
 		}
+		if IsHiddenName(path) {
+			return filepath.SkipDir
+		}
 		if limitHit {
 			return filepath.SkipAll
 		}
@@ -135,6 +138,16 @@ func (w *Watcher) Run(ctx context.Context) error {
 			}
 
 			if w.jobSuppressesIngest() {
+				continue
+			}
+
+			// Dot-prefixed entries are never managed by this gallery, so
+			// Create/Rename/Write/Remove for them all short-circuit before
+			// os.Stat / registerTree / markFileMissing. Entries hidden
+			// inside an unwatched directory produce no event at all; the
+			// ones that were already watched before becoming hidden land
+			// here, and their is_missing flag is left to the next sync.
+			if IsHiddenName(event.Name) {
 				continue
 			}
 
@@ -203,6 +216,14 @@ func (w *Watcher) eventPrefix() string {
 func (w *Watcher) registerTree(dir string) {
 	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			return nil
+		}
+		// Skip dot-prefixed entries under the newly created dir, matching
+		// the scan-side convention; dir itself is exempt as its own root.
+		if path != dir && IsHiddenName(path) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if d.IsDir() {
@@ -315,6 +336,11 @@ func (w *Watcher) reconcileMovedOut(path string) {
 }
 
 func (w *Watcher) ingestFile(path string) {
+	// Race backstop: a debounce timer queued before the entry became
+	// hidden would otherwise still ingest it.
+	if IsHiddenName(path) {
+		return
+	}
 	if w.jobSuppressesIngest() {
 		return
 	}

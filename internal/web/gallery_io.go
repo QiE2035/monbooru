@@ -575,6 +575,15 @@ func writeGalleryFilesToZip(zw *zip.Writer, galleryPath string) error {
 			return walkErr
 		}
 		if info.IsDir() {
+			// Skip dot-prefixed directories below the root so a nested
+			// gallery (e.g. Pictures/.H) never ends up in its parent's
+			// backup. The root itself is exempted like every other scan.
+			if path != galleryPath && gallery.IsHiddenName(path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if gallery.IsHiddenName(path) {
 			return nil
 		}
 		rel, err := filepath.Rel(galleryPath, path)
@@ -1353,13 +1362,18 @@ func reconcileMissingFiles(database *db.DB, galleryPath string) error {
 }
 
 // wipeDirContents removes everything inside dir but keeps the directory
-// itself (so a bind mount survives).
+// itself (so a bind mount survives). Dot-prefixed entries are preserved:
+// a replace-import of gallery `main` must not delete the files of a
+// nested gallery (`main/.H`) it does not manage.
 func wipeDirContents(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
 		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
 			return err
 		}
