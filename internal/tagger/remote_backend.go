@@ -44,31 +44,65 @@ func (b *remoteBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 	var buf bytes.Buffer
 	mp := multipart.NewWriter(&buf)
 
-	for _, im := range req.Images {
-		var data []byte
-		if len(im.FrameBytes) > 0 && len(im.FrameBytes[0]) > 0 {
-			data = im.FrameBytes[0]
-		} else if len(im.FramePaths) > 0 {
+	// Pre-fill one result per requested image so images that never make
+	// it into the multipart body still advance the orchestrator's
+	// done/skipped accounting (progress reaches 100%).
+	out := RunResponse{Results: make([]BackendImageResult, len(req.Images))}
+	for i, im := range req.Images {
+		out.Results[i] = BackendImageResult{ID: im.ID, Err: "image not sent to remote tagger"}
+	}
+
+	// sent records the req.Images positions that actually got written to
+	// the body. The server indexes its results by this filtered order, so
+	// a result's Index maps back through sent to the original request.
+	var sent []int
+
+	for i, im := range req.Images {
+		var src io.Reader
+		var f *os.File
+		contentType := ""
+		switch {
+		case len(im.FrameBytes) > 0 && len(im.FrameBytes[0]) > 0:
+			src = bytes.NewReader(im.FrameBytes[0])
+			contentType = detectImageContentType(im.FrameBytes[0])
+		case len(im.FramePaths) > 0:
 			var err error
-			data, err = os.ReadFile(im.FramePaths[0])
+			f, err = os.Open(im.FramePaths[0])
 			if err != nil {
 				continue
 			}
-		} else {
+			// Sniff the header before committing to the request so a
+			// corrupt file is rejected without ever being read whole.
+			head := make([]byte, 12)
+			n, _ := io.ReadFull(f, head)
+			contentType = detectImageContentType(head[:n])
+			src = io.MultiReader(bytes.NewReader(head[:n]), f)
+		default:
 			continue
 		}
-		// Detect content type from magic bytes for static image types.
-		contentType := detectImageContentType(data)
 		if contentType == "" {
+			if f != nil {
+				f.Close()
+			}
 			continue
 		}
 		part, err := mp.CreateFormFile("images", fmt.Sprintf("%d%s", im.ID, extForContentType(contentType)))
 		if err != nil {
+			if f != nil {
+				f.Close()
+			}
 			return RunResponse{}, fmt.Errorf("create form file: %w", err)
 		}
-		if _, err := part.Write(data); err != nil {
+		if _, err := io.Copy(part, src); err != nil {
+			if f != nil {
+				f.Close()
+			}
 			return RunResponse{}, fmt.Errorf("write form file: %w", err)
 		}
+		if f != nil {
+			f.Close()
+		}
+		sent = append(sent, i)
 	}
 
 	if err := mp.Close(); err != nil {
@@ -103,21 +137,30 @@ func (b *remoteBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 		return RunResponse{}, fmt.Errorf("decode response: %w", err)
 	}
 
-	out := RunResponse{Results: make([]BackendImageResult, 0, len(results))}
+	// Overlay the server results onto the pre-filled entries. Resulted
+	// tracks which sent images got a server entry so the rest can be
+	// counted as skipped instead of silently succeeding with no tags.
+	resulted := make([]bool, len(req.Images))
 	for _, r := range results {
-		if r.Index < 0 || r.Index >= len(req.Images) {
+		if r.Index < 0 || r.Index >= len(sent) {
 			continue
 		}
-		br := BackendImageResult{ID: req.Images[r.Index].ID}
+		br := &out.Results[sent[r.Index]]
 		if r.Error != "" {
 			br.Err = r.Error
 		} else {
+			br.Err = ""
 			br.Tags = make(map[TagKey]Scored, len(r.Tags))
 			for _, e := range r.Tags {
 				br.Tags[TagKey{Name: e.Name, CatID: e.CategoryID}] = Scored{Score: e.Score, TaggerName: e.TaggerName}
 			}
 		}
-		out.Results = append(out.Results, br)
+		resulted[sent[r.Index]] = true
+	}
+	for _, idx := range sent {
+		if !resulted[idx] {
+			out.Results[idx].Err = "no result from remote tagger"
+		}
 	}
 	return out, nil
 }

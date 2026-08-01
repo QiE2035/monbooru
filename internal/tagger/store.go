@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/monbooru/monbooru/internal/config"
@@ -191,6 +191,10 @@ func storeResults(
 
 func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, ids []int64, taggers []TaggerStatus, mgr *jobs.Manager, provider string, mangaCacheDir string) (int, error) {
 	remote := newRemoteBackend(cfg.Tagger.RemoteClient.URL, cfg.Tagger.RemoteClient.Token)
+	// Remote tagging is the last big heap consumer of the job; give the
+	// OS the Go heap back when it finishes so a long batch doesn't stay
+	// pinned at its peak RSS.
+	defer debug.FreeOSMemory()
 
 	// Batch size scales with the configured parallel workers so the A-side
 	// never receives more work per request than it can keep up with.
@@ -229,14 +233,8 @@ func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, 
 				done++
 				continue
 			}
-			data, err := os.ReadFile(canonPath)
-			if err != nil {
-				skipped++
-				done++
-				continue
-			}
 			requests = append(requests, BackendImageRequest{
-				ID: id, FrameBytes: [][]byte{data},
+				ID: id, FramePaths: []string{canonPath},
 			})
 		}
 
