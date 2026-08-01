@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"html"
@@ -21,9 +22,7 @@ import (
 // delete handler's delete-go-back). kind picks the flash-ok / flash-err
 // palette; pass "" for ok.
 func setFlashHeader(w http.ResponseWriter, text, kind string, extras map[string]any) {
-	if kind == "" {
-		kind = "ok"
-	}
+	kind = cmp.Or(kind, "ok")
 	// The client renders this through innerHTML (showActionFlash), so the
 	// text is escaped here at the single boundary, the same way
 	// writeInlineFlash escapes the body path. Without it an operator-
@@ -57,6 +56,18 @@ func hxDone(w http.ResponseWriter, r *http.Request, flash, hxDest, fallback stri
 	http.Redirect(w, r, fallback, http.StatusSeeOther)
 }
 
+// hxRedirect sends an htmx caller to dest via the HX-Redirect header and
+// everyone else via a 303. The bare counterpart to hxDone, which carries
+// a flash along with the redirect.
+func hxRedirect(w http.ResponseWriter, r *http.Request, dest string) {
+	if isHTMXRequest(r) {
+		w.Header().Set("HX-Redirect", dest)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, dest, http.StatusSeeOther)
+}
+
 // writeInlineFlash writes a `<div class="flash flash-{kind}">...</div>`
 // fragment with text HTML-escaped, for handlers that need the flash
 // payload in the response body (htmx partial swap target) rather than
@@ -65,9 +76,7 @@ func hxDone(w http.ResponseWriter, r *http.Request, flash, hxDest, fallback stri
 // taken verbatim and HTML-escaped here so every call site shares one
 // escape boundary.
 func writeInlineFlash(w http.ResponseWriter, kind, text string) {
-	if kind == "" {
-		kind = "ok"
-	}
+	kind = cmp.Or(kind, "ok")
 	_, _ = w.Write([]byte(`<div class="flash flash-` + kind + `">` + html.EscapeString(text) + `</div>`))
 }
 
@@ -76,9 +85,7 @@ func writeInlineFlash(w http.ResponseWriter, kind, text string) {
 // the few flashes that carry markup (e.g. links to affected rows) which
 // the plain-text escaper would render as literal angle brackets.
 func writeInlineFlashHTML(w http.ResponseWriter, kind, body string) {
-	if kind == "" {
-		kind = "ok"
-	}
+	kind = cmp.Or(kind, "ok")
 	_, _ = w.Write([]byte(`<div class="flash flash-` + kind + `">` + body + `</div>`))
 }
 
@@ -88,9 +95,7 @@ func writeInlineFlashHTML(w http.ResponseWriter, kind, body string) {
 func writeFlashOOB(w http.ResponseWriter, id, kind, text string) {
 	body := ""
 	if text != "" {
-		if kind == "" {
-			kind = "ok"
-		}
+		kind = cmp.Or(kind, "ok")
 		body = `<div class="flash flash-` + kind + `">` + html.EscapeString(text) + `</div>`
 	}
 	_, _ = w.Write([]byte(`<div id="` + id + `" hx-swap-oob="true">` + body + `</div>`))
@@ -192,4 +197,38 @@ func loadImagePaths(ctx context.Context, database *db.DB, id int64) []models.Ima
 		logx.Warnf("load image paths: %v", err)
 	}
 	return paths
+}
+
+// manifestHandler serves the web app manifest behind the layout's
+// <link rel="manifest">, so a browser can install the gallery as a
+// home-screen app. The icon follows server.logo the same way
+// booruFaviconURL does - an override replaces the bundled icon rather
+// than sitting beside it - and carries no sizes hint, since the
+// operator's file has whatever dimensions it has.
+func (s *Server) manifestHandler(w http.ResponseWriter, r *http.Request) {
+	icon := map[string]any{
+		"src":     "/static/icon-192.png",
+		"sizes":   "192x192",
+		"type":    "image/png",
+		"purpose": "any maskable",
+	}
+	if s.cfg.Server.BooruLogo != "" {
+		icon = map[string]any{"src": "/custom.logo"}
+	}
+	name := s.booruName()
+	w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
+	// Built from live config, so a heuristic cache would keep serving the
+	// old name after a rename; /custom.css and /custom.logo revalidate for
+	// the same reason.
+	w.Header().Set("Cache-Control", "no-cache")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"name":             name,
+		"short_name":       name,
+		"id":               "/",
+		"start_url":        "/",
+		"display":          "standalone",
+		"background_color": "#0e0e0e",
+		"theme_color":      "#0e0e0e",
+		"icons":            []map[string]any{icon},
+	})
 }

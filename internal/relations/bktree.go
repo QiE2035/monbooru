@@ -4,6 +4,7 @@ import (
 	"math/bits"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/monbooru/monbooru/internal/db"
 	"github.com/monbooru/monbooru/internal/gallery"
@@ -59,12 +60,33 @@ type BKTree struct {
 	root    *bkNode
 	idIndex map[int64]int64 // id -> phash, drives Remove
 	built   atomic.Bool
+	// lastUsed stamps the last search so the reclaim loop can drop a
+	// tree nobody is browsing against.
+	lastUsed atomic.Int64
 }
 
 type bkNode struct {
-	phash    int64
-	ids      []int64
-	children map[int]*bkNode
+	phash int64
+	ids   []int64
+	// Edges keyed by distance, as a slice rather than a map: fanout is
+	// at most 65 and in practice a handful, where a map costs an order
+	// of magnitude more per node than the linear scan saves.
+	children []bkEdge
+}
+
+type bkEdge struct {
+	dist int
+	node *bkNode
+}
+
+// child returns the edge at distance dist, or nil.
+func (n *bkNode) child(dist int) *bkNode {
+	for i := range n.children {
+		if n.children[i].dist == dist {
+			return n.children[i].node
+		}
+	}
+	return nil
 }
 
 // NewBKTree returns an empty tree. Use BuildFromDB to populate from
@@ -87,6 +109,24 @@ func (t *BKTree) Built() bool {
 func (t *BKTree) Reset() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.resetLocked()
+}
+
+// ReleaseIdle drops a built tree nobody has searched for at least
+// `after`, returning whether it did. The next query rebuilds it from
+// the phash column; on a large library the index is tens of megabytes
+// that only a relations or phash: browse needs.
+func (t *BKTree) ReleaseIdle(after time.Duration) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.built.Load() || time.Since(time.Unix(0, t.lastUsed.Load())) < after {
+		return false
+	}
+	t.resetLocked()
+	return true
+}
+
+func (t *BKTree) resetLocked() {
 	t.root = nil
 	t.idIndex = make(map[int64]int64)
 	t.built.Store(false)
@@ -117,6 +157,7 @@ func (t *BKTree) BuildFromDB(database *db.DB) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	t.lastUsed.Store(time.Now().UnixNano())
 	t.built.Store(true)
 	return nil
 }
@@ -145,16 +186,19 @@ func (t *BKTree) Remove(id int64) {
 
 // SearchWithinDistance returns every image id whose stored phash is
 // within Hamming distance `d` of `query`. Self-matches at distance 0
-// are included. Result order is unspecified.
-func (t *BKTree) SearchWithinDistance(query int64, d int) []int64 {
+// are included. Result order is unspecified. The second return reports
+// whether a built tree answered: a caller that gets false has to fall
+// back rather than read the empty result as "no matches", since the
+// tree can be dropped between its EnsureBuilt and this call.
+func (t *BKTree) SearchWithinDistance(query int64, d int) ([]int64, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+	t.lastUsed.Store(time.Now().UnixNano())
 	var out []int64
-	if t.root == nil {
-		return out
+	if t.root != nil {
+		t.searchLocked(t.root, query, d, &out)
 	}
-	t.searchLocked(t.root, query, d, &out)
-	return out
+	return out, t.built.Load()
 }
 
 func (t *BKTree) insertLocked(id, phash int64) {
@@ -170,14 +214,11 @@ func (t *BKTree) insertLocked(id, phash int64) {
 			return
 		}
 		dist := hammingDistance(cur.phash, phash)
-		if cur.children == nil {
-			cur.children = map[int]*bkNode{}
-		}
-		if child, ok := cur.children[dist]; ok {
+		if child := cur.child(dist); child != nil {
 			cur = child
 			continue
 		}
-		cur.children[dist] = &bkNode{phash: phash, ids: []int64{id}}
+		cur.children = append(cur.children, bkEdge{dist: dist, node: &bkNode{phash: phash, ids: []int64{id}}})
 		return
 	}
 }
@@ -199,8 +240,7 @@ func (t *BKTree) removeIDLocked(id, phash int64) {
 			}
 			return
 		}
-		dist := hammingDistance(cur.phash, phash)
-		cur = cur.children[dist]
+		cur = cur.child(hammingDistance(cur.phash, phash))
 	}
 }
 
@@ -214,11 +254,11 @@ func (t *BKTree) searchLocked(node *bkNode, query int64, d int, out *[]int64) {
 		lo = 0
 	}
 	hi := dist + d
-	for edge, child := range node.children {
-		if edge < lo || edge > hi {
+	for _, edge := range node.children {
+		if edge.dist < lo || edge.dist > hi {
 			continue
 		}
-		t.searchLocked(child, query, d, out)
+		t.searchLocked(edge.node, query, d, out)
 	}
 }
 
@@ -240,7 +280,7 @@ type Registry struct {
 }
 
 // DefaultRegistry is the process-wide registry the hooks in
-// gallery.RecomputeAndStorePhash and Service.OnImageDelete route
+// gallery.RecomputeAndStorePhash and Service.OnImageDeleteTx route
 // through.
 var DefaultRegistry = &Registry{trees: map[*db.DB]*BKTree{}}
 

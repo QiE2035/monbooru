@@ -1,11 +1,13 @@
 package web
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"html/template"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -216,12 +218,8 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 
 	wantAdjacent := refURL == "" && (backSort != "" || backQ != "")
 	if wantAdjacent {
-		if backSort == "" {
-			backSort = "newest"
-		}
-		if backOrder == "" {
-			backOrder = "desc"
-		}
+		backSort = cmp.Or(backSort, "newest")
+		backOrder = cmp.Or(backOrder, "desc")
 	}
 	ceiling := resolveCeiling(r, s.Active())
 
@@ -235,20 +233,30 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 	var rankPage string
 	rankReady := make(chan struct{})
 	rankFired := false
+	// Set only while the page is still unresolved, so the post-adjacency
+	// read below knows whether to look again.
+	pendingKey := ""
 	if wantAdjacent && s.cfg.UI.PageSize > 0 {
 		var seed int64
 		if backSort == "random" && backSeed != "" {
 			seed, _ = strconv.ParseInt(backSeed, 10, 64)
 		}
 		cacheKey := search.BuildAdjacencyCacheKey(s.activeName, backQ, backSort, backOrder, seed, ceiling.Level())
-		if ids, ok := search.AdjacencyCacheGet(cacheKey); ok {
-			for i, mid := range ids {
-				if mid == id {
-					backPage = strconv.Itoa(i/s.cfg.UI.PageSize + 1)
-					break
-				}
+		switch ids, ok := search.AdjacencyCacheGet(cacheKey); {
+		case ok:
+			// A populated list settles the question either way: an image
+			// it does not carry is one the back_q no longer matches, and
+			// ranking it would answer a question nobody asked.
+			if page, found := s.pageOfMatch(ids, id); found {
+				backPage = page
 			}
-		} else {
+		case backSort == "similarity":
+			// A score is not a column, so the rank has no cursor to count
+			// against and would resolve it by re-running the same ranked
+			// fan the adjacency lookup below already pays. Read the page
+			// off that fan's cached list instead.
+			pendingKey = cacheKey
+		default:
 			rankFired = true
 			go func() {
 				defer close(rankReady)
@@ -321,13 +329,17 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			prevID, nextID = s.findAdjacentImages(id, backQ, backSort, backOrder, backSeed, ceiling)
+			prevID, nextID = s.findAdjacentImages(ctx, id, backQ, backSort, backOrder, backSeed, ceiling)
 		}()
 	}
 	wg.Wait()
 	<-rankReady
 	if rankPage != "" {
 		backPage = rankPage
+	} else if ids, ok := search.AdjacencyCacheGet(pendingKey); ok {
+		if page, found := s.pageOfMatch(ids, id); found {
+			backPage = page
+		}
 	}
 
 	var comfyNodes []models.ComfyNode
@@ -480,16 +492,28 @@ func distinctTaggerNames(tags []models.ImageTag, auto bool) []string {
 	return out
 }
 
+// pageOfMatch returns the 1-indexed gallery page holding id in a sorted
+// match list. Not found when the list no longer carries the image (it
+// was deleted, or it never matched the back_q), which leaves back_page
+// on whatever the URL carried.
+func (s *Server) pageOfMatch(ids []int64, id int64) (string, bool) {
+	i := slices.Index(ids, id)
+	if i < 0 {
+		return "", false
+	}
+	return strconv.Itoa(i/s.cfg.UI.PageSize + 1), true
+}
+
 // findAdjacentImages finds the prev/next image IDs in the given search context
 // via cursor-style LIMIT 1 queries - O(log n) per side instead of loading the
 // full matching ID list. seedStr carries the random-sort seed forward from the
 // referring gallery so the same shuffle resolves to the same neighbours.
 // ceiling AND-chains the cookie-ceiling NotExprs onto the parsed back_q so
 // adjacency walks the same set the gallery shows.
-func (s *Server) findAdjacentImages(currentID int64, queryStr, sortStr, orderStr, seedStr string, ceiling *Ceiling) (prevID, nextID *int64) {
+func (s *Server) findAdjacentImages(ctx context.Context, currentID int64, queryStr, sortStr, orderStr, seedStr string, ceiling *Ceiling) (prevID, nextID *int64) {
 	sq := adjacentSearchQuery(queryStr, sortStr, orderStr, seedStr, ceiling)
 	sq.CacheKey = search.BuildAdjacencyCacheKey(s.activeName, queryStr, sortStr, orderStr, sq.RandomSeed, ceiling.Level())
-	prevID, nextID, err := search.ExecuteAdjacent(s.db(), sq, currentID)
+	prevID, nextID, err := search.ExecuteAdjacent(ctx, s.db(), sq, currentID)
 	if err != nil {
 		logx.Warnf("findAdjacentImages: %v", err)
 	}

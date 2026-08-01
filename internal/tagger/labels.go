@@ -1,5 +1,3 @@
-//go:build tagger
-
 package tagger
 
 import (
@@ -11,7 +9,28 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/monbooru/monbooru/internal/tags"
 )
+
+// sanitizeLabel coerces a label-file name into the stored tag form through the
+// same normalizer the add path uses (tags.NormalizeName): spaces fold to
+// underscores, control runes drop, the rest of Unicode is kept. A label that
+// empties out, or holds no content rune, becomes `_unsupported_<idx>` so the
+// slice index keeps its 1:1 mapping with the model's output channels - dropping
+// the entry would shift every later label and corrupt downstream attribution.
+// The returned bool is false in that fallback case so callers can flag the slot
+// as a placeholder and skip emission at inference time.
+func sanitizeLabel(raw string, idx int) (string, bool) {
+	name := tags.NormalizeName(raw)
+	if rs := []rune(name); len(rs) > 200 {
+		name = string(rs[:200])
+	}
+	if name == "" || !tags.HasTagContent(name) {
+		return fmt.Sprintf("_unsupported_%d", idx), false
+	}
+	return name, true
+}
 
 // tagLabel holds a parsed row from the model's label file. The slice
 // index always lines up 1:1 with the model's output channels even for
@@ -40,7 +59,7 @@ func loadLabels(path string, profile Profile) ([]tagLabel, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	switch profile.LabelFormat {
 	case "wd14_csv":

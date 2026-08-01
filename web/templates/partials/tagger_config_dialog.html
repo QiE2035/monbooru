@@ -1,0 +1,146 @@
+{{define "partials/tagger_config_dialog.html"}}
+<form hx-post="/settings/tagger/{{.Name}}/config"
+      hx-target="#flash-tagger-config-{{.Name}}" hx-swap="innerHTML">
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+  <div class="dialog-tabs">
+    <button type="button" class="dialog-tab active" data-panel="tc-galleries-{{.Name}}">galleries</button>
+    <button type="button" class="dialog-tab" data-panel="tc-thresholds-{{.Name}}">thresholds</button>
+    <button type="button" class="dialog-tab" data-panel="tc-mappings-{{.Name}}">mappings</button>
+    <button type="button" class="dialog-tab" data-panel="tc-export-{{.Name}}">export</button>
+  </div>
+  <div class="dialog-panel" id="tc-galleries-{{.Name}}">
+    <p class="field-hint">Galleries this tagger runs on.</p>
+    <div class="tagger-gal-cols">
+      <div class="field tagger-gal-allrow">
+        <label><input type="checkbox" name="all" value="on"
+                      {{if .AllChecked}}checked{{end}}
+                      onchange="taggerGalAllToggle(this)"> All galleries
+          <span class="field-hint">(including ones added later)</span></label>
+      </div>
+      <div>
+        <div class="tagger-gal-actions">
+          <button type="button" class="btn-sm" onclick="taggerGalSelect(this, true)">Select all</button>
+          <button type="button" class="btn-sm" onclick="taggerGalSelect(this, false)">Select none</button>
+        </div>
+        <ul class="tagger-gal-list">
+          {{range .GalRows}}
+          <li><label><input type="checkbox" name="gallery_names" value="{{.Name}}"
+                             {{if $.AllChecked}}checked disabled{{else if .Checked}}checked{{end}}> {{.Name}}</label></li>
+          {{end}}
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="dialog-panel" id="tc-thresholds-{{.Name}}" hidden>
+    <p class="field-hint">Threshold sets the minimum confidence a tag in this category needs to be added.<br>
+      Max tags caps how many tags the auto-tagger adds in this category per image. (set to 0 to keep every tag)<br>
+      Disable a category to stop this tagger emitting it at all.</p>
+    <table class="tagger-thresh-table">
+      <thead><tr><th>Category</th><th>Threshold</th><th>Max tags</th><th>Enable</th><th></th></tr></thead>
+      <tbody>
+        <tr class="tagger-thresh-global">
+          <td><strong>Global</strong></td>
+          <td>
+            <input type="number" name="global_threshold" value="{{printf "%.2f" .Global}}"
+                   min="0" max="1" step="0.01" required>
+          </td>
+          <td></td>
+          <td></td>
+          <td></td>
+        </tr>
+        {{range .Rows}}
+        <tr>
+          <td>
+            <input type="hidden" name="category" value="{{.Category}}">
+            <span style="color:{{.Color}}">{{.Category}}</span>
+            {{if .ViaRules}}<span class="field-hint">via rules</span>{{end}}
+          </td>
+          <td>
+            <input type="number" name="threshold_{{.Category}}" value="{{.Override}}"
+                   data-default="{{.DefaultThreshold}}"
+                   placeholder="(global)" min="0" max="1" step="0.01">
+          </td>
+          <td>
+            <input type="number" name="maxtags_{{.Category}}" value="{{.MaxTags}}"
+                   data-default="{{.DefaultMaxTags}}"
+                   placeholder="({{.MaxDefault}})" min="0" step="1">
+          </td>
+          <td>
+            <input type="checkbox" name="enable_{{.Category}}" value="1" data-default-checked="1"{{if not .Disabled}} checked{{end}}>
+          </td>
+          <td>
+            <a href="#" class="reset-thresh"
+               onclick="resetThreshRow(this); return false;">Reset</a>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  <div class="dialog-panel tc-mappings" id="tc-mappings-{{.Name}}" hidden>
+    <p class="field-hint">Rules rename a label, change its category, or mute it for this tagger.<br>
+      Applied edits take effect on the next run.<br>
+      {{.LabelCount}} labels - <span id="tc-custom-count-{{.Name}}">{{.CustomRules}}</span> custom.</p>
+    <div class="tc-search-row" id="tc-search-row-{{.Name}}">
+      <input type="search" name="q" placeholder="search labels"
+             hx-get="/settings/tagger/{{.Name}}/labels"
+             hx-trigger="input changed delay:300ms, search"
+             hx-target="#tc-labels-{{.Name}}"
+             hx-include="#tc-search-row-{{.Name}}">
+      <input type="hidden" name="filter" value="">
+      <input type="hidden" name="limit" value="">
+      <span class="tc-filters">
+        <button type="button" class="tc-filter active" data-filter="">all</button>
+        <button type="button" class="tc-filter" data-filter="customized">customized</button>
+        <button type="button" class="tc-filter" data-filter="muted">muted</button>
+      </span>
+    </div>
+    <div id="tc-labels-{{.Name}}" class="table-scroll"
+         hx-get="/settings/tagger/{{.Name}}/labels"
+         hx-trigger="load"
+         hx-target="this"
+         hx-include="#tc-search-row-{{.Name}}">Loading...</div>
+    <template class="tc-editor-template">
+      <tr class="tc-editor-row">
+        <td colspan="4">
+          <span class="tc-editor-fields">
+            <label>category <select name="rule_category" class="tc-edit-category">
+              {{range .Categories}}<option value="{{.}}">{{.}}</option>{{end}}
+            </select></label>
+            <label>rename to <input type="text" name="rule_name" class="tc-edit-name" placeholder="(keep name)"></label>
+            <label><input type="checkbox" name="rule_mute" value="1" class="tc-edit-mute"> mute</label>
+            <button type="button" class="btn-sm tc-edit-apply" name="rule_source"
+                    hx-post="/settings/tagger/{{.Name}}/mapping"
+                    hx-target="#tc-labels-{{.Name}}" hx-swap="innerHTML">Apply</button>
+            <button type="button" class="btn-sm tc-edit-cancel">Cancel</button>
+          </span>
+        </td>
+      </tr>
+    </template>
+  </div>
+  <div class="dialog-panel" id="tc-export-{{.Name}}" hidden>
+    <p class="field-hint">Click copy to export your current configuration.</p>
+    <p class="code-block-label"><strong>rules</strong>
+      <span class="field-hint">{{.RuleCount}} rules - {{.CustomRules}} changes vs stock</span>
+      <button type="button" class="btn-sm" data-copy-from="#tc-export-json-{{.Name}}" title="Copy the merged dispatch.json">Copy</button>
+      <span class="copy-flash" hidden>copied</span>
+    </p>
+    <pre class="code-block tc-export-block">{{range .ExportRules}}<span{{if .Mark}} class="exp-{{.Mark}}"{{end}}>{{.Text}}</span>{{end}}</pre>
+    <textarea id="tc-export-json-{{.Name}}" hidden readonly>{{.ExportJSON}}</textarea>
+    {{if .ProfileJSON}}
+    <p class="code-block-label"><strong>profile</strong>
+      <span class="field-hint">tagger.json{{if .ProfileStock}} - stock{{end}}</span>
+      <button type="button" class="btn-sm" data-copy-from="#tc-profile-json-{{.Name}}" title="Copy the effective tagger.json">Copy</button>
+      <span class="copy-flash" hidden>copied</span>
+    </p>
+    <pre class="code-block tc-export-block">{{range .ProfileLines}}<span{{if .Mark}} class="exp-{{.Mark}}"{{end}}>{{.Text}}</span>{{end}}</pre>
+    <textarea id="tc-profile-json-{{.Name}}" hidden readonly>{{.ProfileJSON}}</textarea>
+    {{end}}
+  </div>
+  <div id="flash-tagger-config-{{.Name}}"></div>
+  <div class="dialog-actions">
+    <button type="submit">Save</button>
+    <button type="button" onclick="this.closest('dialog').close()">Close</button>
+  </div>
+</form>
+{{end}}

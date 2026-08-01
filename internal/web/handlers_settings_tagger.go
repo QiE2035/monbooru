@@ -1,8 +1,10 @@
 package web
 
 import (
+	"cmp"
+	"encoding/json"
 	"fmt"
-	"html"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"github.com/monbooru/monbooru/internal/config"
 	"github.com/monbooru/monbooru/internal/logx"
 	"github.com/monbooru/monbooru/internal/tagger"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 // taggerRow is the per-template render shape for one row of the
@@ -29,27 +32,79 @@ type taggerRow struct {
 	Reason              string
 	Enabled             bool
 	ConfidenceThreshold float64
-	ThresholdSummary    string
-	GallerySummary      string
+	ConfigSummary       string
+	Differs             bool
 	Installed           bool
 	Supported           bool
+	Gated               bool
 	HostCommand         string
 	DockerCommand       string
 }
 
 // installedTaggerRow fills the fields every installed tagger shares; the
-// caller layers the catalog-only fields on supported rows.
-func installedTaggerRow(t tagger.TaggerStatus, totalGalleries int) taggerRow {
+// caller layers the catalog-only fields on supported rows. Differs
+// drives the row's Reset button: true when any operator-tunable state
+// (thresholds, caps, disabled categories, gallery scope, dispatch
+// overlay) departs from the catalog-seeded stock.
+func (s *Server) installedTaggerRow(t tagger.TaggerStatus, totalGalleries int, modelPath string) taggerRow {
+	ruleCount := tagger.OverlayRuleCount(modelPath, t.Name)
 	return taggerRow{
 		Name:                t.Name,
 		Available:           t.Available,
 		Reason:              t.Reason,
 		Enabled:             t.Enabled,
 		ConfidenceThreshold: t.ConfidenceThreshold,
-		ThresholdSummary:    taggerThresholdSummary(t.ConfidenceThreshold, t.CategoryThresholds, t.DisabledCategories),
-		GallerySummary:      taggerGallerySummary(t.Galleries, totalGalleries),
+		ConfigSummary:       taggerConfigSummary(t.TaggerInstance, totalGalleries, ruleCount),
+		Differs:             taggerDiffersFromStock(t.TaggerInstance, modelPath, ruleCount),
 		Installed:           true,
 	}
+}
+
+// taggerConfigSummary is the inline summary next to the row's single
+// Configure button: the threshold summary, a gallery restriction when
+// one applies, and the custom dispatch-rule count when the overlay
+// exists.
+func taggerConfigSummary(inst config.TaggerInstance, totalGalleries, ruleCount int) string {
+	out := taggerThresholdSummary(inst.ConfidenceThreshold, inst.CategoryThresholds, inst.DisabledCategories)
+	if inst.Galleries != nil && len(inst.Galleries) != totalGalleries {
+		if len(inst.Galleries) == 0 {
+			out += ", no galleries"
+		} else {
+			out += ", galleries: " + strings.Join(inst.Galleries, ", ")
+		}
+	}
+	switch {
+	case ruleCount == 1:
+		out += ", 1 rule"
+	case ruleCount > 1:
+		out += fmt.Sprintf(", %d rules", ruleCount)
+	}
+	return out
+}
+
+// taggerDiffersFromStock reports whether the instance departs from what
+// SeedTaggerInstance would produce for a fresh row: any threshold / cap
+// / disabled-category override off the catalog seed, a gallery
+// restriction, or a dispatch overlay on disk.
+func taggerDiffersFromStock(inst config.TaggerInstance, modelPath string, ruleCount int) bool {
+	seed := tagger.SeedTaggerInstance(inst.Name, inst.Enabled, catalogEntryByName(modelPath, inst.Name))
+	if inst.ConfidenceThreshold != seed.ConfidenceThreshold {
+		return true
+	}
+	if !maps.Equal(inst.CategoryThresholds, seed.CategoryThresholds) {
+		return true
+	}
+	if !maps.Equal(inst.PerCategoryTopK, seed.PerCategoryTopK) {
+		return true
+	}
+	a := append([]string(nil), inst.DisabledCategories...)
+	b := append([]string(nil), seed.DisabledCategories...)
+	sort.Strings(a)
+	sort.Strings(b)
+	if !slices.Equal(a, b) {
+		return true
+	}
+	return inst.Galleries != nil || ruleCount > 0
 }
 
 // thresholdRow is the per-category render shape for the per-tagger
@@ -70,6 +125,7 @@ type thresholdRow struct {
 	MaxDefault       int    // default cap surfaced as the input placeholder
 	Color            string // tag_categories.color, surfaced as a 1px dot
 	Disabled         bool   // category is muted (in disabled_categories)
+	ViaRules         bool   // reached only through dispatch rules, not the model
 	DefaultThreshold string // catalog default threshold; "" = no catalog override
 	DefaultMaxTags   string // catalog default top-K; "" = no catalog override
 }
@@ -88,24 +144,32 @@ func (s *Server) settingsTaggerPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newUseCUDA := r.FormValue("use_cuda") == "on"
-	// Probe CUDA before persisting the enable so the user sees any library/GPU
-	// issue immediately instead of waiting for a tagger run to fail. ORT env
-	// init is not re-entrant so refuse while a tagger job is holding it.
-	if newUseCUDA && !s.cfg.Tagger.UseCUDA {
+	newProvider := strings.ToLower(strings.TrimSpace(r.FormValue("execution_provider")))
+	newProvider = cmp.Or(newProvider, "cpu")
+	if !config.IsValidExecutionProvider(newProvider) {
+		writeInlineFlash(w, "err", "Invalid execution provider: "+newProvider)
+		return
+	}
+	// Probe the requested execution provider before persisting the change so
+	// the user sees any library/device issue immediately instead of waiting
+	// for a tagger run to fail. ORT env init is not re-entrant so refuse
+	// while a tagger job is holding it.
+	if newProvider != s.cfg.Tagger.ExecutionProvider {
 		if s.jobs.IsRunning() {
 			writeInlineFlash(w, "err", "A job is running; try again when it finishes.")
 			return
 		}
-		if err := tagger.CheckCUDAAvailable(); err != nil {
-			writeInlineFlash(w, "err", "Cannot enable GPU: "+err.Error())
-			return
+		if newProvider != "cpu" {
+			if err := tagger.CheckProviderAvailable(newProvider); err != nil {
+				writeInlineFlash(w, "err", "Cannot enable "+newProvider+": "+err.Error())
+				return
+			}
 		}
 	}
 
 	s.cfgMu.Lock()
-	cudaChanged := s.cfg.Tagger.UseCUDA != newUseCUDA
-	s.cfg.Tagger.UseCUDA = newUseCUDA
+	providerChanged := s.cfg.Tagger.ExecutionProvider != newProvider
+	s.cfg.Tagger.ExecutionProvider = newProvider
 	if n, err := strconv.Atoi(r.FormValue("parallel")); err == nil && n >= 1 {
 		s.cfg.Tagger.Parallel = n
 	}
@@ -121,14 +185,14 @@ func (s *Server) settingsTaggerPost(w http.ResponseWriter, r *http.Request) {
 	}
 	// Drop the cached ORT session so the freed RAM is visible immediately
 	// rather than after idle_release_after_minutes elapses.
-	if cudaChanged {
+	if providerChanged {
 		tagger.ReleaseAll()
 	}
-	logx.Infof("settings: tagger updated (use_cuda=%t)", s.cfg.Tagger.UseCUDA)
+	logx.Infof("settings: tagger updated (execution_provider=%s)", s.cfg.Tagger.ExecutionProvider)
 	writeInlineFlash(w, "ok", "Saved.")
 	s.renderTemplate(w, "partials/tagger_mode_badge.html", map[string]any{
-		"UseCUDA": s.cfg.Tagger.UseCUDA,
-		"OOB":     true,
+		"Provider": s.cfg.Tagger.ExecutionProvider,
+		"OOB":      true,
 	})
 }
 
@@ -152,6 +216,7 @@ func (s *Server) settingsTaggerDisablePost(w http.ResponseWriter, r *http.Reques
 // or nil. Callers that need to surface a save failure to the operator
 // pass its error string through their usual flash helper.
 func (s *Server) updateTagger(name string, mutate func(*config.TaggerInstance)) error {
+	modelPath := s.modelPath()
 	s.cfgMu.Lock()
 	found := false
 	for i := range s.cfg.Tagger.Taggers {
@@ -162,7 +227,7 @@ func (s *Server) updateTagger(name string, mutate func(*config.TaggerInstance)) 
 		}
 	}
 	if !found {
-		catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
+		catalog := catalogEntryByName(modelPath, name)
 		seeded := tagger.SeedTaggerInstance(name, false, catalog)
 		mutate(&seeded)
 		s.cfg.Tagger.Taggers = append(s.cfg.Tagger.Taggers, seeded)
@@ -196,12 +261,12 @@ func (s *Server) applyTaggerEnabled(w http.ResponseWriter, name string, enabled 
 	w.Header().Set("HX-Refresh", "true")
 }
 
-// settingsTaggerThresholdsGet renders the dialog body for one tagger's
-// thresholds: a global slot plus one row per category the tagger can
-// actually reach - its profile's emitted set, the categories its
-// dispatch rules route into, and any category already carrying an
-// override. HTMX lazy-loads the body via hx-get on first dialog open.
-func (s *Server) settingsTaggerThresholdsGet(w http.ResponseWriter, r *http.Request) {
+// settingsTaggerConfigGet renders the tabbed dialog body for one
+// tagger: a galleries panel, a thresholds panel, a mappings panel.
+// HTMX lazy-loads the body via hx-get on first dialog open; the tab
+// strip only toggles panel visibility, so one Save submits every
+// panel's fields.
+func (s *Server) settingsTaggerConfigGet(w http.ResponseWriter, r *http.Request) {
 	name, ok := pathTaggerName(w, r)
 	if !ok {
 		return
@@ -211,42 +276,285 @@ func (s *Server) settingsTaggerThresholdsGet(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "tagger not found", http.StatusNotFound)
 		return
 	}
+	galRows, allChecked, _ := s.galleryDialogData(name)
+	inst, _ := s.resolveTaggerInstance(name)
+	modelPath := s.modelPath()
+	catIDs, catList := s.categoryChoices()
+	labelCount := 0
+	if views, err := tagger.BrowseLabels(modelPath, name, taggerTagsFile(inst), catIDs); err == nil {
+		labelCount = len(views)
+	}
+
+	embedded := tagger.EmbeddedDispatchRules(name)
+	overlay := tagger.OverlayDispatchRules(modelPath, name)
+	merged := tagger.MergedDispatchRules(modelPath, name)
+	exportJSON := ""
+	if b, err := tagger.MarshalDispatchDoc(merged); err == nil {
+		exportJSON = string(b) + "\n"
+	}
+	profileJSON, profileLines := "", []exportLine(nil)
+	sidecarFields := tagger.SidecarProfileFields(modelPath, name)
+	if profile, err := tagger.ResolveProfile(modelPath, name, taggerTagsFile(inst)); err == nil {
+		if b, err := tagger.ProfileExportDoc(profile); err == nil {
+			profileJSON = string(b) + "\n"
+			marked := map[string]bool{}
+			for _, f := range sidecarFields {
+				marked[f] = true
+			}
+			for _, line := range strings.Split(string(b), "\n") {
+				mark := ""
+				trimmed := strings.TrimSpace(line)
+				if i := strings.Index(trimmed, `":`); strings.HasPrefix(trimmed, `"`) && i > 0 && marked[trimmed[1:i]] {
+					mark = "add"
+				}
+				profileLines = append(profileLines, exportLine{Text: line, Mark: mark})
+			}
+		}
+	}
+
 	csrf := s.csrfToken(sessionFromContext(r.Context()))
-	s.renderTemplate(w, "partials/tagger_thresholds_dialog.html", map[string]any{
-		"Name":      name,
-		"Global":    global,
-		"Rows":      rows,
-		"CSRFToken": csrf,
+	s.renderTemplate(w, "partials/tagger_config_dialog.html", map[string]any{
+		"Name":         name,
+		"Global":       global,
+		"Rows":         rows,
+		"GalRows":      galRows,
+		"AllChecked":   allChecked,
+		"Categories":   catList,
+		"LabelCount":   labelCount,
+		"CustomRules":  len(overlay),
+		"ExportRules":  exportRuleLines(embedded, overlay),
+		"ExportJSON":   exportJSON,
+		"RuleCount":    len(merged),
+		"ProfileLines": profileLines,
+		"ProfileJSON":  profileJSON,
+		"ProfileStock": len(sidecarFields) == 0,
+		"CSRFToken":    csrf,
 	})
 }
 
-// settingsTaggerThresholdsPost saves the per-tagger threshold form. The
-// global threshold is required (input type=number, validated client-side
-// too); a category row with an empty Threshold or Max-tags value clears
-// the matching override.
-//
-// On validation error the inline flash inside the dialog is updated and
-// the dialog stays open. On success the dialog closes (via the
-// `tagger-saved` HX-Trigger event), the parent settings page's
-// `#flash-tagger` carries the confirmation, and the row's summary text
-// is OOB-swapped to reflect the new values without a page reload.
-func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Request) {
+// exportLine is one rendered line of the export panel's file views.
+// Mark selects the color: "" (as shipped), "add" (this install's
+// change), "del" (the shipped rule an overlay entry displaces - shown
+// struck, absent from the copied file), "gap" (an elided run of
+// unchanged rules).
+type exportLine struct {
+	Text string
+	Mark string
+}
+
+// exportRuleLines renders the merged dispatch table as display lines:
+// overlay-only sources read as added, overridden defaults as a struck
+// shipped line above the replacement, and runs of more than five
+// untouched defaults collapse into a count so a 1500-rule table stays
+// scannable.
+func exportRuleLines(embedded, overlay []tagger.DispatchEntry) []exportLine {
+	embByte := map[string]tagger.DispatchEntry{}
+	for _, e := range embedded {
+		embByte[e.Source] = e
+	}
+	ovr := map[string]tagger.DispatchEntry{}
+	for _, e := range overlay {
+		ovr[e.Source] = e
+	}
+	sources := make([]string, 0, len(embByte)+len(ovr))
+	seen := map[string]bool{}
+	for _, e := range embedded {
+		if !seen[e.Source] {
+			seen[e.Source] = true
+			sources = append(sources, e.Source)
+		}
+	}
+	for _, e := range overlay {
+		if !seen[e.Source] {
+			seen[e.Source] = true
+			sources = append(sources, e.Source)
+		}
+	}
+	sort.Strings(sources)
+
+	ruleText := func(e tagger.DispatchEntry) string {
+		b, _ := json.Marshal(e)
+		return "    " + string(b) + ","
+	}
+	lines := []exportLine{{Text: "{"}, {Text: `  "version": 1,`}, {Text: `  "rules": [`}}
+	var run []tagger.DispatchEntry
+	flushRun := func() {
+		if len(run) <= 5 {
+			for _, e := range run {
+				lines = append(lines, exportLine{Text: ruleText(e)})
+			}
+		} else {
+			lines = append(lines, exportLine{Text: fmt.Sprintf("    ... %d default rules ...", len(run)), Mark: "gap"})
+		}
+		run = nil
+	}
+	for _, src := range sources {
+		o, hasOverlay := ovr[src]
+		e, hasEmbedded := embByte[src]
+		if !hasOverlay {
+			run = append(run, e)
+			continue
+		}
+		flushRun()
+		if hasEmbedded {
+			lines = append(lines, exportLine{Text: ruleText(e), Mark: "del"})
+		}
+		lines = append(lines, exportLine{Text: ruleText(o), Mark: "add"})
+	}
+	flushRun()
+	lines = append(lines, exportLine{Text: "  ]"}, exportLine{Text: "}"})
+	return lines
+}
+
+// taggerLabelRow is the render shape of one mappings-panel result row.
+type taggerLabelRow struct {
+	Source      string
+	CatName     string
+	TagName     string
+	Color       string
+	Muted       bool   // dropped by a rule
+	CategoryOff bool   // effective category is in disabled_categories
+	Rule        string // "", "default", "custom"
+}
+
+// taggerLabelPageSize is how many rows the mappings panel shows at
+// once, and the step the trailing "[+ more]" grows the list by.
+// taggerLabelMaxRows is where growing stops: past it the table costs
+// more to render and scroll than the search costs to type.
+const (
+	taggerLabelPageSize = 50
+	taggerLabelMaxRows  = 500
+)
+
+// settingsTaggerLabelsGet renders the mappings panel's rows: the
+// model's label list resolved through the dispatch chain, filtered by
+// q (substring on the raw label and the effective tag name) and filter
+// (all | customized | muted). "customized" is this install's own rules,
+// not the shipped ones. "muted" covers rule-muted labels and labels
+// whose effective category the tagger has disabled - the row says
+// which is which.
+func (s *Server) settingsTaggerLabelsGet(w http.ResponseWriter, r *http.Request) {
 	name, ok := pathTaggerName(w, r)
 	if !ok {
 		return
 	}
-	if !parseFormOK(w, r) {
+	s.renderTaggerLabels(w, r, name)
+}
+
+// renderTaggerLabels writes the mappings panel's result list for the
+// current q / filter / limit. Shared by the search GET and the rule
+// POST so an applied edit comes back through the same rendering path.
+func (s *Server) renderTaggerLabels(w http.ResponseWriter, r *http.Request, name string) {
+	inst, ok := s.resolveTaggerInstance(name)
+	if !ok {
+		http.Error(w, "tagger not found", http.StatusNotFound)
 		return
 	}
+	modelPath := s.modelPath()
+	catIDs, _ := s.categoryChoices()
+	colors := s.categoryColors()
+	views, err := tagger.BrowseLabels(modelPath, name, taggerTagsFile(inst), catIDs)
+	custom := len(tagger.OverlayDispatchRules(modelPath, name))
+	if err != nil {
+		s.renderTemplate(w, "partials/tagger_labels_rows.html", map[string]any{
+			"Name":        name,
+			"CustomRules": custom,
+			"Err":         "Cannot read the label file: " + err.Error(),
+		})
+		return
+	}
+	q := strings.ToLower(strings.TrimSpace(r.FormValue("q")))
+	filter := r.FormValue("filter")
+	limit := taggerLabelPageSize
+	if n, err := strconv.Atoi(r.FormValue("limit")); err == nil && n > limit {
+		limit = min(n, taggerLabelMaxRows)
+	}
+	disabled := map[string]bool{}
+	for _, cat := range inst.DisabledCategories {
+		disabled[cat] = true
+	}
+	var rows []taggerLabelRow
+	more := 0
+	for _, v := range views {
+		if q != "" && !strings.Contains(strings.ToLower(v.Source), q) && !strings.Contains(strings.ToLower(v.TagName), q) {
+			continue
+		}
+		catOff := !v.Muted && disabled[v.CatName]
+		switch filter {
+		case "customized":
+			if v.Rule != "custom" {
+				continue
+			}
+		case "muted":
+			if !v.Muted && !catOff {
+				continue
+			}
+		}
+		if len(rows) >= limit {
+			more++
+			continue
+		}
+		rows = append(rows, taggerLabelRow{
+			Source:      v.Source,
+			CatName:     v.CatName,
+			TagName:     v.TagName,
+			Color:       colors[v.CatName],
+			Muted:       v.Muted,
+			CategoryOff: catOff,
+			Rule:        v.Rule,
+		})
+	}
+	s.renderTemplate(w, "partials/tagger_labels_rows.html", map[string]any{
+		"Name":        name,
+		"Rows":        rows,
+		"More":        more,
+		"NextLimit":   limit + taggerLabelPageSize,
+		"CanGrow":     limit < taggerLabelMaxRows,
+		"CustomRules": custom,
+	})
+}
+
+// taggerTagsFile mirrors the discovery fallback for instances whose
+// TOML entry doesn't pin a label file.
+func taggerTagsFile(inst config.TaggerInstance) string {
+	if inst.TagsFile != "" {
+		return inst.TagsFile
+	}
+	return tagger.DefaultTagsFile
+}
+
+// categoryChoices returns the gallery's categories as both the name→id
+// map the dispatch compiler needs and a name-sorted list for the rule
+// editor's category select.
+func (s *Server) categoryChoices() (map[string]int64, []string) {
+	ids := map[string]int64{}
+	var names []string
+	cats, err := s.tagSvc().ListCategories()
+	if err != nil {
+		return ids, names
+	}
+	for _, c := range cats {
+		ids[c.Name] = c.ID
+		names = append(names, c.Name)
+	}
+	sort.Strings(names)
+	return ids, names
+}
+
+// parseThresholdForm reads the thresholds panel out of the config form.
+// A category row with an empty Threshold or Max-tags value clears the
+// matching override. Every row submits its category hidden input; the
+// per-row Enable checkbox is only present when ticked, so a category
+// whose box is absent is muted. errMsg is non-empty on a validation
+// failure.
+func parseThresholdForm(r *http.Request) (global float64, overrides map[string]float64, topK map[string]int, disabled []string, errMsg string) {
 	globalRaw := strings.TrimSpace(r.FormValue("global_threshold"))
 	global, err := strconv.ParseFloat(globalRaw, 64)
 	if err != nil || global < 0 || global > 1 {
-		writeInlineFlash(w, "err", "Global threshold must be between 0 and 1.")
-		return
+		return 0, nil, nil, nil, "Global threshold must be between 0 and 1."
 	}
-	overrides := map[string]float64{}
-	topK := map[string]int{}
-	var disabled []string
+	overrides = map[string]float64{}
+	topK = map[string]int{}
 	for _, cat := range r.Form["category"] {
 		cat = strings.TrimSpace(cat)
 		if cat == "" {
@@ -256,8 +564,7 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 		if raw != "" {
 			v, err := strconv.ParseFloat(raw, 64)
 			if err != nil || v < 0 || v > 1 {
-				writeInlineFlash(w, "err", "Threshold for "+cat+" must be between 0 and 1.")
-				return
+				return 0, nil, nil, nil, "Threshold for " + cat + " must be between 0 and 1."
 			}
 			overrides[cat] = v
 		}
@@ -265,19 +572,139 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 		if rawK != "" {
 			n, err := strconv.Atoi(rawK)
 			if err != nil || n < 0 {
-				writeInlineFlash(w, "err", "Max tags for "+cat+" must be 0 or higher.")
-				return
+				return 0, nil, nil, nil, "Max tags for " + cat + " must be 0 or higher."
 			}
 			topK[cat] = n
 		}
-		// Every row submits its category hidden input; the per-row Enable
-		// checkbox is only present when ticked. A category whose Enable box
-		// is absent is muted. The dialog ships every category enabled by
-		// default, so disabling is the deliberate act.
 		if r.FormValue("enable_"+cat) == "" {
 			disabled = append(disabled, cat)
 		}
 	}
+	return global, overrides, topK, disabled, ""
+}
+
+// parseGalleriesForm reads the galleries panel out of the config form.
+// Three submitted shapes:
+//   - `all=on`                       → nil (every gallery, legacy)
+//   - `all=off` with selected names  → those names
+//   - `all=off` with no selection    → []string{} (no gallery, dormant)
+//
+// The explicit-empty case is preserved by storing a non-nil empty slice
+// so the TOML round-trip writes `galleries = []` and AppliesToGallery
+// returns false everywhere on the next read. Submitted names are
+// filtered against the configured galleries so a stale form value can't
+// poison the config.
+func (s *Server) parseGalleriesForm(r *http.Request) []string {
+	if r.FormValue("all") == "on" {
+		return nil
+	}
+	galleries := []string{}
+	valid := map[string]bool{}
+	s.cfgMu.Lock()
+	for _, g := range s.cfg.Galleries {
+		valid[g.Name] = true
+	}
+	s.cfgMu.Unlock()
+	for _, n := range r.Form["gallery_names"] {
+		n = strings.TrimSpace(n)
+		if n == "" || !valid[n] {
+			continue
+		}
+		galleries = append(galleries, n)
+	}
+	return galleries
+}
+
+// settingsTaggerMappingPost applies one mappings-panel edit to the
+// tagger's dispatch overlay and answers with the panel's result list
+// re-read from disk, so the edited row comes back carrying the rule it
+// now has. A validation failure retargets the swap at the dialog's
+// flash slot: the list is left alone and the editor stays open on the
+// value the operator has to fix.
+func (s *Server) settingsTaggerMappingPost(w http.ResponseWriter, r *http.Request) {
+	name, ok := pathTaggerName(w, r)
+	if !ok {
+		return
+	}
+	if !parseFormOK(w, r) {
+		return
+	}
+	modelPath := s.modelPath()
+	if errMsg := s.applyMappingRule(name, modelPath, r); errMsg != "" {
+		w.Header().Set("HX-Retarget", "#flash-tagger-config-"+name)
+		writeInlineFlash(w, "err", errMsg)
+		return
+	}
+	// Clear whatever error the previous attempt left in the dialog's
+	// flash slot; the main swap owns the result list.
+	writeFlashOOB(w, "flash-tagger-config-"+name, "", "")
+	s.renderTaggerLabels(w, r, name)
+}
+
+// applyMappingRule folds one edit into the tagger's dispatch overlay
+// and rewrites it. `rule_reset` drops the custom rule for the label,
+// `rule_mute` stores a drop rule, otherwise rule_category / rule_name
+// become the rule. errMsg is non-empty on a validation failure;
+// nothing is written in that case.
+func (s *Server) applyMappingRule(name, modelPath string, r *http.Request) (errMsg string) {
+	source := strings.TrimSpace(r.FormValue("rule_source"))
+	if source == "" {
+		return "Malformed mapping rule."
+	}
+	// Everything the form can reject is checked before the overlay lock
+	// so the held cycle is just read, swap one key, write.
+	reset := r.FormValue("rule_reset") != ""
+	entry := tagger.DispatchEntry{Source: source}
+	if !reset && r.FormValue("rule_mute") == "" {
+		category := r.FormValue("rule_category")
+		catIDs, _ := s.categoryChoices()
+		if _, ok := catIDs[category]; !ok {
+			return "Unknown category " + category + " for label " + source + "."
+		}
+		rename := ""
+		if n := strings.TrimSpace(r.FormValue("rule_name")); n != "" && n != source {
+			valid, err := tags.ValidateTagName(n)
+			if err != nil {
+				return "Invalid rename for label " + source + ": " + err.Error()
+			}
+			rename = valid
+		}
+		entry = tagger.DispatchEntry{Source: source, Category: category, Name: rename}
+	}
+	if err := tagger.UpdateDispatchOverlay(modelPath, name, func(overlay map[string]tagger.DispatchEntry) error {
+		if reset {
+			delete(overlay, source)
+		} else {
+			overlay[source] = entry
+		}
+		return nil
+	}); err != nil {
+		return "Could not save dispatch.json: " + err.Error()
+	}
+	logx.Infof("settings: tagger %q mapping rule for %q updated", name, source)
+	return ""
+}
+
+// settingsTaggerConfigPost saves the dialog's gallery scope and
+// thresholds in one pass; mapping rules are written as they are
+// applied and don't ride this form. On validation error the inline
+// flash inside the dialog is updated and the dialog stays open; on
+// success the page refreshes so the row summary, Reset button, and any
+// state badges all reflect the new configuration.
+func (s *Server) settingsTaggerConfigPost(w http.ResponseWriter, r *http.Request) {
+	name, ok := pathTaggerName(w, r)
+	if !ok {
+		return
+	}
+	if !parseFormOK(w, r) {
+		return
+	}
+	global, overrides, topK, disabled, errMsg := parseThresholdForm(r)
+	if errMsg != "" {
+		writeInlineFlash(w, "err", errMsg)
+		return
+	}
+	galleries := s.parseGalleriesForm(r)
 	if err := s.updateTagger(name, func(t *config.TaggerInstance) {
 		t.ConfidenceThreshold = global
 		if len(overrides) > 0 {
@@ -291,24 +718,23 @@ func (s *Server) settingsTaggerThresholdsPost(w http.ResponseWriter, r *http.Req
 			t.PerCategoryTopK = nil
 		}
 		t.DisabledCategories = disabled
+		t.Galleries = galleries
 	}); err != nil {
 		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
-	logx.Infof("settings: tagger %q thresholds updated (global=%.2f, %d threshold overrides, %d top-K overrides, %d disabled)", name, global, len(overrides), len(topK), len(disabled))
-	summary := taggerThresholdSummary(global, overrides, disabled)
-	setDialogSavedTrigger(w, "tagger-saved", "tagger-thresh-"+name)
-	writeOOBSummaryFlash(w, "tagger-thresh-summary-"+name, summary, "flash-tagger", "Tagger "+name+" thresholds saved.")
+	logx.Infof("settings: tagger %q config updated (global=%.2f, %d threshold overrides, %d top-K overrides, %d disabled, all_galleries=%t)",
+		name, global, len(overrides), len(topK), len(disabled), galleries == nil)
+	setFlashHeader(w, "Tagger "+name+" configuration saved.", "ok", nil)
+	w.Header().Set("HX-Refresh", "true")
 }
 
-// settingsTaggerThresholdsResetPost wipes per-tagger threshold and
-// top-K overrides and rebases the global threshold to the catalog
-// default (or the package fallback when no catalog entry exists).
-// Renders the dialog body afresh so the inputs reflect the reset values
-// without a save round-trip; the row summary is OOB-swapped so the
-// parent table updates immediately. Stays inside the dialog so the
-// operator can fine-tune from the reset baseline before clicking Save.
-func (s *Server) settingsTaggerThresholdsResetPost(w http.ResponseWriter, r *http.Request) {
+// settingsTaggerResetPost restores one tagger to stock: catalog-seeded
+// thresholds, every gallery, and no dispatch overlay. The row's Reset
+// button only renders when something differs, so this is always a
+// deliberate act; the page refreshes so the button disappears with the
+// state it reported.
+func (s *Server) settingsTaggerResetPost(w http.ResponseWriter, r *http.Request) {
 	name, ok := pathTaggerName(w, r)
 	if !ok {
 		return
@@ -316,48 +742,36 @@ func (s *Server) settingsTaggerThresholdsResetPost(w http.ResponseWriter, r *htt
 	if !parseFormOK(w, r) {
 		return
 	}
-	catalog := catalogEntryByName(s.cfg.Paths.ModelPath, name)
-	defaults := tagger.SeedTaggerInstance(name, false, catalog)
+	defaults := tagger.SeedTaggerInstance(name, false, catalogEntryByName(s.modelPath(), name))
 	if err := s.updateTagger(name, func(t *config.TaggerInstance) {
 		t.ConfidenceThreshold = defaults.ConfidenceThreshold
 		t.CategoryThresholds = defaults.CategoryThresholds
 		t.PerCategoryTopK = defaults.PerCategoryTopK
 		t.DisabledCategories = defaults.DisabledCategories
+		t.Galleries = nil
 	}); err != nil {
 		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}
-	logx.Infof("settings: tagger %q thresholds reset to defaults", name)
-	rows, global, ok := s.thresholdDialogData(name)
-	if !ok {
-		http.Error(w, "tagger not found", http.StatusNotFound)
+	overlay := filepath.Join(s.modelPath(), name, "dispatch.json")
+	if err := os.Remove(overlay); err != nil && !os.IsNotExist(err) {
+		logx.Warnf("reset tagger %q: remove %q: %v", name, overlay, err)
+		writeInlineFlash(w, "err", "Reset saved but could not delete dispatch.json: "+err.Error())
 		return
 	}
-	csrf := s.csrfToken(sessionFromContext(r.Context()))
-	summary := taggerThresholdSummary(global, defaults.CategoryThresholds, defaults.DisabledCategories)
-	_, _ = fmt.Fprintf(w, `<span id="tagger-thresh-summary-%s" hx-swap-oob="true">%s</span>`,
-		html.EscapeString(name), html.EscapeString(summary))
-	s.renderTemplate(w, "partials/tagger_thresholds_dialog.html", map[string]any{
-		"Name":      name,
-		"Global":    global,
-		"Rows":      rows,
-		"CSRFToken": csrf,
-	})
+	logx.Infof("settings: tagger %q reset to stock", name)
+	setFlashHeader(w, "Tagger "+name+" reset to stock.", "ok", nil)
+	w.Header().Set("HX-Refresh", "true")
 }
 
-// resolveTaggerInstance looks up the named tagger in the configured
-// instances, falling back to the discovery default so a never-enabled
-// row can still open its dialogs (seeding from the catalog when
-// possible). ok=false means the tagger isn't in cfg or on disk.
+// resolveTaggerInstance looks up the named tagger. Discovery covers
+// both the configured instances and the subfolders without a TOML
+// entry, and it is the only path that fills ModelFile / TagsFile from
+// what is actually on disk - a seeded entry carries neither, so a
+// tagger whose label file isn't the `tags.csv` default (joytag,
+// camie-v2) would otherwise resolve to a filename that doesn't exist.
+// ok=false means the tagger isn't in cfg or on disk.
 func (s *Server) resolveTaggerInstance(name string) (config.TaggerInstance, bool) {
-	s.cfgMu.Lock()
-	for _, t := range s.cfg.Tagger.Taggers {
-		if t.Name == name {
-			s.cfgMu.Unlock()
-			return t, true
-		}
-	}
-	s.cfgMu.Unlock()
 	for _, t := range tagger.DiscoverTaggers(s.cfg) {
 		if t.Name == name {
 			return t.TaggerInstance, true
@@ -367,36 +781,34 @@ func (s *Server) resolveTaggerInstance(name string) (config.TaggerInstance, bool
 }
 
 // thresholdDialogData assembles the per-row state the template renders:
-// one entry per category the profile is expected to emit, plus any
-// extra categories carrying an existing override (so a dispatch-driven
-// override stays editable). global is the live ConfidenceThreshold.
-// ok=false means the tagger isn't in cfg or on disk.
+// the profile's natively emitted categories first, then the categories
+// its dispatch rules route into (flagged ViaRules), then every other
+// category on the gallery - so a category no shipped tagger reaches
+// (person, species) is still tunable ahead of the dispatch rule that
+// would use it. Each group is name-sorted. Stale overrides pointing at
+// categories the gallery no longer has trail last so they stay
+// clearable. global is the live ConfidenceThreshold. ok=false means the
+// tagger isn't in cfg or on disk.
 func (s *Server) thresholdDialogData(name string) (rows []thresholdRow, global float64, ok bool) {
 	inst, ok := s.resolveTaggerInstance(name)
 	if !ok {
 		return nil, 0, false
 	}
-	s.cfgMu.Lock()
-	modelPath := s.cfg.Paths.ModelPath
-	s.cfgMu.Unlock()
+	modelPath := s.modelPath()
 	global = inst.ConfidenceThreshold
 
-	tagsFile := inst.TagsFile
-	if tagsFile == "" {
-		tagsFile = tagger.DefaultTagsFile
-	}
-	profile, _ := tagger.ResolveProfile(modelPath, name, tagsFile)
+	profile, _ := tagger.ResolveProfile(modelPath, name, taggerTagsFile(inst))
 	emit := profile.EmittedCategories()
 
 	colors := s.categoryColors()
 
 	// Catalog-seeded defaults drive the per-row Reset so it restores the
-	// same per-category values the dialog-level "Reset to defaults" would
-	// (see settingsTaggerThresholdsResetPost).
+	// same per-category values the row-level Reset would
+	// (see settingsTaggerResetPost).
 	defaults := tagger.SeedTaggerInstance(name, false, catalogEntryByName(modelPath, name))
 
 	seen := map[string]bool{}
-	appendRow := func(cat string) {
+	appendRow := func(cat string, viaRules bool) {
 		if seen[cat] {
 			return
 		}
@@ -408,36 +820,43 @@ func (s *Server) thresholdDialogData(name string) (rows []thresholdRow, global f
 			MaxDefault:       tagger.ResolveTopK(nil, cat),
 			Color:            colors[cat],
 			Disabled:         slices.Contains(inst.DisabledCategories, cat),
+			ViaRules:         viaRules,
 			DefaultThreshold: formatOverride(defaults.CategoryThresholds, cat),
 			DefaultMaxTags:   formatTopKOverride(defaults.PerCategoryTopK, cat),
 		})
 	}
-	for _, cat := range emit {
-		appendRow(cat)
-	}
-	// Categories the tagger only reaches through dispatch routing (e.g.
-	// wd-swinv2 sends some general labels into medium / meta / year) are
-	// emittable too, so surface them - restricted to categories that
-	// exist on the gallery, since a rule pointing at a missing one is
-	// skipped at inference time anyway.
-	for _, cat := range tagger.DispatchTargetCategories(modelPath, name) {
-		if _, ok := colors[cat]; ok {
-			appendRow(cat)
+	appendSorted := func(cats []string, viaRules bool) {
+		cats = append([]string(nil), cats...)
+		sort.Strings(cats)
+		for _, cat := range cats {
+			appendRow(cat, viaRules)
 		}
 	}
-	// Extra overrides (threshold, top-K, or disabled) not in the
-	// profile's emitted set still render so the operator can edit /
-	// clear them (dispatch rules can land a label in any category).
+	appendSorted(emit, false)
+	var dispatchTargets []string
+	for _, cat := range tagger.DispatchTargetCategories(modelPath, name) {
+		if _, ok := colors[cat]; ok {
+			dispatchTargets = append(dispatchTargets, cat)
+		}
+	}
+	appendSorted(dispatchTargets, true)
+	var rest []string
+	for cat := range colors {
+		rest = append(rest, cat)
+	}
+	appendSorted(rest, false)
+	// Stale overrides (threshold, top-K, or disabled) pointing at
+	// categories the gallery no longer has still render so the operator
+	// can clear them.
+	var stale []string
 	for cat := range inst.CategoryThresholds {
-		appendRow(cat)
+		stale = append(stale, cat)
 	}
 	for cat := range inst.PerCategoryTopK {
-		appendRow(cat)
+		stale = append(stale, cat)
 	}
-	for _, cat := range inst.DisabledCategories {
-		appendRow(cat)
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].Category < rows[j].Category })
+	stale = append(stale, inst.DisabledCategories...)
+	appendSorted(stale, false)
 	return rows, global, true
 }
 
@@ -466,12 +885,7 @@ func formatTopKOverride(m map[string]int, key string) string {
 // equivalent configs render the same string.
 func taggerThresholdSummary(global float64, overrides map[string]float64, disabled []string) string {
 	out := fmt.Sprintf("global %.2f", global)
-	keys := make([]string, 0, len(overrides))
-	for k := range overrides {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
+	for _, k := range slices.Sorted(maps.Keys(overrides)) {
 		out += fmt.Sprintf(", %s %.2f", k, overrides[k])
 	}
 	if len(disabled) > 0 {
@@ -480,80 +894,6 @@ func taggerThresholdSummary(global float64, overrides map[string]float64, disabl
 		out += " (disabled: " + strings.Join(d, ", ") + ")"
 	}
 	return out
-}
-
-// settingsTaggerGalleriesGet renders the dialog body for one tagger's
-// per-gallery selection. One checkbox per configured gallery; the "all
-// galleries" sentinel renders pre-checked when the TaggerInstance has
-// no explicit Galleries list (the legacy default).
-func (s *Server) settingsTaggerGalleriesGet(w http.ResponseWriter, r *http.Request) {
-	name, ok := pathTaggerName(w, r)
-	if !ok {
-		return
-	}
-	rows, allChecked, ok := s.galleryDialogData(name)
-	if !ok {
-		http.Error(w, "tagger not found", http.StatusNotFound)
-		return
-	}
-	csrf := s.csrfToken(sessionFromContext(r.Context()))
-	s.renderTemplate(w, "partials/tagger_galleries_dialog.html", map[string]any{
-		"Name":       name,
-		"Rows":       rows,
-		"AllChecked": allChecked,
-		"CSRFToken":  csrf,
-	})
-}
-
-// settingsTaggerGalleriesPost saves the per-tagger Galleries list.
-// Three submitted shapes:
-//   - `all=on`                       → nil (every gallery, legacy)
-//   - `all=off` with selected names  → those names
-//   - `all=off` with no selection    → []string{} (no gallery, dormant)
-//
-// The explicit-empty case is preserved by storing a non-nil empty slice
-// so the TOML round-trip writes `galleries = []` and AppliesToGallery
-// returns false everywhere on the next read.
-//
-// On success the dialog closes via the shared tagger-saved HX-Trigger.
-func (s *Server) settingsTaggerGalleriesPost(w http.ResponseWriter, r *http.Request) {
-	name, ok := pathTaggerName(w, r)
-	if !ok {
-		return
-	}
-	if !parseFormOK(w, r) {
-		return
-	}
-	all := r.FormValue("all") == "on"
-	var galleries []string
-	if !all {
-		// Filter against configured gallery names so a stale form value
-		// can't poison the config (a renamed gallery would otherwise
-		// linger here and silently disable the tagger). A non-nil empty
-		// slice represents the explicit "no galleries" choice.
-		galleries = []string{}
-		valid := map[string]bool{}
-		for _, g := range s.cfg.Galleries {
-			valid[g.Name] = true
-		}
-		for _, n := range r.Form["gallery_names"] {
-			n = strings.TrimSpace(n)
-			if n == "" || !valid[n] {
-				continue
-			}
-			galleries = append(galleries, n)
-		}
-	}
-	if err := s.updateTagger(name, func(t *config.TaggerInstance) {
-		t.Galleries = galleries
-	}); err != nil {
-		writeInlineFlash(w, "err", "Could not save: "+err.Error())
-		return
-	}
-	logx.Infof("settings: tagger %q galleries updated (all=%t, %d named)", name, all, len(galleries))
-	summary := taggerGallerySummary(galleries, len(s.cfg.Galleries))
-	setDialogSavedTrigger(w, "tagger-saved", "tagger-gal-"+name)
-	writeOOBSummaryFlash(w, "tagger-gal-summary-"+name, summary, "flash-tagger", "Tagger "+name+" galleries saved.")
 }
 
 // galleryDialogData returns one row per configured gallery, with
@@ -582,25 +922,6 @@ func (s *Server) galleryDialogData(name string) (rows []taggerGalleryRow, allChe
 		})
 	}
 	return rows, allChecked, true
-}
-
-// taggerGallerySummary renders the per-row summary text shown next to
-// the Galleries Configure button. nil reads as "(all)" - the legacy
-// applies-everywhere default; explicit empty reads as "(none)" so the
-// dormant case is distinguishable at a glance. Listing every configured
-// gallery also reads "(all)" so picking every box produces the same
-// short summary.
-func taggerGallerySummary(galleries []string, totalGalleries int) string {
-	if galleries == nil {
-		return "(all)"
-	}
-	if len(galleries) == 0 {
-		return "(none)"
-	}
-	if len(galleries) == totalGalleries {
-		return "(all)"
-	}
-	return strings.Join(galleries, ", ")
 }
 
 // catalogEntryByName looks up a catalog row by name, returning nil for
@@ -653,7 +974,7 @@ func (s *Server) disableUnavailableTaggers() {
 // as "not enabled".
 func (s *Server) persistNewlyDiscoveredTaggers() {
 	discovered := tagger.DiscoverTaggers(s.cfg)
-	modelPath := s.cfg.Paths.ModelPath
+	modelPath := s.modelPath()
 	s.cfgMu.Lock()
 	known := make(map[string]bool, len(s.cfg.Tagger.Taggers))
 	for _, t := range s.cfg.Tagger.Taggers {
@@ -695,15 +1016,20 @@ func (s *Server) settingsTaggerDeletePost(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	s.cfg.Tagger.Taggers = slices.DeleteFunc(s.cfg.Tagger.Taggers, func(t config.TaggerInstance) bool { return t.Name == name })
 	dir := filepath.Join(s.cfg.Paths.ModelPath, name)
 	s.cfgMu.Unlock()
+	// The folder goes first: dropping the entry before a removal that
+	// then fails leaves memory and the TOML disagreeing, and the next
+	// settings write persists the memory view.
 	if err := os.RemoveAll(dir); err != nil {
 		logx.Warnf("delete tagger %q: remove %q: %v", name, dir, err)
-		writeInlineFlash(w, "err", "Removed config entry but could not delete folder: "+err.Error())
+		writeInlineFlash(w, "err", "Could not delete the tagger folder: "+err.Error())
 		return
 	}
-	if err := s.saveConfig(); err != nil {
+	if err := s.withConfig(func(c *config.Config) error {
+		c.Tagger.Taggers = slices.DeleteFunc(c.Tagger.Taggers, func(t config.TaggerInstance) bool { return t.Name == name })
+		return nil
+	}); err != nil {
 		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return
 	}

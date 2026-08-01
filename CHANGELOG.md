@@ -1,5 +1,41 @@
 # Changelog
 
+## [v1.17.0] - 2026-08-01
+### Added
+- New dialog for configuring each tagger: browse a tagger's labels, rewrite their mappings, and export the merged rules. ([#59](https://github.com/monbooru/monbooru/issues/59))
+- More auto-tagger's ONNX Runtime provider: CUDA, DirectML, TensorRT, OpenVINO or CoreML. ([#70](https://github.com/monbooru/monbooru/issues/70))
+- The auto-tagger worker runs on Windows. ([#70](https://github.com/monbooru/monbooru/issues/70))
+- Add animetimm EVA02 model to the tagger catalog. ([#68](https://github.com/monbooru/monbooru/issues/68))
+- The Tags page filter and its API parameter accept `*` wildcards. ([#81](https://github.com/monbooru/monbooru/issues/81))
+- Add PWA support for home-screen web app. ([#74](https://github.com/monbooru/monbooru/issues/74))
+- Review sessions show the parent two sibling images share. ([#71](https://github.com/monbooru/monbooru/issues/71))
+
+### Changed
+- `similar:` and the thumbnail scores rank by shared tags, not by tag rarity. (Find relations pair keeps tag rarity)
+- The auto-tagger caps medium, person, species and year tags like the other categories.
+- Similarity search and the Find pairs tag pass are much faster on large libraries.
+- Steady-state memory drops on large libraries as idle indexes are released.
+
+### Fixed
+- Find pairs no longer floods the queue with images that only share a character. ([#88](https://github.com/monbooru/monbooru/issues/88))
+- Changing the pair detector settings clears the pairs the old settings queued. ([#88](https://github.com/monbooru/monbooru/issues/88))
+- Skipped and already-linked pairs no longer reappear in a review session.
+- Galleries created on Windows now import, sync and search correctly on any platform. ([#72](https://github.com/monbooru/monbooru/issues/72))
+- A tag batch that changed nothing now fails and says why.
+- Relabelling a URL-only source renames it instead of leaving a duplicate. ([#79](https://github.com/monbooru/monbooru/issues/79))
+- `a OR -b` is read as a union instead of silently intersecting.
+- Syncing an unreadable gallery root no longer marks the whole library missing.
+- Tag counts are correct after a metadata-only import.
+- A failed export reports an error instead of writing a truncated archive.
+
+Thanks to @QiE2035 for the execution provider support (https://github.com/monbooru/monbooru/issues/70), the Windows path fix (https://github.com/monbooru/monbooru/issues/72) and the web app manifest (https://github.com/monbooru/monbooru/issues/74).
+Thanks to @gary-host-laptop for the report (https://github.com/monbooru/monbooru/issues/71), the report and fix (https://github.com/monbooru/monbooru/issues/79) and the fix (https://github.com/monbooru/monbooru/issues/81).
+Thanks to @CeareDelafont for the reports (https://github.com/monbooru/monbooru/issues/81, https://github.com/monbooru/monbooru/issues/88).
+Thanks to @JustRoxy for the feature request (https://github.com/monbooru/monbooru/issues/68).
+
+Co-authored-by: QiE2035 <18079122+QiE2035@users.noreply.github.com>
+Co-authored-by: gary-host-laptop <github.striven@aleeas.com>
+
 ## [v1.16.0] - 2026-07-26
 ### Added
 - `similar:<id>` search ranks images by shared tags, with scores on the thumbnails. ([#63](https://github.com/monbooru/monbooru/issues/63))

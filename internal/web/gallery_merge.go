@@ -2,6 +2,7 @@ package web
 
 import (
 	"archive/zip"
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -83,7 +84,13 @@ func (s *Server) ExportGalleryLight(name string, w io.Writer) error {
 		return err
 	}
 
-	return writeGalleryFilesToZip(zw, cx.GalleryPath)
+	if err := writeGalleryFilesToZip(zw, cx.GalleryPath); err != nil {
+		return err
+	}
+	// Close writes the central directory; until it succeeds the response
+	// body is not a readable archive. The deferred close stays for the
+	// error paths, where its already-closed error is discarded.
+	return zw.Close()
 }
 
 // ExportGalleryLightManifest streams the same tags.json document as
@@ -99,70 +106,75 @@ func (s *Server) ExportGalleryLightManifest(name string, w io.Writer) error {
 }
 
 // writeLightManifest streams the tags.json document using the existing
-// jsonWriter so memory stays bounded to one image's tag list at a time.
+// jsonWriter. One image-ordered join carries the tags, so the cursor
+// groups as it advances and neither the image list nor a per-image
+// query round trip is paid.
 func writeLightManifest(cx *galleryCtx, w io.Writer) error {
 	bw := newJSONWriter(w)
 	bw.objStart()
 	bw.field("version", lightManifestVersion)
 	bw.arrayStart("images")
-
-	rows, err := cx.DB.Read.Query(`
-		SELECT i.id, i.sha256, i.folder_path, i.canonical_path
-		FROM images i WHERE i.is_missing = 0 ORDER BY i.id`)
-	if err != nil {
+	fail := func(err error) error {
 		bw.arrayEnd()
 		bw.objEnd()
 		return err
 	}
-	type imgRow struct {
-		id                     int64
-		sha, folder, canonical string
+
+	rows, err := cx.DB.Read.Query(lightManifestQuery)
+	if err != nil {
+		return fail(err)
 	}
-	var imgs []imgRow
-	for rows.Next() {
-		var r imgRow
-		if err := rows.Scan(&r.id, &r.sha, &r.folder, &r.canonical); err != nil {
-			_ = rows.Close()
-			bw.arrayEnd()
-			bw.objEnd()
-			return err
-		}
-		imgs = append(imgs, r)
-	}
-	_ = rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	first := true
-	for _, r := range imgs {
-		tagRows, err := cx.DB.Read.Query(`
-			SELECT t.name, tc.name FROM image_tags it
-			JOIN tags t ON t.id = it.tag_id
-			JOIN tag_categories tc ON tc.id = t.category_id
-			WHERE it.image_id = ? AND t.is_alias = 0
-			ORDER BY tc.name, t.name`, r.id)
-		if err != nil {
-			bw.arrayEnd()
-			bw.objEnd()
-			return err
+	var cur lightManifestImage
+	var curID int64
+	open := false
+	for rows.Next() {
+		var id int64
+		var sha, folder, canonical string
+		var tname, tcat sql.NullString
+		if err := rows.Scan(&id, &sha, &folder, &canonical, &tname, &tcat); err != nil {
+			return fail(err)
 		}
-		tagsList := []string{}
-		for tagRows.Next() {
-			var tname, tcat string
-			if err := tagRows.Scan(&tname, &tcat); err != nil {
-				_ = tagRows.Close()
-				bw.arrayEnd()
-				bw.objEnd()
-				return err
+		if !open || id != curID {
+			if open {
+				bw.arrayItem(&first, cur)
 			}
-			tagsList = append(tagsList, tagToken(tcat, tname))
+			curID, open = id, true
+			cur = lightManifestImage{
+				SHA256: sha,
+				Path:   filepath.ToSlash(filepath.Join(folder, storedBasename(canonical))),
+				Tags:   []string{},
+			}
 		}
-		_ = tagRows.Close()
-		rel := filepath.ToSlash(filepath.Join(r.folder, filepath.Base(r.canonical)))
-		bw.arrayItem(&first, lightManifestImage{SHA256: r.sha, Path: rel, Tags: tagsList})
+		if tname.Valid {
+			cur.Tags = append(cur.Tags, tagToken(tcat.String, tname.String))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fail(err)
+	}
+	if open {
+		bw.arrayItem(&first, cur)
 	}
 	bw.arrayEnd()
 	bw.objEnd()
 	return bw.err
 }
+
+// lightManifestQuery emits one row per (image, tag) pair and a single
+// tag-less row for an image carrying none. Alias rows fall out through
+// the join condition rather than a WHERE so they don't take their image
+// with them.
+const lightManifestQuery = `
+	SELECT i.id, i.sha256, i.folder_path, i.canonical_path, t.name, tc.name
+	FROM images i
+	LEFT JOIN image_tags it ON it.image_id = i.id
+	LEFT JOIN tags t ON t.id = it.tag_id AND t.is_alias = 0
+	LEFT JOIN tag_categories tc ON tc.id = t.category_id
+	WHERE i.is_missing = 0
+	ORDER BY i.id, tc.name, t.name`
 
 // replaceFromLightArchive wipes the target gallery (db, thumbnails, source
 // folder) and rebuilds from a light zip: a fresh db gets bootstrapped,
@@ -343,9 +355,7 @@ func insertMissingImageRow(database *db.DB, sha, path, galleryPath, origin strin
 	if sha == "" {
 		return 0, fmt.Errorf("manifest entry has empty sha256")
 	}
-	if origin == "" {
-		origin = models.OriginIngest
-	}
+	origin = cmp.Or(origin, models.OriginIngest)
 	folder := gallery.FolderPath(galleryPath, path)
 	tx, err := database.Write.Begin()
 	if err != nil {
@@ -656,53 +666,39 @@ func applyMergeRecords(cx *galleryCtx, records []mergeRecord, source string, max
 
 // readDBMergeRecords extracts one record per non-missing image from a secondary
 // SQLite file. Tags are emitted under their canonical name; aliases are skipped.
+// Rides the same image-ordered join the light export uses, grouping off the
+// cursor rather than issuing a tag query per image.
 func readDBMergeRecords(src *db.DB) ([]mergeRecord, error) {
-	rows, err := src.Read.Query(`
-		SELECT i.id, i.sha256, i.folder_path, i.canonical_path
-		FROM images i WHERE i.is_missing = 0`)
+	rows, err := src.Read.Query(lightManifestQuery)
 	if err != nil {
 		return nil, err
 	}
-	type imgRow struct {
-		id                     int64
-		sha, folder, canonical string
-	}
-	var imgs []imgRow
-	for rows.Next() {
-		var r imgRow
-		if err := rows.Scan(&r.id, &r.sha, &r.folder, &r.canonical); err != nil {
-			_ = rows.Close()
-			return nil, err
-		}
-		imgs = append(imgs, r)
-	}
-	_ = rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var recs []mergeRecord
-	for _, r := range imgs {
-		tagRows, err := src.Read.Query(`
-			SELECT t.name, tc.name FROM image_tags it
-			JOIN tags t ON t.id = it.tag_id
-			JOIN tag_categories tc ON tc.id = t.category_id
-			WHERE it.image_id = ? AND t.is_alias = 0`, r.id)
-		if err != nil {
+	var curID int64
+	open := false
+	for rows.Next() {
+		var id int64
+		var sha, folder, canonical string
+		var tname, tcat sql.NullString
+		if err := rows.Scan(&id, &sha, &folder, &canonical, &tname, &tcat); err != nil {
 			return nil, err
 		}
-		var tagsList []string
-		for tagRows.Next() {
-			var n, c string
-			if err := tagRows.Scan(&n, &c); err != nil {
-				_ = tagRows.Close()
-				return nil, err
-			}
-			tagsList = append(tagsList, tagToken(c, n))
+		if !open || id != curID {
+			curID, open = id, true
+			recs = append(recs, mergeRecord{
+				SHA256:     sha,
+				SourcePath: filepath.ToSlash(filepath.Join(folder, storedBasename(canonical))),
+			})
 		}
-		_ = tagRows.Close()
-		recs = append(recs, mergeRecord{
-			SHA256:     r.sha,
-			Tags:       tagsList,
-			SourcePath: filepath.ToSlash(filepath.Join(r.folder, filepath.Base(r.canonical))),
-		})
+		if tname.Valid {
+			last := &recs[len(recs)-1]
+			last.Tags = append(last.Tags, tagToken(tcat.String, tname.String))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return recs, nil
 }
@@ -735,7 +731,7 @@ func readExportMergeRecords(exp galleryExport) []mergeRecord {
 		recs = append(recs, mergeRecord{
 			SHA256:     img.SHA256,
 			Tags:       byImg[img.ID],
-			SourcePath: filepath.ToSlash(filepath.Join(img.FolderPath, filepath.Base(img.CanonicalPath))),
+			SourcePath: filepath.ToSlash(filepath.Join(img.FolderPath, storedBasename(img.CanonicalPath))),
 		})
 	}
 	return recs
@@ -801,9 +797,7 @@ func applyTransferTags(database *db.DB, tagSvc *tags.Service, imageID int64, gro
 		// the creator of a tag the target gallery has never seen; an
 		// unlabelled group is an anonymous UI add on the source side.
 		origin := g.taggerName
-		if origin == "" {
-			origin = "user"
-		}
+		origin = cmp.Or(origin, "user")
 		tagIDs, confs := resolveTokenTagIDsConf(database, tagSvc, g.tokens, g.confs, generalID, false, origin)
 		if err := tagSvc.AddTagsToImageFromTaggerConf(imageID, tagIDs, confs, g.isAuto, g.taggerName); err != nil {
 			return fmt.Errorf("transfer tags to image %d: %w", imageID, err)

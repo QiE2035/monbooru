@@ -12,15 +12,7 @@
     </div>
     {{if .MarkedRows}}
     <div class="detail-topbar-right">
-      <form hx-post="/relations/duplicates/marked/delete-all"
-            hx-target="#flash-walker-marked" hx-swap="innerHTML"
-            hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-            hx-confirm="Delete every non-original member of every duplicate-image group? Files are removed from disk."
-            data-confirm-ok="Delete all"
-            style="display:inline">
-        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <button type="submit" class="btn-danger btn-sm">Delete all duplicate images</button>
-      </form>
+      {{template "partials/bulk_delete_form.html" (dict "CSRFToken" .CSRFToken "Action" "/relations/duplicates/marked/delete-all" "Target" "#flash-walker-marked" "Confirm" "Delete every non-original member of every duplicate-image group? Files are removed from disk." "ConfirmOK" "Delete all" "Label" "Delete all duplicate images")}}
     </div>
     {{end}}
   </div>

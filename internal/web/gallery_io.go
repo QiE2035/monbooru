@@ -2,6 +2,7 @@ package web
 
 import (
 	"archive/zip"
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -550,7 +551,13 @@ func (s *Server) ExportGalleryArchive(name, format string, w io.Writer) error {
 		}
 	}
 
-	return writeGalleryFilesToZip(zw, cx.GalleryPath)
+	if err := writeGalleryFilesToZip(zw, cx.GalleryPath); err != nil {
+		return err
+	}
+	// Close writes the central directory; until it succeeds the response
+	// body is not a readable archive. The deferred close stays for the
+	// error paths, where its already-closed error is discarded.
+	return zw.Close()
 }
 
 // writeGalleryFilesToZip walks galleryPath and appends every file under it
@@ -615,7 +622,10 @@ func (s *Server) ImportGallery(name, format string, upload io.Reader) error {
 		s.ctxMu.Unlock()
 		return fmt.Errorf("cannot import over the active gallery; switch to another first")
 	}
-	if name == s.cfg.DefaultGallery {
+	s.cfgMu.RLock()
+	isDefault := name == s.cfg.DefaultGallery
+	s.cfgMu.RUnlock()
+	if isDefault {
 		s.ctxMu.Unlock()
 		return fmt.Errorf("cannot import over the default gallery; set another as default first")
 	}
@@ -747,19 +757,11 @@ func replaceDBFromFile(srcPath, dbPath, thumbsPath, galleryPath string) error {
 	if err := validateSQLiteFile(srcPath); err != nil {
 		return fmt.Errorf("uploaded file is not a valid monbooru database: %w", err)
 	}
-	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove %s: %w", p, err)
-		}
+	if err := resetDBAndThumbs(dbPath, thumbsPath); err != nil {
+		return err
 	}
 	if err := os.Rename(srcPath, dbPath); err != nil {
 		return fmt.Errorf("install db: %w", err)
-	}
-	if err := os.RemoveAll(thumbsPath); err != nil {
-		return fmt.Errorf("clear thumbnails: %w", err)
-	}
-	if err := os.MkdirAll(thumbsPath, 0o755); err != nil {
-		return fmt.Errorf("recreate thumbnails dir: %w", err)
 	}
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -987,20 +989,11 @@ func replaceDBFromJSON(srcPath, dbPath, thumbsPath, galleryPath string) error {
 		return loadErr
 	}
 
-	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove %s: %w", p, err)
-		}
+	if err := resetDBAndThumbs(dbPath, thumbsPath); err != nil {
+		return err
 	}
 	if err := os.Rename(tmpPath, dbPath); err != nil {
 		return fmt.Errorf("install db: %w", err)
-	}
-
-	if err := os.RemoveAll(thumbsPath); err != nil {
-		return fmt.Errorf("clear thumbnails: %w", err)
-	}
-	if err := os.MkdirAll(thumbsPath, 0o755); err != nil {
-		return fmt.Errorf("recreate thumbnails dir: %w", err)
 	}
 	return nil
 }
@@ -1112,6 +1105,17 @@ func replaceFromArchive(srcPath, dbPath, thumbsPath, galleryPath string, maxFile
 	return reconcileMissingFiles(database, galleryPath)
 }
 
+// storedBasename is filepath.Base for a path read back out of a
+// database or an export. Those carry the separators of the machine
+// that wrote them, which filepath.Base on another OS would not
+// recognise as separators at all.
+func storedBasename(p string) string {
+	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
 // rebaseImagePaths rewrites every images.canonical_path and
 // image_paths.path so that the absolute prefix matches the target gallery's
 // root. The export format stores absolute paths by design (the gallery is
@@ -1129,6 +1133,13 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Ahead of the scan, and ahead of any canonical_path rewrite: the
+	// statement keys off the separators in canonical_path to prove the
+	// row came from Windows, and the rebase below erases that evidence.
+	if _, err := tx.Exec(db.NormalizeWindowsFolderPathSQL); err != nil {
+		return fmt.Errorf("normalize folder paths: %w", err)
+	}
 
 	type imgRow struct {
 		id        int64
@@ -1148,6 +1159,10 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 		}
 		imgs = append(imgs, r)
 	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
 	_ = rows.Close()
 
 	// Infer the source-root from the first canonical row: each row
@@ -1161,12 +1176,12 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 		if r.canonical == "" {
 			continue
 		}
-		suffix := filepath.Join(r.folder, filepath.Base(r.canonical))
+		suffix := filepath.Join(r.folder, storedBasename(r.canonical))
 		if r.folder == "" {
-			suffix = filepath.Base(r.canonical)
+			suffix = storedBasename(r.canonical)
 		}
-		if strings.HasSuffix(r.canonical, "/"+suffix) {
-			sourceRoot = strings.TrimSuffix(r.canonical, "/"+suffix)
+		if strings.HasSuffix(r.canonical, string(filepath.Separator)+suffix) {
+			sourceRoot = strings.TrimSuffix(r.canonical, string(filepath.Separator)+suffix)
 			break
 		}
 		if r.canonical == suffix {
@@ -1180,7 +1195,7 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 	// Image_paths include the canonical (is_canonical=1) and any aliases.
 	// We rebuild each one by computing newPath the same way.
 	for _, r := range imgs {
-		newCanonical := filepath.Join(root, r.folder, filepath.Base(r.canonical))
+		newCanonical := filepath.Join(root, r.folder, storedBasename(r.canonical))
 		if newCanonical == r.canonical {
 			continue
 		}
@@ -1221,6 +1236,10 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 		r.isCanonical = isCanon == 1
 		paths = append(paths, r)
 	}
+	if err := pathRows.Err(); err != nil {
+		_ = pathRows.Close()
+		return err
+	}
 	_ = pathRows.Close()
 
 	for _, p := range paths {
@@ -1233,14 +1252,14 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 		// risk a UNIQUE-on-path collision with the canonical row).
 		var newPath string
 		if p.isCanonical || sourceRoot == "" {
-			newPath = filepath.Join(root, p.folder, filepath.Base(p.path))
-		} else if rel := strings.TrimPrefix(p.path, sourceRoot+"/"); rel != p.path {
+			newPath = filepath.Join(root, p.folder, storedBasename(p.path))
+		} else if rel := strings.TrimPrefix(p.path, sourceRoot+string(filepath.Separator)); rel != p.path {
 			newPath = filepath.Join(root, rel)
 		} else {
 			// Alias path was outside the inferred source root (operator
 			// hand-edit). Fall back to the canonical-folder shape rather
 			// than leaving the alias dangling at the foreign absolute.
-			newPath = filepath.Join(root, p.folder, filepath.Base(p.path))
+			newPath = filepath.Join(root, p.folder, storedBasename(p.path))
 		}
 		if newPath == p.path {
 			continue
@@ -1267,13 +1286,28 @@ func rebaseImagePaths(database *db.DB, targetGalleryPath string) error {
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return recalcImportedTagCounts(database)
+}
+
+// recalcImportedTagCounts rebases usage_count on what the reconcile just
+// decided is visible. The export carries the counts verbatim, so an
+// import whose files are not at the target path leaves every tag
+// claiming usages the gallery cannot show - "1 match" over "No images
+// found" until the operator finds Maintenance -> Recalculate.
+func recalcImportedTagCounts(database *db.DB) error {
+	if _, err := tags.RecalcDBCount(database); err != nil {
+		return fmt.Errorf("recalculate tag counts: %w", err)
+	}
+	return nil
 }
 
 // fileMissingFlag reports 1 when the image's canonical file is absent from
 // galleryRoot and 0 when it is present, matching what Sync records.
 func fileMissingFlag(galleryRoot, folder, canonical string) int {
-	if _, err := os.Stat(filepath.Join(galleryRoot, folder, filepath.Base(canonical))); err == nil {
+	if _, err := os.Stat(filepath.Join(galleryRoot, folder, storedBasename(canonical))); err == nil {
 		return 0
 	}
 	return 1
@@ -1315,7 +1349,7 @@ func reconcileMissingFiles(database *db.DB, galleryPath string) error {
 			return fmt.Errorf("reconcile is_missing for image %d: %w", r.id, err)
 		}
 	}
-	return nil
+	return recalcImportedTagCounts(database)
 }
 
 // wipeDirContents removes everything inside dir but keeps the directory
@@ -1426,7 +1460,7 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		if _, err := tx.Exec(
 			`INSERT INTO tags (id, name, category_id, usage_count, is_alias, canonical_tag_id, created_at, origin, last_used_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, r.Name, r.CategoryID, r.UsageCount, r.IsAlias, nullInt64Arg(r.CanonicalTagID), r.CreatedAt, r.Origin, nullStringArg(r.LastUsedAt),
+			r.ID, r.Name, r.CategoryID, r.UsageCount, r.IsAlias, r.CanonicalTagID, r.CreatedAt, r.Origin, r.LastUsedAt,
 		); err != nil {
 			return fmt.Errorf("insert tag %d: %w", r.ID, err)
 		}
@@ -1444,8 +1478,8 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 			`INSERT INTO images (id, sha256, canonical_path, folder_path, file_type, width, height,
 			                    file_size, is_missing, is_favorited, is_inbox, auto_tagged_at, source_type, origin, source, url, page_count, duration_seconds, series, series_order, note, original_source, ingested_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, r.SHA256, r.CanonicalPath, r.FolderPath, r.FileType, nullInt64Arg(r.Width), nullInt64Arg(r.Height),
-			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, nullStringArg(r.AutoTaggedAt), r.SourceType, r.Origin, r.Source, r.URL, nullInt64Arg(r.PageCount), nullFloat64Arg(r.DurationSeconds), r.Series, nullInt64Arg(r.SeriesOrder), r.Note, r.OriginalSource, r.IngestedAt,
+			r.ID, r.SHA256, r.CanonicalPath, r.FolderPath, r.FileType, r.Width, r.Height,
+			r.FileSize, r.IsMissing, r.IsFavorited, r.IsInbox, r.AutoTaggedAt, r.SourceType, r.Origin, r.Source, r.URL, r.PageCount, r.DurationSeconds, r.Series, r.SeriesOrder, r.Note, r.OriginalSource, r.IngestedAt,
 		); err != nil {
 			return fmt.Errorf("insert image %d: %w", r.ID, err)
 		}
@@ -1463,7 +1497,7 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 	for _, r := range exp.ImageCollections {
 		if _, err := tx.Exec(
 			`INSERT OR IGNORE INTO image_collections (image_id, name, position) VALUES (?, ?, ?)`,
-			r.ImageID, r.Name, nullInt64Arg(r.Position),
+			r.ImageID, r.Name, r.Position,
 		); err != nil {
 			return fmt.Errorf("insert image_collection (%d,%q): %w", r.ImageID, r.Name, err)
 		}
@@ -1524,9 +1558,9 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		if _, err := tx.Exec(
 			`INSERT INTO sd_metadata (image_id, prompt, negative_prompt, model, seed, sampler, steps, cfg_scale, raw_params, generation_hash)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ImageID, nullStringArg(r.Prompt), nullStringArg(r.NegativePrompt), nullStringArg(r.Model),
-			nullInt64Arg(r.Seed), nullStringArg(r.Sampler), nullInt64Arg(r.Steps),
-			nullFloat64Arg(r.CFGScale), nullStringArg(r.RawParams), nullStringArg(r.GenerationHash),
+			r.ImageID, r.Prompt, r.NegativePrompt, r.Model,
+			r.Seed, r.Sampler, r.Steps,
+			r.CFGScale, r.RawParams, r.GenerationHash,
 		); err != nil {
 			return fmt.Errorf("insert sd_metadata %d: %w", r.ImageID, err)
 		}
@@ -1535,9 +1569,9 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		if _, err := tx.Exec(
 			`INSERT INTO comfyui_metadata (image_id, prompt, model_checkpoint, seed, sampler, steps, cfg_scale, raw_workflow, generation_hash)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ImageID, nullStringArg(r.Prompt), nullStringArg(r.ModelCheckpoint),
-			nullInt64Arg(r.Seed), nullStringArg(r.Sampler), nullInt64Arg(r.Steps),
-			nullFloat64Arg(r.CFGScale), nullStringArg(r.RawWorkflow), nullStringArg(r.GenerationHash),
+			r.ImageID, r.Prompt, r.ModelCheckpoint,
+			r.Seed, r.Sampler, r.Steps,
+			r.CFGScale, r.RawWorkflow, r.GenerationHash,
 		); err != nil {
 			return fmt.Errorf("insert comfyui_metadata %d: %w", r.ImageID, err)
 		}
@@ -1548,14 +1582,14 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 			     year, month, day, writer, penciller, inker, colorist, letterer, cover_artist, editor, publisher,
 			     imprint, genre, web, language_iso, format, manga, age_rating, community_rating, xml_page_count, raw_xml)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ImageID, nullStringArg(r.Title), nullStringArg(r.Series), nullStringArg(r.Number), nullStringArg(r.Volume),
-			nullInt64Arg(r.Count), nullStringArg(r.Summary), nullStringArg(r.Notes),
-			nullInt64Arg(r.Year), nullInt64Arg(r.Month), nullInt64Arg(r.Day),
-			nullStringArg(r.Writer), nullStringArg(r.Penciller), nullStringArg(r.Inker), nullStringArg(r.Colorist),
-			nullStringArg(r.Letterer), nullStringArg(r.CoverArtist), nullStringArg(r.Editor), nullStringArg(r.Publisher),
-			nullStringArg(r.Imprint), nullStringArg(r.Genre), nullStringArg(r.Web), nullStringArg(r.LanguageISO),
-			nullStringArg(r.Format), nullStringArg(r.Manga), nullStringArg(r.AgeRating),
-			nullFloat64Arg(r.CommunityRating), nullInt64Arg(r.XMLPageCount), nullStringArg(r.RawXML),
+			r.ImageID, r.Title, r.Series, r.Number, r.Volume,
+			r.Count, r.Summary, r.Notes,
+			r.Year, r.Month, r.Day,
+			r.Writer, r.Penciller, r.Inker, r.Colorist,
+			r.Letterer, r.CoverArtist, r.Editor, r.Publisher,
+			r.Imprint, r.Genre, r.Web, r.LanguageISO,
+			r.Format, r.Manga, r.AgeRating,
+			r.CommunityRating, r.XMLPageCount, r.RawXML,
 		); err != nil {
 			return fmt.Errorf("insert manga_metadata %d: %w", r.ImageID, err)
 		}
@@ -1625,27 +1659,6 @@ func loadExportIntoDB(database *db.DB, exp galleryExport) error {
 		}
 	}
 	return tx.Commit()
-}
-
-func nullStringArg(n sql.NullString) any {
-	if n.Valid {
-		return n.String
-	}
-	return nil
-}
-
-func nullInt64Arg(n sql.NullInt64) any {
-	if n.Valid {
-		return n.Int64
-	}
-	return nil
-}
-
-func nullFloat64Arg(n sql.NullFloat64) any {
-	if n.Valid {
-		return n.Float64
-	}
-	return nil
 }
 
 // jsonWriter emits a single JSON object incrementally so each table's rows
@@ -1874,9 +1887,7 @@ func (s *Server) settingsGalleryImport(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = filePart.Close() }()
 
 	mode := fields["mode"]
-	if mode == "" {
-		mode = "replace"
-	}
+	mode = cmp.Or(mode, "replace")
 	if mode != "replace" && mode != "merge" {
 		writeInlineFlash(w, "err", "mode must be replace or merge")
 		return

@@ -226,7 +226,7 @@ func (p *parser) parseAll() []Expr {
 					break
 				}
 				p.next()
-				right := p.parseTerm()
+				right := p.parseOperand()
 				if right == nil {
 					break
 				}
@@ -239,6 +239,23 @@ func (p *parser) parseAll() []Expr {
 		exprs = append(exprs, left)
 	}
 	return exprs
+}
+
+// parseOperand reads one right-hand side of an OR, consuming a leading
+// NOT. parseTerm stops dead at one, which used to abandon the fold and
+// leave the negation to be picked up as a fresh top-level term that
+// Parse ANDs onto everything else - so `a OR -b` answered with the
+// intersection the operator asked to exclude.
+func (p *parser) parseOperand() Expr {
+	if t := p.peek(); t != nil && t.kind == tokNot {
+		p.next()
+		inner := p.parseTerm()
+		if inner == nil {
+			return nil
+		}
+		return NotExpr{Expr: inner}
+	}
+	return p.parseTerm()
 }
 
 func (p *parser) parseTerm() Expr {

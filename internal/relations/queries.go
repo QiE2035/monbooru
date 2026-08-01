@@ -50,6 +50,27 @@ func (r *ImageRelations) HasAny() bool {
 	return false
 }
 
+// SharedDerivativeSource returns the image both a and b are direct
+// derivatives of, when one exists. Each derivative has exactly one
+// source (PK on derivative_image_id), so the join yields at most one
+// row from two point seeks.
+func SharedDerivativeSource(database *db.DB, a, b int64) (int64, bool, error) {
+	var source int64
+	err := database.Read.QueryRow(`
+		SELECT ea.source_image_id
+		FROM derivative_edges ea
+		JOIN derivative_edges eb ON eb.source_image_id = ea.source_image_id
+		WHERE ea.derivative_image_id = ? AND eb.derivative_image_id = ?`, a, b,
+	).Scan(&source)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return source, true, nil
+}
+
 // LoadImageRelations gathers every relation the image participates in.
 // Each query rides a covering index; the whole load is sub-millisecond
 // on a 1M-row library.

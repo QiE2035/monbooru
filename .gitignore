@@ -1,5 +1,6 @@
 # Built binary
 /monbooru
+/monbooru.exe
 
 # Local config
 /monbooru.toml
@@ -7,10 +8,13 @@
 # Runtime data
 thumbnails/
 *.db
+*.db-wal
+*.db-shm
 
 # ONNX Runtime / tagger model files (large, fetched separately)
 *.onnx
 *.ort
+*.dll
 
 # Test / coverage artifacts
 cover.out
@@ -19,4 +23,5 @@ coverage.out
 
 # IDE / editor
 .vscode/
-
+.trae/
+.idea/

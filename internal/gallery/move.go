@@ -51,6 +51,8 @@ func MoveImage(database *db.DB, galleryPath string, id int64, targetFolder strin
 	if newFolder == "." {
 		newFolder = ""
 	}
+	// folder_path is stored "/"-separated on every platform.
+	newFolder = filepath.ToSlash(newFolder)
 
 	if newFolder == oldFolder {
 		return &MoveImageResult{

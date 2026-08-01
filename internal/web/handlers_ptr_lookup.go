@@ -73,6 +73,10 @@ func (s *Server) ptrLookupCands(ids []int64) ([]ptrLookupCand, error) {
 			}
 			cands = append(cands, ptrLookupCand{id: id, name: name})
 		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
 		_ = rows.Close()
 	}
 	return cands, nil

@@ -1,9 +1,12 @@
 package search
 
 import (
+	"cmp"
 	"database/sql"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -686,25 +689,25 @@ type whereBuilder struct {
 	relPresenceResolved bool
 	// similarSeeds caches one resolved seed per image id so repeated
 	// similar: terms against the same seed share the read.
-	similarSeeds map[int64]tags.SimilaritySeed
+	similarSeeds map[int64]tags.OverlapSeed
 }
 
-// similaritySeed resolves and caches the weighted tag set for one seed
+// similaritySeed resolves and caches the shareable tag set for one seed
 // image. A nil db (test path) has no seed to read, so the caller emits
 // the no-match predicate.
-func (b *whereBuilder) similaritySeed(imageID int64) (tags.SimilaritySeed, bool) {
+func (b *whereBuilder) similaritySeed(imageID int64) (tags.OverlapSeed, bool) {
 	if seed, ok := b.similarSeeds[imageID]; ok {
 		return seed, true
 	}
 	if b.db == nil {
-		return tags.SimilaritySeed{}, false
+		return tags.OverlapSeed{}, false
 	}
-	seed, err := tags.LoadSimilaritySeed(b.db, imageID)
+	seed, err := tags.LoadOverlapSeed(b.db, imageID)
 	if err != nil {
-		return tags.SimilaritySeed{}, false
+		return tags.OverlapSeed{}, false
 	}
 	if b.similarSeeds == nil {
-		b.similarSeeds = map[int64]tags.SimilaritySeed{}
+		b.similarSeeds = map[int64]tags.OverlapSeed{}
 	}
 	b.similarSeeds[imageID] = seed
 	return seed, true
@@ -844,9 +847,7 @@ func buildWhereDBDriverFull(expr Expr, database *db.DB, legs []andDriverLeg) (st
 		}
 	}
 	where := strings.Join(b.parts, " AND ")
-	if where == "" {
-		where = "1=1"
-	}
+	where = cmp.Or(where, "1=1")
 	return where, b.args, b.hasMissingFilter, b.ceilingRewrote
 }
 
@@ -1011,10 +1012,9 @@ func fileTypeInClause(seen, tautologyCap map[string]bool) string {
 		return "1=1"
 	}
 	quoted := make([]string, 0, len(seen))
-	for ft := range seen {
+	for _, ft := range slices.Sorted(maps.Keys(seen)) {
 		quoted = append(quoted, "'"+ft+"'")
 	}
-	sort.Strings(quoted)
 	return "i.file_type IN (" + strings.Join(quoted, ", ") + ")"
 }
 

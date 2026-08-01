@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -88,9 +89,7 @@ func (h *Handler) createCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	color := strings.TrimSpace(body.Color)
-	if color == "" {
-		color = "#888888"
-	}
+	color = cmp.Or(color, "#888888")
 	cat, err := g.TagSvc.CreateCategory(body.Name, color)
 	if err != nil {
 		writeCategoryError(w, err)
@@ -163,9 +162,7 @@ func (h *Handler) deleteCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action := body.Action
-	if action == "" {
-		action = "move"
-	}
+	action = cmp.Or(action, "move")
 	if action != "move" && action != "delete_all" {
 		apiError(w, http.StatusBadRequest, "invalid_request", "action must be 'move' or 'delete_all'")
 		return

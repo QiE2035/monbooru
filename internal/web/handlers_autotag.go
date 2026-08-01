@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"html"
@@ -40,7 +41,7 @@ func (s *Server) spawnAutoTagJob(ids []int64, selected []tagger.TaggerStatus, lo
 	baseline := readVmRSS()
 	go func() {
 		ctx := s.jobs.Context()
-		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.UseCUDA, cx.MangaCacheDir())
+		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.ExecutionProvider, cx.MangaCacheDir())
 		// New tags are commonly created by a tagger run, so the cached
 		// tag count is stale once the worker returns regardless of
 		// outcome (cancelled runs still wrote rows for completed images).
@@ -84,8 +85,7 @@ func logAutotagPeak(scope string, baselineRSS uint64) {
 // optional autotag-after-upload all flow through here.
 func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	if cx := s.Active(); cx == nil || cx.Degraded {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		writeInlineFlash(w, "err", "Upload unavailable: gallery path is unreadable.")
+		flashStatus(w, http.StatusServiceUnavailable, "Upload unavailable: gallery path is unreadable.")
 		return
 	}
 	maxBytes := int64(s.cfg.Gallery.MaxFileSizeMB) * 1024 * 1024
@@ -105,9 +105,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	folderInput := strings.TrimSpace(r.FormValue("folder"))
 	// The inline inbox drop zone posts no folder field, so fall back to the
 	// operator's configured default; an explicit folder still wins.
-	if folderInput == "" {
-		folderInput = strings.TrimSpace(s.cfg.Gallery.DefaultUploadFolder)
-	}
+	folderInput = cmp.Or(folderInput, strings.TrimSpace(s.cfg.Gallery.DefaultUploadFolder))
 	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
 	files := r.MultipartForm.File["files"]
 	if len(files) == 0 {
@@ -140,7 +138,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	var addedIDs []int64
 	var dupeIDs []int64
 	var tagWarnings []string
-	added, dupes, errors, oversized := 0, 0, 0, 0
+	added, dupes, failed, oversized := 0, 0, 0, 0
 	for _, fh := range files {
 		// Enforce the per-file cap up front; the watcher and API handler do the
 		// same. The MaxBytesReader cap above only bounds the total request body,
@@ -152,7 +150,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		}
 		file, err := fh.Open()
 		if err != nil {
-			errors++
+			failed++
 			continue
 		}
 
@@ -160,7 +158,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		dst, err := os.Create(dstPath)
 		if err != nil {
 			_ = file.Close()
-			errors++
+			failed++
 			continue
 		}
 
@@ -168,7 +166,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 			_ = dst.Close()
 			_ = file.Close()
 			_ = os.Remove(dstPath)
-			errors++
+			failed++
 			continue
 		}
 		_ = dst.Close()
@@ -177,14 +175,22 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		ft, ftErr := gallery.DetectFileType(dstPath)
 		if ftErr != nil {
 			_ = os.Remove(dstPath)
-			errors++
+			failed++
 			continue
 		}
 
 		img, isDup, ingestErr := gallery.Ingest(s.db(), s.galleryPath(), s.thumbnailsPath(), dstPath, ft, models.OriginUpload)
 		if ingestErr != nil {
 			logx.Warnf("upload ingest %q: %v", fh.Filename, ingestErr)
-			errors++
+			// Bytes the ingest will never accept: drop the copy we just
+			// wrote, like the extension check above does, so it doesn't
+			// sit in the gallery folder failing every later sync. A
+			// transient failure keeps the file - the operator's bytes
+			// are not ours to discard over a busy write pool.
+			if errors.Is(ingestErr, gallery.ErrUnsupportedType) {
+				_ = os.Remove(dstPath)
+			}
+			failed++
 			continue
 		}
 		if isDup {
@@ -259,14 +265,14 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	if oversized > 0 {
 		fmt.Fprintf(&msg, ", %d skipped (exceeds %d MB)", oversized, s.cfg.Gallery.MaxFileSizeMB)
 	}
-	if errors > 0 {
-		fmt.Fprintf(&msg, ", %d error(s)", errors)
+	if failed > 0 {
+		fmt.Fprintf(&msg, ", %d error(s)", failed)
 	}
 	if len(tagWarnings) > 0 {
 		fmt.Fprintf(&msg, " (%d tag warning(s): %s)", len(tagWarnings), html.EscapeString(strings.Join(tagWarnings, "; ")))
 	}
 	cssClass := "flash-ok"
-	if added == 0 && (errors > 0 || oversized > 0) {
+	if added == 0 && (failed > 0 || oversized > 0) {
 		cssClass = "flash-err"
 	}
 
@@ -410,9 +416,9 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 		// Force CPU inference for one-shot detail-page runs: spinning up the
 		// CUDA session and loading the model onto the GPU dwarfs the tagging
 		// time for a single image, so CPU finishes faster even when the
-		// global toggle is on.
+		// global provider is GPU.
 		ctx := s.jobs.Context()
-		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, []int64{id}, selected, s.jobs, false, cx.MangaCacheDir())
+		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, []int64{id}, selected, s.jobs, "cpu", cx.MangaCacheDir())
 		cx.InvalidateCaches()
 		if ctx.Err() != nil {
 			s.jobs.Complete("auto-tagging cancelled")

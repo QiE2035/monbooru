@@ -29,7 +29,7 @@ func detectHydrus(entries []NormalizedEntry) bool {
 		switch {
 		case HasMediaExt(e.Rel):
 			hasImage = true
-		case strings.HasSuffix(strings.ToLower(e.Rel), ".txt") && !strings.HasSuffix(e.Rel, "/"):
+		case strings.HasSuffix(strings.ToLower(e.Rel), ".txt"):
 			hasSidecar = true
 		}
 		if hasImage && hasSidecar {
@@ -53,8 +53,10 @@ func translateHydrus(entries []NormalizedEntry) (Result, error) {
 			continue
 		}
 		if strings.HasSuffix(strings.ToLower(e.Rel), ".txt") {
-			imgRel := strings.TrimSuffix(e.Rel, ".txt")
-			imgRel = strings.TrimSuffix(imgRel, ".TXT")
+			// The check above already proved the suffix, whatever its
+			// case; TrimSuffix per spelling missed foo.png.Txt, which
+			// then failed HasMediaExt and dropped that image's tags.
+			imgRel := e.Rel[:len(e.Rel)-len(".txt")]
 			if HasMediaExt(imgRel) {
 				sidecars[imgRel] = e.File
 			}

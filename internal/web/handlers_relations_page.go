@@ -1,8 +1,12 @@
 package web
 
 import (
+	"cmp"
+	"context"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,6 +39,15 @@ func (s *Server) findPairsDistance() int {
 	return d
 }
 
+// tagPairsEnabled reports whether the tag-similarity detector is on,
+// read through cfgMu like findPairsDistance so a settings save lands on
+// the next render.
+func (s *Server) tagPairsEnabled() bool {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	return s.cfg.Relations.TagPairs
+}
+
 // applyRelationsConfig mirrors the operator's [relations] block onto
 // the relations package's runtime atomics. Called at boot and after
 // every settings edit so a TOML save propagates without restart.
@@ -58,28 +71,28 @@ func (s *Server) settingsRelationsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	d, err := strconv.Atoi(r.FormValue("default_distance"))
 	if err != nil || d < 0 || d > maxPhashDistance {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Distance must be an integer 0..12.")
+		flashStatus(w, http.StatusBadRequest, "Distance must be an integer 0..12.")
 		return
 	}
 	order := r.FormValue("default_session_order")
 	if !validOrderModes[order] {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Unknown session order.")
+		flashStatus(w, http.StatusBadRequest, "Unknown session order.")
 		return
 	}
 	threshold := config.DefaultTagPairThreshold
+	// The form speaks percent, matching the ~N% the session cards show;
+	// the config keeps the 0..1 fraction the scoring paths use.
 	if raw := r.FormValue("tag_pair_threshold"); raw != "" {
 		v, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			writeInlineFlash(w, "err", "Match strength must be a number between 0.5 and 1.")
+			flashStatus(w, http.StatusBadRequest, "Match strength must be a number between 70 and 100.")
 			return
 		}
-		threshold = config.ClampTagPairThreshold(v)
+		threshold = config.ClampTagPairThreshold(v / 100)
 	}
 	tagPairs := r.FormValue("tag_pairs") == "on"
 	s.cfgMu.Lock()
+	before := s.cfg.Relations
 	s.cfg.Relations.DefaultDistance = d
 	s.cfg.Relations.DefaultSessionOrder = order
 	s.cfg.Relations.IncrementalOnIngest = true
@@ -88,15 +101,52 @@ func (s *Server) settingsRelationsPost(w http.ResponseWriter, r *http.Request) {
 	rc := s.cfg.Relations
 	s.cfgMu.Unlock()
 	if err := s.saveConfig(); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	applyRelationsConfig(rc)
+	pruned := ""
+	if before.DefaultDistance != d || before.TagPairs != tagPairs || before.TagPairThreshold != threshold {
+		if n := s.pruneRelationQueues(r.Context(), rc); n > 0 {
+			pruned = fmt.Sprintf(" %d stale pair(s) dropped.", n)
+		}
+	}
 	logx.Infof("settings: relations { distance=%d order=%s tag_pairs=%v threshold=%.2f }", d, order, tagPairs, threshold)
 	_, _ = fmt.Fprintf(w,
-		`<div class="flash flash-ok">Saved. distance=%d order=%s tag pairs=%v (%.2f)</div>`,
-		d, order, tagPairs, threshold)
+		`<div class="flash flash-ok">Saved. distance=%d order=%s tag pairs=%v (%.0f%%)%s</div>`,
+		d, order, tagPairs, threshold*100, pruned)
+}
+
+// pruneRelationQueues reconciles every gallery's pair queue with the
+// detector settings just saved. The [relations] block is app-wide while
+// each gallery owns its queue, so a queue left unpruned would keep
+// offering pairs the new settings reject until the operator switched to
+// it. Returns the number of rows dropped.
+func (s *Server) pruneRelationQueues(ctx context.Context, rc config.RelationsConfig) int {
+	s.ctxMu.RLock()
+	ctxs := make([]*galleryCtx, 0, len(s.contexts))
+	for _, cx := range s.contexts {
+		ctxs = append(ctxs, cx)
+	}
+	s.ctxMu.RUnlock()
+	opts := relations.FindPairsOptions{
+		Distance:         rc.DefaultDistance,
+		TagPairs:         rc.TagPairs,
+		TagPairThreshold: config.ClampTagPairThreshold(rc.TagPairThreshold),
+	}
+	total := 0
+	for _, cx := range ctxs {
+		if cx.DB == nil {
+			continue
+		}
+		n, err := relations.PruneQueue(ctx, cx.DB, opts)
+		if err != nil {
+			logx.Warnf("prune pair queue %q: %v", cx.Name, err)
+			continue
+		}
+		total += n
+	}
+	return total
 }
 
 // relationsCounts is the cheap rollup the Relations page header
@@ -131,7 +181,7 @@ type queueSourceCount struct {
 // the order the hub lists them.
 var queueSourceLabels = []struct{ source, label string }{
 	{relations.SourcePhash, "image similarity"},
-	{relations.SourceTags, "tag similarity"},
+	{relations.SourceTags, "rare tag similarity"},
 	{relations.SourceBoth, "both"},
 	{relations.SourceReview, "reopened"},
 }
@@ -552,14 +602,9 @@ func annotateBrowseCardIngestedAt(cx *galleryCtx, cards []browseCard) error {
 	if len(idSet) == 0 {
 		return nil
 	}
-	placeholders := make([]string, 0, len(idSet))
-	args := make([]any, 0, len(idSet))
-	for id := range idSet {
-		placeholders = append(placeholders, "?")
-		args = append(args, id)
-	}
+	placeholders, args := db.InPlaceholders(slices.Collect(maps.Keys(idSet)))
 	rows, err := cx.DB.Read.Query(
-		`SELECT id, ingested_at FROM images WHERE id IN (`+strings.Join(placeholders, ",")+`)`,
+		`SELECT id, ingested_at FROM images WHERE id IN (`+placeholders+`)`,
 		args...,
 	)
 	if err != nil {
@@ -620,11 +665,8 @@ func humanISODate(s string) string {
 // sortedRootsDesc returns the keys of rootSet sorted by id descending,
 // so the newest root sorts first.
 func sortedRootsDesc(rootSet map[int64]bool) []int64 {
-	roots := make([]int64, 0, len(rootSet))
-	for r := range rootSet {
-		roots = append(roots, r)
-	}
-	sort.Slice(roots, func(i, j int) bool { return roots[i] > roots[j] })
+	roots := slices.Sorted(maps.Keys(rootSet))
+	slices.Reverse(roots)
 	return roots
 }
 
@@ -806,17 +848,7 @@ func dfsDerivativeTree(node int64, depth int, ancestorTrunks []string, isLast bo
 // root (depth 0) carries no trunks; every other row gets one entry per
 // ancestor depth plus the tee / elbow connector.
 func rowTrunks(ancestorTrunks []string, depth int, isLast bool) []string {
-	if depth == 0 {
-		return nil
-	}
-	out := make([]string, 0, depth)
-	out = append(out, ancestorTrunks...)
-	if isLast {
-		out = append(out, "elbow")
-	} else {
-		out = append(out, "tee")
-	}
-	return out
+	return trunkSlice(ancestorTrunks, depth, isLast, "elbow", "tee")
 }
 
 // extendAncestorTrunks computes the ancestor-trunk slice each child of
@@ -825,17 +857,22 @@ func rowTrunks(ancestorTrunks []string, depth int, isLast bool) []string {
 // siblings below (its column continues past its children) and "empty"
 // when this node is the last child (the column ends).
 func extendAncestorTrunks(ancestorTrunks []string, depth int, isLast bool) []string {
+	return trunkSlice(ancestorTrunks, depth, isLast, "empty", "line")
+}
+
+// trunkSlice appends one segment to the ancestor trunks: last when this
+// node is its parent's final child, more otherwise. Depth 0 is the root,
+// which carries no trunks at all.
+func trunkSlice(ancestorTrunks []string, depth int, isLast bool, last, more string) []string {
 	if depth == 0 {
 		return nil
 	}
 	out := make([]string, 0, depth)
 	out = append(out, ancestorTrunks...)
 	if isLast {
-		out = append(out, "empty")
-	} else {
-		out = append(out, "line")
+		return append(out, last)
 	}
-	return out
+	return append(out, more)
 }
 
 // scanGroupMembers returns every image_id belonging to the named
@@ -896,9 +933,7 @@ func (s *Server) browseRelationsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := r.URL.Query().Get("kind")
-	if kind == "" {
-		kind = "duplicate"
-	}
+	kind = cmp.Or(kind, "duplicate")
 	if !validBrowseKinds[kind] {
 		http.NotFound(w, r)
 		return

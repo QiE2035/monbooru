@@ -37,8 +37,7 @@ func (s *Server) resolveBatchScope(w http.ResponseWriter, r *http.Request, errLa
 	case "search":
 		expr, parseErr := search.Parse(r.FormValue("q"))
 		if parseErr != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			writeInlineFlash(w, "err", "Could not parse search: "+parseErr.Error())
+			flashStatus(w, http.StatusBadRequest, "Could not parse search: "+parseErr.Error())
 			return nil, false
 		}
 		// "act on current search" must mirror what the operator sees in
@@ -53,14 +52,12 @@ func (s *Server) resolveBatchScope(w http.ResponseWriter, r *http.Request, errLa
 		})
 		if err != nil {
 			logx.Errorf("%s search: %v", errLabel, err)
-			w.WriteHeader(http.StatusInternalServerError)
-			writeInlineFlash(w, "err", "Search error.")
+			flashStatus(w, http.StatusInternalServerError, "Search error.")
 			return nil, false
 		}
 		return ids, true
 	default:
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "scope must be search or selection")
+		flashStatus(w, http.StatusBadRequest, "scope must be search or selection")
 		return nil, false
 	}
 }
@@ -96,8 +93,7 @@ func (s *Server) batchDelete(w http.ResponseWriter, r *http.Request) {
 		// startBulkDelete(nil) would 202 with nothing queued, which the
 		// client reads as success - so surface the failure instead.
 		logx.Warnf("batch delete: load targets: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Could not load the selected images.")
+		flashStatus(w, http.StatusInternalServerError, "Could not load the selected images.")
 		return
 	}
 	defer func() { _ = rows.Close() }()
@@ -113,8 +109,7 @@ func (s *Server) batchDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := rows.Err(); err != nil {
 		logx.Warnf("batch delete: scan targets: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Could not load the selected images.")
+		flashStatus(w, http.StatusInternalServerError, "Could not load the selected images.")
 		return
 	}
 	targets := make([]search.DeleteTarget, 0, len(ids))
@@ -135,8 +130,7 @@ func (s *Server) deleteSearchPost(w http.ResponseWriter, r *http.Request) {
 	expr, parseErr := search.Parse(queryStr)
 	if parseErr != nil {
 		logx.Warnf("delete-search parse: %v", parseErr)
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Could not parse search: "+parseErr.Error())
+		flashStatus(w, http.StatusBadRequest, "Could not parse search: "+parseErr.Error())
 		return
 	}
 	expr = resolveCeiling(r, s.Active()).Apply(expr)
@@ -151,8 +145,7 @@ func (s *Server) deleteSearchPost(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		logx.Errorf("delete-search: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Search error.")
+		flashStatus(w, http.StatusInternalServerError, "Search error.")
 		return
 	}
 
@@ -177,9 +170,11 @@ func (s *Server) startBulkDelete(w http.ResponseWriter, targets []search.DeleteT
 // runBulkDelete processes targets in chunks with one transaction per chunk.
 // The images schema cascades image_tags / image_paths / sd_metadata /
 // comfyui_metadata on image delete, so a single DELETE FROM images clears the
-// dependent rows. Tag usage counts are reconciled at the end by a targeted
-// recalc scoped to the tag IDs actually touched by the cascade (collected
-// from image_tags before the DELETE), avoiding a full-table Recalc
+// dependent rows. dup_groups.original_image_id has no CASCADE, so the
+// relations hook runs first to promote or dissolve, exactly as the
+// single-image delete does. Tag usage counts are reconciled at the end by a
+// targeted recalc scoped to the tag IDs actually touched by the cascade
+// (collected from image_tags before the DELETE), avoiding a full-table Recalc
 // that would walk every tag in the library.
 func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 	ctx := s.jobs.Context()
@@ -193,22 +188,24 @@ func (s *Server) runBulkDelete(targets []search.DeleteTarget) {
 
 	s.jobs.Update(0, total, "deleting…")
 	done := 0
+	onDelete := s.onImagesDeleteCallback()
 	affectedTags, processed, cancelled, err := s.tagSvc().ChunkedDeleteWithTagRecalc(
 		ctx, ids, "", nil,
-		func(tx *sql.Tx, placeholders string, args []any) error {
+		func(tx *sql.Tx, chunk []int64, placeholders string, args []any) error {
+			if onDelete != nil {
+				if err := onDelete(tx, chunk); err != nil {
+					return err
+				}
+			}
 			_, err := tx.Exec(`DELETE FROM images WHERE id IN (`+placeholders+`)`, args...)
 			return err
 		},
 		func(chunk []int64) {
 			for _, id := range chunk {
 				t := byID[id]
-				_ = os.Remove(gallery.ThumbnailPath(s.thumbnailsPath(), id))
-				_ = os.Remove(gallery.HoverPath(s.thumbnailsPath(), id))
-				gallery.RemoveMangaCache(s.thumbnailsPath(), id)
-				if !t.IsMissing && t.CanonicalPath != "" {
-					if err := os.Remove(t.CanonicalPath); err != nil && !os.IsNotExist(err) {
-						logx.Warnf("bulk delete file %q: %v", t.CanonicalPath, err)
-					}
+				gallery.RemoveImageArtifacts(s.thumbnailsPath(), id, "")
+				if !t.IsMissing {
+					gallery.UnlinkImageFile(s.galleryPath(), t.CanonicalPath, id)
 				}
 			}
 			done += len(chunk)
@@ -250,8 +247,7 @@ func (s *Server) batchMove(w http.ResponseWriter, r *http.Request) {
 	// Validate the folder once up-front so the user sees the error inline
 	// rather than as a per-image log entry once the job starts.
 	if _, err := gallery.ResolveSubdir(s.galleryPath(), targetFolder); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -260,45 +256,55 @@ func (s *Server) batchMove(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// runBatchMove processes move targets one image at a time. Each MoveImage has
-// its own small write txn + Rename; per-image failures are logged and counted
-// but don't stop the run so a single unreadable file can't strand the rest.
-func (s *Server) runBatchMove(ids []int64, targetFolder string) {
+// runPerImageJob walks ids one at a time, applying op and counting the
+// per-image failures rather than stopping on them - a single unreadable
+// file must not strand the rest of the scope. Progress lands every 25
+// images; the caches are dropped only when something actually changed.
+func (s *Server) runPerImageJob(ids []int64, verb, gerund, past string, op func(i int, id int64) error) {
 	ctx := s.jobs.Context()
 	total := len(ids)
-	moved, failed := 0, 0
+	done, failed := 0, 0
 	cancelled := false
 
-	s.jobs.Update(0, total, "moving…")
-
+	s.jobs.Update(0, total, gerund+"…")
 	for i, id := range ids {
 		if ctx.Err() != nil {
 			cancelled = true
 			break
 		}
-		if _, err := gallery.MoveImage(s.db(), s.galleryPath(), id, targetFolder); err != nil {
-			logx.Warnf("batch move %d: %v", id, err)
+		if err := op(i, id); err != nil {
+			logx.Warnf("batch %s %d: %v", verb, id, err)
 			failed++
 			continue
 		}
-		moved++
+		done++
 		if (i+1)%25 == 0 || i == total-1 {
-			s.jobs.Update(i+1, total, "moving…")
+			s.jobs.Update(i+1, total, gerund+"…")
 		}
 	}
 
-	if moved > 0 {
+	if done > 0 {
 		s.Active().InvalidateCaches()
 	}
 	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("move cancelled (%d/%d moved)", moved, total))
+		s.jobs.Complete(fmt.Sprintf("%s cancelled (%d/%d %s)", verb, done, total, past))
 		return
 	}
-	summary := fmt.Sprintf("Moved %d image(s).", moved)
+	title := strings.ToUpper(past[:1]) + past[1:]
+	summary := fmt.Sprintf("%s %d image(s).", title, done)
 	if failed > 0 {
-		summary = fmt.Sprintf("Moved %d image(s), %d failed.", moved, failed)
+		summary = fmt.Sprintf("%s %d image(s), %d failed.", title, done, failed)
 	}
 	s.jobs.Complete(summary)
+}
+
+// runBatchMove relocates every target into one folder. Each MoveImage
+// has its own small write txn + Rename.
+func (s *Server) runBatchMove(ids []int64, targetFolder string) {
+	s.runPerImageJob(ids, "move", "moving", "moved", func(_ int, id int64) error {
+		_, err := gallery.MoveImage(s.db(), s.galleryPath(), id, targetFolder)
+		return err
+	})
 }
 
 // batchRename kicks off a background `move` job that renames the selected
@@ -310,8 +316,7 @@ func (s *Server) batchRename(w http.ResponseWriter, r *http.Request) {
 	}
 	base := strings.TrimSpace(r.FormValue("name"))
 	if base == "" || base != filepath.Base(base) || base == "." || base == ".." {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Base name required (no path separators).")
+		flashStatus(w, http.StatusBadRequest, "Base name required (no path separators).")
 		return
 	}
 
@@ -325,47 +330,14 @@ func (s *Server) batchRename(w http.ResponseWriter, r *http.Request) {
 // scope's width with a two-digit floor. Collisions still auto-suffix
 // inside RenameImage; per-image failures are logged and counted like
 // batch moves.
+// runBatchRename renames the scope to a numbered sequence, zero-padded
+// to the width the whole run needs so the names sort in one order.
 func (s *Server) runBatchRename(ids []int64, base string) {
-	ctx := s.jobs.Context()
-	total := len(ids)
-	renamed, failed := 0, 0
-	cancelled := false
-	width := len(strconv.Itoa(total))
-	if width < 2 {
-		width = 2
-	}
-
-	s.jobs.Update(0, total, "renaming…")
-
-	for i, id := range ids {
-		if ctx.Err() != nil {
-			cancelled = true
-			break
-		}
-		name := fmt.Sprintf("%s%0*d", base, width, i+1)
-		if _, err := gallery.RenameImage(s.db(), s.galleryPath(), id, name); err != nil {
-			logx.Warnf("batch rename %d: %v", id, err)
-			failed++
-			continue
-		}
-		renamed++
-		if (i+1)%25 == 0 || i == total-1 {
-			s.jobs.Update(i+1, total, "renaming…")
-		}
-	}
-
-	if renamed > 0 {
-		s.Active().InvalidateCaches()
-	}
-	if cancelled {
-		s.jobs.Complete(fmt.Sprintf("rename cancelled (%d/%d renamed)", renamed, total))
-		return
-	}
-	summary := fmt.Sprintf("Renamed %d image(s).", renamed)
-	if failed > 0 {
-		summary = fmt.Sprintf("Renamed %d image(s), %d failed.", renamed, failed)
-	}
-	s.jobs.Complete(summary)
+	width := max(len(strconv.Itoa(len(ids))), 2)
+	s.runPerImageJob(ids, "rename", "renaming", "renamed", func(i int, id int64) error {
+		_, err := gallery.RenameImage(s.db(), s.galleryPath(), id, fmt.Sprintf("%s%0*d", base, width, i+1))
+		return err
+	})
 }
 
 // batchTag kicks off a background `tag` job that adds (op=add) or removes
@@ -381,25 +353,21 @@ func (s *Server) batchTag(w http.ResponseWriter, r *http.Request) {
 	}
 	op := strings.TrimSpace(r.FormValue("op"))
 	if op != "add" && op != "remove" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "op must be add or remove")
+		flashStatus(w, http.StatusBadRequest, "op must be add or remove")
 		return
 	}
 	tagInput := strings.TrimSpace(r.FormValue("tags"))
 	if tagInput == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "No tags provided.")
+		flashStatus(w, http.StatusBadRequest, "No tags provided.")
 		return
 	}
 	catTags, parseErrMsg := s.parseTagInput(tagInput)
 	if parseErrMsg != "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", parseErrMsg)
+		flashStatus(w, http.StatusBadRequest, parseErrMsg)
 		return
 	}
 	if len(catTags) == 0 {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "No tags to apply.")
+		flashStatus(w, http.StatusBadRequest, "No tags to apply.")
 		return
 	}
 
@@ -534,8 +502,7 @@ func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
 	switch mode {
 	case "user", "auto", "all", "source", "source-all", "stale":
 	default:
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "mode must be user, auto, all, source, source-all, or stale")
+		flashStatus(w, http.StatusBadRequest, "mode must be user, auto, all, source, source-all, or stale")
 		return
 	}
 	// filterName narrows mode=auto to one tagger's output and mode=source to
@@ -547,8 +514,7 @@ func (s *Server) batchStrip(w http.ResponseWriter, r *http.Request) {
 	case "source":
 		filterName = strings.TrimSpace(r.FormValue("source"))
 		if filterName == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			writeInlineFlash(w, "err", "pick a source")
+			flashStatus(w, http.StatusBadRequest, "pick a source")
 			return
 		}
 	}
@@ -609,7 +575,7 @@ func (s *Server) runBatchStrip(ids []int64, mode, filterName string) {
 	removed := int64(0)
 	affectedTags, processed, cancelled, err := s.tagSvc().ChunkedDeleteWithTagRecalc(
 		ctx, ids, modePredicate, extraArgs,
-		func(tx *sql.Tx, placeholders string, args []any) error {
+		func(tx *sql.Tx, _ []int64, placeholders string, args []any) error {
 			res, err := tx.Exec(
 				`DELETE FROM image_tags WHERE image_id IN (`+placeholders+`)`+modePredicate, args...)
 			if err != nil {
@@ -657,27 +623,23 @@ func (s *Server) runBatchStrip(ids []int64, mode, filterName string) {
 // (scope=selection). The op is always a per-row toggle: inbox rows
 // become archived, archived become inbox. Mirrors batchTag's scope
 // dispatch and runBulkDelete's chunked-tx shape.
+// The job processes ids in chunks of 500 with one transaction per
+// chunk. SQLite's `1 - is_inbox` does the per-row toggle in a single
+// UPDATE so a mixed selection (some inbox, some archived) ends up
+// cleanly inverted.
 func (s *Server) batchInbox(w http.ResponseWriter, r *http.Request) {
-	s.startScopedJob(w, r, "batch-inbox", models.JobTypeTag, s.runBatchInbox)
-}
-
-// runBatchInbox processes ids in chunks of 500 with one transaction per
-// chunk. Each row's is_inbox flips; SQLite's `1 - is_inbox` does the
-// per-row toggle in a single UPDATE so a mixed selection (some inbox,
-// some archived) ends up cleanly inverted.
-func (s *Server) runBatchInbox(ids []int64) {
-	s.runBulkToggle(ids, "is_inbox", "inbox state", "inbox toggle", "Toggled inbox state")
+	s.startScopedJob(w, r, "batch-inbox", models.JobTypeTag, func(ids []int64) {
+		s.runBulkToggle(ids, "is_inbox", "inbox state", "inbox toggle", "Toggled inbox state")
+	})
 }
 
 // batchFavorite mirrors batchInbox for the is_favorited column: a
 // per-row toggle that flips favorited rows to unfavorited and vice
 // versa across the resolved scope.
 func (s *Server) batchFavorite(w http.ResponseWriter, r *http.Request) {
-	s.startScopedJob(w, r, "batch-favorite", models.JobTypeTag, s.runBatchFavorite)
-}
-
-func (s *Server) runBatchFavorite(ids []int64) {
-	s.runBulkToggle(ids, "is_favorited", "favorite state", "favorite toggle", "Toggled favorite state")
+	s.startScopedJob(w, r, "batch-favorite", models.JobTypeTag, func(ids []int64) {
+		s.runBulkToggle(ids, "is_favorited", "favorite state", "favorite toggle", "Toggled favorite state")
+	})
 }
 
 // startScopedJob is the HTTP shell shared by every batch handler: parse
@@ -746,13 +708,11 @@ func (s *Server) batchCollection(w http.ResponseWriter, r *http.Request) {
 	}
 	collectionVal := strings.TrimSpace(r.FormValue("collection"))
 	if collectionVal == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Collection label required.")
+		flashStatus(w, http.StatusBadRequest, "Collection label required.")
 		return
 	}
 	if len(collectionVal) > maxExternalSourceLen {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Collection label too long.")
+		flashStatus(w, http.StatusBadRequest, "Collection label too long.")
 		return
 	}
 	mode := r.FormValue("mode")
@@ -1041,10 +1001,5 @@ func (s *Server) deleteFolderPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if isHTMXRequest(r) {
-		w.Header().Set("HX-Redirect", "/")
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	hxRedirect(w, r, "/")
 }

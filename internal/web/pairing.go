@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -324,9 +325,7 @@ func (s *Server) monloaderPairApprove(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.RLock()
 	base := strings.TrimSpace(s.cfg.Monloader.APIURL)
 	s.cfgMu.RUnlock()
-	if base == "" {
-		base = monloaderCallbackURL(req.URL, req.Source)
-	}
+	base = cmp.Or(base, monloaderCallbackURL(req.URL, req.Source))
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	if !s.monloaderReachable(ctx, base) {

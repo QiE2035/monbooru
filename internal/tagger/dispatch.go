@@ -1,5 +1,3 @@
-//go:build tagger
-
 package tagger
 
 import (
@@ -65,7 +63,7 @@ func LoadDispatch(modelPath, taggerName string, catIDs map[string]int64) *Dispat
 // (unknown category, unsupported name); callers skip it and the source
 // falls through to whatever rule was registered before, or to the
 // default chain when none was.
-func compileDispatchRule(r dispatchEntry, catIDs map[string]int64) (DispatchRule, bool) {
+func compileDispatchRule(r DispatchEntry, catIDs map[string]int64) (DispatchRule, bool) {
 	rule := DispatchRule{}
 	if r.Category == "" {
 		rule.Drop = true

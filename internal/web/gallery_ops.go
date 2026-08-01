@@ -49,12 +49,16 @@ func (s *Server) SetDefault(name string) error {
 		s.ctxMu.Unlock()
 		return fmt.Errorf("unknown gallery %q", name)
 	}
-	if s.cfg.DefaultGallery == name {
-		s.ctxMu.Unlock()
+	s.cfgMu.Lock()
+	unchanged := s.cfg.DefaultGallery == name
+	if !unchanged {
+		s.cfg.DefaultGallery = name
+	}
+	s.cfgMu.Unlock()
+	s.ctxMu.Unlock()
+	if unchanged {
 		return nil
 	}
-	s.cfg.DefaultGallery = name
-	s.ctxMu.Unlock()
 
 	if err := s.saveConfig(); err != nil {
 		return fmt.Errorf("persist default gallery: %w", err)
@@ -107,7 +111,9 @@ func (s *Server) AddGallery(name, galleryPath string) error {
 		return err
 	}
 	s.contexts[name] = cx
+	s.cfgMu.Lock()
 	s.cfg.Galleries = append(s.cfg.Galleries, g)
+	s.cfgMu.Unlock()
 	cx.startWatcher(s.cfg.Gallery.WatchEnabled, s.cfg.Gallery.MaxFileSizeMB, s.jobs)
 	s.ctxMu.Unlock()
 
@@ -148,7 +154,9 @@ func (s *Server) RemoveGallery(name string, removeFolder bool) error {
 	dataDir := filepath.Dir(cx.DBPath) // /<data_path>/<name>
 	cx.close()
 	delete(s.contexts, name)
+	s.cfgMu.Lock()
 	s.cfg.Galleries = slices.DeleteFunc(s.cfg.Galleries, func(g config.Gallery) bool { return g.Name == name })
+	s.cfgMu.Unlock()
 	s.ctxMu.Unlock()
 
 	if err := os.RemoveAll(dataDir); err != nil {
@@ -228,6 +236,7 @@ func (s *Server) RenameGallery(oldName, newName string) error {
 	}
 	delete(s.contexts, oldName)
 	s.contexts[newName] = newCx
+	s.cfgMu.Lock()
 	for i := range s.cfg.Galleries {
 		if s.cfg.Galleries[i].Name == oldName {
 			s.cfg.Galleries[i].Name = newName
@@ -236,11 +245,12 @@ func (s *Server) RenameGallery(oldName, newName string) error {
 			break
 		}
 	}
-	if s.activeName == oldName {
-		s.activeName = newName
-	}
 	if s.cfg.DefaultGallery == oldName {
 		s.cfg.DefaultGallery = newName
+	}
+	s.cfgMu.Unlock()
+	if s.activeName == oldName {
+		s.activeName = newName
 	}
 	newCx.startWatcher(s.cfg.Gallery.WatchEnabled, s.cfg.Gallery.MaxFileSizeMB, s.jobs)
 	s.ctxMu.Unlock()
@@ -254,8 +264,7 @@ func (s *Server) RenameGallery(oldName, newName string) error {
 
 // galleryList returns a name-sorted copy for the Settings table.
 func (s *Server) galleryList() []config.Gallery {
-	out := make([]config.Gallery, len(s.cfg.Galleries))
-	copy(out, s.cfg.Galleries)
+	out := s.galleries()
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }

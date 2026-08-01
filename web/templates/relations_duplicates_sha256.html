@@ -12,15 +12,7 @@
     </div>
     {{if .Sha256Rows}}
     <div class="detail-topbar-right">
-      <form hx-post="/relations/file-duplicates/remove"
-            hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-            hx-confirm="Remove every non-canonical duplicate file and its bytes from disk? The canonical path stays."
-            data-confirm-ok="Remove all"
-            style="display:inline">
-        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-        <input type="hidden" name="all" value="true">
-        <button type="submit" class="btn-danger btn-sm">Delete all duplicate files</button>
-      </form>
+      {{template "partials/bulk_delete_form.html" (dict "CSRFToken" .CSRFToken "Action" "/relations/file-duplicates/remove" "Confirm" "Remove every non-canonical duplicate file and its bytes from disk? The canonical path stays." "ConfirmOK" "Remove all" "Label" "Delete all duplicate files" "All" true)}}
     </div>
     {{end}}
   </div>

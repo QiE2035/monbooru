@@ -46,34 +46,53 @@ func (s *Server) notifyMonloaderTeardown(baseURL, token string) error {
 	return nil
 }
 
-// EnqueueMetadataFetch asks monloader to re-read the post at url (metadata
-// only, no download) and enrich monbooru image imageID in gallery. All the
-// work - gallery-dl, mapping, the enrich call back into monbooru - runs on
-// monloader; monbooru only enqueues, keeping its single-egress model intact.
-func (s *Server) EnqueueMetadataFetch(ctx context.Context, imageID int64, gallery, url string) error {
+// monloaderPost sends one JSON body to a monloader API path and returns
+// the live response for the caller to map. The token read happens under
+// cfgMu; the Do call must not, so a slow monloader can't block a
+// settings write. An unconfigured link short-circuits before any I/O.
+func (s *Server) monloaderPost(ctx context.Context, path string, payload map[string]any) (*http.Response, error) {
 	base := strings.TrimRight(s.monloaderAPIBase(), "/")
 	s.cfgMu.RLock()
 	token := s.cfg.Monloader.APIToken
 	s.cfgMu.RUnlock()
 	if base == "" || token == "" {
-		return fmt.Errorf("monloader is not configured")
+		return nil, fmt.Errorf("monloader is not configured")
 	}
-	body, _ := json.Marshal(map[string]any{"image_id": imageID, "gallery": gallery, "url": url})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/metadata", bytes.NewReader(body))
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := monloaderClient.Do(req)
+	return monloaderClient.Do(req)
+}
+
+// enqueueMonloader posts one enqueue payload and maps the reply: any
+// non-2xx is a per-request refusal the caller can skip a row over.
+// onConflict, when set, names what a 409 means for that endpoint.
+func (s *Server) enqueueMonloader(ctx context.Context, path string, payload map[string]any, onConflict error) error {
+	resp, err := s.monloaderPost(ctx, path, payload)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if onConflict != nil && resp.StatusCode == http.StatusConflict {
+		return onConflict
+	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		return monloaderStatusError{resp.Status}
 	}
 	return nil
+}
+
+// EnqueueMetadataFetch asks monloader to re-read the post at url (metadata
+// only, no download) and enrich monbooru image imageID in gallery. All the
+// work - gallery-dl, mapping, the enrich call back into monbooru - runs on
+// monloader; monbooru only enqueues, keeping its single-egress model intact.
+func (s *Server) EnqueueMetadataFetch(ctx context.Context, imageID int64, gallery, url string) error {
+	return s.enqueueMonloader(ctx, "/api/v1/metadata",
+		map[string]any{"image_id": imageID, "gallery": gallery, "url": url}, nil)
 }
 
 // EnqueueReplace asks monloader to download the file the post at url serves
@@ -81,29 +100,8 @@ func (s *Server) EnqueueMetadataFetch(ctx context.Context, imageID int64, galler
 // fetch, only the enqueue happens here; the download, the hash verify, and
 // the push back into the replace endpoint all run on monloader.
 func (s *Server) EnqueueReplace(ctx context.Context, imageID int64, gallery, url string) error {
-	base := strings.TrimRight(s.monloaderAPIBase(), "/")
-	s.cfgMu.RLock()
-	token := s.cfg.Monloader.APIToken
-	s.cfgMu.RUnlock()
-	if base == "" || token == "" {
-		return fmt.Errorf("monloader is not configured")
-	}
-	body, _ := json.Marshal(map[string]any{"image_id": imageID, "gallery": gallery, "url": url})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/replace", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := monloaderClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		return monloaderStatusError{resp.Status}
-	}
-	return nil
+	return s.enqueueMonloader(ctx, "/api/v1/replace",
+		map[string]any{"image_id": imageID, "gallery": gallery, "url": url}, nil)
 }
 
 // errPTRUnavailable marks a lookup monloader refused because its PTR backend
@@ -128,34 +126,9 @@ func isMonloaderStatusErr(err error) bool {
 // queries monloader's local PTR index by sha256 - and enrich the image back
 // through the same callbacks a source refetch uses.
 func (s *Server) EnqueueHashLookup(ctx context.Context, imageID int64, gallery, backend, md5, sha256 string) error {
-	base := strings.TrimRight(s.monloaderAPIBase(), "/")
-	s.cfgMu.RLock()
-	token := s.cfg.Monloader.APIToken
-	s.cfgMu.RUnlock()
-	if base == "" || token == "" {
-		return fmt.Errorf("monloader is not configured")
-	}
-	body, _ := json.Marshal(map[string]any{
+	return s.enqueueMonloader(ctx, "/api/v1/lookup", map[string]any{
 		"image_id": imageID, "gallery": gallery, "backend": backend, "md5": md5, "sha256": sha256,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/lookup", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := monloaderClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusConflict {
-		return errPTRUnavailable
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		return monloaderStatusError{resp.Status}
-	}
-	return nil
+	}, errPTRUnavailable)
 }
 
 // ptrTagInfo is one tag's answer from monloader's PTR graph query, in
@@ -174,21 +147,7 @@ type ptrTagInfo struct {
 // ptrTagLookup asks monloader's PTR index for the alias / implication graph
 // of the given monbooru-form tag names (at most ptrLookupBatch per call).
 func (s *Server) ptrTagLookup(ctx context.Context, names []string) (map[string]ptrTagInfo, error) {
-	base := strings.TrimRight(s.monloaderAPIBase(), "/")
-	s.cfgMu.RLock()
-	token := s.cfg.Monloader.APIToken
-	s.cfgMu.RUnlock()
-	if base == "" || token == "" {
-		return nil, fmt.Errorf("monloader is not configured")
-	}
-	body, _ := json.Marshal(map[string]any{"tags": names})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/ptr/tags", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := monloaderClient.Do(req)
+	resp, err := s.monloaderPost(ctx, "/api/v1/ptr/tags", map[string]any{"tags": names})
 	if err != nil {
 		return nil, err
 	}

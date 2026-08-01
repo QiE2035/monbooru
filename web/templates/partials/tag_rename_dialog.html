@@ -1,0 +1,29 @@
+{{define "partials/tag_rename_dialog.html"}}
+<dialog id="rename-dialog">
+  <form id="rename-form"
+        hx-post=""
+        hx-target="#rename-error"
+        hx-swap="innerHTML">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <p>Rename <strong id="rename-src-name"></strong></p>
+    <div class="field">
+      <label>New name</label>
+      <input type="text" name="name" id="rename-new-name" required autocomplete="off">
+    </div>
+    {{/* An alias has no old name worth keeping, so the listing hides the
+         row client-side per picked tag and the detail page - which knows
+         its one tag up front - drops it outright. */}}
+    {{if .KeepAlias}}
+    <label style="display:block;font-size:12px" id="rename-keep-alias-row">
+      <input type="checkbox" name="keep_alias" value="1" id="rename-keep-alias">
+      Keep the old name as an alias
+    </label>
+    {{end}}
+    <div id="rename-error"></div>
+    <div class="dialog-actions">
+      <button type="submit">Rename</button>
+      <button type="button" onclick="document.getElementById('rename-dialog').close()">Cancel</button>
+    </div>
+  </form>
+</dialog>
+{{end}}

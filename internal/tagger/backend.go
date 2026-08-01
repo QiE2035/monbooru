@@ -25,7 +25,7 @@ type Backend interface {
 	// so the caller can log it.
 	ReleaseIdle(after time.Duration) bool
 	// ReleaseAll unconditionally tears the cache down. Called on
-	// use_cuda flips and on server shutdown.
+	// execution_provider flips and on server shutdown.
 	ReleaseAll()
 }
 
@@ -69,7 +69,7 @@ type Scored struct {
 // model set is currently warm.
 type CacheStatus struct {
 	Loaded   bool
-	UseCUDA  bool
+	Provider string
 	InUse    bool
 	Sessions []string
 	LastUsed time.Time
@@ -82,7 +82,7 @@ type CacheStatus struct {
 type RunRequest struct {
 	Cfg            *config.Config
 	Taggers        []TaggerStatus
-	UseCUDA        bool
+	Provider       string
 	CatIDs         map[string]int64
 	GeneralCatID   int64
 	InferredCats   map[string]int64

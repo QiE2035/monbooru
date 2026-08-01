@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"crypto/md5"
 	"crypto/sha256"
 	"database/sql"
@@ -1235,7 +1236,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 				invalidate := g.InvalidateCaches
 				mangaCache := gallery.MangaCacheDir(g.ThumbnailsPath)
 				go func() {
-					skipped, err := tagger.RunWithTaggers(h.jobs.Context(), database, h.cfg, []int64{imgID}, selected, h.jobs, h.cfg.Tagger.UseCUDA, mangaCache)
+					skipped, err := tagger.RunWithTaggers(h.jobs.Context(), database, h.cfg, []int64{imgID}, selected, h.jobs, h.cfg.Tagger.ExecutionProvider, mangaCache)
 					if invalidate != nil {
 						invalidate()
 					}
@@ -1356,13 +1357,9 @@ func (h *Handler) searchImages(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	queryStr := q.Get("q")
 	sortStr := q.Get("sort")
-	if sortStr == "" {
-		sortStr = "newest"
-	}
+	sortStr = cmp.Or(sortStr, "newest")
 	orderStr := q.Get("order")
-	if orderStr == "" {
-		orderStr = "desc"
-	}
+	orderStr = cmp.Or(orderStr, "desc")
 
 	offset, limit := parsePage(r, h.cfg.UI.PageSize, 200)
 	pageNum := offset/limit + 1
@@ -1619,9 +1616,7 @@ func (h *Handler) applyInitialTags(g Gallery, imgID int64, rawTags []string, via
 	// the tags page (and an api source group on the detail page) rather
 	// than looking like anonymous UI adds. A caller-supplied via still
 	// wins and is recorded verbatim.
-	if via == "" {
-		via = "api"
-	}
+	via = cmp.Or(via, "api")
 	tagIDs, warnings := h.resolveTagNames(g, rawTags, via)
 	if len(tagIDs) > 0 {
 		if _, err := g.TagSvc.AddTagsToOneImage(imgID, tagIDs, via); err != nil {

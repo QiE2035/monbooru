@@ -23,8 +23,7 @@ func (s *Server) findRelationPairsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	cx := s.Active()
 	if cx == nil || cx.DB == nil || cx.bkTree == nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "No active gallery.")
+		flashStatus(w, http.StatusInternalServerError, "No active gallery.")
 		return
 	}
 	s.cfgMu.Lock()
@@ -45,8 +44,7 @@ func (s *Server) findRelationPairsPost(w http.ResponseWriter, r *http.Request) {
 	// explicit confirm so a non-HTMX caller (curl, bookmarked URL, broken
 	// script) can't drop the queue with a single missing flag.
 	if replace && r.FormValue("confirm") != "REBUILD" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "replace=true requires confirm=REBUILD.")
+		flashStatus(w, http.StatusBadRequest, "replace=true requires confirm=REBUILD.")
 		return
 	}
 
@@ -90,16 +88,14 @@ func (s *Server) resetSkippedPost(w http.ResponseWriter, r *http.Request) {
 	}
 	cx := s.Active()
 	if cx == nil || cx.DB == nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "No active gallery.")
+		flashStatus(w, http.StatusInternalServerError, "No active gallery.")
 		return
 	}
 	res, err := cx.DB.Write.ExecContext(r.Context(),
 		`UPDATE potential_relation_pairs SET skipped_at = NULL WHERE skipped_at IS NOT NULL`)
 	if err != nil {
 		logx.Warnf("reset skipped: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	n, _ := res.RowsAffected()

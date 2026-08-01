@@ -226,17 +226,7 @@ func (m *Manager) MarkViewed() {
 		return
 	}
 	m.viewed = true
-	if m.timer != nil {
-		m.timer.Stop()
-	}
-	m.timer = time.AfterFunc(6*time.Second, func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if m.state == nil || m.state.Running {
-			return
-		}
-		m.clearStateLocked()
-	})
+	m.armDismiss(6 * time.Second)
 }
 
 // Dismiss clears the completed/failed job state so the status widget goes idle.
@@ -273,10 +263,17 @@ func (m *Manager) SetWatcherMessage(msg string) {
 // scheduleAutoDismiss arms the 30s auto-dismiss for the current completed
 // state. Caller must hold m.mu.
 func (m *Manager) scheduleAutoDismiss() {
+	m.armDismiss(30 * time.Second)
+}
+
+// armDismiss replaces any pending dismiss with one d from now. It fires
+// only while the state is still the completed one it was armed against:
+// a job started in the meantime owns the widget. Caller must hold m.mu.
+func (m *Manager) armDismiss(d time.Duration) {
 	if m.timer != nil {
 		m.timer.Stop()
 	}
-	m.timer = time.AfterFunc(30*time.Second, func() {
+	m.timer = time.AfterFunc(d, func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if m.state == nil || m.state.Running {

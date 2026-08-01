@@ -2,6 +2,7 @@ package compatibility
 
 import (
 	"archive/zip"
+	"cmp"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -93,9 +94,7 @@ func translateBlombooru(entries []NormalizedEntry) (Result, error) {
 		// archive_path is "media/<filename>"; route the file under the
 		// same basename in the target gallery root.
 		rel := strings.TrimPrefix(m.ArchivePath, "media/")
-		if rel == "" {
-			rel = m.Filename
-		}
+		rel = cmp.Or(rel, m.Filename)
 		if rel == "" {
 			continue
 		}

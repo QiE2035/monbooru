@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"net/http"
 
 	"github.com/monbooru/monbooru/internal/tags"
@@ -27,9 +28,7 @@ func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {
 	prefix := q.Get("q")
 	catName := q.Get("category")
 	sortStr := q.Get("sort")
-	if sortStr == "" {
-		sortStr = "usage"
-	}
+	sortStr = cmp.Or(sortStr, "usage")
 
 	offset, limit := parsePage(r, 100, 500)
 

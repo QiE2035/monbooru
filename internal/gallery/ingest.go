@@ -1,6 +1,7 @@
 package gallery
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
@@ -10,7 +11,6 @@ import (
 	_ "image/png"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	_ "golang.org/x/image/webp"
@@ -22,18 +22,18 @@ import (
 )
 
 // FolderPath computes the relative directory of filePath under
-// galleryPath. Returns "" for files at the gallery root. Linux paths.
+// galleryPath. Returns "" for files at the gallery root, and for paths
+// that fall outside it. The result is always "/"-separated:
+// folder_path is a DB value, not a filesystem path, so it must be
+// portable across platforms.
 func FolderPath(galleryPath, filePath string) string {
-	dir := filepath.Dir(filePath)
-	if dir == "." {
+	// Rel cleans both sides, so a gallery_path configured with "/" still
+	// matches the native separators the filesystem walk hands back.
+	rel, err := filepath.Rel(galleryPath, filepath.Dir(filePath))
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
 		return ""
 	}
-	rel := strings.TrimPrefix(dir, galleryPath)
-	rel = strings.TrimPrefix(rel, "/")
-	if rel == "." {
-		return ""
-	}
-	return rel
+	return filepath.ToSlash(rel)
 }
 
 // Ingest processes a single file: hash, dimension probe, metadata
@@ -69,9 +69,7 @@ func decodeImageDimensions(path string) (w, h *int) {
 // ClaimOwnership preamble. Sync uses it directly to avoid double-hashing
 // the same file on large libraries.
 func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType, hash, origin string) (*models.Image, bool, error) {
-	if origin == "" {
-		origin = models.OriginIngest
-	}
+	origin = cmp.Or(origin, models.OriginIngest)
 	var existingID int64
 	err := database.Read.QueryRow(
 		`SELECT id FROM images WHERE sha256 = ?`, hash,
@@ -192,6 +190,17 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 	}
 	if err != sql.ErrNoRows {
 		return nil, false, fmt.Errorf("checking sha256: %w", err)
+	}
+
+	// DetectFileType trusts the extension so the sync walk stays free of
+	// per-file reads. That leaves bytes that are not media at all - a
+	// text file renamed .png - reaching here, where they would insert a
+	// row with no dimensions, no thumbnail and no phash. Confirm the
+	// signature before committing to a row, like the cbz branch below
+	// refuses an archive that will not open.
+	if _, err := detectMagicType(path); err != nil {
+		logx.Warnf("ingest: skip %q: contents are not a supported media type", path)
+		return nil, false, fmt.Errorf("ingest %q: %w", path, err)
 	}
 
 	fi, err := os.Stat(path)

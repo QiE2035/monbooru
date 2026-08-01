@@ -95,13 +95,11 @@ func (s *Server) renameCollectionPost(w http.ResponseWriter, r *http.Request) {
 	oldName := strings.TrimSpace(r.FormValue("prev"))
 	newName := strings.TrimSpace(r.FormValue("name"))
 	if oldName == "" || newName == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Both the current and the new collection name are required.")
+		flashStatus(w, http.StatusBadRequest, "Both the current and the new collection name are required.")
 		return
 	}
 	if len(newName) > maxExternalSourceLen {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Collection label too long.")
+		flashStatus(w, http.StatusBadRequest, "Collection label too long.")
 		return
 	}
 	if oldName == newName {
@@ -122,14 +120,12 @@ func (s *Server) collectionFindRelationsPost(w http.ResponseWriter, r *http.Requ
 	}
 	name := strings.TrimSpace(r.FormValue("collection"))
 	if name == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Collection label required.")
+		flashStatus(w, http.StatusBadRequest, "Collection label required.")
 		return
 	}
 	enabled := r.FormValue("enabled") == "1"
 	if err := gallery.SetCollectionFindRelations(s.db(), name, enabled); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Could not update the collection.")
+		flashStatus(w, http.StatusInternalServerError, "Could not update the collection.")
 		return
 	}
 	verb := "enabled"
@@ -195,16 +191,14 @@ func (s *Server) reorderCollectionPost(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.FormValue("collection"))
 	if name == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Collection label required.")
+		flashStatus(w, http.StatusBadRequest, "Collection label required.")
 		return
 	}
 	// Filename mode ignores the clicked ids and orders the whole collection by
 	// filename, ceiling-blind.
 	if r.FormValue("mode") == "filename" {
 		if err := gallery.SortCollectionByFilename(s.db(), name); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			writeInlineFlash(w, "err", "Could not reorder the collection.")
+			flashStatus(w, http.StatusInternalServerError, "Could not reorder the collection.")
 			return
 		}
 		s.Active().InvalidateCaches()
@@ -213,23 +207,20 @@ func (s *Server) reorderCollectionPost(w http.ResponseWriter, r *http.Request) {
 	}
 	raw := strings.TrimSpace(r.FormValue("ids"))
 	if raw == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Click at least one image first.")
+		flashStatus(w, http.StatusBadRequest, "Click at least one image first.")
 		return
 	}
 	var ids []int64
 	for _, part := range strings.Split(raw, ",") {
 		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			writeInlineFlash(w, "err", "Bad image id list.")
+			flashStatus(w, http.StatusBadRequest, "Bad image id list.")
 			return
 		}
 		ids = append(ids, id)
 	}
 	if err := gallery.ReorderCollection(s.db(), name, ids); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Could not reorder the collection.")
+		flashStatus(w, http.StatusInternalServerError, "Could not reorder the collection.")
 		return
 	}
 	s.Active().InvalidateCaches()
@@ -242,13 +233,11 @@ func (s *Server) reorderCollectionPost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) startCollectionJob(w http.ResponseWriter, name string, run func([]int64)) {
 	ids, err := gallery.CollectionMemberIDs(s.db(), name)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Could not read the collection.")
+		flashStatus(w, http.StatusInternalServerError, "Could not read the collection.")
 		return
 	}
 	if len(ids) == 0 {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "That collection no longer exists.")
+		flashStatus(w, http.StatusBadRequest, "That collection no longer exists.")
 		return
 	}
 	if !s.startJob(w, models.JobTypeTag) {
@@ -267,8 +256,7 @@ func (s *Server) dissolveCollectionPost(w http.ResponseWriter, r *http.Request) 
 	}
 	name := strings.TrimSpace(r.FormValue("collection"))
 	if name == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Collection label required.")
+		flashStatus(w, http.StatusBadRequest, "Collection label required.")
 		return
 	}
 	s.startCollectionJob(w, name, func(ids []int64) {

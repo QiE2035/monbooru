@@ -31,8 +31,7 @@ func (s *Server) syncTrigger(w http.ResponseWriter, r *http.Request) {
 	if cx := s.Active(); cx == nil || cx.Degraded {
 		// Same escaped-fragment shape as the busy-job refusal below it:
 		// the topbar swaps this body straight into #sync-flash.
-		w.WriteHeader(http.StatusServiceUnavailable)
-		writeInlineFlash(w, "err", "Sync unavailable: gallery path is unreadable.")
+		flashStatus(w, http.StatusServiceUnavailable, "Sync unavailable: gallery path is unreadable.")
 		return
 	}
 	if !s.startJob(w, models.JobTypeSync) {

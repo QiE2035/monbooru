@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -224,10 +225,16 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 	return s, nil
 }
 
+// idleIndexReleaseAfter is how long a gallery's phash and counted-tag
+// indexes may sit unread before the reclaim loop drops them. Long
+// enough that a browse session pausing doesn't pay the rebuild, short
+// enough that a finished one gives the memory back.
+const idleIndexReleaseAfter = 30 * time.Minute
+
 // runMemoryReclaim wakes every 5 minutes and, when no job is active,
-// shrinks each gallery's SQLite page cache, returns the Go heap, and
-// tears down the cached auto-tagger session set if it has been idle
-// for tagger.idle_release_after_minutes.
+// drops each gallery's idle in-memory indexes, shrinks its SQLite page
+// cache, returns the Go heap, and tears down the cached auto-tagger
+// session set if it has been idle for tagger.idle_release_after_minutes.
 func (s *Server) runMemoryReclaim() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -244,10 +251,19 @@ func (s *Server) runMemoryReclaim() {
 			}
 			s.ctxMu.RUnlock()
 			for _, cx := range ctxs {
+				dropped := cx.DB.ReleaseIdleCountedTags(idleIndexReleaseAfter)
+				if cx.bkTree != nil && cx.bkTree.ReleaseIdle(idleIndexReleaseAfter) {
+					dropped = true
+				}
+				if dropped {
+					logx.Debugf("memory reclaim %q: dropped idle indexes", cx.Name)
+				}
 				if err := cx.DB.ShrinkMemory(context.Background()); err != nil {
 					logx.Warnf("memory reclaim %q: %v", cx.Name, err)
 				}
 			}
+			search.AdjacencyCacheSweep()
+			s.pruneFetchStatus()
 			debug.FreeOSMemory()
 			s.cfgMu.Lock()
 			mins := s.cfg.Tagger.IdleReleaseAfterMinutes
@@ -299,13 +315,8 @@ func (s *Server) ContextMiddleware(next http.Handler) http.Handler {
 }
 
 func contextMiddlewareBypass(path string) bool {
-	if path == "/internal/gallery/switch" {
-		return true
-	}
-	if path == "/custom.css" {
-		return true
-	}
-	if path == "/custom.logo" {
+	switch path {
+	case "/internal/gallery/switch", "/custom.css", "/custom.logo", "/manifest.json":
 		return true
 	}
 	if strings.HasPrefix(path, "/i/") {
@@ -360,6 +371,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.staticFS))))
 	mux.HandleFunc("GET /custom.css", s.serveCustomCSS)
 	mux.HandleFunc("GET /custom.logo", s.serveCustomLogo)
+	mux.HandleFunc("GET /manifest.json", s.manifestHandler)
 	mux.HandleFunc("GET /thumbnails/{gallery}/{file}", s.serveThumbnail)
 	// Fallback icon for tabs with no <link rel="icon"> (a raw image opened
 	// in a new tab). Route through the override so server.logo applies;
@@ -526,11 +538,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/tagger/{name}/enable", s.settingsTaggerEnablePost)
 	mux.HandleFunc("POST /settings/tagger/{name}/disable", s.settingsTaggerDisablePost)
 	mux.HandleFunc("POST /settings/tagger/{name}/delete", s.settingsTaggerDeletePost)
-	mux.HandleFunc("GET /settings/tagger/{name}/thresholds", s.settingsTaggerThresholdsGet)
-	mux.HandleFunc("POST /settings/tagger/{name}/thresholds", s.settingsTaggerThresholdsPost)
-	mux.HandleFunc("POST /settings/tagger/{name}/thresholds/reset", s.settingsTaggerThresholdsResetPost)
-	mux.HandleFunc("GET /settings/tagger/{name}/galleries", s.settingsTaggerGalleriesGet)
-	mux.HandleFunc("POST /settings/tagger/{name}/galleries", s.settingsTaggerGalleriesPost)
+	mux.HandleFunc("GET /settings/tagger/{name}/config", s.settingsTaggerConfigGet)
+	mux.HandleFunc("POST /settings/tagger/{name}/config", s.settingsTaggerConfigPost)
+	mux.HandleFunc("GET /settings/tagger/{name}/labels", s.settingsTaggerLabelsGet)
+	mux.HandleFunc("POST /settings/tagger/{name}/mapping", s.settingsTaggerMappingPost)
+	mux.HandleFunc("POST /settings/tagger/{name}/reset", s.settingsTaggerResetPost)
 
 	// Saved searches are managed from the sidebar (no dedicated search page).
 	mux.HandleFunc("POST /search/saved", s.createSavedSearch)
@@ -841,15 +853,9 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 	if expr, parseErr := search.Parse(r.URL.Query().Get("q")); parseErr == nil {
 		inboxNavActive = inboxFilterActive(expr)
 	}
-	// Copy the gallery list so template rendering never dereferences the map
-	// under a concurrent mutation (the middleware lock is scoped to the
-	// request, but the slice is cheap and small).
-	galleries := make([]config.Gallery, len(s.cfg.Galleries))
-	copy(galleries, s.cfg.Galleries)
+	galleries := s.galleries()
 	active := readRatingCookie(r)
-	if active == "" {
-		active = "explicit"
-	}
+	active = cmp.Or(active, "explicit")
 	conn, connVer, ptrReady, ptrSyncing, ptrContrib := s.monloaderStatusSeed()
 	if s.monloaderPaused() {
 		// A paused link renders as paused everywhere and hides the
@@ -990,27 +996,39 @@ func (s *Server) booruName() string {
 	return "Monbooru"
 }
 
-// booruLogoURL points the topbar logo at /custom.logo when an override
-// is configured, the bundled logo otherwise. The bundled default is the
-// logo, not the favicon - the two surfaces share the override but have
-// distinct fallbacks (see booruFaviconURL).
-func (s *Server) booruLogoURL() string {
-	if s.cfg.Server.BooruLogo != "" {
-		return "/custom.logo"
-	}
-	return "/static/logo.png"
+// modelPath reads paths.model_path under the config lock. Fixed after
+// boot, but every tagger handler reaches for it and one lock discipline
+// beats nine open-coded reads.
+func (s *Server) modelPath() string {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg.Paths.ModelPath
 }
 
-// booruFaviconURL points the favicon link at /custom.logo when an
-// override is configured, the bundled favicon otherwise. A configured
-// server.logo replaces both the favicon and the topbar logo; only the
-// unset fallback differs from booruLogoURL.
-func (s *Server) booruFaviconURL() string {
+// galleries copies cfg.Galleries under the lock its mutators take. A
+// slice-header read torn against a reallocating append pairs the old
+// array pointer with the new length, so the copy walks off the end of
+// the old backing array and hands garbage strings to a template.
+func (s *Server) galleries() []config.Gallery {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	out := make([]config.Gallery, len(s.cfg.Galleries))
+	copy(out, s.cfg.Galleries)
+	return out
+}
+
+// booruAsset points a branded surface at /custom.logo when
+// server.logo is configured. One override drives both the topbar logo
+// and the favicon; only the unset fallback differs.
+func (s *Server) booruAsset(fallback string) string {
 	if s.cfg.Server.BooruLogo != "" {
 		return "/custom.logo"
 	}
-	return "/static/favicon.png"
+	return fallback
 }
+
+func (s *Server) booruLogoURL() string    { return s.booruAsset("/static/logo.png") }
+func (s *Server) booruFaviconURL() string { return s.booruAsset("/static/favicon.png") }
 
 // monloaderWebBase is the browser-facing monloader base for the footer
 // "connected to monloader" link: the configured web url when set, else the api url.
@@ -1018,9 +1036,7 @@ func (s *Server) monloaderWebBase() string {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
 	base := s.cfg.Server.MonloaderURL
-	if base == "" {
-		base = s.cfg.Monloader.APIURL
-	}
+	base = cmp.Or(base, s.cfg.Monloader.APIURL)
 	return strings.TrimRight(base, "/")
 }
 
@@ -1271,15 +1287,9 @@ func (s *Server) withConfig(fn func(*config.Config) error) error {
 	return nil
 }
 
-// saveConfig acquires the config mutex, writes the config file, and returns
-// any error so callers can surface the failure to the user instead of leaving
-// the in-memory cfg out of sync with what's actually persisted to disk.
+// saveConfig persists the config as it stands, for callers that have
+// already made their edit. Returns any error so they can surface the
+// failure instead of leaving the in-memory cfg out of sync with disk.
 func (s *Server) saveConfig() error {
-	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
-	if err := config.Save(s.cfg, s.configPath); err != nil {
-		logx.Errorf("config save: %v", err)
-		return err
-	}
-	return nil
+	return s.withConfig(func(*config.Config) error { return nil })
 }

@@ -18,14 +18,8 @@
     </div>
     {{/* Applied on change: the select showing a sort the grid is not in
          reads as a broken grid, not as a pending edit. */}}
-    <select name="sort" id="search-sort" onchange="submitSearch()">
-      <option value="newest"   {{if eq .Sort "newest"}}selected{{end}}>Newest</option>
-      <option value="filesize" {{if eq .Sort "filesize"}}selected{{end}}>File size</option>
-      <option value="order"    {{if eq .Sort "order"}}selected{{end}}>Collection order</option>
-      {{if eq .Sort "random"}}<option value="random" selected>Random</option>{{end}}
-      {{if eq .Sort "similarity"}}<option value="similarity" selected>Similarity</option>{{end}}
-    </select>
-    <select name="order" onchange="submitSearch()">
+    {{template "partials/sort_select.html" .}}
+    <select name="order" aria-label="Sort direction" onchange="submitSearch()">
       <option value="desc" {{if eq .Order "desc"}}selected{{end}}>↓</option>
       <option value="asc"  {{if eq .Order "asc"}}selected{{end}}>↑</option>
     </select>

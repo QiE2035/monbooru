@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -21,9 +22,7 @@ import (
 // the empty-storage steady state means "no ceiling".
 func (s *Server) ratingCeilingPost(w http.ResponseWriter, r *http.Request) {
 	level := r.URL.Query().Get("level")
-	if level == "" {
-		level = r.FormValue("level")
-	}
+	level = cmp.Or(level, r.FormValue("level"))
 	writeRatingCookie(w, level)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -138,14 +137,10 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 	var prevID, nextID *int64
 	if refID == nil && (back.Sort != "" || back.Q != "") {
 		sortStr := back.Sort
-		if sortStr == "" {
-			sortStr = "newest"
-		}
+		sortStr = cmp.Or(sortStr, "newest")
 		orderStr := back.Order
-		if orderStr == "" {
-			orderStr = "desc"
-		}
-		prevID, nextID = s.findAdjacentImages(id, back.Q, sortStr, orderStr, back.Seed, resolveCeiling(r, s.Active()))
+		orderStr = cmp.Or(orderStr, "desc")
+		prevID, nextID = s.findAdjacentImages(r.Context(), id, back.Q, sortStr, orderStr, back.Seed, resolveCeiling(r, s.Active()))
 	}
 
 	_, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), id, tags.RemoveAllTagsFromImageTx, s.onImageDeleteCallback())
@@ -159,8 +154,7 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		logx.Errorf("delete image %d: %v", id, err)
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", "Delete failed; check server log.")
+		flashStatus(w, http.StatusInternalServerError, "Delete failed; check server log.")
 		return
 	}
 	s.Active().InvalidateCaches()
@@ -330,7 +324,8 @@ func (s *Server) setSource(w http.ResponseWriter, r *http.Request) {
 	postID := strings.TrimSpace(r.FormValue("post_id"))
 	prevSite := strings.TrimSpace(r.FormValue("prev_site"))
 	prevPost := strings.TrimSpace(r.FormValue("prev_post"))
-	if prevSite != "" && (!strings.EqualFold(prevSite, site) || prevPost != postID) {
+	hasPrev := r.FormValue("has_prev") == "1" || prevSite != "" || prevPost != ""
+	if hasPrev && (!strings.EqualFold(prevSite, site) || prevPost != postID) {
 		if err := gallery.RenameSourceMembership(s.db(), id, prevSite, prevPost, site, postID, url); err != nil {
 			externalErr(w, r, err.Error(), http.StatusInternalServerError)
 			return
@@ -556,8 +551,7 @@ func externalErr(w http.ResponseWriter, r *http.Request, msg string, code int) {
 func hxErr(w http.ResponseWriter, r *http.Request, htmxMsg, plainMsg string, code int) {
 	if isHTMXRequest(r) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		writeInlineFlash(w, "err", htmxMsg)
+		flashStatus(w, http.StatusOK, htmxMsg)
 		return
 	}
 	http.Error(w, plainMsg, code)
@@ -876,10 +870,12 @@ func unlinkUnderGallery(galleryRoot, victim string) error {
 	return nil
 }
 
-// moveImage relocates the one image at {id} into the requested folder. A `move`
-// job is used even for single-image moves to reuse the watcher suppression
-// pattern from batch moves; the job is brief and auto-dismisses like any other.
-func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
+// singleImageMoveJob is the shell moveImage and renameImage share. A
+// `move` job is taken even for one image so the watcher suppression the
+// batch path relies on applies here too; the job is brief and
+// auto-dismisses like any other. op returns the success flash, and
+// answered when it has already written the response body itself.
+func (s *Server) singleImageMoveJob(w http.ResponseWriter, r *http.Request, doneMsg string, op func(id int64) (flash string, answered bool, err error)) {
 	if !parseFormOK(w, r) {
 		return
 	}
@@ -887,27 +883,22 @@ func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	targetFolder := strings.TrimSpace(r.FormValue("folder"))
-
 	if !s.startJob(w, models.JobTypeMove) {
 		return
 	}
-
-	if _, moveErr := gallery.MoveImage(s.db(), s.galleryPath(), id, targetFolder); moveErr != nil {
-		s.jobs.Fail(moveErr.Error())
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", moveErr.Error())
+	flash, answered, err := op(id)
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		flashStatus(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	s.Active().InvalidateCaches()
-	s.jobs.Complete("Moved image.")
-
+	s.jobs.Complete(doneMsg)
+	if answered {
+		return
+	}
 	if isHTMXRequest(r) {
-		dest := targetFolder
-		if dest == "" {
-			dest = "gallery root"
-		}
-		setFlashHeader(w, fmt.Sprintf("Moved image to %s.", dest), "ok", nil)
+		setFlashHeader(w, flash, "ok", nil)
 		w.Header().Set("HX-Redirect", fmt.Sprintf("/images/%d", id))
 		w.WriteHeader(http.StatusOK)
 		return
@@ -915,48 +906,37 @@ func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, fmt.Sprintf("/images/%d", id), http.StatusSeeOther)
 }
 
-// renameImage renames the one image at {id}'s file in place. A `move` job
-// is used for the same watcher-suppression reason as moveImage.
+// moveImage relocates the one image at {id} into the requested folder.
+func (s *Server) moveImage(w http.ResponseWriter, r *http.Request) {
+	targetFolder := strings.TrimSpace(r.FormValue("folder"))
+	s.singleImageMoveJob(w, r, "Moved image.", func(id int64) (string, bool, error) {
+		if _, err := gallery.MoveImage(s.db(), s.galleryPath(), id, targetFolder); err != nil {
+			return "", false, err
+		}
+		return fmt.Sprintf("Moved image to %s.", cmp.Or(targetFolder, "gallery root")), false, nil
+	})
+}
+
+// renameImage renames the one image at {id}'s file in place. The
+// collections-order tile renames inline and wants the final name back
+// (a collision may have suffixed it), so that shape answers before the
+// shared redirect tail.
 func (s *Server) renameImage(w http.ResponseWriter, r *http.Request) {
-	if !parseFormOK(w, r) {
-		return
-	}
-	id, ok := pathInt64(w, r, "id")
-	if !ok {
-		return
-	}
 	newName := strings.TrimSpace(r.FormValue("name"))
-
-	if !s.startJob(w, models.JobTypeMove) {
-		return
-	}
-
-	res, renameErr := gallery.RenameImage(s.db(), s.galleryPath(), id, newName)
-	if renameErr != nil {
-		s.jobs.Fail(renameErr.Error())
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", renameErr.Error())
-		return
-	}
-	s.Active().InvalidateCaches()
-	s.jobs.Complete("Renamed image.")
-
-	newBase := filepath.Base(res.NewCanonicalPath)
-	// The collections-order tile renames in place and wants the final
-	// name back (collisions may have suffixed it); the detail-page
-	// dialog reloads the page instead.
-	if r.FormValue("inline") == "1" {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte(newBase))
-		return
-	}
-	if isHTMXRequest(r) {
-		setFlashHeader(w, fmt.Sprintf("Renamed image to %s.", newBase), "ok", nil)
-		w.Header().Set("HX-Redirect", fmt.Sprintf("/images/%d", id))
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, fmt.Sprintf("/images/%d", id), http.StatusSeeOther)
+	inline := r.FormValue("inline") == "1"
+	s.singleImageMoveJob(w, r, "Renamed image.", func(id int64) (string, bool, error) {
+		res, err := gallery.RenameImage(s.db(), s.galleryPath(), id, newName)
+		if err != nil {
+			return "", false, err
+		}
+		newBase := filepath.Base(res.NewCanonicalPath)
+		if inline {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte(newBase))
+			return "", true, nil
+		}
+		return fmt.Sprintf("Renamed image to %s.", newBase), false, nil
+	})
 }
 
 // nextPrefix returns the smallest string strictly greater than prefix

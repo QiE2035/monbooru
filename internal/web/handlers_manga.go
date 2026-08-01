@@ -66,9 +66,6 @@ func resumePage(img *models.Image) int {
 	return page
 }
 
-// readerHandler serves /images/{id}/read?page=N. Validates the row is
-// a manga, clamps page to [1, page_count], and renders the reader
-// template.
 // loadMangaImage parses {id}, loads the image, and 404s unless it is a
 // readable cbz. Returns ok=false (the 404 is already written) otherwise.
 func (s *Server) loadMangaImage(w http.ResponseWriter, r *http.Request) (*models.Image, bool) {
@@ -85,6 +82,9 @@ func (s *Server) loadMangaImage(w http.ResponseWriter, r *http.Request) (*models
 	return img, true
 }
 
+// readerHandler serves /images/{id}/read?page=N and renders the reader
+// template. A bare URL opens on the resume bookmark; an explicit page
+// is clamped to [1, page_count] and clears the bookmark at page 1.
 func (s *Server) readerHandler(w http.ResponseWriter, r *http.Request) {
 	img, ok := s.loadMangaImage(w, r)
 	if !ok {

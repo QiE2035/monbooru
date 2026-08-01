@@ -63,13 +63,17 @@ func (b *whereBuilder) buildPhashFilter(e FilterExpr) string {
 	if b.db != nil {
 		if tree := relations.DefaultRegistry.Lookup(b.db); tree != nil {
 			if err := tree.EnsureBuilt(b.db); err == nil {
-				ids := tree.SearchWithinDistance(phash, distance)
-				if len(ids) == 0 {
-					return "1=0"
+				// A tree dropped between the build and the search answers
+				// built=false; the scalar fallback below is then the only
+				// correct reading, since empty would mean "no matches".
+				if ids, built := tree.SearchWithinDistance(phash, distance); built {
+					if len(ids) == 0 {
+						return "1=0"
+					}
+					placeholders, idArgs := db.InPlaceholders(ids)
+					b.args = append(b.args, idArgs...)
+					return "i.id IN (" + placeholders + ")"
 				}
-				placeholders, idArgs := db.InPlaceholders(ids)
-				b.args = append(b.args, idArgs...)
-				return "i.id IN (" + placeholders + ")"
 			}
 		}
 	}

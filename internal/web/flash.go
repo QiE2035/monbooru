@@ -22,6 +22,15 @@ func flashErr(w http.ResponseWriter, r *http.Request, msg string) {
 	http.Error(w, msg, http.StatusBadRequest)
 }
 
+// flashStatus writes an inline error flash under an explicit status.
+// The pairing is the dominant shape across the handlers: unlike
+// flashErr it does not branch on the request mode, because these
+// callers are always the HTMX-driven dialogs and batch bars.
+func flashStatus(w http.ResponseWriter, code int, msg string) {
+	w.WriteHeader(code)
+	writeInlineFlash(w, "err", msg)
+}
+
 // setDialogSavedTrigger fires the JS-side dialog-close event ("tagger-saved"
 // / "token-saved") naming the dialog, so one body listener per event serves
 // every config dialog of that family.

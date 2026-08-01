@@ -248,13 +248,13 @@ func (s *Service) AddVersionEdge(parent, child int64) error {
 		// chain is a silent success so REST retries against a flaky
 		// network don't have to distinguish "first call landed but
 		// the response was lost" from a real cycle / direction
-		// conflict.
+		// conflict. Still prunes: a queue row can predate the edge.
 		var exact int
 		if err := tx.QueryRow(
 			`SELECT 1 FROM version_edges WHERE child_image_id = ? AND parent_image_id = ?`,
 			child, parent,
 		).Scan(&exact); err == nil {
-			return nil
+			return pruneQueuePairTx(tx, parent, child)
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -315,12 +315,13 @@ func (s *Service) AddDerivativeEdge(source, derivative int64) error {
 		// Idempotent re-add: the same (source, derivative) already
 		// declared returns silent success so retries don't have to
 		// distinguish a same-edge replay from a real source-conflict.
+		// Still prunes: a queue row can predate the edge.
 		var exact int
 		if err := tx.QueryRow(
 			`SELECT 1 FROM derivative_edges WHERE derivative_image_id = ? AND source_image_id = ?`,
 			derivative, source,
 		).Scan(&exact); err == nil {
-			return nil
+			return pruneQueuePairTx(tx, source, derivative)
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -396,11 +397,13 @@ func (s *Service) RemoveDupMember(imageID int64) error {
 }
 
 // nextDupOriginalQuery picks a dup group's next original (largest file,
-// then highest id) excluding one member. Shared so the unlink preview and
-// the two promotion sites stay byte-identical.
+// then highest id) from the members that are not leaving. %s carries the
+// placeholders for the leaving set - one for a single unlink, the whole
+// chunk when a bulk delete decides the group once. Shared so the unlink
+// preview and the promotion sites stay byte-identical.
 const nextDupOriginalQuery = `SELECT m.image_id FROM dup_group_members m
 	JOIN images i ON i.id = m.image_id
-	WHERE m.group_id = ? AND m.image_id != ?
+	WHERE m.group_id = ? AND m.image_id NOT IN (%s)
 	ORDER BY i.file_size DESC, m.image_id DESC
 	LIMIT 1`
 
@@ -436,7 +439,7 @@ func promoteNextOriginalTx(tx *sql.Tx, gid, leaverID int64) error {
 		return nil
 	}
 	var newOriginal int64
-	if err := tx.QueryRow(nextDupOriginalQuery, gid, leaverID).Scan(&newOriginal); err != nil {
+	if err := tx.QueryRow(fmt.Sprintf(nextDupOriginalQuery, "?"), gid, leaverID).Scan(&newOriginal); err != nil {
 		return err
 	}
 	_, err := tx.Exec(`UPDATE dup_groups SET original_image_id = ? WHERE id = ?`, newOriginal, gid)
@@ -479,7 +482,7 @@ func (s *Service) NextOriginalIfRemoved(groupID, removeID int64) (int64, error) 
 		return 0, nil
 	}
 	var nextID int64
-	err := s.db.Read.QueryRow(nextDupOriginalQuery, groupID, removeID).Scan(&nextID)
+	err := s.db.Read.QueryRow(fmt.Sprintf(nextDupOriginalQuery, "?"), groupID, removeID).Scan(&nextID)
 	if err != nil {
 		return 0, err
 	}
@@ -1004,23 +1007,15 @@ func (s *Service) CopyTagsFromDuplicatesToOriginal(groupID int64) (int, error) {
 	return int(added), err
 }
 
-// OnImageDelete fixes up dup_groups.original_image_id (no FK CASCADE)
+// OnImageDeleteTx fixes up dup_groups.original_image_id (no FK CASCADE)
 // and dissolves singleton groups so the caller's subsequent
 // `DELETE FROM images WHERE id = ?` doesn't fail on the NOT NULL FK.
-// Called from gallery.DeleteImage right before the image row is
-// removed; the FK CASCADE on the member tables takes care of the
-// dependent rows. Also drops the image from this gallery's in-memory
-// BK-tree (if one is built) so subsequent phash queries don't surface
-// a stale id.
-func (s *Service) OnImageDelete(imageID int64) error {
-	return s.inWriteTx(func(tx *sql.Tx) error { return s.OnImageDeleteTx(tx, imageID) })
-}
-
-// OnImageDeleteTx is OnImageDelete on a caller-held transaction, so the
-// image-delete path can commit the graph fixups alongside the row
-// delete. The BK-tree drop is an in-memory index update with no undo,
-// but it is rebuildable and the row it describes is on its way out
-// either way.
+// Runs on a caller-held transaction so the image-delete path commits
+// the graph fixups alongside the row delete; the FK CASCADE on the
+// member tables takes care of the dependent rows. Also drops the image
+// from this gallery's in-memory BK-tree (if one is built) so subsequent
+// phash queries don't surface a stale id. That drop has no undo, but it
+// is rebuildable and the row it describes is on its way out either way.
 func (s *Service) OnImageDeleteTx(tx *sql.Tx, imageID int64) error {
 	if err := handleDupGroupOnDeleteTx(tx, imageID); err != nil {
 		return err
@@ -1030,6 +1025,77 @@ func (s *Service) OnImageDeleteTx(tx *sql.Tx, imageID int64) error {
 	}
 	if tree := DefaultRegistry.Lookup(s.db); tree != nil && tree.Built() {
 		tree.Remove(imageID)
+	}
+	return nil
+}
+
+// OnImagesDeleteTx is OnImageDeleteTx for a whole delete chunk. Looping
+// the per-image form here would not do: with two members of a
+// three-member group in the same chunk it can promote a member the
+// chunk is about to remove, and the FK on dup_groups.original_image_id
+// then fails the whole transaction. Each touched group is decided once
+// against the membership that survives the chunk.
+func (s *Service) OnImagesDeleteTx(tx *sql.Tx, imageIDs []int64) error {
+	if len(imageIDs) == 0 {
+		return nil
+	}
+	if err := groupsOnBatchDeleteTx(tx, "dup_group_members", "dup_groups", imageIDs, true); err != nil {
+		return err
+	}
+	if err := groupsOnBatchDeleteTx(tx, "alt_group_members", "alt_groups", imageIDs, false); err != nil {
+		return err
+	}
+	if tree := DefaultRegistry.Lookup(s.db); tree != nil && tree.Built() {
+		for _, id := range imageIDs {
+			tree.Remove(id)
+		}
+	}
+	return nil
+}
+
+// groupsOnBatchDeleteTx drops every touched group the chunk would leave
+// with fewer than two members and, for dup groups, re-points an original
+// that is leaving at the best survivor. The membership rows themselves
+// go with the caller's DELETE through the FK CASCADE.
+func groupsOnBatchDeleteTx(tx *sql.Tx, memberTbl, groupTbl string, imageIDs []int64, promoteOriginal bool) error {
+	placeholders, args := db.InPlaceholders(imageIDs)
+	groupIDs, err := db.QueryIDs(tx,
+		`SELECT DISTINCT group_id FROM `+memberTbl+` WHERE image_id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return err
+	}
+	for _, gid := range groupIDs {
+		gidArgs := append([]any{gid}, args...)
+		var survivors int
+		if err := tx.QueryRow(
+			`SELECT COUNT(*) FROM `+memberTbl+` WHERE group_id = ? AND image_id NOT IN (`+placeholders+`)`,
+			gidArgs...,
+		).Scan(&survivors); err != nil {
+			return err
+		}
+		if survivors < 2 {
+			if _, err := tx.Exec(`DELETE FROM `+groupTbl+` WHERE id = ?`, gid); err != nil {
+				return err
+			}
+			continue
+		}
+		if !promoteOriginal {
+			continue
+		}
+		var original int64
+		if err := tx.QueryRow(`SELECT original_image_id FROM `+groupTbl+` WHERE id = ?`, gid).Scan(&original); err != nil {
+			return err
+		}
+		if !slices.Contains(imageIDs, original) {
+			continue
+		}
+		var newOriginal int64
+		if err := tx.QueryRow(fmt.Sprintf(nextDupOriginalQuery, placeholders), gidArgs...).Scan(&newOriginal); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE `+groupTbl+` SET original_image_id = ? WHERE id = ?`, newOriginal, gid); err != nil {
+			return err
+		}
 	}
 	return nil
 }

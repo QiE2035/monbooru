@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
 	"slices"
@@ -14,6 +15,47 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// executionProviderRow is one execution provider entry for the Settings
+// → Auto-Tagger radio list.
+type executionProviderRow struct {
+	Name  string
+	Label string
+}
+
+// executionProviderRows lists the selectable providers in UI order.
+// Availability is not probed here: ORT env init is not re-entrant and the
+// parent process must not load the library on a page render, so a bad
+// pick is rejected at save time by CheckProviderAvailable instead.
+func executionProviderRows() []executionProviderRow {
+	rows := make([]executionProviderRow, 0, len(config.ValidExecutionProviders))
+	for _, name := range config.ValidExecutionProviders {
+		rows = append(rows, executionProviderRow{Name: name, Label: providerDisplayLabel(name)})
+	}
+	return rows
+}
+
+// providerDisplayLabel returns the human-readable label for a provider name.
+func providerDisplayLabel(name string) string {
+	switch name {
+	case "cpu":
+		return "CPU"
+	case "cuda":
+		return "CUDA"
+	case "directml":
+		return "DirectML"
+	case "tensorrt":
+		return "TensorRT"
+	case "openvino":
+		return "OpenVINO"
+	case "coreml":
+		return "CoreML"
+	case "coremlv2":
+		return "CoreML V2"
+	default:
+		return name
+	}
+}
+
 func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	base := s.base(r, "settings", "Settings - "+s.booruName())
 	s.disableUnavailableTaggers()
@@ -24,26 +66,27 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	// "supported"; user-only installed taggers (not in the catalog) come last
 	// as "unsupported". The template renders a separator between the two
 	// groups when both are non-empty.
-	modelPath := s.cfg.Paths.ModelPath
+	modelPath := s.modelPath()
 	catalog := tagger.LoadCatalog(modelPath)
 	taggerByName := map[string]tagger.TaggerStatus{}
 	for _, t := range taggers {
 		taggerByName[t.Name] = t
 	}
-	// Supported rows track the catalog order (wd-swinv2 → joytag →
-	// camie-v2 by default) so the table reflects the editorial
+	// Supported rows track the catalog order (wd-swinv2 → animetimm-eva02
+	// → joytag → camie-v2 by default) so the table reflects the editorial
 	// recommendation, not the alphabetical disk-readdir order. For each
 	// catalog entry, surface the installed row when present, otherwise
 	// the ghost row.
 	var supportedRows, unsupportedRows []taggerRow
-	totalGalleries := len(s.cfg.Galleries)
+	totalGalleries := len(s.galleries())
 	catalogNames := map[string]bool{}
 	for _, e := range catalog {
 		catalogNames[e.Name] = true
 		if t, installed := taggerByName[e.Name]; installed {
-			row := installedTaggerRow(t, totalGalleries)
+			row := s.installedTaggerRow(t, totalGalleries, modelPath)
 			row.Supported = true
 			row.Description = e.Description
+			row.Gated = e.Gated
 			row.HostCommand = e.HostCommand()
 			row.DockerCommand = e.DockerCommand("monbooru")
 			supportedRows = append(supportedRows, row)
@@ -52,6 +95,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 				Name:          e.Name,
 				Description:   e.Description,
 				Supported:     true,
+				Gated:         e.Gated,
 				HostCommand:   e.HostCommand(),
 				DockerCommand: e.DockerCommand("monbooru"),
 			})
@@ -63,7 +107,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		if catalogNames[t.Name] {
 			continue
 		}
-		unsupportedRows = append(unsupportedRows, installedTaggerRow(t, totalGalleries))
+		unsupportedRows = append(unsupportedRows, s.installedTaggerRow(t, totalGalleries, modelPath))
 	}
 	taggerRows := append(supportedRows, unsupportedRows...)
 	data := base.AsMap()
@@ -71,10 +115,9 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	data["Config"] = s.cfg
 	data["Taggers"] = taggers
 	data["TaggerRows"] = taggerRows
-	data["SupportedCount"] = len(supportedRows)
-	data["UnsupportedCount"] = len(unsupportedRows)
 	data["ScheduleStatus"] = s.ScheduleStatus()
 	data["Stats"] = s.gatherStats()
+	data["ExecutionProviders"] = executionProviderRows()
 	data["MonloaderPending"] = s.pairs.listPending()
 	data["MonloaderPaired"] = s.pairedWith("monloader")
 	data["MonloaderPeerURL"] = s.monloaderAPIBase()
@@ -86,9 +129,7 @@ func (s *Server) settingsSchedulePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	timeVal := strings.TrimSpace(r.FormValue("time"))
-	if timeVal == "" {
-		timeVal = "01:00"
-	}
+	timeVal = cmp.Or(timeVal, "01:00")
 	if err := config.ValidateScheduleTime(timeVal); err != nil {
 		writeInlineFlash(w, "err", err.Error())
 		return

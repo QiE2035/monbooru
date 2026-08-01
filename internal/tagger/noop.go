@@ -12,8 +12,8 @@ import (
 	"github.com/monbooru/monbooru/internal/jobs"
 )
 
-// CheckCUDAAvailable always errors here; inference is compiled out.
-func CheckCUDAAvailable() error {
+// CheckProviderAvailable always errors here; inference is compiled out.
+func CheckProviderAvailable(_ string) error {
 	return errors.New("auto-tagger disabled (built without -tags tagger)")
 }
 
@@ -37,7 +37,7 @@ func AvailableTaggers(cfg *config.Config) []TaggerStatus {
 }
 
 // RunWithTaggers is the no-op stub matching the tagger build signature.
-func RunWithTaggers(_ context.Context, _ *db.DB, _ *config.Config, _ []int64, _ []TaggerStatus, _ *jobs.Manager, _ bool, _ string) (int, error) {
+func RunWithTaggers(_ context.Context, _ *db.DB, _ *config.Config, _ []int64, _ []TaggerStatus, _ *jobs.Manager, _ string, _ string) (int, error) {
 	return 0, nil
 }
 

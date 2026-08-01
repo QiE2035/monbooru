@@ -128,6 +128,12 @@ func ApplyReplacedFile(database *db.DB, thumbnailsPath string, imageID int64, st
 		return err
 	}
 
+	// The staged file came from os.CreateTemp at 0600 and the rename
+	// carries that through onto the gallery path, where every other
+	// write path lands at what os.Create gives under the usual umask.
+	if err := os.Chmod(stagedPath, 0o644); err != nil {
+		logx.Warnf("replace: chmod staged file %q: %v", stagedPath, err)
+	}
 	if err := moveIntoPlace(stagedPath, newPath); err != nil {
 		// The row already points at the new sha; keep the backup for hand
 		// recovery and surface the standard missing-file state.

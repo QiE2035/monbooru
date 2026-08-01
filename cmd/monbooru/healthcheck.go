@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"flag"
 	"fmt"
 	"net"
@@ -51,9 +52,7 @@ func resolveHealthAddr(configPath string) string {
 			addr = mc.Server.BindAddress
 		}
 	}
-	if addr == "" {
-		addr = "127.0.0.1:8080"
-	}
+	addr = cmp.Or(addr, "127.0.0.1:8080")
 
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {

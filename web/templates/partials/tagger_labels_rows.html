@@ -1,0 +1,42 @@
+{{define "partials/tagger_labels_rows.html"}}
+{{/* Rules are written as they are applied, so the panel's count line
+     rides every result-list render instead of the dialog body. */}}
+<span id="tc-custom-count-{{.Name}}" hx-swap-oob="true">{{.CustomRules}}</span>
+{{if .Err}}
+<p class="field-hint">{{.Err}}</p>
+{{else}}
+<table class="tagger-labels-table">
+  <thead><tr><th>Label</th><th>Emits as</th><th>Rule</th><th></th></tr></thead>
+  <tbody>
+    {{range .Rows}}
+    <tr data-source="{{.Source}}" data-category="{{.CatName}}" data-name="{{.TagName}}" data-rule="{{.Rule}}"{{if .Muted}} data-muted="1"{{end}}>
+      <td class="tc-source">{{.Source}}</td>
+      <td class="tc-emits">
+        {{- if .Muted}}<span class="status-dim">muted</span>
+        {{- else}}<span style="color:{{.Color}}">{{.CatName}}:{{.TagName}}</span>{{if .CategoryOff}} <span class="status-dim">- category off</span>{{end}}{{end -}}
+      </td>
+      <td class="tc-rule">
+        {{- if eq .Rule "custom"}}<span class="status-badge status-custom">custom</span>{{else}}<span class="status-badge">default</span>{{end -}}
+      </td>
+      <td class="tc-actions">
+        <button type="button" class="btn-sm tc-edit">Edit</button>
+        {{- if eq .Rule "custom"}}
+        <button type="button" class="btn-sm tc-reset" name="rule_source" value="{{.Source}}"
+                hx-post="/settings/tagger/{{$.Name}}/mapping" hx-vals='{"rule_reset":"1"}'
+                hx-target="#tc-labels-{{$.Name}}" hx-swap="innerHTML">Reset</button>
+        {{end -}}
+      </td>
+    </tr>
+    {{else}}
+    <tr><td colspan="4"><span class="status-dim">no matching labels</span></td></tr>
+    {{end}}
+    {{if gt .More 0}}
+    <tr class="tc-more"><td colspan="4">
+      {{if .CanGrow}}<button type="button" class="btn-link-accent tc-more-btn" data-limit="{{.NextLimit}}">[+ more]</button>{{end}}
+      <span class="status-dim">{{.More}} not shown</span>
+    </td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}

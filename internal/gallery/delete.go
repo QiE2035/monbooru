@@ -26,11 +26,9 @@ type DeleteImageResult struct {
 //     which is NOT NULL with no CASCADE so the parent DELETE would fail
 //     while the image is still wearing the original badge.
 //
-// galleryPath gates the canonical-path unlink behind PathInside so a
-// row whose canonical_path drifted outside the gallery root (a hand-
-// edited DB, a renamed mount) can't trick the handler into removing
-// arbitrary filesystem paths; sibling unlink paths in handlers_image_
-// actions.go and handlers_maintenance.go already carry the same gate.
+// The on-disk half runs through RemoveImageArtifacts and
+// UnlinkImageFile, shared with the bulk delete and prune-missing jobs
+// so the containment gate cannot go missing on one of them.
 func DeleteImage(database *db.DB, galleryPath, thumbnailsPath string, id int64, removeAllTags func(*sql.Tx, int64) error, onImageDelete func(*sql.Tx, int64) error) (*DeleteImageResult, error) {
 	var canonPath, folderPath, fileType string
 	var isMissing int
@@ -66,14 +64,7 @@ func DeleteImage(database *db.DB, galleryPath, thumbnailsPath string, id int64, 
 		return nil, fmt.Errorf("commit delete image %d: %w", id, err)
 	}
 
-	_ = os.Remove(ThumbnailPath(thumbnailsPath, id))
-	_ = os.Remove(HoverPath(thumbnailsPath, id))
-	// Manga cache directory only exists for cbz rows. Skipping the
-	// RemoveAll for static images cuts a per-image syscall in the bulk
-	// delete and prune-missing hot paths.
-	if fileType == "cbz" {
-		RemoveMangaCache(thumbnailsPath, id)
-	}
+	RemoveImageArtifacts(thumbnailsPath, id, fileType)
 
 	result := &DeleteImageResult{
 		CanonicalPath: canonPath,
@@ -81,13 +72,39 @@ func DeleteImage(database *db.DB, galleryPath, thumbnailsPath string, id int64, 
 		IsMissing:     isMissing == 1,
 	}
 
-	if !result.IsMissing && canonPath != "" {
-		if galleryPath != "" && !PathInside(galleryPath, canonPath) {
-			logx.Warnf("delete image %d: refusing to unlink %q outside gallery root %q", id, canonPath, galleryPath)
-		} else if err := os.Remove(canonPath); err != nil && !os.IsNotExist(err) {
-			logx.Warnf("delete image file %q: %v", canonPath, err)
-		}
+	if !result.IsMissing {
+		UnlinkImageFile(galleryPath, canonPath, id)
 	}
 
 	return result, nil
+}
+
+// RemoveImageArtifacts deletes the derived files monbooru generated for
+// one image: thumbnail, hover preview, and the manga page cache. An
+// empty fileType means the caller doesn't know it and the cache is
+// removed unconditionally; passing the real type skips a RemoveAll for
+// the static rows that never had one.
+func RemoveImageArtifacts(thumbnailsPath string, id int64, fileType string) {
+	_ = os.Remove(ThumbnailPath(thumbnailsPath, id))
+	_ = os.Remove(HoverPath(thumbnailsPath, id))
+	if fileType == "" || fileType == "cbz" {
+		RemoveMangaCache(thumbnailsPath, id)
+	}
+}
+
+// UnlinkImageFile removes one image's own file. galleryPath gates the
+// unlink behind PathInside so a row whose canonical_path drifted
+// outside the gallery root (a hand-edited DB, a repointed mount) can't
+// make a delete remove an arbitrary filesystem path.
+func UnlinkImageFile(galleryPath, canonPath string, id int64) {
+	if canonPath == "" {
+		return
+	}
+	if galleryPath != "" && !PathInside(galleryPath, canonPath) {
+		logx.Warnf("delete image %d: refusing to unlink %q outside gallery root %q", id, canonPath, galleryPath)
+		return
+	}
+	if err := os.Remove(canonPath); err != nil && !os.IsNotExist(err) {
+		logx.Warnf("delete image file %q: %v", canonPath, err)
+	}
 }

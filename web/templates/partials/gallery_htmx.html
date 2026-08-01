@@ -10,6 +10,16 @@
 <div id="search-warning" hx-swap-oob="true">{{if .SearchWarning}}<span class="field-hint">{{.SearchWarning}}</span>{{end}}</div>
 {{/* OOB footer cell so the "N hidden images in the current search" tracks the new search */}}
 <span id="footer-hidden" class="footer-hidden" hx-swap-oob="true">{{with .HiddenByCeiling}}<span class="footer-sep-strong">::</span>{{.}} hidden {{plural . "image" "images"}} in the current search{{end}}</span>
+{{/* OOB sort select: the header sits outside #gallery-grid, so a search that
+     resolves to a different sort than the form submitted - a similarity sort
+     whose query lost its similar: term - would leave the select advertising
+     an order the grid is not in. */}}
+{{template "partials/sort_select.html" .}}
+{{/* OOB library totals: an ingest landing while the page is open refreshes the
+     grid in place, and without these the footer keeps its render-time counts. */}}
+<span id="footer-count-images" hx-swap-oob="true">{{.VisibleCount}} img</span>
+<span id="footer-count-tags" hx-swap-oob="true">{{.TagCount}} tags</span>
+<span id="footer-count-collections" hx-swap-oob="true">{{.CollectionsCount}} collections</span>
 {{/* OOB toolbar: keeps the Actions chooser button in sync with the current search.
      Without this, the toolbar rendered on full-page load goes stale on every htmx swap. */}}
 <div id="save-search-area" hx-swap-oob="true">{{template "partials/save_search_area.html" .}}</div>

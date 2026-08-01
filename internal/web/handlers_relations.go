@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -619,8 +620,7 @@ func (s *Server) addRelationPost(w http.ResponseWriter, r *http.Request) {
 	case "not_related":
 		err = cx.RelationsSvc.AddNotRelated(a, b)
 	default:
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Unknown relation type.")
+		flashStatus(w, http.StatusBadRequest, "Unknown relation type.")
 		return
 	}
 	if err != nil {
@@ -640,6 +640,39 @@ func (s *Server) addRelationPost(w http.ResponseWriter, r *http.Request) {
 //   - a, b: image ids (most types); group_id for dup / alt dissolve and
 //     promote; root_id for version / derivative dissolve
 //   - image_id for promote-original (the new original)
+//
+// relationRemoveOp is one arm of the remove/dissolve vocabulary: where
+// its target comes from, what to call with it, and what the flash says.
+// An empty field means the arm reads the a/b pair instead of one id -
+// parseRelationPair carries its own self-relation guard, so the two
+// readers are not interchangeable.
+type relationRemoveOp struct {
+	field string
+	msg   string
+	run   func(svc *relations.Service, a, b int64) error
+}
+
+var relationRemoveOps = map[string]relationRemoveOp{
+	// "duplicate" / "alternate" unlink one image from its group;
+	// "dissolve-*" wipes the whole group instead.
+	"duplicate": {field: "image_id", msg: "Relation removed.",
+		run: func(svc *relations.Service, id, _ int64) error { return svc.RemoveDupMember(id) }},
+	"alternate": {field: "image_id", msg: "Relation removed.",
+		run: func(svc *relations.Service, id, _ int64) error { return svc.RemoveAltMember(id) }},
+	// The form posts a, b in chain order (parent, child).
+	"version":     {msg: "Relation removed.", run: (*relations.Service).RemoveVersionEdge},
+	"derivative":  {msg: "Relation removed.", run: (*relations.Service).RemoveDerivativeEdge},
+	"not_related": {msg: "Relation removed.", run: (*relations.Service).RemoveNotRelated},
+	"dissolve-dup": {field: "group_id", msg: "Group dissolved.",
+		run: func(svc *relations.Service, gid, _ int64) error { return svc.DissolveDupGroup(gid) }},
+	"dissolve-alt": {field: "group_id", msg: "Group dissolved.",
+		run: func(svc *relations.Service, gid, _ int64) error { return svc.DissolveAltGroup(gid) }},
+	"dissolve-version": {field: "root_id", msg: "Version chain dissolved.",
+		run: func(svc *relations.Service, rid, _ int64) error { return svc.DissolveVersionChain(rid) }},
+	"dissolve-derivative": {field: "root_id", msg: "Derivative tree dissolved.",
+		run: func(svc *relations.Service, rid, _ int64) error { return svc.DissolveDerivativeTree(rid) }},
+}
+
 func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
@@ -650,97 +683,25 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	relType := r.FormValue("type")
-	msg := "Relation removed."
-	switch relType {
-	case "duplicate":
-		// "duplicate" unlink takes one image_id and removes it from its
-		// dup group; "dissolve-dup" wipes the whole group instead.
-		id, ok := formInt64(w, r, "image_id")
+	var msg string
+	switch op, tabled := relationRemoveOps[relType]; {
+	case tabled:
+		var a, b int64
+		var ok bool
+		if op.field != "" {
+			a, ok = formInt64(w, r, op.field)
+		} else {
+			a, b, ok = parseRelationPair(w, r)
+		}
 		if !ok {
 			return
 		}
-		if err := cx.RelationsSvc.RemoveDupMember(id); err != nil {
+		if err := op.run(cx.RelationsSvc, a, b); err != nil {
 			writeRelationError(w, err)
 			return
 		}
-	case "alternate":
-		id, ok := formInt64(w, r, "image_id")
-		if !ok {
-			return
-		}
-		if err := cx.RelationsSvc.RemoveAltMember(id); err != nil {
-			writeRelationError(w, err)
-			return
-		}
-	case "version":
-		a, b, ok := parseRelationPair(w, r)
-		if !ok {
-			return
-		}
-		// Form posts a, b in chain order (parent, child).
-		if err := cx.RelationsSvc.RemoveVersionEdge(a, b); err != nil {
-			writeRelationError(w, err)
-			return
-		}
-	case "derivative":
-		a, b, ok := parseRelationPair(w, r)
-		if !ok {
-			return
-		}
-		if err := cx.RelationsSvc.RemoveDerivativeEdge(a, b); err != nil {
-			writeRelationError(w, err)
-			return
-		}
-	case "not_related":
-		a, b, ok := parseRelationPair(w, r)
-		if !ok {
-			return
-		}
-		if err := cx.RelationsSvc.RemoveNotRelated(a, b); err != nil {
-			writeRelationError(w, err)
-			return
-		}
-	case "dissolve-dup":
-		gid, ok := formInt64(w, r, "group_id")
-		if !ok {
-			return
-		}
-		if err := cx.RelationsSvc.DissolveDupGroup(gid); err != nil {
-			writeRelationError(w, err)
-			return
-		}
-		msg = "Group dissolved."
-	case "dissolve-alt":
-		gid, ok := formInt64(w, r, "group_id")
-		if !ok {
-			return
-		}
-		if err := cx.RelationsSvc.DissolveAltGroup(gid); err != nil {
-			writeRelationError(w, err)
-			return
-		}
-		msg = "Group dissolved."
-	case "dissolve-version":
-		rootID, ok := formInt64(w, r, "root_id")
-		if !ok {
-			return
-		}
-		if err := cx.RelationsSvc.DissolveVersionChain(rootID); err != nil {
-			writeRelationError(w, err)
-			return
-		}
-		msg = "Version chain dissolved."
-	case "dissolve-derivative":
-		rootID, ok := formInt64(w, r, "root_id")
-		if !ok {
-			return
-		}
-		if err := cx.RelationsSvc.DissolveDerivativeTree(rootID); err != nil {
-			writeRelationError(w, err)
-			return
-		}
-		msg = "Derivative tree dissolved."
-	case "promote-original":
+		msg = op.msg
+	case relType == "promote-original":
 		gid, ok := formInt64(w, r, "group_id")
 		if !ok {
 			return
@@ -754,7 +715,7 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		msg = "Original updated."
-	case "review-again":
+	case relType == "review-again":
 		// "review-again" undoes a 2-member relation and reopens the
 		// session on that exact pair. The `kind` field disambiguates
 		// which relation the dissolve targets (dup / alt / version /
@@ -766,8 +727,7 @@ func (s *Server) removeRelationPost(w http.ResponseWriter, r *http.Request) {
 		reviewAgainPost(w, r, cx)
 		return
 	default:
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Unknown relation type.")
+		flashStatus(w, http.StatusBadRequest, "Unknown relation type.")
 		return
 	}
 	cx.InvalidateCaches()
@@ -799,8 +759,7 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) {
 			return
 		}
 		if ar == 0 || br == 0 || ar == br {
-			w.WriteHeader(http.StatusBadRequest)
-			writeInlineFlash(w, "err", "Group must have exactly two members.")
+			flashStatus(w, http.StatusBadRequest, "Group must have exactly two members.")
 			return
 		}
 		a, b = ar, br
@@ -846,8 +805,7 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) {
 		}
 		a, b = ar, br
 	default:
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Unknown review-again kind.")
+		flashStatus(w, http.StatusBadRequest, "Unknown review-again kind.")
 		return
 	}
 	// not_related_pairs is keyed (a,b) without canonical ordering;
@@ -883,12 +841,7 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) {
 	}
 	cx.InvalidateCaches()
 	dest := "/relations/session?a=" + strconv.FormatInt(lo, 10) + "&b=" + strconv.FormatInt(hi, 10)
-	if isHTMXRequest(r) {
-		w.Header().Set("HX-Redirect", dest)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, dest, http.StatusSeeOther)
+	hxRedirect(w, r, dest)
 }
 
 // groupMembersTable returns the per-kind members-table name for
@@ -963,26 +916,15 @@ func (s *Server) copyTagsToOriginalPreview(w http.ResponseWriter, r *http.Reques
 		}
 		entries = append(entries, rec)
 	}
-	bucketOrder := []string{}
-	buckets := map[string]*copyTagsPreviewGroup{}
-	for _, e := range entries {
-		cat := e.category
-		if cat == "" {
-			cat = "(uncategorised)"
-		}
-		b, ok := buckets[cat]
-		if !ok {
-			b = &copyTagsPreviewGroup{Category: cat, Color: e.color}
-			buckets[cat] = b
-			bucketOrder = append(bucketOrder, cat)
-		}
-		b.Tags = append(b.Tags, e.name)
-	}
-	groups := make([]copyTagsPreviewGroup, 0, len(bucketOrder))
+	category := func(e row) string { return cmp.Or(e.category, "(uncategorised)") }
+	groups := groupOrdered(entries, nil, category,
+		func(e row) *copyTagsPreviewGroup {
+			return &copyTagsPreviewGroup{Category: category(e), Color: e.color}
+		},
+		func(g *copyTagsPreviewGroup, e row) { g.Tags = append(g.Tags, e.name) })
 	total := 0
-	for _, k := range bucketOrder {
-		groups = append(groups, *buckets[k])
-		total += len(buckets[k].Tags)
+	for _, g := range groups {
+		total += len(g.Tags)
 	}
 	s.renderTemplate(w, "partials/copy_tags_preview.html", map[string]any{
 		"GroupID":    gid,
@@ -1023,8 +965,7 @@ func (s *Server) reverseRelationPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	default:
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Unknown relation type.")
+		flashStatus(w, http.StatusBadRequest, "Unknown relation type.")
 		return
 	}
 	cx.InvalidateCaches()
@@ -1052,18 +993,14 @@ func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := r.URL.Query().Get("kind")
-	if kind == "" {
-		kind = r.FormValue("kind")
-	}
+	kind = cmp.Or(kind, r.FormValue("kind"))
 	if kind != "alt" && kind != "dup" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Unknown merge kind.")
+		flashStatus(w, http.StatusBadRequest, "Unknown merge kind.")
 		return
 	}
 	ids := parseIDList(r.Form["group_id"])
 	if len(ids) < 2 {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Pick at least two groups to merge.")
+		flashStatus(w, http.StatusBadRequest, "Pick at least two groups to merge.")
 		return
 	}
 	switch kind {
@@ -1077,13 +1014,11 @@ func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
 		if raw := strings.TrimSpace(r.FormValue("keep_original_from")); raw != "" {
 			v, err := strconv.ParseInt(raw, 10, 64)
 			if err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				writeInlineFlash(w, "err", "Invalid keep_original_from.")
+				flashStatus(w, http.StatusBadRequest, "Invalid keep_original_from.")
 				return
 			}
 			if !slices.Contains(ids, v) {
-				w.WriteHeader(http.StatusBadRequest)
-				writeInlineFlash(w, "err", "keep_original_from must be one of the merging groups.")
+				flashStatus(w, http.StatusBadRequest, "keep_original_from must be one of the merging groups.")
 				return
 			}
 			keep = v
@@ -1099,12 +1034,7 @@ func (s *Server) mergeGroupsPost(w http.ResponseWriter, r *http.Request) {
 		redirectKind = "alternate"
 	}
 	target := "/relations/browse?kind=" + redirectKind
-	if isHTMXRequest(r) {
-		w.Header().Set("HX-Redirect", target)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	hxRedirect(w, r, target)
 }
 
 // dissolveGroupsPost is the batch counterpart to removeRelationPost.
@@ -1129,14 +1059,11 @@ func (s *Server) dissolveGroupsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := r.URL.Query().Get("kind")
-	if kind == "" {
-		kind = r.FormValue("kind")
-	}
+	kind = cmp.Or(kind, r.FormValue("kind"))
 	switch kind {
 	case "duplicate", "alternate", "version", "derivative", "not_related":
 	default:
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Unknown dissolve kind.")
+		flashStatus(w, http.StatusBadRequest, "Unknown dissolve kind.")
 		return
 	}
 	switch kind {
@@ -1182,12 +1109,7 @@ func (s *Server) dissolveGroupsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	cx.InvalidateCaches()
 	target := "/relations/browse?kind=" + kind
-	if isHTMXRequest(r) {
-		w.Header().Set("HX-Redirect", target)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	hxRedirect(w, r, target)
 }
 
 // parseIDList trims, parses, and de-duplicates a repeated int64 form
@@ -1266,8 +1188,7 @@ func parseRelationPair(w http.ResponseWriter, r *http.Request) (int64, int64, bo
 		// the floor by the default htmx config and the operator would
 		// see no feedback at all.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		writeInlineFlash(w, "err", "Cannot relate an image to itself.")
+		flashStatus(w, http.StatusOK, "Cannot relate an image to itself.")
 		return 0, 0, false
 	}
 	return a, b, true
@@ -1283,6 +1204,5 @@ func writeRelationError(w http.ResponseWriter, err error) {
 		msg = fe.Message
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	writeInlineFlash(w, "err", msg)
+	flashStatus(w, http.StatusOK, msg)
 }

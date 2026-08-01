@@ -66,10 +66,14 @@ func DiscoverTaggers(cfg *config.Config) []TaggerStatus {
 	// broken rows.
 	if entries, err := os.ReadDir(cfg.Paths.ModelPath); err == nil {
 		for _, e := range entries {
-			if !e.IsDir() {
+			name := e.Name()
+			// Stat rather than trusting the entry's own type: a model
+			// directory symlinked in from elsewhere (one large model
+			// shared across installs) reports as a link, not a dir.
+			fi, err := os.Stat(filepath.Join(cfg.Paths.ModelPath, name))
+			if err != nil || !fi.IsDir() {
 				continue
 			}
-			name := e.Name()
 			if !hasTaggerFiles(filepath.Join(cfg.Paths.ModelPath, name)) {
 				continue
 			}

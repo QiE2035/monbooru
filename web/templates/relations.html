@@ -10,7 +10,7 @@
   <div class="relations-hub-cols">
     <section id="find" class="settings-section">
       <h3>Find relations</h3>
-      <p class="field-hint">Walk a queue of candidate pairs surfaced by image similarity and, when enabled, tag similarity. Decide one pair at a time as same image, variant, newer revision, based on, or not related.</p>
+      <p class="field-hint">Walk a queue of candidate pairs surfaced by image similarity and, when enabled, rare tag similarity. Decide one pair at a time as same image, variant, newer revision, based on, or not related.</p>
       {{- $emptyQueue := and (eq .Counts.QueueOpen 0) (eq .Counts.QueueSkipped 0) -}}
       <div class="relations-header-row">
         <form hx-post="/relations/find-pairs" hx-target="#flash-relations" hx-swap="innerHTML"
@@ -71,16 +71,7 @@
         <p class="field-hint">The same file saved at more than one path on disk.</p>
         <div class="relations-header-row">
           <a class="btn-sm" href="/relations/duplicates/sha256">Review duplicate files</a>
-          <form hx-post="/relations/file-duplicates/remove"
-                hx-target="#flash-relations" hx-swap="innerHTML"
-                hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-                hx-confirm="Remove every non-canonical duplicate file and its bytes from disk? The canonical path stays."
-                data-confirm-ok="Remove all"
-                style="display:inline">
-            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <input type="hidden" name="all" value="true">
-            <button type="submit" class="btn-danger btn-sm">Delete all duplicate files</button>
-          </form>
+          {{template "partials/bulk_delete_form.html" (dict "CSRFToken" .CSRFToken "Action" "/relations/file-duplicates/remove" "Target" "#flash-relations" "Confirm" "Remove every non-canonical duplicate file and its bytes from disk? The canonical path stays." "ConfirmOK" "Remove all" "Label" "Delete all duplicate files" "All" true)}}
         </div>
       </div>
       <div class="settings-sub">
@@ -88,15 +79,7 @@
         <p class="field-hint">Images you marked as duplicates of each other. <strong>{{.Counts.DupGroups}}</strong> group(s) declared via the Relations session or the detail-page panel.</p>
         <div class="relations-header-row">
           <a class="btn-sm" href="/relations/duplicates/marked">Review duplicate images</a>
-          <form hx-post="/relations/duplicates/marked/delete-all"
-                hx-target="#flash-relations" hx-swap="innerHTML"
-                hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
-                hx-confirm="Delete every non-original member of every duplicate-image group? Files are removed from disk."
-                data-confirm-ok="Delete all"
-                style="display:inline">
-            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <button type="submit" class="btn-danger btn-sm">Delete all duplicate images</button>
-          </form>
+          {{template "partials/bulk_delete_form.html" (dict "CSRFToken" .CSRFToken "Action" "/relations/duplicates/marked/delete-all" "Target" "#flash-relations" "Confirm" "Delete every non-original member of every duplicate-image group? Files are removed from disk." "ConfirmOK" "Delete all" "Label" "Delete all duplicate images")}}
         </div>
       </div>
     </div>

@@ -114,8 +114,10 @@ func (s *Server) SessionMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Public paths inject "anon" session so CSRF works on the login form
-		if r.URL.Path == "/login" || isStaticPath(r.URL.Path) {
+		// Public paths inject "anon" session so CSRF works on the login form.
+		// The manifest joins them because browsers fetch it with credentials
+		// omitted: gated, it resolves to the login page and fails to parse.
+		if r.URL.Path == "/login" || r.URL.Path == "/manifest.json" || isStaticPath(r.URL.Path) {
 			ctx := context.WithValue(r.Context(), sessionContextKey, "anon")
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return

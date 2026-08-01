@@ -1,8 +1,10 @@
 package web
 
 import (
+	"cmp"
 	"fmt"
 	"html/template"
+	"math"
 	"net/url"
 	"sort"
 	"strconv"
@@ -64,6 +66,7 @@ func templateFuncs() template.FuncMap {
 		// query at the inner quote.
 		"qval": search.QuoteValue,
 		"sub":  func(a, b int) int { return a - b },
+		"pct":  func(f float64) int { return int(math.Round(f * 100)) },
 		"list": func(vs ...any) []any { return vs },
 		"dict": func(pairs ...any) map[string]any {
 			m := make(map[string]any, len(pairs)/2)
@@ -159,9 +162,7 @@ func templateFuncs() template.FuncMap {
 					continue
 				}
 				key := t.TaggerName
-				if key == "" {
-					key = "auto-tagger"
-				}
+				key = cmp.Or(key, "auto-tagger")
 				if _, ok := byTagger[key]; !ok {
 					order = append(order, key)
 					kind := "auto"
@@ -258,43 +259,18 @@ func templateFuncs() template.FuncMap {
 			return out
 		},
 		"groupTagsByOrigin": func(list []models.Tag) []originTagGroup {
-			// Stale rows get their own group, sorted after the current ones.
-			idx := map[string]int{}
-			var out []originTagGroup
-			for _, t := range list {
-				key := t.Origin
-				if t.Stale {
-					key += "\x00stale"
-				}
-				i, ok := idx[key]
-				if !ok {
-					i = len(out)
-					idx[key] = i
-					out = append(out, originTagGroup{Origin: t.Origin, Stale: t.Stale})
-				}
-				out[i].Tags = append(out[i].Tags, t)
-			}
-			sort.SliceStable(out, func(i, j int) bool { return !out[i].Stale && out[j].Stale })
-			return out
+			return groupByOriginStale(list,
+				func(t models.Tag) (string, bool) { return t.Origin, t.Stale },
+				func(t models.Tag) originTagGroup { return originTagGroup{Origin: t.Origin, Stale: t.Stale} },
+				func(g *originTagGroup, t models.Tag) { g.Tags = append(g.Tags, t) })
 		},
 		"groupImplicationsByOrigin": func(list []models.Implication) []originImplicationGroup {
-			idx := map[string]int{}
-			var out []originImplicationGroup
-			for _, im := range list {
-				key := im.Origin
-				if im.Stale {
-					key += "\x00stale"
-				}
-				i, ok := idx[key]
-				if !ok {
-					i = len(out)
-					idx[key] = i
-					out = append(out, originImplicationGroup{Origin: im.Origin, Stale: im.Stale})
-				}
-				out[i].Implications = append(out[i].Implications, im)
-			}
-			sort.SliceStable(out, func(i, j int) bool { return !out[i].Stale && out[j].Stale })
-			return out
+			return groupByOriginStale(list,
+				func(im models.Implication) (string, bool) { return im.Origin, im.Stale },
+				func(im models.Implication) originImplicationGroup {
+					return originImplicationGroup{Origin: im.Origin, Stale: im.Stale}
+				},
+				func(g *originImplicationGroup, im models.Implication) { g.Implications = append(g.Implications, im) })
 		},
 		// originLabel spells a provenance label for a relation subheading,
 		// mirroring the meta line's user/ptr handling.
@@ -424,6 +400,7 @@ func templateFuncs() template.FuncMap {
 		"hasPrefix": func(s, prefix string) bool {
 			return strings.HasPrefix(s, prefix)
 		},
+		"providerLabel": providerDisplayLabel,
 		// urlDomain returns the host of a URL (without a leading "www.") for
 		// display; the full URL still drives the link's href. Falls back to
 		// the input when it doesn't parse as an absolute URL with a host.
@@ -463,4 +440,39 @@ func templateFuncs() template.FuncMap {
 			return time.Since(t).Milliseconds()
 		},
 	}
+}
+
+// groupByOriginStale buckets items by (origin, stale) in first-appearance
+// order and moves the stale buckets to the end, the shape both
+// provenance groupers render. key returns the origin and whether the
+// item is stale; newGroup builds a bucket from its first item; add folds
+// an item into its bucket.
+func groupByOriginStale[T, G any](items []T, key func(T) (string, bool), newGroup func(T) G, add func(*G, T)) []G {
+	idx := map[string]int{}
+	var groups []G
+	var isStale []bool
+	for _, it := range items {
+		origin, stale := key(it)
+		k := origin
+		if stale {
+			k += "\x00stale"
+		}
+		i, ok := idx[k]
+		if !ok {
+			i = len(groups)
+			idx[k] = i
+			groups = append(groups, newGroup(it))
+			isStale = append(isStale, stale)
+		}
+		add(&groups[i], it)
+	}
+	out := make([]G, 0, len(groups))
+	for _, want := range []bool{false, true} {
+		for i, g := range groups {
+			if isStale[i] == want {
+				out = append(out, g)
+			}
+		}
+	}
+	return out
 }

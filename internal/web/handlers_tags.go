@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -292,9 +293,7 @@ func tagListingParamsFrom(q url.Values) tagListingParams {
 		p.Stale = s
 	}
 	p.Folded = q.Get("folded") == "1"
-	if p.Sort == "" {
-		p.Sort = "usage"
-	}
+	p.Sort = cmp.Or(p.Sort, "usage")
 	if p.Order != "asc" && p.Order != "desc" {
 		// Default to the natural reading direction per sort: most-used /
 		// newest / most recently applied first, alphabetical A→Z for name.
@@ -641,8 +640,9 @@ func (s *Server) deleteTagsSearchPost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) runDeleteTagsByIDs(ids []int64) {
 	ctx := s.jobs.Context()
 	total := len(ids)
-	processed, deleted := 0, 0
+	processed, deleted, skipped := 0, 0, 0
 	cancelled := false
+	var reasons skipReasons
 
 	s.jobs.Update(0, total, "deleting tags…")
 	for i, id := range ids {
@@ -652,6 +652,8 @@ func (s *Server) runDeleteTagsByIDs(ids []int64) {
 		}
 		if err := s.tagSvc().DeleteTag(id); err != nil {
 			logx.Warnf("delete tag %d: %v", id, err)
+			reasons.add(err)
+			skipped++
 		} else {
 			deleted++
 		}
@@ -662,7 +664,11 @@ func (s *Server) runDeleteTagsByIDs(ids []int64) {
 	}
 
 	s.Active().InvalidateCaches()
-	s.finishJob(nil, cancelled, fmt.Sprintf("delete tags cancelled (%d/%d processed)", processed, total), fmt.Sprintf("deleted %d tag(s)", deleted))
+	summary := fmt.Sprintf("deleted %d tag(s)", deleted)
+	if skipped > 0 {
+		summary += fmt.Sprintf(", skipped %d", skipped)
+	}
+	s.finishTagScopeJob(deleted, reasons, cancelled, "delete tags", summary)
 }
 
 func (s *Server) renameTagPost(w http.ResponseWriter, r *http.Request) {

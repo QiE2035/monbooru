@@ -314,9 +314,7 @@ func ParseComfyWorkflowNodes(raw string) []models.ComfyNode {
 	for _, k := range keys {
 		n := parsed[k]
 		title := n.Meta.Title
-		if title == "" {
-			title = n.ClassType
-		}
+		title = cmp.Or(title, n.ClassType)
 
 		var params []models.ComfyNodeParam
 		paramKeys := make([]string, 0, len(n.Inputs))

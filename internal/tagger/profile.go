@@ -287,6 +287,56 @@ func parseProfileDoc(data []byte, source string) (Profile, bool) {
 	return doc.Profile, true
 }
 
+// SidecarProfileFields names the profile axes the model-dir tagger.json
+// sidecar restates, by their JSON keys, mirroring mergeProfile's
+// non-zero test. Nil when no valid sidecar exists - the export view
+// uses that as its "stock" signal and colors the listed fields.
+func SidecarProfileFields(modelPath, taggerName string) []string {
+	sidecar, ok := parseSidecarProfile(modelPath, taggerName)
+	if !ok {
+		return nil
+	}
+	var out []string
+	if sidecar.InputSize != 0 {
+		out = append(out, "input_size")
+	}
+	if sidecar.Layout != "" {
+		out = append(out, "layout")
+	}
+	if sidecar.Channels != "" {
+		out = append(out, "channels")
+	}
+	if sidecar.Normalize != "" {
+		out = append(out, "normalize")
+	}
+	if sidecar.Pad != "" {
+		out = append(out, "pad")
+	}
+	if sidecar.FillColor != ([3]uint8{}) {
+		out = append(out, "fill_color")
+	}
+	if sidecar.Activation != "" {
+		out = append(out, "activation")
+	}
+	if sidecar.LabelFormat != "" {
+		out = append(out, "label_format")
+	}
+	if sidecar.CategoryScheme != "" {
+		out = append(out, "category_scheme")
+	}
+	if sidecar.OutputIndex != 0 {
+		out = append(out, "output_index")
+	}
+	return out
+}
+
+// ProfileExportDoc marshals the resolved profile in the tagger.json
+// document shape so the export view shows a file a sidecar or a
+// profile_default PR can use as-is.
+func ProfileExportDoc(p Profile) ([]byte, error) {
+	return json.MarshalIndent(profileDoc{Version: profileSchemaVersion, Profile: p}, "", "  ")
+}
+
 // EmittedCategories names the categories the profile is expected to
 // produce. Used by Settings → Auto-Tagger → Configure to populate the
 // per-category threshold dialog. The set is informational, not
@@ -297,7 +347,7 @@ func parseProfileDoc(data []byte, source string) (Profile, bool) {
 func (p Profile) EmittedCategories() []string {
 	switch p.CategoryScheme {
 	case "wd14_numeric":
-		return []string{"general", "artist", "character", "copyright", "rating"}
+		return []string{"general", "artist", "character", "copyright", "meta", "rating"}
 	case "single_general":
 		return []string{"general"}
 	case "name_string":

@@ -39,6 +39,7 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 	thumbnailsPath := s.thumbnailsPath()
 	tagSvc := s.tagSvc()
 	active := s.Active()
+	onDelete := s.onImagesDeleteCallback()
 	go func() {
 		ctx := s.jobs.Context()
 		total := len(ids)
@@ -47,7 +48,12 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 		removed := 0
 		affectedTags, processed, cancelled, err := tagSvc.ChunkedDeleteWithTagRecalc(
 			ctx, ids, "", nil,
-			func(tx *sql.Tx, placeholders string, args []any) error {
+			func(tx *sql.Tx, chunk []int64, placeholders string, args []any) error {
+				if onDelete != nil {
+					if err := onDelete(tx, chunk); err != nil {
+						return err
+					}
+				}
 				res, err := tx.Exec(`DELETE FROM images WHERE id IN (`+placeholders+`)`, args...)
 				if err != nil {
 					return err
@@ -59,9 +65,7 @@ func (s *Server) pruneMissingImagesPost(w http.ResponseWriter, r *http.Request) 
 			},
 			func(chunk []int64) {
 				for _, id := range chunk {
-					_ = os.Remove(gallery.ThumbnailPath(thumbnailsPath, id))
-					_ = os.Remove(gallery.HoverPath(thumbnailsPath, id))
-					gallery.RemoveMangaCache(thumbnailsPath, id)
+					gallery.RemoveImageArtifacts(thumbnailsPath, id, "")
 				}
 				done += len(chunk)
 				s.jobs.Update(done, total, "pruning…")
@@ -360,14 +364,12 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 	pathIDRaw := r.FormValue("path_id")
 	pathID, err := strconv.ParseInt(pathIDRaw, 10, 64)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Invalid path id.")
+		flashStatus(w, http.StatusBadRequest, "Invalid path id.")
 		return
 	}
 	tx, err := s.db().Write.Begin()
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
@@ -375,8 +377,7 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 	var newPath string
 	var alreadyCanonical int
 	if err := tx.QueryRow(`SELECT image_id, path, is_canonical FROM image_paths WHERE id = ?`, pathID).Scan(&imageID, &newPath, &alreadyCanonical); err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		writeInlineFlash(w, "err", "Path not found.")
+		flashStatus(w, http.StatusNotFound, "Path not found.")
 		return
 	}
 	if alreadyCanonical == 1 {
@@ -384,28 +385,23 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, statErr := os.Stat(newPath); statErr != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Cannot promote: file is missing on disk.")
+		flashStatus(w, http.StatusBadRequest, "Cannot promote: file is missing on disk.")
 		return
 	}
 	if _, err := tx.Exec(`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ?`, imageID); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if _, err := tx.Exec(`UPDATE image_paths SET is_canonical = 1 WHERE id = ?`, pathID); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if _, err := tx.Exec(`UPDATE images SET canonical_path = ? WHERE id = ?`, newPath, imageID); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeInlineFlash(w, "ok", "Promoted to canonical.")
@@ -571,8 +567,7 @@ func (s *Server) vacuumDBPost(w http.ResponseWriter, r *http.Request) {
 // is what the racing handler observes.
 func (s *Server) freeMemoryPost(w http.ResponseWriter, r *http.Request) {
 	if err := s.jobs.Start(models.JobTypeFreeMemory); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		writeInlineFlash(w, "err", "A job is running; try again when it finishes.")
+		flashStatus(w, http.StatusConflict, "A job is running; try again when it finishes.")
 		return
 	}
 	defer s.jobs.Complete("Memory caches released.")

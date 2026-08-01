@@ -24,7 +24,7 @@ Designed for organizing your local media collection, including AI-generated imag
 
 - **Tag-based gallery** with folder tree, favorites, saved searches, collections, related-image suggestions, and rating tags (general / sensitive / questionable / explicit) with a SFW ceiling
 - **Stable Diffusion metadata** from A1111/Forge and ComfyUI: prompts, models, seeds, full workflows
-- **Local ONNX auto-tagging** (WD14 SwinV2, JoyTag, Camie v2, or any compatible model) on CPU or GPU
+- **Local ONNX auto-tagging** (WD14 SwinV2, animetimm EVA02, JoyTag, Camie v2, or any compatible model) on CPU or GPU
 - Images, video, animated GIFs, plus CBZ/ZIP archives browsed as a single object with a built-in manga reader; animated hover previews on the grid
 - **Search** with wildcards, OR, exclusions, plus filters on folder, date, size, dimensions, category, generation recipe, and more
 - **Keyboard-driven UI**: contextual shortcuts on every page, from grid navigation to batch actions; press `?` in-app for the full map
@@ -99,4 +99,20 @@ See the monbooru documentation for help. In-app, type `system:` in the search ba
 
 ## Acknowledgements
 
-Thanks to [@gary-host-laptop](https://github.com/gary-host-laptop) for ongoing feature requests and feedback.
+This section covers monbooru and its companion repos ([monloader](https://github.com/monbooru/monloader), [monsender](https://github.com/monbooru/monsender), [mondocs](https://github.com/monbooru/mondocs)).
+
+Thanks to [@gary-host-laptop](https://github.com/gary-host-laptop) for sustained contributions over time. Every shipped contribution is credited in the release that ships it; see [CONTRIBUTING](CONTRIBUTING.md).
+
+This project is built on the work of others:
+
+- [htmx](https://htmx.org/) powers the server-rendered UI.
+- [SQLite](https://sqlite.org/), through the pure-Go [modernc.org/sqlite](https://gitlab.com/cznic/sqlite) driver, stores each gallery.
+- [ONNX Runtime](https://onnxruntime.ai/), through [onnxruntime_go](https://github.com/yalue/onnxruntime_go), runs the auto-tagger. The models in the bundled catalog are the work of [SmilingWolf](https://huggingface.co/SmilingWolf) (WD SwinV2 v3), [animetimm](https://huggingface.co/animetimm) (EVA02), [fancyfeast](https://huggingface.co/fancyfeast) (JoyTag), and [Camais03](https://huggingface.co/Camais03) (Camie Tagger v2).
+- [ffmpeg](https://ffmpeg.org/) decodes video for thumbnails and hover previews.
+- monloader is mostly a wrapper for [gallery-dl](https://github.com/mikf/gallery-dl), which does the actual scraping. Reverse lookups by image similarity are answered by [IQDB](https://iqdb.org/) and [SauceNAO](https://saucenao.com/); md5 lookups by the boorus themselves. The PTR tag lookup syncs against the [Hydrus Public Tag Repository](https://hydrusnetwork.github.io/hydrus/PTR.html) (PTR) via [Hydrus Network](https://github.com/hydrusnetwork/hydrus)'s repository protocol; the tags, aliases, and implications it serves are the work of the hydrus community.
+- monsender's in-page image detection uses code from [ushiro](https://github.com/gary-host-laptop/ushiro) by gary-host-laptop and [behind!](https://github.com/kubuzetto/behind) by kubuzetto, originally under MPL-2.0.
+- The mondocs site is built with [Hugo](https://gohugo.io/).
+
+The full Go dependency lists are in each repo's `go.mod`.
+
+The sample images in the screenshots, here, in the companion repos, and in the documentation, were downloaded from Danbooru and are the work of their respective artists, who retain all rights. They appear only to demonstrate the app; the repositories' license doesn't apply to them.

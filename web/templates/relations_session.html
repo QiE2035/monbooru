@@ -14,12 +14,14 @@
       <span class="field-hint"><strong>{{.Remaining}}</strong> pair(s) remaining</span>
       {{end}}
     </div>
+    {{if .TagPairs}}
     <form method="get" action="/relations/session" class="session-order-form session-detector-form">
       <span class="field-hint">Found by</span>
       <label><input type="radio" name="detector" value="both" onchange="this.form.submit()" {{if eq .Detector "both"}}checked{{end}}> Both</label>
       <label><input type="radio" name="detector" value="phash" onchange="this.form.submit()" {{if eq .Detector "phash"}}checked{{end}}> Near duplicate (pHash)</label>
-      <label><input type="radio" name="detector" value="tags" onchange="this.form.submit()" {{if eq .Detector "tags"}}checked{{end}}> Tags similarity</label>
+      <label><input type="radio" name="detector" value="tags" onchange="this.form.submit()" {{if eq .Detector "tags"}}checked{{end}}> Rare tag similarity</label>
     </form>
+    {{end}}
     <form method="get" action="/relations/session" class="session-order-form">
       <span class="field-hint">Order</span>
       <label><input type="radio" name="order" value="smallest_distance_first" onchange="this.form.submit()" {{if eq .Order "smallest_distance_first"}}checked{{end}}> Smallest distance</label>
@@ -39,9 +41,12 @@
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <button type="submit" class="btn-sm btn-purple">Raise ceiling to explicit</button>
     </form>
-    {{else if ne .Detector "both"}}
+    {{else if gt .Skipped 0}}
+    <h3>Nothing left to review.</h3>
+    <p class="field-hint"><strong>{{.Skipped}}</strong> pair(s) you skipped are still queued. <a href="/relations">Reset skipped</a> puts them back.</p>
+    {{else if and .TagPairs (ne .Detector "both")}}
     <h3>No pairs from this detector.</h3>
-    <p class="field-hint">Nothing in the queue was found by {{if eq .Detector "phash"}}image{{else}}tag{{end}} similarity. Switch <strong>Found by</strong> back to <a href="/relations/session?detector=both">Both</a>, or run <a href="/relations">Find new pairs</a>.</p>
+    <p class="field-hint">Nothing in the queue was found by {{if eq .Detector "phash"}}image{{else}}rare tag{{end}} similarity. Switch <strong>Found by</strong> back to <a href="/relations/session?detector=both">Both</a>, or run <a href="/relations">Find new pairs</a>.</p>
     {{else}}
     <h3>No pairs to review.</h3>
     <p class="field-hint">The queue is empty. Run <a href="/relations">Find new pairs</a> to surface more candidates.</p>
@@ -75,11 +80,11 @@
         <div class="session-distance" aria-hidden="true">
           <span class="session-distance-line"></span>
           {{if eq .Pair.Source "tags"}}
-          <span class="session-distance-label">tags similarity <strong class="session-source-tags">~{{.Pair.ScorePercent}}%</strong></span>
+          <span class="session-distance-label">rare tag similarity <strong class="session-source-tags">~{{.Pair.ScorePercent}}%</strong></span>
           <span class="session-distance-sub">{{.SharedTagsTotal}} shared tag(s)</span>
           {{else if eq .Pair.Source "both"}}
           <span class="session-distance-label">phash distance <strong>{{.Pair.Distance}}</strong> &middot;</span>
-          <span class="session-distance-label">tags similarity <strong class="session-source-tags">~{{.Pair.ScorePercent}}%</strong></span>
+          <span class="session-distance-label">rare tag similarity <strong class="session-source-tags">~{{.Pair.ScorePercent}}%</strong></span>
           <span class="session-distance-sub">both detectors agree</span>
           {{else if eq .Pair.Source "review"}}
           <span class="session-distance-label">reopened <strong class="session-source-review">by you</strong></span>
@@ -92,6 +97,15 @@
           <button type="button" id="session-swap" title="Swap which side is left (W)">Swap sides (W)</button>
           <button type="button" id="session-compare" title="Compare the two images (C)">Compare (C)</button>
         </div>
+        {{if .Pair.SharedSource}}
+        <div class="session-parent">
+          <span>both based on</span>
+          <a href="/images/{{.Pair.SharedSource}}" target="_blank">
+            <img src="/thumbnails/{{.ActiveGallery}}/{{.Pair.SharedSource}}.jpg" alt="image {{.Pair.SharedSource}}">
+          </a>
+          <a href="/images/{{.Pair.SharedSource}}" target="_blank" class="mono-small">#{{.Pair.SharedSource}}</a>
+        </div>
+        {{end}}
       </div>
       <div class="session-cell" data-side="{{$secondSide}}">
         <h4 class="session-role" data-role="right">Right</h4>
@@ -114,6 +128,7 @@
       <input type="hidden" name="b" value="{{.Pair.B.ID}}">
       <input type="hidden" name="left" id="session-left" value="{{.Pair.LeftID}}">
       <input type="hidden" name="order" value="{{.Order}}">
+      {{if .TagPairs}}<input type="hidden" name="detector" value="{{.Detector}}">{{end}}
 
       <p class="session-hint">Use the buttons below to commit the decision, or swap sides first.</p>
       <div class="session-buttons">
@@ -131,11 +146,17 @@
                 title="Right is based on left (4)">4 Based on (Derivative)</button>
       </div>
       <div class="session-buttons session-buttons-secondary">
+        {{if .Pair.SharedSource}}
+        <button type="submit" name="type" value="not_related"
+                data-prompt-sentence="{left} and {right} have no direct relation - they stay siblings under #{{.Pair.SharedSource}}."
+                title="Simple siblings (5)">5 Simple siblings</button>
+        {{else}}
         <button type="submit" name="type" value="not_related"
                 data-prompt-sentence="{left} and {right} are not related; the pair stays out of every future session."
                 title="Not related (5)">5 Not related</button>
+        {{end}}
         <button type="submit" name="type" value="skip"
-                data-prompt-sentence="Skip this pair - it returns at the back of the queue."
+                data-prompt-sentence="Skip this pair - it leaves this session until you reset skipped pairs."
                 title="Skip (6 / Space)">6 Skip</button>
       </div>
     </form>

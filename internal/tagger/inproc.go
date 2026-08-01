@@ -3,13 +3,16 @@
 package tagger
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,9 +60,9 @@ type inprocBackend struct {
 	mu          sync.Mutex
 	inUse       bool
 	initialized bool
-	useCUDA     bool
+	provider    string
 	sessionOpts *ort.SessionOptions
-	cudaOpts    *ort.CUDAProviderOptions
+	epCleanup   func()
 	sessions    map[string]*loadedSession
 	lastUsed    time.Time
 }
@@ -96,8 +99,8 @@ func init() {
 // filenames, and the same profile fingerprint. The profile check picks
 // up tagger.json sidecar edits without a manual reload. Caller must
 // hold b.mu.
-func (b *inprocBackend) satisfies(modelPath string, taggers []TaggerStatus, useCUDA bool) bool {
-	if !b.initialized || b.useCUDA != useCUDA {
+func (b *inprocBackend) satisfies(modelPath string, taggers []TaggerStatus, provider string) bool {
+	if !b.initialized || b.provider != provider {
 		return false
 	}
 	for _, t := range taggers {
@@ -119,11 +122,14 @@ func (b *inprocBackend) satisfies(modelPath string, taggers []TaggerStatus, useC
 	return true
 }
 
-// ensure populates the cache for (taggers, useCUDA). On signature
+// ensure populates the cache for (taggers, provider). On signature
 // mismatch the existing cache is torn down first. Caller must hold
 // b.mu.
-func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, useCUDA bool) error {
-	if b.satisfies(cfg.Paths.ModelPath, taggers, useCUDA) {
+func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, provider string) error {
+	// Normalized before the signature check so an empty provider matches a
+	// warm "cpu" cache instead of tearing it down.
+	provider = cmp.Or(provider, "cpu")
+	if b.satisfies(cfg.Paths.ModelPath, taggers, provider) {
 		logx.Infof("tagger: reusing warm cache (%d session(s))", len(b.sessions))
 		return nil
 	}
@@ -131,10 +137,7 @@ func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, useCU
 		b.teardownLocked()
 	}
 
-	mode := "CPU"
-	if useCUDA {
-		mode = "CUDA"
-	}
+	mode := strings.ToUpper(provider)
 	logx.Infof("tagger: loading %d session(s) on %s", len(taggers), mode)
 	loadStart := time.Now()
 
@@ -147,10 +150,10 @@ func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, useCU
 	// .nv-cache so the cache survives container recycles. Honour an
 	// operator-set CUDA_CACHE_PATH if one is already in the
 	// environment.
-	if useCUDA && os.Getenv("CUDA_CACHE_PATH") == "" {
+	if provider == "cuda" && os.Getenv("CUDA_CACHE_PATH") == "" {
 		cacheDir := filepath.Join(cfg.Paths.DataPath, ".nv-cache")
 		if err := os.MkdirAll(cacheDir, 0o755); err == nil {
-			os.Setenv("CUDA_CACHE_PATH", cacheDir)
+			_ = os.Setenv("CUDA_CACHE_PATH", cacheDir)
 		}
 	}
 
@@ -184,42 +187,25 @@ func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, useCU
 		return fmt.Errorf("set inter-op threads: %w", err)
 	}
 
-	if useCUDA {
-		// Drop the CPU-side initializer copies once weights upload to
-		// the device; ORT otherwise keeps a duplicate in host memory
-		// for the lifetime of the session.
-		if err := opts.AddSessionConfigEntry("session.use_device_allocator_for_initializers", "1"); err != nil {
-			b.teardownLocked()
-			return fmt.Errorf("ort session config: %w", err)
-		}
-		cudaOpts, err := ort.NewCUDAProviderOptions()
-		if err != nil {
-			b.teardownLocked()
-			return fmt.Errorf("ort cuda options (ensure libonnxruntime was built with CUDA): %w", err)
-		}
-		b.cudaOpts = cudaOpts
-		// HEURISTIC trades the multi-second first-Run cuDNN search
-		// (EXHAUSTIVE default) for a fast algorithm pick that ORT's
-		// own docs put within a few percent of optimal on most CNNs.
-		// kSameAsRequested grows the GPU arena by the requested size
-		// instead of doubling; default is fine for training but
-		// inflates the arena on small-batch inference. Keeping copies
-		// on the default stream avoids the cross-stream sync that
-		// only pays off when the secondary stream is fully utilised.
-		if err := cudaOpts.Update(map[string]string{
-			"cudnn_conv_algo_search":    "HEURISTIC",
-			"arena_extend_strategy":     "kSameAsRequested",
-			"do_copy_in_default_stream": "1",
-		}); err != nil {
-			b.teardownLocked()
-			return fmt.Errorf("update cuda options: %w", err)
-		}
-		if err := opts.AppendExecutionProviderCUDA(cudaOpts); err != nil {
-			b.teardownLocked()
-			return fmt.Errorf("append cuda provider: %w", err)
+	// Like the CUDA JIT cache above, OpenVINO's compiled-model cache goes
+	// under <data_path> so it survives container recycles.
+	epCacheDir := ""
+	if provider == "openvino" {
+		dir := filepath.Join(cfg.Paths.DataPath, ".openvino-cache")
+		if err := os.MkdirAll(dir, 0o755); err == nil {
+			epCacheDir = dir
 		}
 	}
-	b.useCUDA = useCUDA
+	cleanup, err := appendExecutionProvider(opts, provider, epCacheDir)
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		b.teardownLocked()
+		return fmt.Errorf("append execution provider %q: %w", provider, err)
+	}
+	b.epCleanup = cleanup
+	b.provider = provider
 
 	b.sessions = make(map[string]*loadedSession, len(taggers))
 	for _, t := range taggers {
@@ -277,6 +263,104 @@ func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, useCU
 	return nil
 }
 
+// appendExecutionProvider attaches the requested ONNX Runtime execution
+// provider to the session options. cacheDir hosts provider-specific
+// compile caches (OpenVINO); pass "" to skip cache configuration, e.g.
+// for a plain availability probe. It returns a cleanup function that
+// must be called to release any provider-specific options that were
+// allocated; the cleanup is nil when nothing was allocated.
+func appendExecutionProvider(opts *ort.SessionOptions, provider, cacheDir string) (cleanup func(), err error) {
+	switch provider {
+	case "cpu", "":
+		return nil, nil
+	case "cuda":
+		// Drop the CPU-side initializer copies once weights upload to
+		// the device; ORT otherwise keeps a duplicate in host memory
+		// for the lifetime of the session.
+		if err := opts.AddSessionConfigEntry("session.use_device_allocator_for_initializers", "1"); err != nil {
+			return nil, fmt.Errorf("ort session config: %w", err)
+		}
+		cudaOpts, err := ort.NewCUDAProviderOptions()
+		if err != nil {
+			return nil, fmt.Errorf("ort cuda options (ensure libonnxruntime was built with CUDA): %w", err)
+		}
+		// HEURISTIC trades the multi-second first-Run cuDNN search
+		// (EXHAUSTIVE default) for a fast algorithm pick that ORT's
+		// own docs put within a few percent of optimal on most CNNs.
+		// kSameAsRequested grows the GPU arena by the requested size
+		// instead of doubling; default is fine for training but
+		// inflates the arena on small-batch inference. Keeping copies
+		// on the default stream avoids the cross-stream sync that
+		// only pays off when the secondary stream is fully utilised.
+		if err := cudaOpts.Update(map[string]string{
+			"cudnn_conv_algo_search":    "HEURISTIC",
+			"arena_extend_strategy":     "kSameAsRequested",
+			"do_copy_in_default_stream": "1",
+		}); err != nil {
+			_ = cudaOpts.Destroy()
+			return nil, fmt.Errorf("update cuda options: %w", err)
+		}
+		if err := opts.AppendExecutionProviderCUDA(cudaOpts); err != nil {
+			_ = cudaOpts.Destroy()
+			return nil, fmt.Errorf("append cuda provider: %w", err)
+		}
+		return func() { _ = cudaOpts.Destroy() }, nil
+	case "directml":
+		if err := opts.AppendExecutionProviderDirectML(0); err != nil {
+			return nil, fmt.Errorf("append directml provider: %w", err)
+		}
+		return nil, nil
+	case "tensorrt":
+		trtOpts, err := ort.NewTensorRTProviderOptions()
+		if err != nil {
+			return nil, fmt.Errorf("ort tensorrt options (ensure libonnxruntime was built with TensorRT): %w", err)
+		}
+		if err := trtOpts.Update(map[string]string{}); err != nil {
+			_ = trtOpts.Destroy()
+			return nil, fmt.Errorf("update tensorrt options: %w", err)
+		}
+		if err := opts.AppendExecutionProviderTensorRT(trtOpts); err != nil {
+			_ = trtOpts.Destroy()
+			return nil, fmt.Errorf("append tensorrt provider: %w", err)
+		}
+		return func() { _ = trtOpts.Destroy() }, nil
+	case "openvino":
+		openvinoOpts := map[string]string{
+			"device_type": "GPU",
+		}
+		if cacheDir != "" {
+			loadCfg := map[string]any{
+				"GPU": map[string]string{
+					"CACHE_DIR":           cacheDir,
+					"EXECUTION_MODE_HINT": "ACCURACY",
+					"PERFORMANCE_HINT":    "LATENCY",
+				},
+			}
+			loadCfgJSON, err := json.Marshal(loadCfg)
+			if err != nil {
+				return nil, fmt.Errorf("marshal openvino load_config: %w", err)
+			}
+			openvinoOpts["load_config"] = string(loadCfgJSON)
+		}
+		if err := opts.AppendExecutionProviderOpenVINO(openvinoOpts); err != nil {
+			return nil, fmt.Errorf("append openvino provider: %w", err)
+		}
+		return nil, nil
+	case "coreml":
+		if err := opts.AppendExecutionProviderCoreML(0); err != nil {
+			return nil, fmt.Errorf("append coreml provider: %w", err)
+		}
+		return nil, nil
+	case "coremlv2":
+		if err := opts.AppendExecutionProviderCoreMLV2(map[string]string{}); err != nil {
+			return nil, fmt.Errorf("append coremlv2 provider: %w", err)
+		}
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unsupported execution provider %q", provider)
+	}
+}
+
 // inferInputSize picks the spatial axis from an ONNX input's Dimensions
 // shape based on the profile's layout. Returns 0 when the shape is
 // degenerate (dynamic axis as -1, or unexpected rank). NHWC: shape is
@@ -305,22 +389,22 @@ func inferInputSize(dims ort.Shape, layout string) int {
 // return the freed bytes to the kernel. Caller must hold b.mu.
 func (b *inprocBackend) teardownLocked() {
 	for _, s := range b.sessions {
-		s.session.Destroy()
+		_ = s.session.Destroy()
 	}
 	b.sessions = nil
-	if b.cudaOpts != nil {
-		b.cudaOpts.Destroy()
-		b.cudaOpts = nil
+	if b.epCleanup != nil {
+		b.epCleanup()
+		b.epCleanup = nil
 	}
 	if b.sessionOpts != nil {
-		b.sessionOpts.Destroy()
+		_ = b.sessionOpts.Destroy()
 		b.sessionOpts = nil
 	}
 	if b.initialized {
-		ort.DestroyEnvironment()
+		_ = ort.DestroyEnvironment()
 		b.initialized = false
 	}
-	b.useCUDA = false
+	b.provider = ""
 	mallocTrim()
 }
 
@@ -359,7 +443,7 @@ func (b *inprocBackend) Status() CacheStatus {
 	}
 	out := CacheStatus{
 		Loaded:   true,
-		UseCUDA:  b.useCUDA,
+		Provider: b.provider,
 		InUse:    b.inUse,
 		LastUsed: b.lastUsed,
 		Sessions: make([]string, 0, len(b.sessions)),
@@ -381,7 +465,7 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 	}
 
 	b.mu.Lock()
-	if err := b.ensure(req.Cfg, req.Taggers, req.UseCUDA); err != nil {
+	if err := b.ensure(req.Cfg, req.Taggers, req.Provider); err != nil {
 		b.mu.Unlock()
 		return RunResponse{}, err
 	}
@@ -571,7 +655,7 @@ func inferImage(lt loadedTagger, path string) ([]float32, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	img, err := gallery.DecodeImageWithCap(f)
 	if err != nil {
@@ -598,12 +682,12 @@ func inferImage(lt loadedTagger, path string) ([]float32, error) {
 	// and after Destroy on error too.
 	outputs := []ort.Value{nil}
 	runErr := lt.session.Run([]ort.Value{inputTensor}, outputs)
-	inputTensor.Destroy()
+	_ = inputTensor.Destroy()
 	releaseTensor(lt.inputSize, tensor)
 	if runErr != nil {
 		return nil, runErr
 	}
-	defer outputs[0].Destroy()
+	defer func() { _ = outputs[0].Destroy() }()
 
 	outTensor, ok := outputs[0].(*ort.Tensor[float32])
 	if !ok {
@@ -626,11 +710,32 @@ func inferImage(lt loadedTagger, path string) ([]float32, error) {
 }
 
 // sharedLibPath finds the ONNX Runtime shared library. ORT_LIB_PATH
-// overrides; otherwise we try the usual install locations.
+// overrides; otherwise we try platform-specific install locations.
 func sharedLibPath() string {
 	if p := os.Getenv("ORT_LIB_PATH"); p != "" {
 		return p
 	}
+
+	// Windows ships the ORT runtime as a DLL and commonly places it
+	// next to the executable or in the working directory; Unix-like
+	// systems use the standard library search paths.
+	if runtime.GOOS == "windows" {
+		var candidates []string
+		if exe, err := os.Executable(); err == nil {
+			candidates = append(candidates, filepath.Join(filepath.Dir(exe), "onnxruntime.dll"))
+		}
+		if wd, err := os.Getwd(); err == nil {
+			candidates = append(candidates, filepath.Join(wd, "onnxruntime.dll"))
+		}
+		candidates = append(candidates, "onnxruntime.dll")
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				return c
+			}
+		}
+		return "onnxruntime.dll"
+	}
+
 	candidates := []string{
 		"/usr/lib/libonnxruntime.so",
 		"/usr/local/lib/libonnxruntime.so",

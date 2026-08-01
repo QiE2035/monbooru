@@ -16,13 +16,17 @@ const dispatchSchemaVersion = 1
 
 type dispatchDoc struct {
 	Version int             `json:"version"`
-	Rules   []dispatchEntry `json:"rules"`
+	Rules   []DispatchEntry `json:"rules"`
 }
 
-type dispatchEntry struct {
+// DispatchEntry is one rule of a dispatch document: route the model's
+// Source label into Category (empty = drop the label), optionally
+// renaming it to Name. The same shape serves the embedded defaults,
+// the on-disk overlay, and the settings mappings editor.
+type DispatchEntry struct {
 	Source   string `json:"source"`
 	Category string `json:"category"`
-	Name     string `json:"name"`
+	Name     string `json:"name,omitempty"`
 }
 
 // DispatchTargetCategories returns the distinct destination category
@@ -36,7 +40,7 @@ type dispatchEntry struct {
 func DispatchTargetCategories(modelPath, taggerName string) []string {
 	seen := map[string]bool{}
 	var out []string
-	add := func(entries []dispatchEntry) {
+	add := func(entries []DispatchEntry) {
 		for _, e := range entries {
 			if e.Category == "" || seen[e.Category] {
 				continue
@@ -50,7 +54,15 @@ func DispatchTargetCategories(modelPath, taggerName string) []string {
 	return out
 }
 
-func parseEmbeddedDispatch(taggerName string) []dispatchEntry {
+// OverlayRuleCount reports how many dispatch rules the tagger's on-disk
+// overlay carries. Zero means the tagger runs on the embedded defaults
+// alone; the settings table uses that as its "differs from stock"
+// signal and the row summary shows the count.
+func OverlayRuleCount(modelPath, taggerName string) int {
+	return len(parseOverlayDispatch(modelPath, taggerName))
+}
+
+func parseEmbeddedDispatch(taggerName string) []DispatchEntry {
 	data, err := defaultDispatchFS.ReadFile("dispatch_default/" + taggerName + ".json")
 	if err != nil {
 		return nil
@@ -58,7 +70,7 @@ func parseEmbeddedDispatch(taggerName string) []dispatchEntry {
 	return parseDispatchDoc(data, "embedded "+taggerName)
 }
 
-func parseOverlayDispatch(modelPath, taggerName string) []dispatchEntry {
+func parseOverlayDispatch(modelPath, taggerName string) []DispatchEntry {
 	p := filepath.Join(modelPath, taggerName, "dispatch.json")
 	data, err := os.ReadFile(p)
 	if err != nil {
@@ -67,7 +79,7 @@ func parseOverlayDispatch(modelPath, taggerName string) []dispatchEntry {
 	return parseDispatchDoc(data, p)
 }
 
-func parseDispatchDoc(data []byte, source string) []dispatchEntry {
+func parseDispatchDoc(data []byte, source string) []DispatchEntry {
 	var doc dispatchDoc
 	if err := json.Unmarshal(data, &doc); err != nil {
 		logx.Warnf("tagger: %s dispatch parse failed: %v", source, err)

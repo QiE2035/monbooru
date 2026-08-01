@@ -114,12 +114,34 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 
 	orderClause := buildOrder(q.Sort, q.Order, q.RandomSeed)
 	var orderArgs []any
+	var rankSeed tags.OverlapSeed
+	hasRankSeed := false
 	switch {
 	case q.Sort == "order" && q.OrderCollection != "":
 		orderClause, orderArgs = collectionOrderClause(q.OrderCollection, q.Order)
 	case q.Sort == "similarity":
 		if seed, ok := similarityRankSeed(database, q.Expr); ok {
 			orderClause, orderArgs = similarityOrderClause(seed, q.Order)
+			rankSeed, hasRankSeed = seed, true
+		}
+	}
+
+	// A similarity sort has no key column, so the COUNT and the page's
+	// ORDER BY would each walk the whole match set - and the ORDER BY
+	// scores it - for one page. Fan first instead and serve every page
+	// off that list: page 1 is where the operator normally arrives, but
+	// a deep page reached by a link or after the entry's TTL lapsed has
+	// the same cost and would otherwise seed nothing for the next hit. A
+	// short read (empty, an error, or a set past the cache cap) falls
+	// through to the regular path rather than reporting a total it
+	// cannot stand behind.
+	if q.Sort == "similarity" && hasRankSeed && q.CacheKey != "" &&
+		!q.SkipCount && q.PresetTotal == nil && AdjacencyCacheTryAcquireFan(q.CacheKey) {
+		ids := fanSimilarityIDs(context.Background(), database, rankSeed, q.Order, where, args)
+		AdjacencyCacheReleaseFan(q.CacheKey)
+		if len(ids) > 0 && len(ids) < adjacencyCacheMaxIDs {
+			AdjacencyCacheSet(q.CacheKey, ids)
+			return executeFromCachedIDs(database, ids, page, limit)
 		}
 	}
 
@@ -236,7 +258,7 @@ func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
 				fanWhere, fanArgs = applyAndDriver(fanWhere, fanArgs, driverLegs)
 				fanWhere = andDefaultVisible(fanWhere, hasMissingFilter)
 			}
-			ids := fetchSortedMatchIDs(database, indexHint, fanWhere, fanArgs, orderClause, orderArgs, total)
+			ids := fetchSortedMatchIDs(context.Background(), database, indexHint, fanWhere, fanArgs, orderClause, orderArgs, total)
 			if len(ids) > 0 {
 				AdjacencyCacheSet(q.CacheKey, ids)
 				if len(ids) < min(total, adjacencyCacheMaxIDs) {
@@ -310,7 +332,9 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 // so subsequent page-flips and detail prev/next ride the cache. Errors
 // degrade to a nil slice; the caller skips populate and the next render
 // retries.
-func fetchSortedMatchIDs(database *db.DB, indexHint, where string, args []any, orderClause string, orderArgs []any, total int) []int64 {
+// ctx bounds the fan for callers that render behind a deadline; Execute
+// has none to hand down and passes a background context.
+func fetchSortedMatchIDs(ctx context.Context, database *db.DB, indexHint, where string, args []any, orderClause string, orderArgs []any, total int) []int64 {
 	n := total
 	if n > adjacencyCacheMaxIDs {
 		n = adjacencyCacheMaxIDs
@@ -320,7 +344,7 @@ func fetchSortedMatchIDs(database *db.DB, indexHint, where string, args []any, o
 		indexHint, where, orderClause,
 	)
 	qargs := append(slices.Concat(args, orderArgs), n)
-	ids, err := db.QueryIDs(database.Read, sql, qargs...)
+	ids, err := db.QueryIDsContext(ctx, database.Read, sql, qargs...)
 	if err != nil {
 		return nil
 	}
@@ -565,7 +589,8 @@ func buildAdjacencyPlan(ctx context.Context, database *db.DB, q Query, currentID
 // containing currentID (see randomAdjacencyBucketSize). Sparse
 // candidate sets skip the gate so prev/next reaches every match
 // instead of dying at a bucket edge holding only currentID.
-func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64, error) {
+// ctx bounds the cold paths; the cache hit above it needs none.
+func ExecuteAdjacent(ctx context.Context, database *db.DB, q Query, currentID int64) (*int64, *int64, error) {
 	// Cache fast path: when the gallery handed us the sorted match list,
 	// prev/next is a slice scan and no SQL fires. Empty key or cache miss
 	// falls through to the cursor logic below.
@@ -577,7 +602,7 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 	// Similarity has no key column to seek on, so the neighbours come
 	// from a position scan of the ranked list instead of a cursor.
 	if q.Sort == "similarity" {
-		ids := similarityMatchIDs(database, q)
+		ids := similarityMatchIDs(ctx, database, q)
 		if len(ids) == 0 {
 			return nil, nil, nil
 		}
@@ -651,7 +676,7 @@ func ExecuteAdjacent(database *db.DB, q Query, currentID int64) (*int64, *int64,
 		}
 	}
 
-	p, err := buildAdjacencyPlan(context.Background(), database, q, currentID, driverLegs, bucketed, bucketLo, bucketHi)
+	p, err := buildAdjacencyPlan(ctx, database, q, currentID, driverLegs, bucketed, bucketLo, bucketHi)
 	if err != nil || !p.ok {
 		return nil, nil, nil
 	}
@@ -714,7 +739,7 @@ func RankInQuery(ctx context.Context, database *db.DB, q Query, currentID int64)
 	// Similarity ranks off the same position scan prev/next uses; the
 	// cursor COUNT below has no score column to compare against.
 	if q.Sort == "similarity" {
-		for i, id := range similarityMatchIDs(database, q) {
+		for i, id := range similarityMatchIDs(ctx, database, q) {
 			if id == currentID {
 				return i, nil
 			}

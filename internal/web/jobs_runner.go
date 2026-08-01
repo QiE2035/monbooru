@@ -14,8 +14,7 @@ import (
 // owns the goroutine + the eventual 202 response.
 func (s *Server) startJob(w http.ResponseWriter, jobType string) bool {
 	if err := s.jobs.Start(jobType); err != nil {
-		w.WriteHeader(http.StatusConflict)
-		writeInlineFlash(w, "err", "A job is already running.")
+		flashStatus(w, http.StatusConflict, "A job is already running.")
 		return false
 	}
 	return true

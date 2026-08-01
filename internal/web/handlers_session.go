@@ -55,11 +55,10 @@ func detectorFilter(mode string) string {
 }
 
 // orderClauseForMode returns the ORDER BY tail the queue SELECT uses.
-// `skipped_at IS NULL DESC` keeps unskipped pairs ahead of skipped
-// ones; the mode-specific second key drives the order inside each
-// half.
+// The walk only serves unskipped rows, so the mode's own keys are the
+// whole order.
 func orderClauseForMode(mode string) string {
-	base := "ORDER BY (p.skipped_at IS NULL) DESC, "
+	base := "ORDER BY "
 	switch mode {
 	case "largest_file_first":
 		return base + "(COALESCE(ia.file_size, 0) + COALESCE(ib.file_size, 0)) DESC, p.distance ASC, p.a_image_id ASC"
@@ -89,6 +88,10 @@ type sessionPairView struct {
 	// without a swap: the bigger-filesize side on a pixel match, the
 	// older image on a tag match. W swap reassigns it client-side.
 	LeftID int64
+	// SharedSource names the image both sides are direct derivatives
+	// of, 0 otherwise. The bridge renders it so a sibling pair reads
+	// as tree context, not as a pair the tree already relates.
+	SharedSource int64
 }
 
 // ScorePercent renders the tag score the way the card reads it.
@@ -137,22 +140,24 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 		// overwrite the saved preference with the fallback.
 		saveSessionOrder(cx, order)
 	}
-	detector := r.URL.Query().Get("detector")
-	if detector == "" {
-		detector = loadSessionDetector(cx)
-	}
-	if !validDetectors[detector] {
+	// The scope opens on the unfiltered walk every time: narrowing it is
+	// a choice for the sitting, carried on the URL through the decide
+	// loop, not a preference that outlives it. With the tag pass off
+	// only one detector is left, so the walk pins to that one.
+	tagPairs := s.tagPairsEnabled()
+	detector := "phash"
+	if tagPairs {
 		detector = "both"
-	}
-	if validDetectors[r.URL.Query().Get("detector")] {
-		saveSessionDetector(cx, detector)
+		if v := r.URL.Query().Get("detector"); validDetectors[v] {
+			detector = v
+		}
 	}
 	ceiling := resolveCeiling(r, cx)
 	// review-again links carry the exact pair to reopen; pin it so the
 	// operator lands on the pair they clicked, not whatever sorts first.
 	pinA, _ := strconv.ParseInt(r.URL.Query().Get("a"), 10, 64)
 	pinB, _ := strconv.ParseInt(r.URL.Query().Get("b"), 10, 64)
-	pair, remaining, rawRemaining, err := loadNextPair(cx, order, detector, ceiling, pinA, pinB)
+	pair, counts, err := loadNextPair(cx, order, detector, ceiling, pinA, pinB)
 	if err != nil {
 		logx.Warnf("session next pair: %v", err)
 		http.Error(w, "load pair", http.StatusInternalServerError)
@@ -184,15 +189,22 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 			}
 			sharedTags, sharedTotal = shared, total
 		}
+		if src, ok, sErr := relations.SharedDerivativeSource(cx.DB, pair.A.ID, pair.B.ID); sErr != nil {
+			logx.Debugf("session shared source: %v", sErr)
+		} else if ok {
+			pair.SharedSource = src
+		}
 	}
 	s.renderTemplate(w, "relations_session.html", sessionPageData{
 		baseData:        s.base(r, "relations", "Session - "+s.booruName()),
 		Pair:            pair,
-		Remaining:       remaining,
-		HiddenByCeiling: rawRemaining - remaining,
+		Remaining:       counts.Open,
+		HiddenByCeiling: counts.HiddenByCeiling,
+		Skipped:         counts.Skipped,
 		Ceiling:         ceiling.Level(),
 		Order:           order,
 		Detector:        detector,
+		TagPairs:        tagPairs,
 		ActiveGallery:   s.activeName,
 		Left:            leftFacts,
 		Right:           rightFacts,
@@ -208,15 +220,20 @@ const sharedTagsShown = 6
 type sessionPageData struct {
 	baseData
 	Pair *sessionPairView
-	// Remaining is the visible queue total (post-ceiling). HiddenByCeiling
-	// is the number of unresolved pairs filtered out because at least one
-	// side carries a rating tag above the cookie ceiling.
+	// Remaining is what the walk can still serve. HiddenByCeiling is the
+	// number of unresolved pairs filtered out because at least one side
+	// carries a rating tag above the cookie ceiling, Skipped the ones
+	// set aside this sitting.
 	Remaining       int
 	HiddenByCeiling int
+	Skipped         int
 	Ceiling         string
 	Order           string
 	Detector        string
-	ActiveGallery   string
+	// TagPairs mirrors the tag-similarity switch: with the pass off the
+	// detector picker is hidden, since every queued pair is a pixel match.
+	TagPairs      bool
+	ActiveGallery string
 	// Left / Right hold the comparison-table data oriented to the
 	// template's left/right slots so the table reads consistently with
 	// the thumbs.
@@ -253,70 +270,51 @@ func saveSessionOrder(cx *galleryCtx, mode string) {
 	}
 }
 
-// loadSessionDetector reads the detector scope, defaulting to the
-// unfiltered walk.
-func loadSessionDetector(cx *galleryCtx) string {
-	var mode string
-	if err := cx.DB.Read.QueryRow(`SELECT detector FROM relation_session WHERE id = 1`).Scan(&mode); err != nil {
-		return "both"
-	}
-	if !validDetectors[mode] {
-		return "both"
-	}
-	return mode
-}
-
-// saveSessionDetector upserts the singleton row.
-func saveSessionDetector(cx *galleryCtx, mode string) {
-	_, err := cx.DB.Write.Exec(
-		`INSERT INTO relation_session (id, detector) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET detector = excluded.detector`,
-		mode,
-	)
-	if err != nil {
-		logx.Debugf("save session detector: %v", err)
-	}
+// sessionQueueCounts splits the scoped queue the way the page reads
+// it: what the walk can serve now, what the rating ceiling holds back,
+// and what the operator has skipped. A skipped pair stays queued but
+// out of the walk until "Reset skipped" on the hub puts it back, so a
+// Skip always moves the sitting forward.
+type sessionQueueCounts struct {
+	Open            int
+	HiddenByCeiling int
+	Skipped         int
 }
 
 // loadNextPair pulls the next queue row plus both image rows and the
-// total remaining count. The total-remaining COUNT is a lightweight
-// covering query against the queue table. ceiling gates each side of
-// the pair on the absence of a rating tag above the cookie level so
-// the session walks only what the operator's ceiling already lets them
-// see in the gallery.
-//
-// Returns (pair, visible, raw, err): visible is the post-filter count,
-// raw is the unfiltered total - the difference is the "N pairs hidden
-// by your ceiling" the empty-queue branch surfaces.
-func loadNextPair(cx *galleryCtx, order, detector string, ceiling *Ceiling, pinA, pinB int64) (*sessionPairView, int, int, error) {
+// queue breakdown. The counts come from one lightweight covering scan
+// of the queue table. ceiling gates each side of the pair on the
+// absence of a rating tag above the cookie level so the session walks
+// only what the operator's ceiling already lets them see in the
+// gallery.
+func loadNextPair(cx *galleryCtx, order, detector string, ceiling *Ceiling, pinA, pinB int64) (*sessionPairView, sessionQueueCounts, error) {
 	scope := detectorFilter(detector)
-	var rawRemaining int
-	if err := cx.DB.Read.QueryRow(
-		`SELECT COUNT(*) FROM potential_relation_pairs p WHERE ` + collectionPairExcl + scope,
-	).Scan(&rawRemaining); err != nil {
-		return nil, 0, 0, err
-	}
-	if rawRemaining == 0 {
-		return nil, 0, 0, nil
-	}
-	// The ceiling gate reads the stored pair rank, so the count and the
+	// The ceiling gate reads the stored pair rank, so the counts and the
 	// pick below stay free of per-row image_tags probes.
 	where, args := "", []any(nil)
 	if rank, active := ceiling.RankCeiling(); active {
 		where = "p.max_rating_rank <= ?"
 		args = []any{rank}
 	}
-	visible := rawRemaining
+	openExpr := "p.skipped_at IS NULL"
 	if where != "" {
-		countQ := `
-			SELECT COUNT(*)
-			FROM potential_relation_pairs p
-			WHERE ` + collectionPairExcl + scope + ` AND ` + where
-		if err := cx.DB.Read.QueryRow(countQ, args...).Scan(&visible); err != nil {
-			return nil, 0, rawRemaining, err
-		}
+		openExpr += " AND " + where
 	}
-	if visible == 0 {
-		return nil, 0, rawRemaining, nil
+	var counts sessionQueueCounts
+	var unskipped int
+	countQ := `
+		SELECT COALESCE(SUM(CASE WHEN p.skipped_at IS NULL THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN ` + openExpr + ` THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN p.skipped_at IS NOT NULL THEN 1 ELSE 0 END), 0)
+		FROM potential_relation_pairs p
+		WHERE ` + collectionPairExcl + scope
+	if err := cx.DB.Read.QueryRow(countQ, args...).Scan(&unskipped, &counts.Open, &counts.Skipped); err != nil {
+		return nil, counts, err
+	}
+	counts.HiddenByCeiling = unskipped - counts.Open
+	pinned := pinA > 0 && pinB > 0
+	if counts.Open == 0 && !pinned {
+		return nil, counts, nil
 	}
 	selectBase := `
 		SELECT p.a_image_id, p.b_image_id, p.distance, p.source, COALESCE(p.score, 0),
@@ -325,19 +323,19 @@ func loadNextPair(cx *galleryCtx, order, detector string, ceiling *Ceiling, pinA
 		FROM potential_relation_pairs p
 		JOIN images ia ON ia.id = p.a_image_id
 		JOIN images ib ON ib.id = p.b_image_id`
-	orderedQ := selectBase + "\n\t\tWHERE " + collectionPairExcl + scope
+	orderedQ := selectBase + "\n\t\tWHERE " + collectionPairExcl + scope + " AND p.skipped_at IS NULL"
 	if where != "" {
 		orderedQ += " AND " + where
 	}
 	orderedQ += "\n\t\t" + orderClauseForMode(order) + "\n\t\tLIMIT 1"
 	query, qargs := orderedQ, args
-	if pinA > 0 && pinB > 0 {
+	if pinned {
 		lo, hi := pinA, pinB
 		if lo > hi {
 			lo, hi = hi, lo
 		}
 		// A pinned pair is what the operator explicitly asked to see, so
-		// the detector scope does not apply to it.
+		// neither the detector scope nor the skipped filter applies.
 		pinnedQ := selectBase + "\n\t\tWHERE " + collectionPairExcl
 		if where != "" {
 			pinnedQ += " AND " + where
@@ -347,7 +345,7 @@ func loadNextPair(cx *galleryCtx, order, detector string, ceiling *Ceiling, pinA
 	}
 	var aPath, bPath string
 	var aW, aH, bW, bH sql.NullInt64
-	view := sessionPairView{Order: order, Remaining: visible}
+	view := sessionPairView{Order: order, Remaining: counts.Open}
 	scan := func(q string, a ...any) error {
 		return cx.DB.Read.QueryRow(q, a...).Scan(
 			&view.A.ID, &view.B.ID, &view.Distance, &view.Source, &view.Score,
@@ -356,16 +354,16 @@ func loadNextPair(cx *galleryCtx, order, detector string, ceiling *Ceiling, pinA
 		)
 	}
 	err := scan(query, qargs...)
-	if err == sql.ErrNoRows && pinA > 0 && pinB > 0 {
+	if err == sql.ErrNoRows && pinned {
 		// Pinned pair isn't in the visible queue (already resolved, or
 		// hidden by the ceiling); fall back to the normal ordered pick.
 		err = scan(orderedQ, args...)
 	}
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, visible, rawRemaining, nil
+			return nil, counts, nil
 		}
-		return nil, visible, rawRemaining, err
+		return nil, counts, err
 	}
 	view.A.Width = aW
 	view.A.Height = aH
@@ -386,7 +384,7 @@ func loadNextPair(cx *galleryCtx, order, detector string, ceiling *Ceiling, pinA
 			(view.B.FileSize == view.A.FileSize && view.B.ID < view.A.ID)) {
 		view.LeftID = view.B.ID
 	}
-	return &view, visible, rawRemaining, nil
+	return &view, counts, nil
 }
 
 // relationCompareFacts is one side of the under-thumbs comparison
@@ -401,10 +399,19 @@ type relationCompareFacts struct {
 	FileSize        int64
 	AddedAt         string
 	TagCount        int
-	UniqueTags      []string
+	UniqueTags      []compareTag
 	UniqueTagsTotal int
 	Format          string
 	Collection      string
+}
+
+// compareTag is one tag name in the comparison table, carrying the
+// category it belongs to so the cell renders it in the category's
+// colour like every other tag surface.
+type compareTag struct {
+	Name     string
+	Category string
+	Color    string
 }
 
 // loadCompareFacts loads the comparison table data for two image ids.
@@ -474,7 +481,7 @@ func scanCompareFacts(cx *galleryCtx, id int64, dst *relationCompareFacts) error
 // into "left only" vs "right only" by re-reading the per-row image_id.
 // Rating tags are excluded because the table caller is comparing the
 // images, not their ratings.
-func loadTagDelta(cx *galleryCtx, leftID, rightID int64) (left []string, right []string, err error) {
+func loadTagDelta(cx *galleryCtx, leftID, rightID int64) (left []compareTag, right []compareTag, err error) {
 	rows, err := cx.DB.Read.Query(`
 		WITH delta AS (
 			SELECT it.tag_id, MAX(it.image_id) AS owner_id
@@ -486,9 +493,10 @@ func loadTagDelta(cx *galleryCtx, leftID, rightID int64) (left []string, right [
 			GROUP BY it.tag_id
 			HAVING COUNT(*) = 1
 		)
-		SELECT delta.owner_id, t.name
+		SELECT delta.owner_id, t.name, COALESCE(tc.name, ''), COALESCE(tc.color, '')
 		FROM delta
 		JOIN tags t ON t.id = delta.tag_id
+		LEFT JOIN tag_categories tc ON tc.id = t.category_id
 		ORDER BY t.name
 		LIMIT 200`, leftID, rightID,
 	)
@@ -498,15 +506,17 @@ func loadTagDelta(cx *galleryCtx, leftID, rightID int64) (left []string, right [
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var owner int64
-		var name string
-		if scanErr := rows.Scan(&owner, &name); scanErr != nil {
+		var t compareTag
+		var color string
+		if scanErr := rows.Scan(&owner, &t.Name, &t.Category, &color); scanErr != nil {
 			return nil, nil, scanErr
 		}
+		t.Color = tags.SafeCategoryColor(color)
 		switch owner {
 		case leftID:
-			left = append(left, name)
+			left = append(left, t)
 		case rightID:
-			right = append(right, name)
+			right = append(right, t)
 		}
 	}
 	return left, right, rows.Err()
@@ -590,8 +600,7 @@ func (s *Server) sessionDecidePost(w http.ResponseWriter, r *http.Request) {
 	case "not_related":
 		err = cx.RelationsSvc.AddNotRelated(left, right)
 	default:
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Unknown decision.")
+		flashStatus(w, http.StatusBadRequest, "Unknown decision.")
 		return
 	}
 	if err != nil {
@@ -676,10 +685,10 @@ func writeDuplicatePostDecideHeaders(w http.ResponseWriter, cx *galleryCtx, left
 // header so the swap reloads the whole page.
 func sessionRedirect(w http.ResponseWriter, r *http.Request) {
 	dest := "/relations/session?order=" + url.QueryEscape(r.FormValue("order"))
-	if isHTMXRequest(r) {
-		w.Header().Set("HX-Redirect", dest)
-		w.WriteHeader(http.StatusNoContent)
-		return
+	// The scope is not stored, so it rides the round trip: a decision
+	// taken inside one detector's walk must not drop back to Both.
+	if d := r.FormValue("detector"); validDetectors[d] {
+		dest += "&detector=" + url.QueryEscape(d)
 	}
-	http.Redirect(w, r, dest, http.StatusSeeOther)
+	hxRedirect(w, r, dest)
 }

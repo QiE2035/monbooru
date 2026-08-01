@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
-	"slices"
 	"sort"
 	"time"
 
@@ -44,11 +43,14 @@ const (
 // else in the queue.
 const tagPairTopK = 3
 
-// tagPairMinTags is the floor both sides must clear for admission. Two
-// three-tag images sharing all three score a perfect 1.0 on almost no
-// evidence; a search can afford that noise because the operator is
-// looking, a work queue cannot.
-const tagPairMinTags = 4
+// tagPairMinShared is how many counted tags two images must have in
+// common before the queue will offer the pair, whatever they score.
+// Measured against a booru library's own declared duplicates: pairs
+// under this floor are almost never related, because a handful of rare
+// tags can carry a high score between two images that share nothing
+// else. A search can afford that noise since the operator is looking;
+// a work queue cannot.
+const tagPairMinShared = 10
 
 // TagPairDistance maps a score into the queue's ordering key.
 func TagPairDistance(score float64) int {
@@ -74,17 +76,16 @@ type tagPairCandidate struct {
 // lets it die with the run. Cancellable like the phash walk; the pass
 // is idempotent, so a re-walk only re-confirms what is already there.
 func findTagPairs(ctx context.Context, database *db.DB, threshold float64, progress FindPairsProgress) (int, error) {
-	corpus, err := tags.LoadSimilarityCorpus(database, tagPairMinTags)
+	// A pair needs tagPairMinShared counted tags in common, and counted
+	// tags never outnumber the raw column, so anything under that floor
+	// cannot form an admissible pair and stays out of the index.
+	corpus, err := tags.LoadSimilarityCorpus(database, tagPairMinShared)
 	if err != nil {
 		return 0, fmt.Errorf("load tag-pair corpus: %w", err)
 	}
-	postings := make(map[int64][]int32)
-	for i, img := range corpus {
-		for _, t := range img.Tags {
-			postings[t.TagID] = append(postings[t.TagID], int32(i))
-		}
-	}
+	postings := buildPostings(corpus)
 	matches := make([][]tagPairCandidate, len(corpus))
+	scan := newPairScan(len(corpus))
 	for i := range corpus {
 		if ctx.Err() != nil {
 			return 0, ctx.Err()
@@ -92,7 +93,7 @@ func findTagPairs(ctx context.Context, database *db.DB, threshold float64, progr
 		if progress != nil && i%64 == 0 {
 			progress(i, len(corpus), "tag probing")
 		}
-		scorePairsFrom(corpus, postings, i, threshold, matches)
+		scorePairsFrom(corpus, postings, i, threshold, matches, scan)
 	}
 	added := 0
 	// Chunked commits, like the phash walk's flush: one WAL write per
@@ -154,86 +155,209 @@ func findTagPairs(ctx context.Context, database *db.DB, threshold float64, progr
 	return added, nil
 }
 
+// tagPostings is the corpus inverted by tag in one flat array: entries
+// holds every carrier index back to back, offsets says where each tag's
+// run starts. A map of per-tag slices costs one allocation per tag and
+// scatters the walk across the heap; the runs here are contiguous.
+type tagPostings struct {
+	offsets []int32
+	entries []int32
+}
+
+func (p *tagPostings) carriers(tagID int32) []int32 {
+	if tagID < 0 || int(tagID)+1 >= len(p.offsets) {
+		return nil
+	}
+	return p.entries[p.offsets[tagID]:p.offsets[tagID+1]]
+}
+
+// scorable reports whether an image can take part in an admissible
+// pair at all: the shared-tag floor counts seeding tags, so an image
+// carrying fewer than that can never clear it, whichever side it is on.
+// Keeping those out of the index removes them as candidates too.
+func scorable(img *tags.SimilarityCorpusImage) bool {
+	n := 0
+	for _, t := range img.Tags {
+		if t.Seeds {
+			n++
+			if n >= tagPairMinShared {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func buildPostings(corpus []tags.SimilarityCorpusImage) *tagPostings {
+	var maxTag int32
+	total := 0
+	for i := range corpus {
+		if !scorable(&corpus[i]) {
+			continue
+		}
+		for _, t := range corpus[i].Tags {
+			if !t.Seeds {
+				continue
+			}
+			if t.TagID > maxTag {
+				maxTag = t.TagID
+			}
+			total++
+		}
+	}
+	p := &tagPostings{offsets: make([]int32, maxTag+2), entries: make([]int32, total)}
+	for i := range corpus {
+		if !scorable(&corpus[i]) {
+			continue
+		}
+		for _, t := range corpus[i].Tags {
+			if t.Seeds {
+				p.offsets[t.TagID+1]++
+			}
+		}
+	}
+	for k := 1; k < len(p.offsets); k++ {
+		p.offsets[k] += p.offsets[k-1]
+	}
+	fill := make([]int32, len(p.offsets))
+	copy(fill, p.offsets)
+	for i := range corpus {
+		if !scorable(&corpus[i]) {
+			continue
+		}
+		for _, t := range corpus[i].Tags {
+			if t.Seeds {
+				p.entries[fill[t.TagID]] = int32(i)
+				fill[t.TagID]++
+			}
+		}
+	}
+	return p
+}
+
+// pairScan is the per-image scratch the walk reuses. stamp marks which
+// candidates the current seed has already seen, so dedup costs one
+// compare instead of sorting the gathered list.
+type pairScan struct {
+	seen    []int32
+	partial []float64
+	cand    []int32
+	ordered []tags.SimilarityTag
+	stamp   int32
+}
+
+func newPairScan(n int) *pairScan {
+	return &pairScan{seen: make([]int32, n), partial: make([]float64, n)}
+}
+
 // scorePairsFrom scores image i against every higher-indexed image it
 // could form an admissible pair with, feeding both sides' top-K
 // lists. Each unordered pair is handled exactly once, from its
-// lower-indexed member: the shared weight is the same either way, and
-// both directions' scores come from it. The type partition keeps a
-// manga match out of a still image's results and vice versa, matching
-// the Similar-entries panel.
-func scorePairsFrom(corpus []tags.SimilarityCorpusImage, postings map[int64][]int32, i int, threshold float64, matches [][]tagPairCandidate) {
+// lower-indexed member: the score is symmetric, so one computation
+// serves both sides. The type partition keeps a manga match out of a
+// still image's results and vice versa, matching the Similar-entries
+// panel.
+func scorePairsFrom(corpus []tags.SimilarityCorpusImage, postings *tagPostings, i int, threshold float64, matches [][]tagPairCandidate, scan *pairScan) {
 	img := &corpus[i]
-	prefix := prefixTags(img, sharedFloor(img, threshold))
+	if !scorable(img) {
+		return
+	}
+	floor := sharedFloor(img, threshold)
+	prefix, outside := prefixTags(img, floor, scan)
 	if len(prefix) == 0 {
 		return
 	}
-	var cand []int32
+	// Shared weight cannot exceed either side's norm, so clearing the
+	// threshold puts the candidate's norm inside a band around this
+	// one's: below it the pair is capped by the candidate's own mass,
+	// above it by this image's. The carrier row is already in cache from
+	// the type check, which makes the band the cheapest rejection
+	// available - and most of the library sits outside it.
+	loNorm := threshold * threshold * img.Norm
+	hiNorm := img.Norm / (threshold * threshold)
+	scan.stamp++
+	scan.cand = scan.cand[:0]
 	for _, t := range prefix {
-		for _, j := range postings[t.TagID] {
-			if j > int32(i) && corpus[j].CBZ == img.CBZ {
-				cand = append(cand, j)
+		for _, j := range postings.carriers(t.TagID) {
+			other := &corpus[j]
+			if j <= int32(i) || other.CBZ != img.CBZ {
+				continue
 			}
+			if scan.seen[j] != scan.stamp {
+				scan.seen[j] = scan.stamp
+				scan.partial[j] = 0
+				if other.Norm >= loNorm && other.Norm <= hiNorm {
+					scan.cand = append(scan.cand, j)
+				}
+			}
+			scan.partial[j] += t.Weight
 		}
 	}
-	if len(cand) == 0 {
-		return
-	}
-	slices.Sort(cand)
-	cand = slices.Compact(cand)
-	seedable := len(img.Tags) >= tagPairMinTags
-	for _, j := range cand {
+	for _, j := range scan.cand {
 		other := &corpus[j]
-		shared := sharedWeight(img.Tags, other.Tags)
-		if seedable {
-			if score := tags.SimilarityScore(shared, img.Norm, other.TagCount); score >= threshold {
-				matches[i] = insertTopK(matches[i], tagPairCandidate{imageID: other.ID, score: score})
-			}
+		// The prefix already contributed everything it can; the tags it
+		// left behind can add at most their own mass. Measured against
+		// what this candidate actually has to reach - not the band's
+		// floor, which every carrier of a heavy prefix tag clears - that
+		// settles most candidates without touching either tag list.
+		if scan.partial[j]+outside < threshold*math.Sqrt(img.Norm*other.Norm) {
+			continue
 		}
-		if len(other.Tags) >= tagPairMinTags {
-			if score := tags.SimilarityScore(shared, other.Norm, img.TagCount); score >= threshold {
-				matches[j] = insertTopK(matches[j], tagPairCandidate{imageID: img.ID, score: score})
-			}
+		shared, n := sharedWeight(img.Tags, other.Tags)
+		if n < tagPairMinShared {
+			continue
 		}
+		score := tags.SimilarityScore(shared, img.Norm, other.Norm)
+		if score < threshold {
+			continue
+		}
+		matches[i] = insertTopK(matches[i], tagPairCandidate{imageID: other.ID, score: score})
+		matches[j] = insertTopK(matches[j], tagPairCandidate{imageID: img.ID, score: score})
 	}
 }
 
-// sharedFloor is the least shared weight any admissible pair seeded
-// at img can carry. Outbound, the candidate holds at least
-// tagPairMinTags rows, so the denominator is at least
-// sqrt(norm * minTags). Inbound, the other side's norm is at least
-// the shared weight itself - a shared tag is counted on both sides -
-// so clearing the threshold forces shared >= threshold^2 * tag_count.
+// sharedFloor is the least shared weight any admissible pair seeded at
+// img can carry. The other side's norm is at least the shared weight
+// itself - a shared tag is counted on both sides - so clearing the
+// threshold forces shared >= threshold^2 * norm.
 func sharedFloor(img *tags.SimilarityCorpusImage, threshold float64) float64 {
-	in := threshold * threshold * float64(img.TagCount)
-	if len(img.Tags) < tagPairMinTags {
-		return in
-	}
-	out := threshold * math.Sqrt(img.Norm*float64(tagPairMinTags))
-	return math.Min(out, in)
+	return threshold * threshold * img.Norm
 }
 
-// prefixTags returns the heaviest tags whose removal would leave less
-// than floor of weight. Every admissible pair shares at least one of
-// them, so only their postings need walking for candidates - and the
-// tags this cuts are exactly the popular, low-weight ones whose
-// postings dominate the scan.
-func prefixTags(img *tags.SimilarityCorpusImage, floor float64) []tags.SimilarityTag {
-	ordered := slices.Clone(img.Tags)
+// prefixTags returns the heaviest seeding tags whose removal would
+// leave less than floor of weight, plus the mass left outside them.
+// Every admissible pair shares at least one prefix tag, so only their
+// postings need walking for candidates - and the tags this cuts are
+// exactly the popular, low-weight ones whose postings dominate the
+// scan. Tags too popular to seed keep their mass in the running total:
+// they can still be shared, so the walk has to assume they are.
+func prefixTags(img *tags.SimilarityCorpusImage, floor float64, scan *pairScan) (prefix []tags.SimilarityTag, outside float64) {
+	scan.ordered = append(scan.ordered[:0], img.Tags...)
+	ordered := scan.ordered
 	sort.Slice(ordered, func(a, b int) bool { return ordered[a].Weight > ordered[b].Weight })
 	remaining := img.Norm
-	for k := range ordered {
+	prefix = ordered[:0]
+	for _, t := range ordered {
 		if remaining < floor {
-			return ordered[:k]
+			break
 		}
-		remaining -= ordered[k].Weight
+		if !t.Seeds {
+			continue
+		}
+		prefix = append(prefix, t)
+		remaining -= t.Weight
 	}
-	return ordered
+	return prefix, remaining
 }
 
-// sharedWeight sums the weights of the tags both id-sorted lists
-// carry.
-func sharedWeight(a, b []tags.SimilarityTag) float64 {
+// sharedWeight sums the weights of the tags both id-sorted lists carry,
+// and reports how many of them say something about the subject. A tag
+// too popular to seed a scan is too popular to count as evidence
+// either - both images being tagged "1girl" is not something the pair
+// has in common - so it adds weight but not count.
+func sharedWeight(a, b []tags.SimilarityTag) (float64, int) {
 	var sum float64
+	n := 0
 	for i, j := 0, 0; i < len(a) && j < len(b); {
 		switch {
 		case a[i].TagID < b[j].TagID:
@@ -242,11 +366,14 @@ func sharedWeight(a, b []tags.SimilarityTag) float64 {
 			j++
 		default:
 			sum += a[i].Weight
+			if a[i].Seeds {
+				n++
+			}
 			i++
 			j++
 		}
 	}
-	return sum
+	return sum, n
 }
 
 // insertTopK keeps the best tagPairTopK candidates ordered by score
@@ -321,11 +448,11 @@ func storeTagPairTx(tx *sql.Tx, p tagPairInsert) (bool, error) {
 	if n, _ := res.RowsAffected(); n > 0 {
 		return true, nil
 	}
-	// A pair admissible both ways is scored once per direction, and the
-	// two scores generally differ. The row is the pair's best evidence,
-	// so raise it rather than keeping whichever direction inserted
-	// first. Scoped to tag-seeded rows: a `both` row's distance is the
-	// phash walk's real hamming distance, not derived from the score.
+	// A re-walk after tag edits can find a stronger score for an
+	// already-queued pair. The row is the pair's best evidence, so
+	// raise it rather than keeping the older value. Scoped to
+	// tag-seeded rows: a `both` row's distance is the phash walk's
+	// real hamming distance, not derived from the score.
 	_, err = tx.Exec(
 		`UPDATE potential_relation_pairs SET score = ?, distance = ?
 		  WHERE a_image_id = ? AND b_image_id = ? AND source = ? AND score < ?`,

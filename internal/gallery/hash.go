@@ -137,6 +137,12 @@ func DetectFileType(path string) (string, error) {
 		return models.FileTypeCBZ, nil
 	}
 
+	return detectMagicType(path)
+}
+
+// detectMagicType reads the file's leading bytes and returns the type
+// their signature declares, or ErrUnsupportedType when they match none.
+func detectMagicType(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", ErrUnsupportedType

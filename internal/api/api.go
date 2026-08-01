@@ -2,6 +2,7 @@
 package api
 
 import (
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -56,7 +57,7 @@ func (g Gallery) recordFetch(imageID int64, state, message string) {
 	}
 }
 
-// relationsOnDelete returns the OnImageDelete callback for the given
+// relationsOnDelete returns the OnImageDeleteTx callback for the given
 // service, or nil when the gallery has no relations service wired (the
 // test harness). gallery.DeleteImage treats a nil callback as a no-op.
 func relationsOnDelete(svc *relations.Service) func(*sql.Tx, int64) error {
@@ -89,9 +90,7 @@ func New(cfg *config.Config, cfgMu *sync.RWMutex, jobManager *jobs.Manager, reso
 // or the X-Monbooru-Gallery header; empty falls back to the active one.
 func (h *Handler) resolveGallery(w http.ResponseWriter, r *http.Request) (Gallery, bool) {
 	name := strings.TrimSpace(r.URL.Query().Get("gallery"))
-	if name == "" {
-		name = strings.TrimSpace(r.Header.Get("X-Monbooru-Gallery"))
-	}
+	name = cmp.Or(name, strings.TrimSpace(r.Header.Get("X-Monbooru-Gallery")))
 	g, ok := h.resolver(name)
 	if !ok {
 		if name == "" {
@@ -315,9 +314,7 @@ func parsePage(r *http.Request, defaultLimit, maxLimit int) (offset, limit int) 
 		}
 	}
 	l := q.Get("limit")
-	if l == "" {
-		l = q.Get("page_size")
-	}
+	l = cmp.Or(l, q.Get("page_size"))
 	if l != "" {
 		if n, err := strconv.Atoi(l); err == nil && n > 0 {
 			limit = min(n, maxLimit)

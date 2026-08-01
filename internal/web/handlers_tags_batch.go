@@ -3,14 +3,53 @@ package web
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/monbooru/monbooru/internal/logx"
 	"github.com/monbooru/monbooru/internal/models"
 )
+
+// skipReasons collects the distinct reasons a tag-scope batch refused
+// rows. The runners answer 202 before they start, so the job summary is
+// the only place the operator ever sees one; a bare "skipped N" there
+// says nothing, and a run where every row was refused still lands in
+// the terminal success state. Capped at three: the summary is one line
+// and wants the shape of the failure, not every instance of it.
+type skipReasons struct{ seen []string }
+
+func (s *skipReasons) add(err error) {
+	msg := err.Error()
+	if len(s.seen) >= 3 || slices.Contains(s.seen, msg) {
+		return
+	}
+	s.seen = append(s.seen, msg)
+}
+
+func (s *skipReasons) any() bool { return len(s.seen) > 0 }
+
+func (s *skipReasons) String() string { return strings.Join(s.seen, "; ") }
+
+// finishTagScopeJob writes a tag-scope batch's terminal state. A run
+// that changed nothing and was refused for a reason fails rather than
+// completes: the status widget renders any completion as a green check,
+// so "0 of 1 rejected outright" and "1 of 1 succeeded" would otherwise
+// look like the same event. A partial run stays a completion but still
+// names why the rest was skipped.
+func (s *Server) finishTagScopeJob(changed int, reasons skipReasons, cancelled bool, noun, summary string) {
+	if reasons.any() {
+		summary += ": " + reasons.String()
+	}
+	var failed error
+	if !cancelled && changed == 0 && reasons.any() {
+		failed = errors.New(summary)
+	}
+	s.finishJob(failed, cancelled, fmt.Sprintf("%s cancelled (%s)", noun, summary), summary)
+}
 
 // resolveTagScope resolves a tags-page batch POST's target set: an
 // explicit ids list (the checkbox selection) when present, else every
@@ -63,8 +102,7 @@ func (s *Server) resolveTagScope(r *http.Request) ([]int64, error) {
 func (s *Server) startTagScopeJob(w http.ResponseWriter, r *http.Request) ([]int64, bool) {
 	ids, err := s.resolveTagScope(r)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusBadRequest, err.Error())
 		return nil, false
 	}
 	if len(ids) == 0 {
@@ -99,8 +137,7 @@ func (s *Server) batchTagCategoryPost(w http.ResponseWriter, r *http.Request) {
 	}
 	catID, err := strconv.ParseInt(r.FormValue("category_id"), 10, 64)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Invalid category.")
+		flashStatus(w, http.StatusBadRequest, "Invalid category.")
 		return
 	}
 	merge := r.FormValue("merge") == "1"
@@ -112,6 +149,7 @@ func (s *Server) runBatchTagCategory(ids []int64, catID int64, merge bool) {
 	total := len(ids)
 	moved, mergedCount, skipped := 0, 0, 0
 	cancelled := false
+	var reasons skipReasons
 
 	s.jobs.Update(0, total, "moving tags…")
 	for i, id := range ids {
@@ -124,6 +162,7 @@ func (s *Server) runBatchTagCategory(ids []int64, catID int64, merge bool) {
 			switch {
 			case err != nil:
 				logx.Warnf("batch category tag %d: %v", id, err)
+				reasons.add(err)
 				skipped++
 			case didMerge:
 				mergedCount++
@@ -132,6 +171,7 @@ func (s *Server) runBatchTagCategory(ids []int64, catID int64, merge bool) {
 			}
 		} else if err := s.tagSvc().ChangeTagCategory(id, catID); err != nil {
 			logx.Warnf("batch category tag %d: %v", id, err)
+			reasons.add(err)
 			skipped++
 		} else {
 			moved++
@@ -149,7 +189,7 @@ func (s *Server) runBatchTagCategory(ids []int64, catID int64, merge bool) {
 	if skipped > 0 {
 		summary += fmt.Sprintf(", skipped %d", skipped)
 	}
-	s.finishJob(nil, cancelled, fmt.Sprintf("category move cancelled (%s)", summary), summary)
+	s.finishTagScopeJob(moved+mergedCount, reasons, cancelled, "category move", summary)
 }
 
 // batchTagAliasPost merges every tag in scope into one canonical (an
@@ -161,8 +201,7 @@ func (s *Server) batchTagAliasPost(w http.ResponseWriter, r *http.Request) {
 	}
 	canonID, msg := s.resolveCanonicalTagInput(r.FormValue("canonical_id"), true)
 	if msg != "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", msg)
+		flashStatus(w, http.StatusBadRequest, msg)
 		return
 	}
 	s.startTagScopeRun(w, r, func(ids []int64) { s.runBatchTagAlias(ids, canonID) })
@@ -173,6 +212,7 @@ func (s *Server) runBatchTagAlias(ids []int64, canonID int64) {
 	total := len(ids)
 	aliased, skipped := 0, 0
 	cancelled := false
+	var reasons skipReasons
 
 	s.jobs.Update(0, total, "aliasing tags…")
 	for i, id := range ids {
@@ -181,9 +221,12 @@ func (s *Server) runBatchTagAlias(ids []int64, canonID int64) {
 			break
 		}
 		if id == canonID {
+			// The Merge dialog puts the chosen canonical in the scope
+			// too; self-skipping it is not a refusal.
 			skipped++
 		} else if err := s.tagSvc().MergeTags(id, canonID); err != nil {
 			logx.Warnf("batch alias tag %d: %v", id, err)
+			reasons.add(err)
 			skipped++
 		} else {
 			aliased++
@@ -198,7 +241,7 @@ func (s *Server) runBatchTagAlias(ids []int64, canonID int64) {
 	if skipped > 0 {
 		summary += fmt.Sprintf(", skipped %d", skipped)
 	}
-	s.finishJob(nil, cancelled, fmt.Sprintf("alias cancelled (%s)", summary), summary)
+	s.finishTagScopeJob(aliased, reasons, cancelled, "alias", summary)
 }
 
 // batchMergeFoldedPost merges each folded original in scope into its corrected
@@ -236,8 +279,7 @@ func (s *Server) batchTagImplyPost(w http.ResponseWriter, r *http.Request) {
 	remove := r.FormValue("mode") == "remove"
 	targetID, msg := s.resolveCanonicalTagInput(r.FormValue("target"), !remove)
 	if msg != "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", msg)
+		flashStatus(w, http.StatusBadRequest, msg)
 		return
 	}
 	s.startTagScopeRun(w, r, func(ids []int64) { s.runBatchTagImply(ids, targetID, remove) })
@@ -248,6 +290,7 @@ func (s *Server) runBatchTagImply(ids []int64, targetID int64, remove bool) {
 	total := len(ids)
 	changed, skipped := 0, 0
 	cancelled := false
+	var reasons skipReasons
 	verb := "declaring implications…"
 	if remove {
 		verb = "removing implications…"
@@ -273,6 +316,7 @@ func (s *Server) runBatchTagImply(ids []int64, targetID int64, remove bool) {
 			skipped++
 		} else if remove {
 			if err := s.tagSvc().RemoveImplication(parentID, targetID); err != nil {
+				reasons.add(err)
 				skipped++
 			} else if err := s.sweepImplicationRemovalInline(ctx, parentID, removeClosure); err != nil {
 				logx.Warnf("batch imply sweep parent %d: %v", parentID, err)
@@ -285,6 +329,7 @@ func (s *Server) runBatchTagImply(ids []int64, targetID int64, remove bool) {
 			switch {
 			case err != nil:
 				logx.Warnf("batch imply parent %d: %v", parentID, err)
+				reasons.add(err)
 				skipped++
 			case created:
 				changed++
@@ -312,7 +357,7 @@ func (s *Server) runBatchTagImply(ids []int64, targetID int64, remove bool) {
 	if skipped > 0 {
 		summary += fmt.Sprintf(", skipped %d", skipped)
 	}
-	s.finishJob(nil, cancelled, fmt.Sprintf("implication batch cancelled (%s)", summary), summary)
+	s.finishTagScopeJob(changed, reasons, cancelled, "implication batch", summary)
 }
 
 // sweepImplicationRemovalInline drops the implied rows a removed edge no

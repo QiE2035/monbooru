@@ -509,6 +509,16 @@ func (s *Server) onImageDeleteCallback() func(*sql.Tx, int64) error {
 	return svc.OnImageDeleteTx
 }
 
+// onImagesDeleteCallback is onImageDeleteCallback for the chunked bulk
+// paths, which hand the whole chunk over so each group is decided once.
+func (s *Server) onImagesDeleteCallback() func(*sql.Tx, []int64) error {
+	svc := s.relationsSvc()
+	if svc == nil {
+		return nil
+	}
+	return svc.OnImagesDeleteTx
+}
+
 func (s *Server) thumbnailsPath() string {
 	if cx := s.Active(); cx != nil {
 		return cx.ThumbnailsPath

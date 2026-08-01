@@ -498,21 +498,24 @@
   <section id="tagger" class="settings-section">
     <div class="settings-section-header">
       <h3>Auto-Tagger</h3>
-      {{template "partials/tagger_mode_badge.html" (dict "UseCUDA" $cfg.Tagger.UseCUDA)}}
+      {{template "partials/tagger_mode_badge.html" (dict "Provider" $cfg.Tagger.ExecutionProvider)}}
     </div>
     <div id="flash-tagger"></div>
     {{$taggers := index . "Taggers"}}
     {{$rows := index . "TaggerRows"}}
-    {{$supported := index . "SupportedCount"}}
-    {{$unsupported := index . "UnsupportedCount"}}
     <form hx-post="/settings/tagger" hx-target="#flash-tagger" hx-swap="innerHTML">
       <input type="hidden" name="_csrf" value="{{$csrf}}">
       <div class="settings-sub">
         <h4>Workers / GPU</h4>
         <div class="settings-cols">
           <div class="field">
-            <label><input type="checkbox" name="use_cuda"{{if $cfg.Tagger.UseCUDA}} checked{{end}}> Use GPU (CUDA)</label>
-            <p class="field-hint">Requires a CUDA-capable image and a GPU passed into the container.</p>
+            <label>Execution provider</label>
+            <div class="radio-grid">
+              {{range index . "ExecutionProviders"}}
+              <label><input type="radio" name="execution_provider" value="{{.Name}}"{{if eq $cfg.Tagger.ExecutionProvider .Name}} checked{{end}}> {{.Label}}</label>
+              {{end}}
+            </div>
+            <p class="field-hint">CPU works everywhere; other providers need a matching ONNX Runtime library.</p>
           </div>
           {{template "partials/range_field.html" dict "Name" "parallel" "Label" "Parallel workers" "Min" 1 "Max" 16 "Step" 1 "Value" $cfg.Tagger.Parallel "Ticks" (list 1 2 4 8 12 16) "Hint" "Images tagged in parallel."}}
           {{template "partials/range_field.html" dict "Name" "idle_release_after_minutes" "Label" "Tagger RAM/VRAM idle release (minutes)" "Min" 0 "Max" 60 "Step" 1 "Value" $cfg.Tagger.IdleReleaseAfterMinutes "Ticks" (list 0 15 30 45 60) "Hint" "Use 0 to free it just after inference."}}
@@ -526,79 +529,73 @@
       <div class="table-scroll">
       <table class="tagger-table">
         <thead>
-          <tr><th>Tagger</th><th>Instructions</th><th>Status</th><th>Thresholds</th><th>Galleries</th><th>Enable</th><th>Delete</th></tr>
+          <tr><th>Tagger</th><th>Status</th><th>Configuration</th><th>Actions</th></tr>
         </thead>
         <tbody>
-          {{range $i, $r := $rows}}
-          {{if and (gt $supported 0) (gt $unsupported 0) (eq $i $supported)}}
-          <tr class="tagger-sep"><td colspan="7">unsupported (not in catalog)</td></tr>
-          {{end}}
+          {{range $r := $rows}}
           <tr>
             <td>
               <strong>{{$r.Name}}</strong>
+              {{if and $r.Installed (not $r.Supported)}}<span class="status-badge status-off" title="Not in the catalog">not in catalog</span>{{end}}
               {{if $r.Description}}<div class="field-hint tagger-row-desc">{{$r.Description}}</div>{{end}}
             </td>
             <td>
-              {{if $r.Supported}}
-              <button type="button" class="btn-sm btn-tagger-cmd"
-                      data-tagger-name="{{$r.Name}}"
-                      data-tagger-desc="{{$r.Description}}"
-                      data-host-cmd="{{$r.HostCommand}}"
-                      data-docker-cmd="{{$r.DockerCommand}}">Show instructions</button>
-              {{end}}
-            </td>
-            <td>
-              {{if not $r.Installed}}<span class="status-dim" title="Not installed">not installed</span>
-              {{else if not $r.Available}}<span class="status-err" title="{{$r.Reason}}">unavailable</span>
+              {{if not $r.Installed}}<span class="status-badge status-faint" title="Not installed">not installed</span>
+              {{else if not $r.Available}}<span class="status-badge status-warn" title="{{$r.Reason}}">unavailable</span>
               {{else if $r.Enabled}}<span class="status-badge status-enabled" title="Enabled">enabled</span>
-              {{else}}<span class="status-dim" title="Disabled">disabled</span>{{end}}
-            </td>
-            <td>
-              {{if and $r.Installed $r.Enabled}}
-              <button type="button" class="btn-sm"
-                      hx-get="/settings/tagger/{{$r.Name}}/thresholds"
-                      hx-target="#tagger-thresh-{{$r.Name}}-body"
-                      hx-trigger="click once"
-                      onclick="document.getElementById('tagger-thresh-{{$r.Name}}').showModal()">Configure</button>
-              <span id="tagger-thresh-summary-{{$r.Name}}" class="field-hint">{{$r.ThresholdSummary}}</span>
-              {{else}}
-              <span class="status-dim">-</span>
-              {{end}}
-            </td>
-            <td>
-              {{if and $r.Installed $r.Enabled}}
-              <button type="button" class="btn-sm"
-                      hx-get="/settings/tagger/{{$r.Name}}/galleries"
-                      hx-target="#tagger-gal-{{$r.Name}}-body"
-                      hx-trigger="click once"
-                      onclick="document.getElementById('tagger-gal-{{$r.Name}}').showModal()">Configure</button>
-              <span id="tagger-gal-summary-{{$r.Name}}" class="field-hint">{{$r.GallerySummary}}</span>
-              {{else}}
-              <span class="status-dim">-</span>
-              {{end}}
+              {{else}}<span class="status-badge status-off" title="Disabled">disabled</span>{{end}}
             </td>
             <td>
               {{if $r.Installed}}
-                {{if $r.Enabled}}
-                <button type="button" class="btn-sm"
-                        hx-post="/settings/tagger/{{$r.Name}}/disable" hx-target="#flash-tagger" hx-swap="innerHTML"
-                        hx-vals='{"_csrf":"{{$csrf}}"}'>Disable</button>
-                {{else if $r.Available}}
-                <button type="button" class="btn-sm btn-success"
-                        hx-post="/settings/tagger/{{$r.Name}}/enable" hx-target="#flash-tagger" hx-swap="innerHTML"
-                        hx-vals='{"_csrf":"{{$csrf}}"}'>Enable</button>
-                {{end}}
+              <button type="button" class="btn-sm"
+                      hx-get="/settings/tagger/{{$r.Name}}/config"
+                      hx-target="#tagger-config-{{$r.Name}}-body"
+                      hx-trigger="click once"
+                      onclick="document.getElementById('tagger-config-{{$r.Name}}').showModal()">Configure</button>
+              <span id="tagger-config-summary-{{$r.Name}}" class="field-hint">{{$r.ConfigSummary}}</span>
+              {{else}}
+              <span class="status-dim">-</span>
               {{end}}
             </td>
             <td>
-              {{if and $r.Installed (not $r.Enabled)}}
-              <button type="button" class="btn-sm btn-danger"
-                      hx-post="/settings/tagger/{{$r.Name}}/delete" hx-target="#flash-tagger" hx-swap="innerHTML"
-                      hx-vals='{"_csrf":"{{$csrf}}"}'
-                      hx-confirm="Delete tagger {{$r.Name}}?"
-                      data-confirm-danger="The folder under model_path will be permanently removed from disk."
-                      data-confirm-ok="Delete">Delete</button>
+              <div class="tagger-actions">
+              {{if not $r.Installed}}
+                {{if $r.Supported}}
+                <button type="button" class="btn-sm tagger-act-state btn-tagger-cmd"
+                        data-tagger-name="{{$r.Name}}"
+                        data-tagger-desc="{{$r.Description}}"
+                        data-gated="{{if $r.Gated}}1{{end}}"
+                        data-host-cmd="{{$r.HostCommand}}"
+                        data-docker-cmd="{{$r.DockerCommand}}">Install</button>
+                {{end}}
+              {{else}}
+                {{if $r.Enabled}}
+                <button type="button" class="btn-sm tagger-act-state"
+                        hx-post="/settings/tagger/{{$r.Name}}/disable" hx-target="#flash-tagger" hx-swap="innerHTML"
+                        hx-vals='{"_csrf":"{{$csrf}}"}'>Disable</button>
+                {{else if $r.Available}}
+                <button type="button" class="btn-sm tagger-act-state btn-success"
+                        hx-post="/settings/tagger/{{$r.Name}}/enable" hx-target="#flash-tagger" hx-swap="innerHTML"
+                        hx-vals='{"_csrf":"{{$csrf}}"}'>Enable</button>
+                {{end}}
+                {{if $r.Differs}}
+                <button type="button" class="btn-sm tagger-act-reset"
+                        hx-post="/settings/tagger/{{$r.Name}}/reset" hx-target="#flash-tagger" hx-swap="innerHTML"
+                        hx-vals='{"_csrf":"{{$csrf}}"}'
+                        hx-confirm="Reset tagger {{$r.Name}} to stock?"
+                        data-confirm-danger="Thresholds, gallery scope and custom mapping rules will be discarded."
+                        data-confirm-ok="Reset">Reset</button>
+                {{end}}
+                {{if not $r.Enabled}}
+                <button type="button" class="btn-sm tagger-act-delete btn-danger"
+                        hx-post="/settings/tagger/{{$r.Name}}/delete" hx-target="#flash-tagger" hx-swap="innerHTML"
+                        hx-vals='{"_csrf":"{{$csrf}}"}'
+                        hx-confirm="Delete tagger {{$r.Name}}?"
+                        data-confirm-danger="The folder under model_path will be permanently removed from disk."
+                        data-confirm-ok="Delete">Delete</button>
+                {{end}}
               {{end}}
+              </div>
             </td>
           </tr>
           {{end}}
@@ -610,18 +607,15 @@
       {{end}}
     </div>
     {{range $rows}}{{if .Installed}}
-    <dialog id="tagger-thresh-{{.Name}}" class="tagger-thresh-dialog">
-      <h4>{{.Name}} - thresholds</h4>
-      <div id="tagger-thresh-{{.Name}}-body">Loading...</div>
-    </dialog>
-    <dialog id="tagger-gal-{{.Name}}" class="tagger-gal-dialog">
-      <h4>{{.Name}} - galleries</h4>
-      <div id="tagger-gal-{{.Name}}-body">Loading...</div>
+    <dialog id="tagger-config-{{.Name}}" class="tagger-config-dialog">
+      <h4>{{.Name}}</h4>
+      <div id="tagger-config-{{.Name}}-body">Loading...</div>
     </dialog>
     {{end}}{{end}}
     <dialog id="tagger-cmd-dialog">
       <p><strong id="tagger-cmd-name"></strong> - <span id="tagger-cmd-desc"></span></p>
       <p class="field-hint">Run one of the commands below on a host with internet access, then reload the Settings page.</p>
+      <p class="field-hint" id="tagger-cmd-gated" hidden>This model is login-gated on Hugging Face: accept its terms on the model page while logged in, then <code>export HF_TOKEN=&lt;your access token&gt;</code> before running.</p>
       <p class="code-block-label"><strong>Direct host install</strong> <span class="field-hint">(run inside <code>{{$cfg.Paths.ModelPath}}</code>)</span>
         <button type="button" class="btn-sm code-block-copy" id="tagger-cmd-host-copy" title="Copy command">Copy</button>
         <span class="copy-flash" hidden>copied</span>
@@ -653,7 +647,7 @@
           </div>
         </div>
         <div class="settings-sub">
-          <h4>Tag similarity pairs</h4>
+          <h4>Rare tag similarity pairs</h4>
           <div class="field">
             <label><input type="checkbox" name="tag_pairs" {{if $cfg.Relations.TagPairs}}checked{{end}}> Also queue pairs that share rare tags</label>
             <p class="field-hint">Finds recolours, redraws and based-on work that image similarity cannot see. Adds a full pass over the library to every find-pairs run.</p>
@@ -666,8 +660,8 @@
           {{template "partials/range_field.html" dict "Name" "default_distance" "Label" "Hamming distance" "Min" 0 "Max" 12 "Step" 1 "Value" $cfg.Relations.DefaultDistance "Ticks" (list 0 2 4 6 8 10 12)}}
         </div>
         <div class="settings-sub">
-          <h4>Tag similarity match strength</h4>
-          {{template "partials/range_field.html" dict "Name" "tag_pair_threshold" "Label" "Score" "Min" 0.5 "Max" 1 "Step" 0.01 "Value" $cfg.Relations.TagPairThreshold "Ticks" (list 0.5 0.6 0.7 0.8 0.9 1)}}
+          <h4>Rare tag similarity match strength</h4>
+          {{template "partials/range_field.html" dict "Name" "tag_pair_threshold" "Label" "Strength (%)" "Min" 70 "Max" 100 "Step" 1 "Value" (pct $cfg.Relations.TagPairThreshold) "Ticks" (list 70 80 90 100) "Hint" "100% catches only images with identical tags."}}
         </div>
       </div>
       <div class="settings-actions"><button type="submit">Save</button></div>
@@ -808,7 +802,7 @@
       <table class="stats-table">
         <tbody>
           {{if $tg.Loaded}}
-          <tr><th>Mode</th><td>{{if $tg.UseCUDA}}CUDA{{else}}CPU{{end}}</td></tr>
+          <tr><th>Mode</th><td>{{providerLabel $tg.Provider}}</td></tr>
           <tr><th>Status</th><td>
             {{if $tg.InUse}}running
             {{else}}idle {{schedDuration $tg.IdleFor}}

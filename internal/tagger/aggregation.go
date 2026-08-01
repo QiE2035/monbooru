@@ -15,12 +15,18 @@ import (
 // store ends up with exactly one tag - taggers that emit several
 // rating signals on borderline content settle deterministically on
 // the top-scoring one instead of needing the store step to pick.
+// "year" is capped the same way: an image is made in one year, so a
+// second guess is noise.
 var DefaultPerCategoryTopK = map[string]int{
 	"character": 8,
 	"copyright": 4,
 	"artist":    4,
 	"general":   25,
 	"rating":    1,
+	"medium":    4,
+	"person":    8,
+	"species":   8,
+	"year":      1,
 }
 
 // DefaultTopKFallback is applied to any category not listed in

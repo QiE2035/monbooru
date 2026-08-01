@@ -263,6 +263,19 @@ function cycleRatingCeiling(delta) {
   return false;
 }
 
+// applySortChange re-runs the search on the picked sort. Only collection
+// order forces a direction: carrying a descending pick over renders the
+// collection backwards, which is never what picking it means. Every
+// other sort keeps whatever the operator set, so switching newest to
+// file size while reading oldest-first stays smallest-first.
+function applySortChange(sortEl) {
+  if (sortEl.value === 'order') {
+    var orderEl = document.querySelector('#search-form select[name="order"]');
+    if (orderEl) orderEl.value = 'asc';
+  }
+  return submitSearch();
+}
+
 // Cycle the gallery sort select between newest -> filesize -> order -> random.
 function cycleSort() {
   var sortEl = document.getElementById('search-sort');
@@ -282,7 +295,7 @@ function cycleSort() {
     sortEl.appendChild(opt);
   }
   sortEl.value = next;
-  return submitSearch();
+  return applySortChange(sortEl);
 }
 
 function flipSortDirection() {
@@ -1194,6 +1207,95 @@ document.addEventListener('click', function(e) {
 document.addEventListener('close', function(e) {
   if (e.target.id === 'ptr-contrib-dialog') htmx.trigger(document.body, 'ptr-contrib-closed');
 }, true);
+
+// Tab strips inside dialogs (the per-tagger Configure pop-in). Tabs
+// only toggle panel visibility within their own form; hidden panels'
+// fields still submit, so one Save covers every tab. Delegated so
+// htmx-injected dialog bodies need no wiring.
+document.body.addEventListener('click', function(e) {
+  var tab = e.target.closest && e.target.closest('.dialog-tab');
+  if (!tab || !tab.dataset.panel) return;
+  var strip = tab.closest('.dialog-tabs');
+  var scope = strip && strip.parentElement;
+  if (!scope) return;
+  strip.querySelectorAll('.dialog-tab').forEach(function(t) {
+    t.classList.toggle('active', t === tab);
+  });
+  scope.querySelectorAll('.dialog-panel').forEach(function(p) {
+    p.hidden = p.id !== tab.dataset.panel;
+  });
+});
+
+// The mappings search box is a text input inside the dialog's config
+// form, so Enter would implicitly submit it - saving the tagger and
+// refreshing the page out from under the open dialog. htmx already
+// re-runs the search on the `search` event, so swallowing the submit
+// leaves Enter meaning "search now".
+document.body.addEventListener('keydown', function(e) {
+  if (e.key !== 'Enter') return;
+  var el = e.target;
+  if (el && el.name === 'q' && el.closest && el.closest('.tc-mappings')) {
+    e.preventDefault();
+  }
+});
+
+// Mappings panel of the tagger Configure dialog. Apply and Reset are
+// htmx buttons posting one rule each and swapping the result list back;
+// this handler only owns the editor row's lifecycle (open, seed, close)
+// and the search-row buttons.
+document.body.addEventListener('click', function(e) {
+  var btn = e.target.closest && e.target.closest('.tc-edit, .tc-reset, .tc-edit-cancel, .tc-filter, .tc-more-btn');
+  if (!btn) return;
+  var panel = btn.closest('.tc-mappings');
+  if (!panel) return;
+  // The search row carries q, filter and limit, so re-triggering the
+  // search input re-renders the list with whatever the buttons set.
+  var search = panel.querySelector('input[name=q]');
+  var limit = panel.querySelector('input[name=limit]');
+
+  if (btn.classList.contains('tc-filter')) {
+    panel.querySelectorAll('.tc-filter').forEach(function(f) { f.classList.toggle('active', f === btn); });
+    var hidden = panel.querySelector('input[name=filter]');
+    if (hidden) hidden.value = btn.dataset.filter;
+    if (search) htmx.trigger(search, 'search');
+    return;
+  }
+
+  if (btn.classList.contains('tc-more-btn')) {
+    if (limit) limit.value = btn.dataset.limit;
+    if (search) htmx.trigger(search, 'search');
+    return;
+  }
+
+  // One editor at a time; any action first closes the open one.
+  var open = panel.querySelector('.tc-editor-row');
+  if (open) open.remove();
+
+  if (!btn.classList.contains('tc-edit')) return;
+
+  // Edit: build the editor row from the panel's template, seeded from
+  // the row's current state. The Apply button carries the label as its
+  // own name/value so the post identifies the row it came from.
+  var row = btn.closest('tr');
+  var tpl = panel.querySelector('.tc-editor-template');
+  if (!row || !tpl) return;
+  var editor = tpl.content.firstElementChild.cloneNode(true);
+  var apply = editor.querySelector('.tc-edit-apply');
+  apply.value = row.dataset.source;
+  if (row.dataset.category) editor.querySelector('.tc-edit-category').value = row.dataset.category;
+  editor.querySelector('.tc-edit-name').value =
+    row.dataset.name !== row.dataset.source ? row.dataset.name : '';
+  editor.querySelector('.tc-edit-mute').checked = row.dataset.muted === '1';
+  // Enter inside the editor applies the edit. Left alone it would
+  // submit the dialog's form instead, closing the whole pop-in.
+  editor.addEventListener('keydown', function(ev) {
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    apply.click();
+  });
+  row.after(editor);
+  htmx.process(editor);
+});
 
 // Per-tagger Galleries dialog helpers. taggerGalAllToggle disables and
 // force-checks the per-gallery boxes when "All galleries" is on so the
@@ -2147,11 +2249,16 @@ function copyToClipboardLegacy(text, done) {
 }
 
 document.addEventListener('click', function (e) {
-  var btn = e.target.closest('[data-copy]');
+  var btn = e.target.closest('[data-copy], [data-copy-from]');
   if (!btn) return;
   e.preventDefault();
+  var text = btn.dataset.copy;
+  if (!text && btn.dataset.copyFrom) {
+    var src = document.querySelector(btn.dataset.copyFrom);
+    text = src ? src.value : '';
+  }
   var flash = btn.parentElement && btn.parentElement.querySelector('.copy-flash');
-  copyToClipboard(btn.dataset.copy, flash);
+  copyToClipboard(text, flash);
 });
 
 document.addEventListener('click', function (e) {
@@ -2163,6 +2270,7 @@ document.addEventListener('click', function (e) {
   var docker = btn.dataset.dockerCmd || '';
   document.getElementById('tagger-cmd-name').textContent = btn.dataset.taggerName || '';
   document.getElementById('tagger-cmd-desc').textContent = btn.dataset.taggerDesc || '';
+  document.getElementById('tagger-cmd-gated').hidden = !btn.dataset.gated;
   document.getElementById('tagger-cmd-host').textContent = host;
   document.getElementById('tagger-cmd-docker').textContent = docker;
   document.getElementById('tagger-cmd-host-copy').dataset.copy = host;
@@ -2934,3 +3042,70 @@ function initInboxUpload() {
 }
 
 document.addEventListener('DOMContentLoaded', initInboxUpload);
+
+// mergeCategoryCollision re-runs an inline category move with merge=1
+// after the collision flash offered it. Shared by the /tags listing and
+// the tag detail page, which both carry a #tag-flash slot.
+function mergeCategoryCollision(tagID, catID) {
+  var body = new URLSearchParams();
+  body.set('category_id', String(catID));
+  body.set('merge', '1');
+  fetch('/tags/' + tagID + '/category', {
+    method: 'PATCH',
+    headers: {'X-CSRF-Token': getCSRFToken(), 'Content-Type': 'application/x-www-form-urlencoded'},
+    body: body
+  }).then(function(r) {
+    if (r.ok) {
+      stashActionFlash('Merged into the existing tag.', 'ok');
+      window.location.reload();
+    } else {
+      r.text().then(function(t) {
+        var el = document.getElementById('tag-flash');
+        if (el) el.innerHTML = '<div class="flash flash-err">' + (t || 'Merge failed.') + '</div>';
+      });
+    }
+  });
+}
+
+// deleteTagFlow is the confirm-then-DELETE a tag goes through from both
+// the /tags listing and the tag detail page. The two differ only in
+// where the id comes from and where they go afterwards, so onSuccess
+// carries the navigation.
+function deleteTagFlow(btn, tagID, onSuccess) {
+  var name = btn.dataset.name;
+  var isRating = btn.dataset.category === 'rating';
+  var msg = isRating
+    ? 'Strip "' + name + '" from every image?'
+    : 'Delete tag "' + name + '" and remove it from every image?';
+  var danger = isRating
+    ? 'The rating tag itself stays in the catalog and can be re-added later.'
+    : 'This cannot be undone.';
+  showConfirm(msg, function() {
+    // The cascade on a heavily-used tag takes seconds; surface the wait
+    // and block a second click until the DELETE answers.
+    btn.disabled = true;
+    var el = document.getElementById('tag-flash');
+    setFlashText(el, 'warn', (isRating ? 'Stripping' : 'Deleting') + ' "' + name + '"…');
+    fetch('/tags/' + tagID, {
+      method: 'DELETE',
+      headers: {'X-CSRF-Token': getCSRFToken()}
+    }).then(function(r) {
+      if (r.ok) {
+        // The DELETE returns 204; raw fetch doesn't process HX-Trigger,
+        // so seed the shared stash directly before navigating.
+        stashActionFlash(escapeHTML(isRating
+          ? 'Stripped "' + name + '" from every image.'
+          : 'Tag "' + name + '" deleted.'), 'ok');
+        onSuccess();
+      } else {
+        btn.disabled = false;
+        r.text().then(function(t) {
+          setFlashText(el, 'err', t || 'Delete failed.');
+        });
+      }
+    }).catch(function() {
+      btn.disabled = false;
+      setFlashText(el, 'err', 'Delete request failed.');
+    });
+  }, danger, isRating ? 'Strip' : 'Delete');
+}

@@ -2,13 +2,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{.Title}}</title>
-  <meta name="csrf-token" content="{{.CSRFToken}}">
-  <link rel="icon" type="image/png" href="{{.BooruFavicon}}">
-  <link rel="stylesheet" href="/static/main.css">
-  {{if .CustomCSS}}<link rel="stylesheet" href="/custom.css">{{end}}
+{{template "partials/head.html" .}}
   <script src="/static/main.js" defer></script>
   {{if .NextPage}}
   <link rel="prefetch" href="/images/{{.Image.ID}}/page/{{.NextPage}}">

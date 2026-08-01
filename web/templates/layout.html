@@ -2,13 +2,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{.Title}}</title>
-  <meta name="csrf-token" content="{{.CSRFToken}}">
-  <link rel="icon" type="image/png" href="{{.BooruFavicon}}">
-  <link rel="stylesheet" href="/static/main.css">
-  {{if .CustomCSS}}<link rel="stylesheet" href="/custom.css">{{end}}
+{{template "partials/head.html" .}}
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/main.js" defer></script>
 </head>
@@ -83,11 +77,11 @@
       <span class="footer-gallery">[{{$.ActiveGallery}}]</span>
       {{end}}{{end}}
       <span class="footer-sep">·</span>
-      <span>{{.VisibleCount}} img</span>
+      <span id="footer-count-images">{{.VisibleCount}} img</span>
       <span class="footer-sep">·</span>
-      <span>{{.TagCount}} tags</span>
+      <span id="footer-count-tags">{{.TagCount}} tags</span>
       <span class="footer-sep">·</span>
-      <span>{{.CollectionsCount}} collections</span>
+      <span id="footer-count-collections">{{.CollectionsCount}} collections</span>
       {{if .Degraded}}<span class="footer-sep">·</span><span class="footer-degraded">degraded</span>{{end}}
       <span class="footer-sep-strong">::</span>
       <span class="footer-rating-label">rating:</span>

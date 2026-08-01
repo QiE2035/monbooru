@@ -16,16 +16,17 @@ import (
 
 // runWorker is the body of the `monbooru tagger-worker` subcommand.
 // Spawned by the parent's IPC backend; serves that parent's requests
-// until the socket closes or SIGTERM arrives.
+// until the parent sends a graceful shutdown request or the connection
+// closes. SIGINT/Ctrl+C is still honoured for local operator control.
 func runWorker(argv []string) {
 	fs := flag.NewFlagSet("tagger-worker", flag.ExitOnError)
-	socket := fs.String("socket", "", "parent Unix-domain socket to connect to")
+	addr := fs.String("addr", "", "parent TCP address to connect to")
 	if err := fs.Parse(argv); err != nil {
 		fmt.Fprintf(os.Stderr, "tagger-worker: %v\n", err)
 		os.Exit(2)
 	}
-	if *socket == "" {
-		fmt.Fprintf(os.Stderr, "tagger-worker: --socket is required\n")
+	if *addr == "" {
+		fmt.Fprintf(os.Stderr, "tagger-worker: --addr is required\n")
 		os.Exit(2)
 	}
 	// Force in-process regardless of the parent's MONBOORU_TAGGER_BACKEND;
@@ -34,10 +35,10 @@ func runWorker(argv []string) {
 	tagger.UseInprocBackend()
 	logx.Set(os.Getenv("MONBOORU_TAGGER_WORKER_LOG"))
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT)
 	defer cancel()
 
-	if err := tagger.RunWorkerServer(ctx, *socket); err != nil {
+	if err := tagger.RunWorkerServer(ctx, *addr); err != nil {
 		fmt.Fprintf(os.Stderr, "tagger-worker: %v\n", err)
 		os.Exit(1)
 	}

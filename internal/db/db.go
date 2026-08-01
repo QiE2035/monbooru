@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"fmt"
 	"math/bits"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -15,13 +16,14 @@ import (
 )
 
 // basenameSQL is the body of the SQLite `basename(path)` scalar
-// function. Returns the substring of `path` after the last `/`; if
-// `path` has no `/`, returns it unchanged. NULL passes through as
-// NULL. Used by the search executor's `name:` filter so the match
-// can target the filename segment without bleeding into folder
-// names; pure SQLite has no built-in for this since `reverse()`
-// isn't part of the modernc build, so registering the function is
-// the cleanest path that avoids a denormalised `basename` column.
+// function. Returns the substring of `path` after the last `/` or `\`:
+// canonical_path holds native absolute paths, so a library written on
+// Windows carries backslashes. NULL passes through as NULL. Used by
+// the search executor's `name:` filter so the match can target the
+// filename segment without bleeding into folder names; pure SQLite
+// has no built-in for this since `reverse()` isn't part of the
+// modernc build, so registering the function is the cleanest path
+// that avoids a denormalised `basename` column.
 func basenameSQL(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 	if len(args) != 1 || args[0] == nil {
 		return nil, nil
@@ -30,7 +32,7 @@ func basenameSQL(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, 
 	if !ok {
 		return nil, nil
 	}
-	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+	if i := strings.LastIndexAny(s, `/\`); i >= 0 {
 		return s[i+1:], nil
 	}
 	return s, nil
@@ -100,12 +102,24 @@ func init() {
 //go:embed schema.sql
 var schemaSQL string
 
+// NormalizeWindowsFolderPathSQL rewrites folder_path from the native
+// separators a Windows build stored to the "/"-separated form every
+// other platform reads. The row has to prove it came from one - a
+// backslash-separated canonical_path with no "/" anywhere - so a POSIX
+// directory with a backslash in its name stays untouched. Run by
+// Bootstrap on the schema-marker gap and by the gallery import, which
+// builds its DB at the current marker and so never sees that gap.
+const NormalizeWindowsFolderPathSQL = `UPDATE images SET folder_path = ltrim(replace(folder_path, '\', '/'), '/')
+	WHERE instr(folder_path, '\') > 0
+	  AND instr(canonical_path, '\') > 0
+	  AND instr(canonical_path, '/') = 0`
+
 // bootstrapSchemaVersion is the marker Bootstrap stores in
 // PRAGMA user_version once it has applied every migration in this file
 // and refreshed sqlite_stat1. Bump it when a migration adds a column or
 // index the planner needs stats for; Bootstrap then runs ANALYZE on the
 // next boot after the upgrade and skips it on every boot afterwards.
-const bootstrapSchemaVersion = 8
+const bootstrapSchemaVersion = 11
 
 // DB holds read and write connection pools for the SQLite database.
 // WAL mode allows concurrent readers but serialises writers, so the read
@@ -126,6 +140,9 @@ type DB struct {
 	// behind every tag-similarity weight, so the tag-pairs pass would
 	// otherwise re-run it once per image in the library.
 	visibleCount atomic.Pointer[int]
+	// countedTags caches the per-image counted-tag totals the overlap
+	// score divides by. Dropped alongside the counts above.
+	countedTags atomic.Pointer[CountedTags]
 }
 
 // Open opens both connection pools pointing at the same SQLite file.
@@ -712,13 +729,27 @@ func Bootstrap(db *DB) error {
 	if err := db.Write.QueryRow(`PRAGMA user_version`).Scan(&ratingRankUserVersion); err != nil {
 		return fmt.Errorf("read user_version (fts5 backfill): %w", err)
 	}
+	// Pinned to the version that introduced them so a later marker bump
+	// can't re-run them over pairs find-pairs has produced since.
+	if ratingRankUserVersion < 10 {
+		// Tag scores from an earlier metric sit on a different scale and
+		// cannot be re-thresholded; drop them and let the next find-pairs
+		// run requeue. Both-detector rows keep their pixel evidence.
+		b.exec("drop stale tag-scored pairs", `DELETE FROM potential_relation_pairs WHERE source = 'tags'`)
+		b.exec("demote stale both-detector pairs", `UPDATE potential_relation_pairs SET source = 'phash', score = NULL WHERE source = 'both'`)
+	}
 	if ratingRankUserVersion < bootstrapSchemaVersion {
+		// basename() splits on both separators now, so keys materialised
+		// under the old body are stale - and the backfill below reads
+		// basename_lower straight back out.
+		b.exec("reindex basename_lower", `REINDEX idx_images_basename_lower_visible`)
 		b.exec("clear image_basename_canonical_fts", `DELETE FROM image_basename_canonical_fts`)
 		b.exec("backfill image_basename_canonical_fts", `INSERT INTO image_basename_canonical_fts (rowid, basename)
 			SELECT id, basename_lower FROM images WHERE basename_lower != ''`)
 		b.exec("clear image_basename_alias_fts", `DELETE FROM image_basename_alias_fts`)
 		b.exec("backfill image_basename_alias_fts", `INSERT INTO image_basename_alias_fts (rowid, basename, image_id)
 			SELECT id, basename_lower, image_id FROM image_paths WHERE is_canonical = 0 AND basename_lower != ''`)
+		b.exec("normalize windows folder_path", NormalizeWindowsFolderPathSQL)
 	}
 	// Triggers maintain the FTS5 tables in lockstep with the source rows.
 	// canonical_path's basename_lower is a VIRTUAL generated column;
@@ -950,6 +981,81 @@ func (db *DB) AutoUntaggedVisibleCount() (int, bool) {
 		       )`)
 }
 
+// CountedTags holds every image's counted-tag total - its non-meta
+// tags at or under maxUsage - in image-id order. Parallel slices
+// rather than a map: the tally is read once per candidate during a
+// similarity ranking and a million-image library costs 12 MB here
+// against four times that in map buckets.
+type CountedTags struct {
+	maxUsage int64
+	ids      []int64
+	totals   []int32
+	// used stamps the last read so the reclaim loop can drop tallies
+	// nothing is ranking against.
+	used atomic.Int64
+}
+
+// Total returns id's counted-tag total; images carrying none are
+// absent from the walk and answer 0.
+func (c *CountedTags) Total(id int64) int32 {
+	if i, ok := slices.BinarySearch(c.ids, id); ok {
+		return c.totals[i]
+	}
+	return 0
+}
+
+// CountedTagTotals returns the tallies the tag-overlap score divides
+// by, walking image_tags once on first use. Deriving them per query
+// instead means scanning every candidate's tag rows through both tag
+// joins, which is seconds on a large library; here the ranking pays a
+// lookup per candidate. Rebuilt when maxUsage moves with the visible
+// count, and dropped by InvalidateCachedCounts.
+func (db *DB) CountedTagTotals(ctx context.Context, maxUsage int64) (*CountedTags, error) {
+	if c := db.countedTags.Load(); c != nil && c.maxUsage == maxUsage {
+		c.used.Store(time.Now().UnixNano())
+		return c, nil
+	}
+	rows, err := db.Read.QueryContext(ctx,
+		`SELECT it.image_id, count(*)
+		   FROM image_tags it
+		   JOIN tags t ON t.id = it.tag_id
+		   JOIN tag_categories tc ON tc.id = t.category_id
+		  WHERE tc.name != 'meta' AND t.usage_count <= ?
+		  GROUP BY it.image_id`, maxUsage)
+	if err != nil {
+		return nil, fmt.Errorf("counted tag totals: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	c := &CountedTags{maxUsage: maxUsage}
+	for rows.Next() {
+		var id int64
+		var total int32
+		if err := rows.Scan(&id, &total); err != nil {
+			return nil, err
+		}
+		c.ids = append(c.ids, id)
+		c.totals = append(c.totals, total)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	c.used.Store(time.Now().UnixNano())
+	db.countedTags.Store(c)
+	return c, nil
+}
+
+// ReleaseIdleCountedTags drops the tallies when nothing has read them
+// for at least `after`, returning whether it did. The next reader walks
+// image_tags again; the point is that an idle gallery shouldn't hold an
+// index only a similarity browse needs.
+func (db *DB) ReleaseIdleCountedTags(after time.Duration) bool {
+	c := db.countedTags.Load()
+	if c == nil || time.Since(time.Unix(0, c.used.Load())) < after {
+		return false
+	}
+	return db.countedTags.CompareAndSwap(c, nil)
+}
+
 // InvalidateCachedCounts drops every per-DB count cache. Call after a
 // write that changes image_tags membership (tag add/remove, batch tag,
 // implication propagation, autotag ingest, image delete) so the next
@@ -959,6 +1065,7 @@ func (db *DB) InvalidateCachedCounts() {
 	db.untaggedVisible.Store(nil)
 	db.autoUntaggedVisible.Store(nil)
 	db.visibleCount.Store(nil)
+	db.countedTags.Store(nil)
 }
 
 // ShrinkMemory runs `PRAGMA shrink_memory` on every connection in

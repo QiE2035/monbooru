@@ -1,6 +1,7 @@
 package tagger
 
 import (
+	"cmp"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -39,9 +40,12 @@ var defaultDispatchFS embed.FS
 // TaggerInstance's PerCategoryTopK map. Categories absent from
 // DefaultTopK fall back to the built-in DefaultPerCategoryTopK table.
 type CatalogEntry struct {
-	Name              string             `json:"name"`
-	Description       string             `json:"description"`
-	Files             []CatalogFile      `json:"files"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Files       []CatalogFile `json:"files"`
+	// Gated marks entries behind a Hugging Face login: the install
+	// snippets add an auth header and expect HF_TOKEN in the caller's shell.
+	Gated             bool               `json:"gated,omitempty"`
 	DefaultThreshold  float64            `json:"default_threshold,omitempty"`
 	DefaultThresholds map[string]float64 `json:"default_thresholds,omitempty"`
 	DefaultTopK       map[string]int     `json:"default_top_k,omitempty"`
@@ -60,10 +64,10 @@ type catalogDoc struct {
 }
 
 // LoadCatalog returns the merged tagger catalog. The embedded default
-// catalog (three suggested taggers - WD14 SwinV2, JoyTag, Camie v2) is the base; an
-// optional <modelPath>/models.json override is applied on top so users can
-// add or replace entries without rebuilding. Same-name entries in the
-// override replace the default; new names append.
+// catalog (four suggested taggers - WD14 SwinV2, animetimm EVA02, JoyTag,
+// Camie v2) is the base; an optional <modelPath>/models.json override is
+// applied on top so users can add or replace entries without rebuilding.
+// Same-name entries in the override replace the default; new names append.
 func LoadCatalog(modelPath string) []CatalogEntry {
 	var doc catalogDoc
 	if err := json.Unmarshal(defaultCatalogJSON, &doc); err != nil {
@@ -101,12 +105,18 @@ func LoadCatalog(modelPath string) []CatalogEntry {
 }
 
 // curlSteps builds the `mkdir -p <dir>` + per-file `curl` step list that
-// downloads the entry's files into targetDir.
+// downloads the entry's files into targetDir. Gated entries authenticate
+// with a double-quoted $HF_TOKEN so the shell running the snippet expands
+// it.
 func (c CatalogEntry) curlSteps(targetDir string) []string {
+	auth := ""
+	if c.Gated {
+		auth = `-H "Authorization: Bearer $HF_TOKEN" `
+	}
 	steps := []string{"mkdir -p " + shellSingleQuote(targetDir)}
 	for _, f := range c.Files {
 		dst := targetDir + "/" + f.Filename
-		steps = append(steps, "curl -L -o "+shellSingleQuote(dst)+" "+shellSingleQuote(f.URL))
+		steps = append(steps, "curl -L "+auth+"-o "+shellSingleQuote(dst)+" "+shellSingleQuote(f.URL))
 	}
 	return steps
 }
@@ -119,13 +129,18 @@ func (c CatalogEntry) HostCommand() string {
 
 // DockerCommand renders a `docker exec <container> sh -c '...'` chain that
 // drops model files into the container's /models mount. Container name
-// defaults to "monbooru" (matching the shipped docker-compose.yml).
+// defaults to "monbooru" (matching the shipped docker-compose.yml). Gated
+// entries forward HF_TOKEN from the host shell into the container with
+// `-e`; the single-quoted inner script leaves its own $HF_TOKEN for the
+// container shell to expand.
 func (c CatalogEntry) DockerCommand(containerName string) string {
-	if containerName == "" {
-		containerName = "monbooru"
+	containerName = cmp.Or(containerName, "monbooru")
+	env := ""
+	if c.Gated {
+		env = `-e HF_TOKEN="$HF_TOKEN" `
 	}
 	inner := strings.Join(c.curlSteps("/models/"+c.Name), " && ")
-	return fmt.Sprintf("docker exec %s sh -c %s", containerName, shellSingleQuote(inner))
+	return fmt.Sprintf("docker exec %s%s sh -c %s", env, containerName, shellSingleQuote(inner))
 }
 
 // shellSingleQuote wraps s in shell single quotes, escaping any embedded

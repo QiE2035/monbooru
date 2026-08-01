@@ -165,6 +165,22 @@ func AdjacencyCacheDropForGallery(gallery string) {
 	adjCacheOrder = newOrder
 }
 
+// AdjacencyCacheSweep drops every entry past its TTL. Get evicts one
+// on the way past and Set evicts by LRU, so without this an idle
+// process keeps expired lists - up to the cache's whole budget - until
+// something touches the cache again.
+func AdjacencyCacheSweep() {
+	adjCacheMu.Lock()
+	defer adjCacheMu.Unlock()
+	now := time.Now()
+	for k, entry := range adjCacheEntries {
+		if now.After(entry.expiresAt) {
+			delete(adjCacheEntries, k)
+			removeFromOrder(k)
+		}
+	}
+}
+
 func removeFromOrder(key string) {
 	if i := slices.Index(adjCacheOrder, key); i >= 0 {
 		adjCacheOrder = slices.Delete(adjCacheOrder, i, i+1)

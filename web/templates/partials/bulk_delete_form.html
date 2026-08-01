@@ -1,0 +1,15 @@
+{{define "partials/bulk_delete_form.html"}}
+{{/* The reload is delayed rather than immediate: the POST answers as
+     soon as the job is queued, so a straight reload would render the
+     pre-delete counts. */}}
+<form hx-post="{{.Action}}"
+      {{if .Target}}hx-target="{{.Target}}" hx-swap="innerHTML"{{end}}
+      hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}"
+      hx-confirm="{{.Confirm}}"
+      data-confirm-ok="{{.ConfirmOK}}"
+      style="display:inline">
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+  {{if .All}}<input type="hidden" name="all" value="true">{{end}}
+  <button type="submit" class="btn-danger btn-sm">{{.Label}}</button>
+</form>
+{{end}}

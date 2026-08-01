@@ -41,12 +41,13 @@ type Config struct {
 // the Start-session CTA preselects; incremental_on_ingest toggles the
 // on-ingest BK-tree probe that fans new pairs into the queue.
 // DefaultTagPairThreshold is the admission score for tag-similarity
-// pairs, clamped to [MinTagPairThreshold, 1]. Stricter than any search
-// default: the search operator is looking for something and can discard
-// a weak match, a queued pair costs a decision.
+// pairs, clamped to [MinTagPairThreshold, 1]. 0.85 keeps the queue
+// proportional across library sizes - a few hundred pairs on a small
+// library, a few thousand on a large one - while the 0.7 floor stops a
+// setting that would offer more pairs than anyone can decide.
 const (
 	DefaultTagPairThreshold = 0.85
-	MinTagPairThreshold     = 0.5
+	MinTagPairThreshold     = 0.7
 )
 
 // ClampTagPairThreshold keeps a hand-edited or form-posted threshold
@@ -135,14 +136,31 @@ type GalleryConfig struct {
 }
 
 type TaggerConfig struct {
-	UseCUDA  bool `toml:"use_cuda"`
-	Parallel int  `toml:"parallel"`
+	// UseCUDA is the legacy boolean GPU toggle, replaced by ExecutionProvider.
+	// It is kept only for backward-compatible loading of old configs and is
+	// never written back to disk.
+	UseCUDA bool `toml:"use_cuda,omitempty"`
+	// ExecutionProvider selects the ONNX Runtime execution provider.
+	// Valid values: cpu, cuda, directml, tensorrt, openvino, coreml, coremlv2.
+	// Empty is treated as "cpu". On read, use_cuda=true with no execution_provider
+	// is migrated to "cuda".
+	ExecutionProvider string `toml:"execution_provider"`
+	Parallel          int    `toml:"parallel"`
 	// IdleReleaseAfterMinutes is how long the cached ORT session may sit
 	// idle before the reclaim loop tears it down. 0 disables caching, so
 	// every run loads the model fresh. Default 15.
 	IdleReleaseAfterMinutes int                  `toml:"idle_release_after_minutes"`
 	Aggregation             TaggerAggregationCfg `toml:"aggregation"`
 	Taggers                 []TaggerInstance     `toml:"taggers"`
+}
+
+// ValidExecutionProviders lists the ONNX Runtime execution providers the
+// operator may select. Kept lowercase to match TOML and wire values.
+var ValidExecutionProviders = []string{"cpu", "cuda", "directml", "tensorrt", "openvino", "coreml", "coremlv2"}
+
+// IsValidExecutionProvider reports whether v is a recognized provider name.
+func IsValidExecutionProvider(v string) bool {
+	return slices.Contains(ValidExecutionProviders, v)
 }
 
 // TaggerAggregationCfg holds the frame-merge knob shared across every
@@ -383,6 +401,7 @@ func Default() *Config {
 			MaxFileSizeMB: 2048,
 		},
 		Tagger: TaggerConfig{
+			ExecutionProvider:       "cpu",
 			Parallel:                4,
 			IdleReleaseAfterMinutes: 15,
 			Aggregation:             TaggerAggregationCfg{MinHitFraction: 0.05},
@@ -438,11 +457,15 @@ func Load(path string) (*Config, error) {
 	} else {
 		cfg.Galleries = nil
 		cfg.DefaultGallery = ""
+		// Cleared so a file that omits the key is distinguishable from an
+		// explicit "cpu"; the use_cuda migration fires only on the empty value.
+		cfg.Tagger.ExecutionProvider = ""
 		if _, err := toml.DecodeFile(path, cfg); err != nil {
 			return nil, fmt.Errorf("parsing config file %q: %w", path, err)
 		}
 	}
 
+	migrateTaggerProvider(cfg)
 	if err := validate(cfg); err != nil {
 		return nil, err
 	}
@@ -454,6 +477,22 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// migrateTaggerProvider maps the legacy use_cuda toggle onto the new
+// execution_provider field. A config that sets use_cuda=true without an
+// explicit execution_provider is interpreted as "cuda"; otherwise the
+// provider defaults to "cpu". The legacy field is cleared so it is never
+// serialized back to disk.
+func migrateTaggerProvider(cfg *Config) {
+	if cfg.Tagger.ExecutionProvider == "" {
+		if cfg.Tagger.UseCUDA {
+			cfg.Tagger.ExecutionProvider = "cuda"
+		} else {
+			cfg.Tagger.ExecutionProvider = "cpu"
+		}
+	}
+	cfg.Tagger.UseCUDA = false
 }
 
 // Save marshals cfg to TOML and writes atomically to path.
@@ -561,7 +600,12 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.Paths.ModelPath = envStr("MONBOORU_PATHS_MODEL_PATH", cfg.Paths.ModelPath)
 	cfg.Gallery.WatchEnabled = envBool("MONBOORU_GALLERY_WATCH_ENABLED", cfg.Gallery.WatchEnabled)
 	cfg.Gallery.MaxFileSizeMB = envInt("MONBOORU_GALLERY_MAX_FILE_SIZE_MB", cfg.Gallery.MaxFileSizeMB)
-	cfg.Tagger.UseCUDA = envBool("MONBOORU_TAGGER_USE_CUDA", cfg.Tagger.UseCUDA)
+	cfg.Tagger.ExecutionProvider = envStr("MONBOORU_TAGGER_EXECUTION_PROVIDER", cfg.Tagger.ExecutionProvider)
+	// Legacy GPU toggle, kept so existing deployments that export it don't
+	// silently fall back to CPU. The provider variable wins when both are set.
+	if os.Getenv("MONBOORU_TAGGER_EXECUTION_PROVIDER") == "" && envBool("MONBOORU_TAGGER_USE_CUDA", false) {
+		cfg.Tagger.ExecutionProvider = "cuda"
+	}
 	cfg.Auth.EnablePassword = envBool("MONBOORU_AUTH_ENABLE_PASSWORD", cfg.Auth.EnablePassword)
 	cfg.Auth.PasswordHash = envStr("MONBOORU_AUTH_PASSWORD_HASH", cfg.Auth.PasswordHash)
 	cfg.Auth.SessionLifetimeDays = envInt("MONBOORU_AUTH_SESSION_LIFETIME_DAYS", cfg.Auth.SessionLifetimeDays)
@@ -603,7 +647,8 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("paths.data_path must not be empty")
 	}
 	seen := map[string]bool{}
-	for _, g := range cfg.Galleries {
+	for i := range cfg.Galleries {
+		g := &cfg.Galleries[i]
 		if err := ValidateGalleryName(g.Name); err != nil {
 			return fmt.Errorf("invalid gallery: %w", err)
 		}
@@ -614,6 +659,10 @@ func validate(cfg *Config) error {
 		if g.GalleryPath == "" {
 			return fmt.Errorf("gallery %q has an empty gallery_path", g.Name)
 		}
+		// Everything downstream measures paths against what the filesystem
+		// hands back, which is always cleaned and natively separated. On
+		// Windows a TOML-friendly "C:/pics" would otherwise never match.
+		g.GalleryPath = filepath.Clean(g.GalleryPath)
 	}
 	if cfg.DefaultGallery == "" {
 		cfg.DefaultGallery = cfg.Galleries[0].Name
@@ -624,6 +673,11 @@ func validate(cfg *Config) error {
 		cfg.Schedule.Time = "01:00"
 	} else if err := ValidateScheduleTime(cfg.Schedule.Time); err != nil {
 		return err
+	}
+	if cfg.Tagger.ExecutionProvider == "" {
+		cfg.Tagger.ExecutionProvider = "cpu"
+	} else if !IsValidExecutionProvider(cfg.Tagger.ExecutionProvider) {
+		return fmt.Errorf("tagger.execution_provider %q must be one of %v", cfg.Tagger.ExecutionProvider, ValidExecutionProviders)
 	}
 	// PageSize must be positive: the API path divides by it
 	// (offset/limit) and would panic on zero. Snap to the documented

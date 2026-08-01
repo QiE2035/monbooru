@@ -189,8 +189,14 @@ func tagFilterWhere(filter TagFilter) (string, []any) {
 		args = append(args, *filter.CategoryID)
 	}
 	if filter.Prefix != "" {
+		pat := db.EscapeLike(filter.Prefix)
+		if strings.Contains(filter.Prefix, "*") {
+			pat = strings.ReplaceAll(pat, "*", "%")
+		} else {
+			pat += "%"
+		}
 		where += " AND t.name LIKE ? ESCAPE '\\'"
-		args = append(args, db.EscapeLike(filter.Prefix)+"%")
+		args = append(args, pat)
 	}
 	switch filter.Origin {
 	case "":

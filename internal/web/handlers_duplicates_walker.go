@@ -202,8 +202,7 @@ func (s *Server) sha256WalkerRemoveOnePost(w http.ResponseWriter, r *http.Reques
 	}
 	pathID, err := strconv.ParseInt(r.FormValue("path_id"), 10, 64)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Invalid path id.")
+		flashStatus(w, http.StatusBadRequest, "Invalid path id.")
 		return
 	}
 	var aliasPath string
@@ -211,13 +210,11 @@ func (s *Server) sha256WalkerRemoveOnePost(w http.ResponseWriter, r *http.Reques
 		`SELECT path FROM image_paths WHERE id = ? AND is_canonical = 0`,
 		pathID,
 	).Scan(&aliasPath); err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		writeInlineFlash(w, "err", "Not a non-canonical path.")
+		flashStatus(w, http.StatusNotFound, "Not a non-canonical path.")
 		return
 	}
 	if _, err := s.db().Write.Exec(`DELETE FROM image_paths WHERE id = ?`, pathID); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if aliasPath != "" {
@@ -230,20 +227,18 @@ func (s *Server) sha256WalkerRemoveOnePost(w http.ResponseWriter, r *http.Reques
 
 // markedWalkerDeleteOnePost deletes one image from a dup group through
 // the same gallery.DeleteImage path the detail page uses; the
-// relations service's OnImageDelete hook cleans the group membership.
+// relations service's OnImageDeleteTx hook cleans the group membership.
 func (s *Server) markedWalkerDeleteOnePost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
 	imageID, err := strconv.ParseInt(r.FormValue("image_id"), 10, 64)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", "Invalid image id.")
+		flashStatus(w, http.StatusBadRequest, "Invalid image id.")
 		return
 	}
 	if _, err := gallery.DeleteImage(s.db(), s.galleryPath(), s.thumbnailsPath(), imageID, tags.RemoveAllTagsFromImageTx, s.onImageDeleteCallback()); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.Active().InvalidateCaches()
@@ -276,8 +271,7 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 	}
 	victims, err := db.QueryIDs(cx.DB.Read, q, args...)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if len(victims) == 0 {
@@ -323,10 +317,5 @@ func (s *Server) markedWalkerDeleteAllPost(w http.ResponseWriter, r *http.Reques
 // page so the refreshed table reflects the just-completed action.
 func redirectWalker(w http.ResponseWriter, r *http.Request, kind string) {
 	target := "/relations/duplicates/" + kind
-	if isHTMXRequest(r) {
-		w.Header().Set("HX-Redirect", target)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	hxRedirect(w, r, target)
 }

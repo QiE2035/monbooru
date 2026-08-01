@@ -1,5 +1,8 @@
 {{define "partials/tagger_mode_badge.html"}}
+{{$provider := .Provider}}
+{{if eq $provider ""}}{{$provider = "cpu"}}{{end}}
+{{$label := providerLabel $provider}}
 <span id="tagger-mode-badge"{{if .OOB}} hx-swap-oob="true"{{end}}>
-  {{if .UseCUDA}}<span class="status-badge status-ok" title="Auto-tagger runs on the GPU via the CUDA execution provider">GPU</span>{{else}}<span class="status-badge status-off" title="Auto-tagger runs on the CPU">CPU</span>{{end}}
+  {{if eq $provider "cpu"}}<span class="status-badge status-off" title="Auto-tagger runs on {{$label}}">{{$label}}</span>{{else}}<span class="status-badge status-ok" title="Auto-tagger runs on {{$label}}">{{$label}}</span>{{end}}
 </span>
 {{end}}

@@ -187,7 +187,7 @@ func FindPairs(ctx context.Context, database *db.DB, tree *BKTree, opts FindPair
 		if progress != nil && idx%64 == 0 {
 			progress(idx, total, "probing")
 		}
-		candidates := tree.SearchWithinDistance(e.phash.Int64, opts.Distance)
+		candidates, _ := tree.SearchWithinDistance(e.phash.Int64, opts.Distance)
 		for _, cid := range candidates {
 			if cid <= e.id {
 				continue // canonicalise a < b; the symmetric pair surfaces when we reach a
@@ -296,7 +296,7 @@ func incrementalProbe(database *db.DB, tree *BKTree, id, phash int64, distance i
 	if archive, err := imageIsArchive(database, id); err != nil || archive {
 		return err
 	}
-	candidates := tree.SearchWithinDistance(phash, distance)
+	candidates, _ := tree.SearchWithinDistance(phash, distance)
 	if len(candidates) == 0 {
 		return nil
 	}

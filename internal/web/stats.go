@@ -81,7 +81,7 @@ type mountStats struct {
 // the 1 GB+ of inference state is parked.
 type taggerCacheStats struct {
 	Loaded           bool
-	UseCUDA          bool
+	Provider         string
 	InUse            bool
 	Sessions         []string
 	IdleFor          time.Duration // zero when in use
@@ -213,7 +213,7 @@ func gatherTaggerStats(s *Server) taggerCacheStats {
 	st := tagger.Status()
 	out := taggerCacheStats{
 		Loaded:   st.Loaded,
-		UseCUDA:  st.UseCUDA,
+		Provider: st.Provider,
 		InUse:    st.InUse,
 		Sessions: st.Sessions,
 	}

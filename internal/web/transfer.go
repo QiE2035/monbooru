@@ -57,8 +57,7 @@ func (s *Server) transferImage(w http.ResponseWriter, r *http.Request) {
 	srcCx := s.Active()
 	if err := s.transferOneImage(srcCx, dstCx, id, removeAfter); err != nil {
 		s.jobs.Fail(err.Error())
-		w.WriteHeader(http.StatusBadRequest)
-		writeInlineFlash(w, "err", err.Error())
+		flashStatus(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	dstCx.InvalidateCaches()
@@ -102,8 +101,7 @@ func (s *Server) transferTarget(w http.ResponseWriter, r *http.Request) (*galler
 			return dst, r.FormValue("remove_after") != "", true
 		}
 	}
-	w.WriteHeader(http.StatusBadRequest)
-	writeInlineFlash(w, "err", msg)
+	flashStatus(w, http.StatusBadRequest, msg)
 	return nil, false, false
 }
 

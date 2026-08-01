@@ -264,9 +264,9 @@ func (s *Service) RecalcCount() (int64, error) {
 // ChunkedDeleteWithTagRecalc walks ids in 500-row write transactions.
 // Per chunk it (1) collects the distinct tag_ids the about-to-delete
 // rows would touch (`SELECT DISTINCT tag_id FROM image_tags WHERE
-// image_id IN (?…)` + extraSQL), (2) calls deleteFn(tx, placeholders,
-// args) for the caller's actual DELETE, (3) commits, (4) runs
-// afterCommit(chunk) outside the tx for filesystem cleanup or
+// image_id IN (?…)` + extraSQL), (2) calls deleteFn(tx, chunk,
+// placeholders, args) for the caller's actual DELETE, (3) commits, (4)
+// runs afterCommit(chunk) outside the tx for filesystem cleanup or
 // progress reporting.
 //
 // ctx aborts at a chunk boundary; cancelled is true and processed
@@ -283,7 +283,7 @@ func (s *Service) ChunkedDeleteWithTagRecalc(
 	ids []int64,
 	extraSQL string,
 	extraArgs []any,
-	deleteFn func(tx *sql.Tx, placeholders string, args []any) error,
+	deleteFn func(tx *sql.Tx, chunk []int64, placeholders string, args []any) error,
 	afterCommit func(chunk []int64),
 ) (affected []int64, processed int, cancelled bool, err error) {
 	const chunkSize = 500
@@ -323,7 +323,7 @@ func (s *Service) ChunkedDeleteWithTagRecalc(
 			seen[tid] = struct{}{}
 		}
 		_ = tagRows.Close()
-		if err := deleteFn(tx, placeholders, args); err != nil {
+		if err := deleteFn(tx, chunk, placeholders, args); err != nil {
 			_ = tx.Rollback()
 			return tagIDsFromSet(seen), processed, false, err
 		}

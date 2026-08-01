@@ -81,6 +81,15 @@ type syncBySHARow struct {
 func Sync(ctx context.Context, database *db.DB, galleryPath, thumbnailsPath string, maxFileSizeMB int, progress func(processed, total int, message string)) (SyncResult, error) {
 	var result SyncResult
 
+	// The root is only probed for degraded mode when a gallery is
+	// opened, and the walk below skips unreadable directories rather
+	// than failing. Without this a root that went away since - an
+	// unmounted drive, a dropped bind mount - reads as an empty tree
+	// and phase 3 flags the whole library missing.
+	if _, err := os.ReadDir(galleryPath); err != nil {
+		return result, fmt.Errorf("gallery path is unreadable: %w", err)
+	}
+
 	progress(0, 0, "Phase 1: scanning filesystem...")
 	known, err := loadKnownPaths(database)
 	if err != nil {
@@ -686,18 +695,23 @@ func buildFolderTree(flat []folderCount) []FolderNode {
 			rootP.Count = fc.count
 			continue
 		}
+		// folder_path is "/"-separated regardless of platform; filepath.Dir
+		// would normalize the separators to native on Windows and miss the
+		// parent in pnodeMap, flattening the tree.
+		name := fc.path
+		parentPath := ""
+		if i := strings.LastIndex(fc.path, "/"); i >= 0 {
+			name = fc.path[i+1:]
+			parentPath = fc.path[:i]
+		}
 		n := &pnode{FolderNode: FolderNode{
 			Path:  fc.path,
-			Name:  filepath.Base(fc.path),
+			Name:  name,
 			Count: fc.count,
 			Depth: strings.Count(fc.path, "/") + 1,
 		}}
 		pnodeMap[fc.path] = n
 
-		parentPath := filepath.Dir(fc.path)
-		if parentPath == "." {
-			parentPath = ""
-		}
 		parent, ok := pnodeMap[parentPath]
 		if !ok {
 			parent = rootP

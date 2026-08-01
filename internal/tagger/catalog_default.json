@@ -12,6 +12,17 @@
       "default_thresholds": { "character": 0.50 }
     },
     {
+      "name": "animetimm-eva02",
+      "description": "Anime tagger, newer tag set (animetimm EVA02, ~1.3 GB, HF account required)",
+      "gated": true,
+      "files": [
+        { "url": "https://huggingface.co/animetimm/eva02_large_patch14_448.dbv4-full/resolve/main/model.onnx", "filename": "model.onnx" },
+        { "url": "https://huggingface.co/animetimm/eva02_large_patch14_448.dbv4-full/resolve/main/selected_tags.csv", "filename": "tags.csv" }
+      ],
+      "default_threshold": 0.40,
+      "default_thresholds": { "character": 0.61 }
+    },
+    {
       "name": "joytag",
       "description": "Photo / realistic tagger (JoyTag, ~430 MB)",
       "files": [

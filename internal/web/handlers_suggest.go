@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"database/sql"
 	"html/template"
 	"net/http"
@@ -321,16 +322,7 @@ func (s *Server) tagSuggest(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	// Accept the input's value however it arrives: q=, tag=, canonical_id=,
 	// or target= (the batch-imply input submits its value under its name).
-	prefix := q.Get("q")
-	if prefix == "" {
-		prefix = q.Get("tag")
-	}
-	if prefix == "" {
-		prefix = q.Get("canonical_id")
-	}
-	if prefix == "" {
-		prefix = q.Get("target")
-	}
+	prefix := cmp.Or(q.Get("q"), q.Get("tag"), q.Get("canonical_id"), q.Get("target"))
 
 	// If the prefix contains "category:name" and the prefix is a real
 	// category, filter by category. Otherwise suggest literal tags whose

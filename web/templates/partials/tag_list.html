@@ -29,7 +29,7 @@
                 hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
                 hx-confirm="Remove the {{len .Tags}} tags under {{.Title}}?"
                 data-confirm-ok="Remove"
-                title="Remove every tag in this group">[×]</button>{{end}}</h4>
+                title="Remove the tags listed here">[×]</button>{{end}}</h4>
       <ul class="tag-list" data-source="{{.Source}}">
         {{range .Tags}}
         <li class="tag-item" data-tag-id="{{.TagID}}" data-source="{{if .IsAuto}}auto{{else}}user{{end}}" style="color:{{.Color}}">

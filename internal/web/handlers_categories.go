@@ -1,12 +1,14 @@
 package web
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/tags"
 )
 
 func (s *Server) categoriesHandler(w http.ResponseWriter, r *http.Request) {
@@ -23,9 +25,9 @@ func (s *Server) categoriesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // categoryColors returns a name → color map for every row in
-// tag_categories on the active gallery. Used by the threshold dialog
-// so each category label renders in its own colour. Database errors
-// yield an empty map so the dialog still renders without colour.
+// tag_categories on the active gallery. Used by the tagger config
+// dialog so each category label renders in its own colour. Database
+// errors yield an empty map so the dialog still renders without colour.
 func (s *Server) categoryColors() map[string]string {
 	cx := s.Active()
 	if cx == nil {
@@ -40,9 +42,12 @@ func (s *Server) categoryColors() map[string]string {
 	for rows.Next() {
 		var name, color string
 		if err := rows.Scan(&name, &color); err != nil {
-			return out
+			return nil
 		}
-		out[name] = color
+		out[name] = tags.SafeCategoryColor(color)
+	}
+	if rows.Err() != nil {
+		return nil
 	}
 	return out
 }
@@ -67,9 +72,7 @@ func (s *Server) createCategoryPost(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.FormValue("name")
 	color := r.FormValue("color")
-	if color == "" {
-		color = "#888888"
-	}
+	color = cmp.Or(color, "#888888")
 	if _, err := s.tagSvc().CreateCategory(name, color); err != nil {
 		externalErr(w, r, err.Error(), http.StatusBadRequest)
 		return
@@ -103,9 +106,7 @@ func (s *Server) deleteCategoryDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action := r.FormValue("action") // "move" | "delete_all"
-	if action == "" {
-		action = "move"
-	}
+	action = cmp.Or(action, "move")
 	var targetID int64
 	if ts := r.FormValue("target_id"); ts != "" {
 		targetID, _ = strconv.ParseInt(ts, 10, 64)

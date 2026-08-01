@@ -1,6 +1,7 @@
 package gallery
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -42,9 +43,7 @@ func MangaImageDir(thumbnailsPath string, imageID int64) string {
 // based) with the supplied original-extension tail. Zero-padded to
 // four digits so a directory listing sorts in display order.
 func MangaPagePath(imageDir string, n int, ext string) string {
-	if ext == "" {
-		ext = ".bin"
-	}
+	ext = cmp.Or(ext, ".bin")
 	return filepath.Join(imageDir, fmt.Sprintf("page_%04d%s", n, ext))
 }
 

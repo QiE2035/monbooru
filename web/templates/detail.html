@@ -25,12 +25,12 @@
                onkeydown="handleSuggestKey(event, 'search-suggest', 'search-input')">
         <div id="search-suggest" class="suggest-dropdown search-suggest-dropdown"></div>
       </div>
-      <select name="sort" id="search-sort">
+      <select name="sort" id="search-sort" aria-label="Sort">
         <option value="newest"   {{if eq .BackSort "newest"}}selected{{end}}>Newest</option>
         <option value="filesize" {{if eq .BackSort "filesize"}}selected{{end}}>File size</option>
         <option value="order"    {{if eq .BackSort "order"}}selected{{end}}>Collection order</option>
       </select>
-      <select name="order">
+      <select name="order" aria-label="Sort direction">
         <option value="desc" {{if ne .BackOrder "asc"}}selected{{end}}>↓</option>
         <option value="asc"  {{if eq .BackOrder "asc"}}selected{{end}}>↑</option>
       </select>
@@ -119,6 +119,7 @@
           hx-swap="innerHTML"
           hx-on::after-request="onExternalEditResponse(event, 'source-dialog')">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <input type="hidden" id="source-has-prev" name="has_prev" value="">
       <input type="hidden" id="source-prev-site" name="prev_site" value="">
       <input type="hidden" id="source-prev-post" name="prev_post" value="">
       <input type="hidden" id="source-post" name="post_id" value="">
@@ -532,19 +533,7 @@
           {{if .ManualAnnotations}}
           <ul class="collection-list operator-annotation-list">
             {{range .ManualAnnotations}}
-            <li class="collection-item annotation-entry" data-ann-id="{{.ID}}">
-              <span class="meta-annotation-body" title="{{.Body}}">{{if .Body}}{{.Body}}{{else}}(no text){{end}}</span>
-              <button type="button" class="btn-link-accent btn-edit-annotation" data-id="{{.ID}}" data-x="{{.X}}" data-y="{{.Y}}" data-w="{{.W}}" data-h="{{.H}}" data-body="{{.Body}}" title="Edit">[edit]</button>
-              <form method="POST" action="/images/{{$.Image.ID}}/annotations/remove"
-                    hx-post="/images/{{$.Image.ID}}/annotations/remove" hx-swap="none"
-                    hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
-                    hx-confirm="Remove this annotation?" data-confirm-ok="Remove"
-                    style="display:inline">
-                <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-                <input type="hidden" name="id" value="{{.ID}}">
-                <button type="submit" class="btn-link-accent" title="Remove annotation">[×]</button>
-              </form>
-            </li>
+            {{template "annotation_entry" (dict "Ann" . "ImageID" $.Image.ID "CSRFToken" $.CSRFToken)}}
             {{end}}
           </ul>
           {{end}}
@@ -683,6 +672,7 @@
       function openSourceDialog(site, post, url) {
         var dlg = document.getElementById('source-dialog');
         if (!dlg) return;
+        document.getElementById('source-has-prev').value = (site || url) ? '1' : '';
         document.getElementById('source-prev-site').value = site || '';
         document.getElementById('source-prev-post').value = post || '';
         document.getElementById('source-post').value = post || '';
@@ -1126,19 +1116,7 @@
             <tr><th>Annotations</th><td>
               <ul class="collection-list">
                 {{range .Annotations}}
-                <li class="collection-item annotation-entry" data-ann-id="{{.ID}}">
-                  <span class="meta-annotation-body" title="{{.Body}}">{{if .Body}}{{.Body}}{{else}}(no text){{end}}</span>
-                  <button type="button" class="btn-link-accent btn-edit-annotation" data-id="{{.ID}}" data-x="{{.X}}" data-y="{{.Y}}" data-w="{{.W}}" data-h="{{.H}}" data-body="{{.Body}}" title="Edit">[edit]</button>
-                  <form method="POST" action="/images/{{$.Image.ID}}/annotations/remove"
-                        hx-post="/images/{{$.Image.ID}}/annotations/remove" hx-swap="none"
-                        hx-headers='{"X-CSRF-Token":"{{$.CSRFToken}}"}'
-                        hx-confirm="Remove this annotation?" data-confirm-ok="Remove"
-                        style="display:inline">
-                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-                    <input type="hidden" name="id" value="{{.ID}}">
-                    <button type="submit" class="btn-link-accent" title="Remove annotation">[×]</button>
-                  </form>
-                </li>
+                {{template "annotation_entry" (dict "Ann" . "ImageID" $.Image.ID "CSRFToken" $.CSRFToken)}}
                 {{end}}
               </ul>
             </td></tr>
@@ -1158,4 +1136,20 @@
 </div>
 
 {{template "layout_end" .}}
+{{end}}
+
+{{define "annotation_entry"}}
+<li class="collection-item annotation-entry" data-ann-id="{{.Ann.ID}}">
+  <span class="meta-annotation-body" title="{{.Ann.Body}}">{{if .Ann.Body}}{{.Ann.Body}}{{else}}(no text){{end}}</span>
+  <button type="button" class="btn-link-accent btn-edit-annotation" data-id="{{.Ann.ID}}" data-x="{{.Ann.X}}" data-y="{{.Ann.Y}}" data-w="{{.Ann.W}}" data-h="{{.Ann.H}}" data-body="{{.Ann.Body}}" title="Edit">[edit]</button>
+  <form method="POST" action="/images/{{.ImageID}}/annotations/remove"
+        hx-post="/images/{{.ImageID}}/annotations/remove" hx-swap="none"
+        hx-headers='{"X-CSRF-Token":"{{.CSRFToken}}"}'
+        hx-confirm="Remove this annotation?" data-confirm-ok="Remove"
+        style="display:inline">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <input type="hidden" name="id" value="{{.Ann.ID}}">
+    <button type="submit" class="btn-link-accent" title="Remove annotation">[×]</button>
+  </form>
+</li>
 {{end}}

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/binary"
 	"net/http"
@@ -70,6 +71,10 @@ type galleryData struct {
 	// the query's similar: seed. Nil for every other query; a missing
 	// id scored nothing and gets no badge.
 	SimilarityPercent map[int64]int
+	// SortSelectOOB marks the shared sort-select partial as an
+	// out-of-band swap, which the HTMX fragment needs and the full-page
+	// render must not carry.
+	SortSelectOOB bool
 }
 
 // inboxCluster describes one batch of time-adjacent inbox entries
@@ -103,17 +108,20 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	if sortStr == "" && search.HasSimilarTerm(expr) {
 		sortStr = "similarity"
 	}
+	// A similarity sort carried over from a previous query has nothing to
+	// rank against, and the executor already falls back to newest. Fold it
+	// here too so the Sort select doesn't advertise an order the grid is
+	// not in.
+	if sortStr == "similarity" && !search.HasSimilarTerm(expr) {
+		sortStr = "newest"
+	}
 	// Collection shortcut links carry no sort/order; read them in series
 	// order instead of ingest order. An explicit sort/order still wins.
 	if sortStr == "" && orderStr == "" && collectionFilterActive(expr) {
 		sortStr, orderStr = "order", "asc"
 	}
-	if sortStr == "" {
-		sortStr = "newest"
-	}
-	if orderStr == "" {
-		orderStr = "desc"
-	}
+	sortStr = cmp.Or(sortStr, "newest")
+	orderStr = cmp.Or(orderStr, "desc")
 	pageStr := q.Get("page")
 	page := 1
 	pageNonPositive := false
@@ -318,7 +326,7 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	// A similar: query ranks by a number the grid otherwise never shows;
 	// scoring the page's own ids puts it on the thumbnails.
 	if seedID, ok := search.SimilaritySeedID(expr); ok {
-		scores, err := tags.ScorePercentsAgainst(s.db(), seedID, ids)
+		scores, err := tags.OverlapPercentsAgainst(s.db(), seedID, ids)
 		if err != nil {
 			logx.Debugf("gallery similarity scores: %v", err)
 		}
@@ -334,6 +342,9 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 	data.HiddenByCeiling = hiddenByCeiling
 
 	if htmxGridTarget {
+		// The header is outside the swap target, so the sort select rides
+		// the fragment as an out-of-band swap.
+		data.SortSelectOOB = true
 		s.renderTemplate(w, "partials/gallery_htmx.html", data)
 		return
 	}
@@ -444,13 +455,9 @@ func (s *Server) gallerySidebar(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		sortStr := q.Get("sort")
-		if sortStr == "" {
-			sortStr = "newest"
-		}
+		sortStr = cmp.Or(sortStr, "newest")
 		orderStr := q.Get("order")
-		if orderStr == "" {
-			orderStr = "desc"
-		}
+		orderStr = cmp.Or(orderStr, "desc")
 		page := 1
 		if p, err := strconv.Atoi(q.Get("page")); err == nil && p > 0 {
 			page = p

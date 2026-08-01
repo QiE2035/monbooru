@@ -224,30 +224,7 @@
 </div>
 
 <!-- Rename dialog -->
-<dialog id="rename-dialog">
-  <form id="rename-form"
-        hx-post=""
-        hx-target="#rename-error"
-        hx-swap="innerHTML">
-    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <p>Rename <strong id="rename-src-name"></strong></p>
-    <div class="field">
-      <label>New name</label>
-      <input type="text" name="name" id="rename-new-name" required autocomplete="off">
-    </div>
-    {{if not .Tag.IsAlias}}
-    <label style="display:block;font-size:12px">
-      <input type="checkbox" name="keep_alias" value="1" id="rename-keep-alias">
-      Keep the old name as an alias
-    </label>
-    {{end}}
-    <div id="rename-error"></div>
-    <div class="dialog-actions">
-      <button type="submit">Rename</button>
-      <button type="button" onclick="document.getElementById('rename-dialog').close()">Cancel</button>
-    </div>
-  </form>
-</dialog>
+{{template "partials/tag_rename_dialog.html" (dict "CSRFToken" .CSRFToken "KeepAlias" (not .Tag.IsAlias))}}
 
 <!-- Change-category dialog: same PATCH as the listing's inline select,
      collision merge offer included via the #tag-flash response. -->
@@ -382,39 +359,7 @@ function pullTagPTR(okLabel, question) {
   var btn = document.getElementById('btn-detail-delete');
   if (!btn) return;
   btn.addEventListener('click', function() {
-    var name = this.dataset.name;
-    var isRating = this.dataset.category === 'rating';
-    var msg = isRating
-      ? 'Strip "' + name + '" from every image?'
-      : 'Delete tag "' + name + '" and remove it from every image?';
-    var danger = isRating
-      ? 'The rating tag itself stays in the catalog and can be re-added later.'
-      : 'This cannot be undone.';
-    var btn = this;
-    showConfirm(msg, function() {
-      // The cascade on a heavily-used tag takes seconds; surface the
-      // wait and block a second click until the DELETE answers.
-      btn.disabled = true;
-      var el = document.getElementById('tag-flash');
-      setFlashText(el, 'warn', (isRating ? 'Stripping' : 'Deleting') + ' "' + name + '"…');
-      fetch('/tags/' + TAG_ID, {
-        method: 'DELETE',
-        headers: {'X-CSRF-Token': getCSRFToken()}
-      }).then(function(r) {
-        if (r.ok) {
-          stashActionFlash(escapeHTML(isRating ? 'Stripped "' + name + '" from every image.' : 'Tag "' + name + '" deleted.'), 'ok');
-          window.location.href = '/tags';
-        } else {
-          btn.disabled = false;
-          r.text().then(function(t) {
-            setFlashText(el, 'err', t || 'Delete failed.');
-          });
-        }
-      }).catch(function() {
-        btn.disabled = false;
-        setFlashText(el, 'err', 'Delete request failed.');
-      });
-    }, danger, isRating ? 'Strip' : 'Delete');
+    deleteTagFlow(btn, TAG_ID, function() { window.location.href = '/tags'; });
   });
 })();
 
@@ -422,25 +367,6 @@ function updateDetailColor(sel) {
   var opt = sel.options[sel.selectedIndex];
   var name = document.getElementById('tag-detail-name');
   if (opt && name && opt.dataset.color) name.style.color = opt.dataset.color;
-}
-
-// mergeCategoryCollision re-runs an inline category move with merge=1
-// after the collision flash offered it (same handler contract as the
-// /tags listing).
-function mergeCategoryCollision(tagID, catID) {
-  var body = new URLSearchParams();
-  body.set('category_id', String(catID));
-  body.set('merge', '1');
-  fetch('/tags/' + tagID + '/category', {
-    method: 'PATCH',
-    headers: {'X-CSRF-Token': getCSRFToken(), 'Content-Type': 'application/x-www-form-urlencoded'},
-    body: body
-  }).then(function(r) {
-    if (r.ok) {
-      stashActionFlash('Merged into the existing tag.', 'ok');
-      window.location.reload();
-    }
-  });
 }
 
 // The implications editor reuses the dialog partial; after an add the

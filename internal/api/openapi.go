@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"encoding/json"
 	"html/template"
 	"maps"
@@ -655,7 +656,7 @@ func buildSpec(baseURL string) map[string]any {
 					"operationId": "listTags",
 					"parameters": []map[string]any{
 						galleryParam(),
-						queryParam("q", "Prefix filter"),
+						queryParam("q", "Name filter; prefix match, or * as a wildcard anywhere"),
 						queryParam("category", "Filter by category name"),
 						queryParam("sort", "Sort field (usage, alpha)"),
 						queryParam("page", "Page number"),
@@ -1144,9 +1145,7 @@ func anchorize(s string) string {
 	r = strings.ReplaceAll(r, "{", "")
 	r = strings.ReplaceAll(r, "}", "")
 	r = strings.Trim(r, "-")
-	if r == "" {
-		r = "root"
-	}
+	r = cmp.Or(r, "root")
 	return r
 }
 

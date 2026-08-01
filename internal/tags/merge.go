@@ -60,13 +60,19 @@ func (s *Service) CreateAliasFrom(name string, categoryID, canonicalID int64, or
 			return fmt.Errorf("cannot alias to a tag that is itself an alias")
 		}
 
+		// The name-collision branch routes on whether the row carries
+		// image_tags rows, not on usage_count: usage_count deliberately
+		// counts visible carriers only, so a tag whose images all went
+		// missing reads 0 while its rows are intact, and upgrading it in
+		// place would leave them keyed on an alias the images never
+		// received - unsearchable from either spelling.
 		var existingID int64
-		var existingIsAlias int
-		var existingUsage int
+		var existingIsAlias, existingCarried int
 		err := tx.QueryRow(
-			`SELECT id, is_alias, usage_count FROM tags WHERE name = ? AND category_id = ?`,
+			`SELECT id, is_alias, EXISTS (SELECT 1 FROM image_tags WHERE tag_id = tags.id)
+			 FROM tags WHERE name = ? AND category_id = ?`,
 			normalized, categoryID,
-		).Scan(&existingID, &existingIsAlias, &existingUsage)
+		).Scan(&existingID, &existingIsAlias, &existingCarried)
 		switch {
 		case err == sql.ErrNoRows:
 			var id int64
@@ -90,7 +96,7 @@ func (s *Service) CreateAliasFrom(name string, categoryID, canonicalID int64, or
 			); err != nil {
 				return err
 			}
-		} else if existingUsage > 0 {
+		} else if existingCarried == 1 {
 			return ErrAliasNameInUse
 		} else {
 			if _, err := tx.Exec(
@@ -102,7 +108,7 @@ func (s *Service) CreateAliasFrom(name string, categoryID, canonicalID int64, or
 		}
 		// Same alias-keyed-rows invariant MergeTags maintains: a tag
 		// becoming (or repointed as) an alias must not be left as parent or
-		// implied in tag_implications. Zero-usage means there are no
+		// implied in tag_implications. The branch above already ruled out
 		// orphan image_tags rows, but a future fan-out hitting a dangling
 		// edge would still misbehave.
 		if err := repointImplicationsToCanonicalTx(tx, existingID, canonicalID); err != nil {

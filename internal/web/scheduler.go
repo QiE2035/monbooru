@@ -353,7 +353,7 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) error {
 	}
 	ctx := s.jobs.Context()
 	baseline := readVmRSS()
-	skipped, err := tagger.RunWithTaggers(ctx, cx.DB, s.cfg, ids, enabled, s.jobs, s.cfg.Tagger.UseCUDA, cx.MangaCacheDir())
+	skipped, err := tagger.RunWithTaggers(ctx, cx.DB, s.cfg, ids, enabled, s.jobs, s.cfg.Tagger.ExecutionProvider, cx.MangaCacheDir())
 	cx.InvalidateCaches()
 	if ctx.Err() != nil {
 		s.jobs.Complete(fmt.Sprintf("[%s] auto-tagging cancelled (%d image(s) queued)", cx.Name, len(ids)))

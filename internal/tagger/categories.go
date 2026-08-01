@@ -1,6 +1,6 @@
-//go:build tagger
-
 package tagger
+
+import "cmp"
 
 // wd14Category maps WD14 numeric category IDs to Monbooru built-in
 // category names, following the danbooru numbering the label sets are
@@ -77,9 +77,7 @@ func resolveCategory(profile Profile, label tagLabel, catIDs map[string]int64, d
 	switch profile.CategoryScheme {
 	case "wd14_numeric":
 		name := wd14Category[label.categoryID]
-		if name == "" {
-			name = "general"
-		}
+		name = cmp.Or(name, "general")
 		return categoryResolution{catID: catIDs[name], catName: name}
 	case "single_general":
 		return categoryResolution{catID: catIDs["general"], catName: "general"}

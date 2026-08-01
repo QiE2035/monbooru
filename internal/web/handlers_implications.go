@@ -52,6 +52,75 @@ func (s *Server) implicationsDialogHandler(w http.ResponseWriter, r *http.Reques
 	s.renderTemplate(w, "partials/implications_dialog.html", data)
 }
 
+// declareImplications reads the tag-input field, resolves each token
+// the way the detail-page tag input does (space-separated multi-add,
+// "category:name", quoted spans) and declares one edge per token. edge
+// turns a resolved tag id into the (parent, implied) pair, which is the
+// only thing the two directions disagree on. Returns how many edges were
+// new and the per-token failures; a nil return means it already answered
+// the request with a parse error.
+func (s *Server) declareImplications(w http.ResponseWriter, r *http.Request, field string, edge func(tagID int64) (parent, implied int64)) (added int, failures []string, ok bool) {
+	raw := strings.TrimSpace(r.FormValue(field))
+	if raw == "" {
+		writeInlineFlash(w, "err", "Tag name is required.")
+		return 0, nil, false
+	}
+	catTags, parseErrMsg := s.parseTagInput(raw)
+	if parseErrMsg != "" {
+		writeInlineFlash(w, "err", parseErrMsg)
+		return 0, nil, false
+	}
+	for _, ct := range catTags {
+		tag, err := s.tagSvc().GetOrCreateTag(ct.name, ct.catID)
+		if err != nil {
+			failures = append(failures, ct.name+": "+err.Error())
+			continue
+		}
+		parent, implied := edge(tag.ID)
+		isNew, err := s.tagSvc().AddImplication(parent, implied)
+		if err != nil {
+			failures = append(failures, ct.name+": "+err.Error())
+			continue
+		}
+		if isNew {
+			added++
+			s.startImplicationPropagation(parent, implied, "add")
+		}
+	}
+	if added > 0 {
+		// New targets may have been created via GetOrCreateTag, so the
+		// cached tag count is stale until the next render.
+		s.Active().InvalidateCaches()
+	}
+	return added, failures, true
+}
+
+// implicationsAddedMsg is the success line both directions report.
+func implicationsAddedMsg(added int) string {
+	noun := "implication"
+	if added != 1 {
+		noun = "implications"
+	}
+	return strconv.Itoa(added) + " " + noun + " added."
+}
+
+// writeImplicationFailures reports a run that added nothing or only
+// part of what was asked. Returns false when there is nothing to report
+// and the caller owns the success response.
+func writeImplicationFailures(w http.ResponseWriter, added int, failures []string) bool {
+	switch {
+	case len(failures) == 0 && added > 0:
+		return false
+	case len(failures) == 0:
+		writeInlineFlash(w, "ok", "Already declared.")
+	case added > 0:
+		writeInlineFlash(w, "err", "Added "+strconv.Itoa(added)+". Failed: "+strings.Join(failures, "; "))
+	default:
+		writeInlineFlash(w, "err", strings.Join(failures, "; "))
+	}
+	return true
+}
+
 func (s *Server) addImplicationPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
@@ -60,70 +129,25 @@ func (s *Server) addImplicationPost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rawInput := strings.TrimSpace(r.FormValue("implied_id"))
-	if rawInput == "" {
-		writeInlineFlash(w, "err", "Tag name is required.")
+	added, failures, ok := s.declareImplications(w, r, "implied_id",
+		func(tagID int64) (int64, int64) { return parentID, tagID })
+	if !ok {
 		return
 	}
-
-	// Parse the same way the detail-page tag input does so users get
-	// space-separated multi-add and "category:name" / quoted spans.
-	catTags, parseErrMsg := s.parseTagInput(rawInput)
-	if parseErrMsg != "" {
-		writeInlineFlash(w, "err", parseErrMsg)
-		return
-	}
-
-	added := 0
-	var failures []string
-	for _, ct := range catTags {
-		tag, err := s.tagSvc().GetOrCreateTag(ct.name, ct.catID)
-		if err != nil {
-			failures = append(failures, ct.name+": "+err.Error())
-			continue
-		}
-		isNew, err := s.tagSvc().AddImplication(parentID, tag.ID)
-		if err != nil {
-			failures = append(failures, ct.name+": "+err.Error())
-			continue
-		}
-		if isNew {
-			added++
-			s.startImplicationPropagation(parentID, tag.ID, "add")
-		}
-	}
-
 	if added > 0 {
-		// New implication targets may have been created via GetOrCreateTag,
-		// so the cached tag count is stale until next render.
-		s.Active().InvalidateCaches()
-		// implication-added drives the dialog's after-request hook (re-fetch
-		// body without closing the modal); monbooru:flash rides the shared
-		// helper so the next /tags reload surfaces the green message above
-		// the table.
-		noun := "implication"
-		if added != 1 {
-			noun = "implications"
-		}
-		setFlashHeader(w, strconv.Itoa(added)+" "+noun+" added.", "ok",
-			map[string]any{"implication-added": ""})
+		// implication-added drives the dialog's after-request hook
+		// (re-fetch body without closing the modal); monbooru:flash rides
+		// the shared helper so the next /tags reload surfaces the green
+		// message above the table.
+		setFlashHeader(w, implicationsAddedMsg(added), "ok", map[string]any{"implication-added": ""})
 	}
-	switch {
-	case len(failures) == 0 && added > 0:
+	if !writeImplicationFailures(w, added, failures) {
 		w.WriteHeader(http.StatusNoContent)
-	case len(failures) == 0 && added == 0:
-		writeInlineFlash(w, "ok", "Already declared.")
-	case added > 0:
-		writeInlineFlash(w, "err", "Added "+strconv.Itoa(added)+". Failed: "+strings.Join(failures, "; "))
-	default:
-		writeInlineFlash(w, "err", strings.Join(failures, "; "))
 	}
 }
 
 // addImpliedByPost is the tag detail page's inline inverse editor: each
-// token in `parent_id` becomes a parent implying {id}. Same parse and
-// fan-out as addImplicationPost, with the edge direction flipped;
-// failures flash in place, success refreshes the page.
+// token in `parent_id` becomes a parent implying {id}.
 func (s *Server) addImpliedByPost(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
@@ -132,52 +156,13 @@ func (s *Server) addImpliedByPost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rawInput := strings.TrimSpace(r.FormValue("parent_id"))
-	if rawInput == "" {
-		writeInlineFlash(w, "err", "Tag name is required.")
+	added, failures, ok := s.declareImplications(w, r, "parent_id",
+		func(tagID int64) (int64, int64) { return tagID, impliedID })
+	if !ok {
 		return
 	}
-	catTags, parseErrMsg := s.parseTagInput(rawInput)
-	if parseErrMsg != "" {
-		writeInlineFlash(w, "err", parseErrMsg)
-		return
-	}
-
-	added := 0
-	var failures []string
-	for _, ct := range catTags {
-		tag, err := s.tagSvc().GetOrCreateTag(ct.name, ct.catID)
-		if err != nil {
-			failures = append(failures, ct.name+": "+err.Error())
-			continue
-		}
-		isNew, err := s.tagSvc().AddImplication(tag.ID, impliedID)
-		if err != nil {
-			failures = append(failures, ct.name+": "+err.Error())
-			continue
-		}
-		if isNew {
-			added++
-			s.startImplicationPropagation(tag.ID, impliedID, "add")
-		}
-	}
-
-	if added > 0 {
-		s.Active().InvalidateCaches()
-	}
-	switch {
-	case len(failures) == 0 && added > 0:
-		noun := "implication"
-		if added != 1 {
-			noun = "implications"
-		}
-		hxDone(w, r, strconv.Itoa(added)+" "+noun+" added.", "", fmt.Sprintf("/tags/%d", impliedID))
-	case len(failures) == 0:
-		writeInlineFlash(w, "ok", "Already declared.")
-	case added > 0:
-		writeInlineFlash(w, "err", "Added "+strconv.Itoa(added)+". Failed: "+strings.Join(failures, "; "))
-	default:
-		writeInlineFlash(w, "err", strings.Join(failures, "; "))
+	if !writeImplicationFailures(w, added, failures) {
+		hxDone(w, r, implicationsAddedMsg(added), "", fmt.Sprintf("/tags/%d", impliedID))
 	}
 }
 

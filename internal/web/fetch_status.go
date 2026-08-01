@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"fmt"
 	"html"
 	"net/http"
@@ -62,6 +63,16 @@ func (s *Server) recordFetchLookup(gallery string, id int64, hashes string) {
 	now := time.Now()
 	s.pruneFetchStatusLocked(now)
 	s.fetchStatus[fetchStatusKey(gallery, id)] = fetchStatusEntry{State: "pending", At: now, Hashes: hashes}
+}
+
+// pruneFetchStatus evicts entries past the TTL. The recording paths
+// prune as they write, so this is for the reclaim loop: once the last
+// fetch of a session lands, nothing writes again and the entries would
+// outlive their TTL until the next one does.
+func (s *Server) pruneFetchStatus() {
+	s.fetchStatusMu.Lock()
+	defer s.fetchStatusMu.Unlock()
+	s.pruneFetchStatusLocked(time.Now())
 }
 
 // pruneFetchStatusLocked initialises the map and evicts entries past the TTL.
@@ -137,9 +148,7 @@ func (s *Server) fetchStatusHandler(w http.ResponseWriter, r *http.Request) {
 		// rides the stash-and-show bridge to survive the reload.
 		s.clearFetchStatus(s.activeName, id)
 		msg := e.Msg
-		if msg == "" {
-			msg = "Fetched tags from the source."
-		}
+		msg = cmp.Or(msg, "Fetched tags from the source.")
 		setFlashHeader(w, msg, "ok", nil)
 		w.Header().Set("HX-Refresh", "true")
 		w.WriteHeader(http.StatusOK)

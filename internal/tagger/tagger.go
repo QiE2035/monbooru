@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,25 +49,45 @@ func UnavailableReason(cfg *config.Config) string {
 	return "no enabled tagger"
 }
 
-// CheckCUDAAvailable probes the ONNX Runtime for CUDA support and
-// verifies an NVIDIA GPU device file exists. The settings handler calls
-// it before persisting use_cuda=true so the user gets an immediate
-// error rather than a surprise at tagger-job time.
-func CheckCUDAAvailable() error {
+// CheckProviderAvailable probes whether the ONNX Runtime library can
+// initialize the requested execution provider. The settings handler calls
+// it before persisting a non-CPU provider so the operator sees a library
+// or device issue immediately rather than at tagger-job time.
+func CheckProviderAvailable(provider string) error {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" || provider == "cpu" {
+		return nil
+	}
+	if !config.IsValidExecutionProvider(provider) {
+		return fmt.Errorf("unsupported execution provider %q", provider)
+	}
+
 	ort.SetSharedLibraryPath(sharedLibPath())
 	if err := ort.InitializeEnvironment(); err != nil {
 		return fmt.Errorf("ort init: %w", err)
 	}
-	defer ort.DestroyEnvironment()
+	defer func() { _ = ort.DestroyEnvironment() }()
 
-	opts, err := ort.NewCUDAProviderOptions()
+	opts, err := ort.NewSessionOptions()
 	if err != nil {
-		return fmt.Errorf("libonnxruntime is not CUDA-capable (use the -cuda Docker image): %w", err)
+		return fmt.Errorf("ort session options: %w", err)
 	}
-	opts.Destroy()
+	defer func() { _ = opts.Destroy() }()
 
-	if _, err := os.Stat("/dev/nvidia0"); err != nil {
-		return fmt.Errorf("no NVIDIA GPU device found (pass the GPU into the container, e.g. Podman AddDevice=nvidia.com/gpu=all)")
+	cleanup, err := appendExecutionProvider(opts, provider, "")
+	if cleanup != nil {
+		cleanup()
+	}
+	if err != nil {
+		return fmt.Errorf("libonnxruntime does not support %s: %w", provider, err)
+	}
+
+	// A CUDA-capable library says nothing about the device: in a container
+	// without the GPU passed in, session creation only fails at job time.
+	if provider == "cuda" && runtime.GOOS == "linux" {
+		if _, err := os.Stat("/dev/nvidia0"); err != nil {
+			return fmt.Errorf("no NVIDIA GPU device found (pass the GPU into the container, e.g. Podman AddDevice=nvidia.com/gpu=all)")
+		}
 	}
 	return nil
 }
@@ -103,13 +124,13 @@ func ReleaseAll() {
 
 // RunWithTaggers tags ids through the supplied taggers, merging
 // results so each image ends up with one row per unique tag. Callers
-// must pass only enabled+available taggers. useCUDA overrides
-// cfg.Tagger.UseCUDA so per-request callers can keep single-image
+// must pass only enabled+available taggers. provider overrides
+// cfg.Tagger.ExecutionProvider so per-request callers can keep single-image
 // runs on the CPU. mangaCacheDir is the per-gallery <data_path>/
 // <gallery>/manga directory used to extract and cache cbz pages on
 // demand; pass "" to fall back to a per-image temp directory.
 // Returns the count of submitted ids left without auto_tagged_at.
-func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, ids []int64, taggers []TaggerStatus, mgr *jobs.Manager, useCUDA bool, mangaCacheDir string) (int, error) {
+func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, ids []int64, taggers []TaggerStatus, mgr *jobs.Manager, provider string, mangaCacheDir string) (int, error) {
 	if len(taggers) == 0 {
 		return 0, fmt.Errorf("no tagger is enabled or available")
 	}
@@ -133,7 +154,7 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 			}
 			catIDs[name] = id
 		}
-		catRows.Close()
+		_ = catRows.Close()
 	}
 	generalCatID := catIDs["general"]
 
@@ -188,7 +209,7 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 				}
 				inferredCats[n] = cid
 			}
-			infRows.Close()
+			_ = infRows.Close()
 		}
 	}
 
@@ -280,7 +301,7 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 	resp, err := backend.Run(ctx, RunRequest{
 		Cfg:            cfg,
 		Taggers:        taggers,
-		UseCUDA:        useCUDA,
+		Provider:       provider,
 		CatIDs:         catIDs,
 		GeneralCatID:   generalCatID,
 		InferredCats:   inferredCats,
@@ -343,7 +364,7 @@ func framesForTagging(canonPath, fileType, mangaCacheDir string, imageID int64) 
 		frames, _ := gallery.ExtractVideoFrames(canonPath, os.TempDir(), positions)
 		cleanup := func() {
 			for _, p := range frames {
-				os.Remove(p)
+				_ = os.Remove(p)
 			}
 		}
 		return frames, cleanup
@@ -354,7 +375,7 @@ func framesForTagging(canonPath, fileType, mangaCacheDir string, imageID int64) 
 			return nil, func() {}
 		}
 		pageCount := len(archive.Pages)
-		archive.Close()
+		_ = archive.Close()
 		cacheRoot := mangaCacheDir
 		var tempDir string
 		if cacheRoot == "" {
@@ -376,7 +397,7 @@ func framesForTagging(canonPath, fileType, mangaCacheDir string, imageID int64) 
 		}
 		cleanup := func() {
 			if tempDir != "" {
-				os.RemoveAll(tempDir)
+				_ = os.RemoveAll(tempDir)
 			}
 		}
 		return paths, cleanup
@@ -397,7 +418,7 @@ func storeResults(
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Resolve each desired tag to a tag_id, creating new rows as
 	// needed. Alias rows redirect to their canonical so we never
@@ -447,12 +468,12 @@ func storeResults(
 		var isAuto int
 		var tname sql.NullString
 		if err := rows.Scan(&tid, &isAuto, &tname); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		current[tid] = rowInfo{isAuto: isAuto == 1, taggerName: tname.String}
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	toRemove := map[int64]struct{}{}
 	if len(taggerNames) > 0 {
@@ -563,23 +584,4 @@ func storeResults(
 	}
 
 	return tx.Commit()
-}
-
-// sanitizeLabel coerces a label-file name into the stored tag form through the
-// same normalizer the add path uses (tags.NormalizeName): spaces fold to
-// underscores, control runes drop, the rest of Unicode is kept. A label that
-// empties out, or holds no content rune, becomes `_unsupported_<idx>` so the
-// slice index keeps its 1:1 mapping with the model's output channels - dropping
-// the entry would shift every later label and corrupt downstream attribution.
-// The returned bool is false in that fallback case so callers can flag the slot
-// as a placeholder and skip emission at inference time.
-func sanitizeLabel(raw string, idx int) (string, bool) {
-	name := tags.NormalizeName(raw)
-	if rs := []rune(name); len(rs) > 200 {
-		name = string(rs[:200])
-	}
-	if name == "" || !tags.HasTagContent(name) {
-		return fmt.Sprintf("_unsupported_%d", idx), false
-	}
-	return name, true
 }

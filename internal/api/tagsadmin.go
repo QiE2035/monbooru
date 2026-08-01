@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"errors"
 	"net/http"
 	"strings"
@@ -34,9 +35,7 @@ func toTagResponse(t *models.Tag) tagResponse {
 // the name named a real category.
 func resolveCategoryID(g Gallery, name string) (int64, bool) {
 	name = strings.TrimSpace(name)
-	if name == "" {
-		name = "general"
-	}
+	name = cmp.Or(name, "general")
 	return categoryIDByName(g, name)
 }
 

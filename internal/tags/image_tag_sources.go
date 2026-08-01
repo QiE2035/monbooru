@@ -1,6 +1,7 @@
 package tags
 
 import (
+	"cmp"
 	"database/sql"
 	"strings"
 
@@ -25,9 +26,7 @@ type TagSource struct {
 // 'user'. Exported for the apply paths that write image_tags outside
 // this package (internal/tagger's direct-SQL batch).
 func RecordTagSourceTx(tx *sql.Tx, imageID, tagID int64, source string) error {
-	if source == "" {
-		source = "user"
-	}
+	source = cmp.Or(source, "user")
 	_, err := tx.Exec(
 		`INSERT OR IGNORE INTO image_tag_sources (image_id, tag_id, source) VALUES (?, ?, ?)`,
 		imageID, tagID, source,

@@ -1,6 +1,9 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
+	"slices"
+)
 
 // galleryListEntry is one row of GET /api/v1/galleries: a configured
 // gallery the caller can target with ?gallery=<name>, plus the same
@@ -22,8 +25,11 @@ func (h *Handler) listGalleries(w http.ResponseWriter, r *http.Request) {
 	if active, ok := h.resolver(""); ok {
 		activeName = active.Name
 	}
-	out := make([]galleryListEntry, 0, len(h.cfg.Galleries))
-	for _, gc := range h.cfg.Galleries {
+	h.cfgMu.RLock()
+	configured := slices.Clone(h.cfg.Galleries)
+	h.cfgMu.RUnlock()
+	out := make([]galleryListEntry, 0, len(configured))
+	for _, gc := range configured {
 		g, ok := h.resolver(gc.Name)
 		if !ok {
 			continue

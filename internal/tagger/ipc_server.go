@@ -8,31 +8,39 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 
 	"github.com/monbooru/monbooru/internal/logx"
 )
 
-// RunWorkerServer dials the parent's Unix-domain socket and
+// RunWorkerServer dials the parent's TCP loopback address and
 // dispatches every framed request that arrives back to the in-process
-// backend until the parent closes the connection. Designed as the
-// body of the `monbooru tagger-worker` subcommand.
-func RunWorkerServer(ctx context.Context, socketPath string) error {
-	conn, err := net.Dial("unix", socketPath)
+// backend until the parent closes the connection or asks for a
+// graceful shutdown. Designed as the body of the `monbooru
+// tagger-worker` subcommand.
+func RunWorkerServer(ctx context.Context, addr string) error {
+	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("tagger-worker: dial %q: %w", socketPath, err)
+		return fmt.Errorf("tagger-worker: dial %q: %w", addr, err)
 	}
-	defer conn.Close()
-	logx.Infof("tagger-worker: connected to parent socket=%s", socketPath)
+	defer func() { _ = conn.Close() }()
+	if err := writeFrame(conn, ipcHello{Token: os.Getenv(ipcTokenEnv)}); err != nil {
+		return fmt.Errorf("tagger-worker: handshake: %w", err)
+	}
+	logx.Infof("tagger-worker: connected to parent addr=%s", addr)
 	return serveRequests(ctx, conn)
 }
 
 // serveRequests reads framed ipcRequests off conn and dispatches each
 // to the local backend. Most methods produce one response frame; Run
 // streams progress frames before its terminal frame. Returns when the
-// parent closes its end (clean shutdown) or when a wire error makes
-// the channel useless.
+// parent closes its end (clean shutdown), when the parent sends an
+// explicit shutdown request, or when a wire error makes the channel
+// useless.
 func serveRequests(ctx context.Context, conn net.Conn) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	// writeMu guards every conn write so Run's progress goroutine
 	// can't interleave bytes with another writer. Only Run currently
 	// writes outside the main loop, but the mutex is the contract
@@ -45,6 +53,13 @@ func serveRequests(ctx context.Context, conn net.Conn) error {
 				return nil
 			}
 			return fmt.Errorf("tagger-worker: read: %w", err)
+		}
+		if req.Method == ipcMethodShutdown {
+			if err := writeLocked(conn, &writeMu, ipcResponse{}); err != nil {
+				return fmt.Errorf("tagger-worker: shutdown response: %w", err)
+			}
+			cancel()
+			return nil
 		}
 		if err := handle(ctx, req, conn, &writeMu); err != nil {
 			return err
