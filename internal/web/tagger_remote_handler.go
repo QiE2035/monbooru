@@ -2,18 +2,47 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/monbooru/monbooru/internal/config"
 	"github.com/monbooru/monbooru/internal/logx"
 	"github.com/monbooru/monbooru/internal/tagger"
 )
 
-// taggerRemoteRun handles POST /api/v1/tagger/remote-run.
-// It accepts multipart images from a paired remote instance, runs the
-// configured local taggers, and returns merged tag results as JSON.
+// remoteDrainWait is how long a drain request blocks waiting for new
+// results before returning an empty page. The B-side's client timeout
+// is longer than this so a full round-trip always fits.
+const remoteDrainWait = 5 * time.Second
+
+// remoteTaggerAuth verifies the Bearer token against the configured
+// tokens and requires the write or tag scope. It returns the raw
+// secret - used as the queue's per-peer result routing key - and
+// whether the request is authorised.
+func (s *Server) remoteTaggerAuth(r *http.Request) (string, bool) {
+	secret := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if secret == "" {
+		return "", false
+	}
+	s.cfgMu.RLock()
+	tok := s.cfg.FindTokenByHash(config.HashToken(secret))
+	s.cfgMu.RUnlock()
+	if tok == nil || (!tok.HasScope(config.ScopeWrite) && !tok.HasScope(config.ScopeTag)) {
+		return "", false
+	}
+	return secret, true
+}
+
+// taggerRemoteRun handles POST /api/v1/tagger/remote-run. It accepts
+// exactly one multipart image from a paired remote instance, enqueues
+// it on the local tagger queue, and returns immediately with 202 and
+// the job id (inference runs asynchronously). When the queue is at
+// capacity it returns 429 with the current watermarks so the peer can
+// back off. Results are collected via GET /api/v1/tagger/remote-results.
 func (s *Server) taggerRemoteRun(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.RLock()
 	allowRemote := s.cfg.Tagger.RemoteServer.AllowRemote
@@ -24,17 +53,9 @@ func (s *Server) taggerRemoteRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify Bearer token with write or tag scope.
-	secret := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if secret == "" {
-		writeRemoteTaggerError(w, http.StatusUnauthorized, "authorization required")
-		return
-	}
-	s.cfgMu.RLock()
-	tok := s.cfg.FindTokenByHash(config.HashToken(secret))
-	s.cfgMu.RUnlock()
-	if tok == nil || (!tok.HasScope(config.ScopeWrite) && !tok.HasScope(config.ScopeTag)) {
-		writeRemoteTaggerError(w, http.StatusForbidden, "invalid or insufficient token")
+	secret, ok := s.remoteTaggerAuth(r)
+	if !ok {
+		writeRemoteTaggerError(w, http.StatusUnauthorized, "invalid or insufficient token")
 		return
 	}
 
@@ -45,8 +66,8 @@ func (s *Server) taggerRemoteRun(w http.ResponseWriter, r *http.Request) {
 	defer r.MultipartForm.RemoveAll()
 
 	files := r.MultipartForm.File["images"]
-	if len(files) == 0 {
-		writeRemoteTaggerError(w, http.StatusBadRequest, "no images provided")
+	if len(files) != 1 {
+		writeRemoteTaggerError(w, http.StatusBadRequest, "exactly one image required per remote submission")
 		return
 	}
 
@@ -77,65 +98,138 @@ func (s *Server) taggerRemoteRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	images := make([]tagger.BackendImageRequest, 0, len(files))
-	for _, fh := range files {
-		f, err := fh.Open()
-		if err != nil {
-			continue
-		}
-		data, err := io.ReadAll(f)
-		f.Close()
-		if err != nil {
-			continue
-		}
-		ct := detectMultipartImageType(data)
-		if ct == "" {
-			continue
-		}
-		images = append(images, tagger.BackendImageRequest{
-			FrameBytes: [][]byte{data},
-		})
-	}
-
-	if len(images) == 0 {
-		writeRemoteTaggerError(w, http.StatusBadRequest, "no supported image files found (only jpeg, png, webp, gif accepted)")
-		return
-	}
-
-	resp, err := tagger.RunRemoteImages(r.Context(), cfg, taggers, catIDs, images)
+	fh := files[0]
+	f, err := fh.Open()
 	if err != nil {
-		logx.Errorf("remote-tagger: RunRemoteImages failed: %v", err)
-		writeRemoteTaggerError(w, http.StatusInternalServerError, "inference failed")
+		writeRemoteTaggerError(w, http.StatusBadRequest, "failed to read uploaded image")
+		return
+	}
+	data, readErr := io.ReadAll(f)
+	f.Close()
+	if readErr != nil {
+		writeRemoteTaggerError(w, http.StatusBadRequest, "failed to read uploaded image")
+		return
+	}
+	if detectMultipartImageType(data) == "" {
+		writeRemoteTaggerError(w, http.StatusBadRequest, "unsupported image type (only jpeg, png, webp, gif accepted)")
 		return
 	}
 
-	results := make([]remoteTagResultOut, 0, len(resp.Results))
-	for i, r := range resp.Results {
-		out := remoteTagResultOut{Index: i}
-		if r.Err != "" {
-			out.Error = r.Err
+	params := tagger.RemoteRunParams{
+		Cfg:            cfg,
+		Taggers:        taggers,
+		CatIDs:         catIDs,
+		Provider:       cfg.Tagger.ExecutionProvider,
+		GeneralCatID:   catIDs["general"],
+		InferredCats:   map[string]int64{},
+		MinHitFraction: cfg.Tagger.Aggregation.MinHitFraction,
+		Parallel:       cfg.Tagger.Parallel,
+	}
+
+	jobID, err := tagger.SubmitRemoteImage(r.Context(), params, tagger.BackendImageRequest{
+		FrameBytes: [][]byte{data},
+	}, secret)
+	if err != nil {
+		if errors.Is(err, tagger.ErrRemoteQueueFull) {
+			capacity, queued, inflight := tagger.RemoteQueueStatus()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":    "remote tagger queue full",
+				"capacity": capacity,
+				"queued":   queued,
+				"inflight": inflight,
+			})
+			return
+		}
+		logx.Errorf("remote-tagger: submit failed: %v", err)
+		writeRemoteTaggerError(w, http.StatusInternalServerError, "failed to enqueue image")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]string{"job_id": jobID})
+}
+
+// taggerRemoteResults handles GET /api/v1/tagger/remote-results?after=<cursor>.
+// It blocks up to remoteDrainWait for results newer than the cursor
+// belonging to this token and returns them in ascending completion
+// order with the new cursor. Idempotent: re-draining from the same
+// cursor yields the same results, so a peer that reconnects can resume
+// without loss or duplication.
+func (s *Server) taggerRemoteResults(w http.ResponseWriter, r *http.Request) {
+	secret, ok := s.remoteTaggerAuth(r)
+	if !ok {
+		writeRemoteTaggerError(w, http.StatusUnauthorized, "invalid or insufficient token")
+		return
+	}
+
+	after := int64(0)
+	if v := r.URL.Query().Get("after"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeRemoteTaggerError(w, http.StatusBadRequest, "invalid after cursor")
+			return
+		}
+		after = n
+	}
+
+	cursor, entries, err := tagger.RemoteDrainResults(secret, after, remoteDrainWait)
+	if err != nil {
+		logx.Errorf("remote-tagger: drain failed: %v", err)
+		writeRemoteTaggerError(w, http.StatusInternalServerError, "drain failed")
+		return
+	}
+
+	results := make([]remoteDrainResultOut, 0, len(entries))
+	for _, e := range entries {
+		out := remoteDrainResultOut{JobID: e.JobID}
+		if e.Err != "" {
+			out.Error = e.Err
 		} else {
-			entries := make([]remoteTagEntryOut, 0, len(r.Tags))
-			for k, s := range r.Tags {
-				entries = append(entries, remoteTagEntryOut{
+			tags := make([]remoteTagEntryOut, 0, len(e.Tags))
+			for k, sc := range e.Tags {
+				tags = append(tags, remoteTagEntryOut{
 					Name:       k.Name,
 					CategoryID: k.CatID,
-					Score:      s.Score,
-					TaggerName: s.TaggerName,
+					Score:      sc.Score,
+					TaggerName: sc.TaggerName,
 				})
 			}
-			out.Tags = entries
+			out.Tags = tags
 		}
 		results = append(results, out)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(results)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"cursor":  cursor,
+		"results": results,
+	})
 }
 
-type remoteTagResultOut struct {
-	Index int                 `json:"index"`
+// taggerRemoteStatus handles GET /api/v1/tagger/remote-status. It
+// returns the queue's capacity, queued, and in-flight image counts so
+// a paired B-side can size its sliding window.
+func (s *Server) taggerRemoteStatus(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.remoteTaggerAuth(r); !ok {
+		writeRemoteTaggerError(w, http.StatusUnauthorized, "invalid or insufficient token")
+		return
+	}
+	capacity, queued, inflight := tagger.RemoteQueueStatus()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]int{
+		"capacity": capacity,
+		"queued":   queued,
+		"inflight": inflight,
+	})
+}
+
+type remoteDrainResultOut struct {
+	JobID string              `json:"job_id"`
 	Tags  []remoteTagEntryOut `json:"tags"`
 	Error string              `json:"error"`
 }

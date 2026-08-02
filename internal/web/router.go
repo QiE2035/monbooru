@@ -178,6 +178,11 @@ func NewServer(cfg *config.Config, configPath string, jobManager *jobs.Manager) 
 
 	applyRelationsConfig(cfg.Relations)
 
+	// Size the remote tagger queue from config; the settings save path
+	// updates it live, but a config file edit needs the startup value
+	// applied to the package singleton too.
+	tagger.SetRemoteQueueCapacity(cfg.Tagger.RemoteServer.QueueSize)
+
 	for _, g := range cfg.Galleries {
 		cx, err := openGalleryCtx(g)
 		if err != nil {
@@ -600,6 +605,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/pair/status", s.pairStatus)
 	mux.HandleFunc("POST /api/v1/pair/remove", s.pairTeardown)
 	mux.HandleFunc("POST /api/v1/tagger/remote-run", s.taggerRemoteRun)
+	mux.HandleFunc("GET /api/v1/tagger/remote-results", s.taggerRemoteResults)
+	mux.HandleFunc("GET /api/v1/tagger/remote-status", s.taggerRemoteStatus)
 	mux.HandleFunc("GET /internal/monloader-pairing", s.monloaderPairingFragment)
 	mux.HandleFunc("POST /settings/monloader/pair/{id}/approve", s.monloaderPairApprove)
 	mux.HandleFunc("POST /settings/monloader/pair/{id}/deny", s.monloaderPairDeny)

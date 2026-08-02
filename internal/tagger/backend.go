@@ -2,11 +2,17 @@ package tagger
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/monbooru/monbooru/internal/config"
 )
+
+// ErrRemoteQueueFull is returned by SubmitRemoteImage when the A-side
+// queue is at capacity; the web layer maps it to HTTP 429 with the
+// current watermarks so the peer can back off.
+var ErrRemoteQueueFull = errors.New("remote tagger queue full")
 
 // Backend is the boundary the inference loop crosses. The default
 // implementation is the subprocess client (ipc.go); the in-process
@@ -123,6 +129,30 @@ type BackendImageResult struct {
 	ID   int64
 	Tags map[TagKey]Scored
 	Err  string
+}
+
+// RemoteRunParams is the immutable run-configuration snapshot captured
+// when a remote image is enqueued on the A-side. The dispatcher
+// replays it into backend.Run so an in-flight job keeps its original
+// settings even if the operator edits the tagger settings while the
+// queue drains.
+type RemoteRunParams struct {
+	Cfg            *config.Config
+	Taggers        []TaggerStatus
+	CatIDs         map[string]int64
+	Provider       string
+	GeneralCatID   int64
+	InferredCats   map[string]int64
+	MinHitFraction float64
+	Parallel       int
+}
+
+// RemoteDrainedResult is one completed remote job's outcome returned
+// by RemoteDrainResults. Tags is nil (and Err non-empty) on failure.
+type RemoteDrainedResult struct {
+	JobID string
+	Tags  map[TagKey]Scored
+	Err   string
 }
 
 var (

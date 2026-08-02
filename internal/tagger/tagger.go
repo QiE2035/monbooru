@@ -345,33 +345,6 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 	return int(skipped.Load()), ctx.Err()
 }
 
-// RunRemoteImages runs the tagger backend on in-memory image data and
-// returns merged tag results without touching any database.
-func RunRemoteImages(ctx context.Context, cfg *config.Config, taggers []TaggerStatus, catIDs map[string]int64, images []BackendImageRequest) (RunResponse, error) {
-	backend := activeBackend()
-	if backend == nil {
-		return RunResponse{}, fmt.Errorf("auto-tagger disabled (no backend registered)")
-	}
-
-	generalCatID := catIDs["general"]
-
-	parallel := min(max(1, cfg.Tagger.Parallel), len(images))
-
-	resp, err := backend.Run(ctx, RunRequest{
-		Cfg:            cfg,
-		Taggers:        taggers,
-		CatIDs:         catIDs,
-		GeneralCatID:   generalCatID,
-		MinHitFraction: cfg.Tagger.Aggregation.MinHitFraction,
-		Parallel:       parallel,
-		Images:         images,
-	})
-	if err != nil {
-		return RunResponse{}, err
-	}
-	return resp, nil
-}
-
 // framesForTagging returns the file paths to feed the tagger plus a
 // cleanup func. Branches by file type:
 //   - static images: [canonPath], no-op cleanup.

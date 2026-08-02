@@ -178,8 +178,21 @@ func (s *Server) settingsTaggerPost(w http.ResponseWriter, r *http.Request) {
 			s.cfg.Tagger.IdleReleaseAfterMinutes = n
 		}
 	}
+	if v := r.FormValue("queue_size"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n < 1 {
+				n = 1
+			} else if n > 64 {
+				n = 64
+			}
+			s.cfg.Tagger.RemoteServer.QueueSize = n
+		}
+	}
 	s.cfg.Tagger.RemoteServer.AllowRemote = r.FormValue("allow_remote") == "on"
 	s.cfgMu.Unlock()
+	// Apply the queue capacity to the live A-side queue singleton right
+	// away; the next remote submission uses the new watermark.
+	tagger.SetRemoteQueueCapacity(s.cfg.Tagger.RemoteServer.QueueSize)
 	if err := s.saveConfig(); err != nil {
 		writeInlineFlash(w, "err", "Could not save: "+err.Error())
 		return

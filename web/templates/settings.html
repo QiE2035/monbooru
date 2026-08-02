@@ -526,6 +526,7 @@
             </label>
             <span class="field-hint">When enabled, other monbooru instances can send images for tagging via the remote-tagger pairing protocol.</span>
           </div>
+          {{template "partials/range_field.html" dict "Name" "queue_size" "Label" "Remote queue size (images)" "Min" 1 "Max" 64 "Step" 1 "Value" $cfg.Tagger.RemoteServer.QueueSize "Ticks" (list 1 16 32 64) "Hint" "How many images this A-side accepts before rejecting with 429; the B-side keeps its sliding window at this size."}}
         </div>
         <div class="settings-actions"><button type="submit">Save</button></div>
       </div>

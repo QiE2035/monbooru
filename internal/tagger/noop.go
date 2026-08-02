@@ -60,8 +60,19 @@ func ReleaseAll() {}
 // Status reports "not loaded" since the non-tagger build never caches.
 func Status() CacheStatus { return CacheStatus{} }
 
-// RunRemoteImages runs the tagger backend on in-memory image data and
-// returns merged tag results without touching any database.
-func RunRemoteImages(_ context.Context, _ *config.Config, _ []TaggerStatus, _ map[string]int64, _ []BackendImageRequest) (RunResponse, error) {
-	return RunResponse{}, errors.New("not built with -tags tagger, inference unavailable")
+// SubmitRemoteImage is a no-op stub on the non-tagger build; the noop
+// build never runs a local backend, it only consumes a remote one.
+func SubmitRemoteImage(_ context.Context, _ RemoteRunParams, _ BackendImageRequest, _ string) (string, error) {
+	return "", errors.New("not built with -tags tagger, inference unavailable")
 }
+
+// RemoteQueueStatus is a no-op stub on the non-tagger build.
+func RemoteQueueStatus() (int, int, int) { return 0, 0, 0 }
+
+// RemoteDrainResults is a no-op stub on the non-tagger build.
+func RemoteDrainResults(_ string, _ int64, _ time.Duration) (int64, []RemoteDrainedResult, error) {
+	return 0, nil, nil
+}
+
+// SetRemoteQueueCapacity is a no-op stub on the non-tagger build.
+func SetRemoteQueueCapacity(_ int) {}

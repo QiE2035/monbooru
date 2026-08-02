@@ -3,6 +3,7 @@ package tagger
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/monbooru/monbooru/internal/config"
 	"github.com/monbooru/monbooru/internal/db"
 	"github.com/monbooru/monbooru/internal/jobs"
+	"github.com/monbooru/monbooru/internal/logx"
 	"github.com/monbooru/monbooru/internal/tags"
 )
 
@@ -189,6 +191,36 @@ func storeResults(
 	return tx.Commit()
 }
 
+// remoteDrainHold is how long the B-side lets the A-side hold a drain
+// request waiting for new results. The A-side's server-side wait is
+// the same value, so the HTTP response always beats the client
+// timeout.
+const remoteDrainHold = 5 * time.Second
+
+// remoteJobTimeout is how long a submitted job may stay unanswered
+// before the B-side counts it skipped. The A-side GCs its own copy at
+// a similar horizon, so this only fires on crashes / partitions and
+// guarantees the batch still terminates.
+const remoteJobTimeout = 10 * time.Minute
+
+// remoteDefaultWindow is the B-side sliding-window fallback when the
+// A-side status probe fails.
+const remoteDefaultWindow = 16
+
+// remoteTarget pairs a B-side image id with its canonical path,
+// pre-resolved once so the refill loop doesn't re-query per submission.
+type remoteTarget struct {
+	id   int64
+	path string
+}
+
+// runRemoteTaggers pushes every eligible image through a paired remote
+// tagger using an asynchronous submit / cursor-drain protocol. It
+// keeps a sliding window at the A-side's advertised capacity: submit
+// up to capacity images, drain completed results, store them, and
+// refill - so transfer and inference overlap instead of alternating in
+// batches. Draining by cursor is idempotent, so a reconnecting B-side
+// resumes without loss or duplication.
 func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, ids []int64, taggers []TaggerStatus, mgr *jobs.Manager, provider string, mangaCacheDir string) (int, error) {
 	remote := newRemoteBackend(cfg.Tagger.RemoteClient.URL, cfg.Tagger.RemoteClient.Token)
 	// Remote tagging is the last big heap consumer of the job; give the
@@ -196,66 +228,136 @@ func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, 
 	// pinned at its peak RSS.
 	defer debug.FreeOSMemory()
 
-	// Batch size scales with the configured parallel workers so the A-side
-	// never receives more work per request than it can keep up with.
-	batchSize := max(1, cfg.Tagger.Parallel)
+	// The window stays at the A-side's advertised capacity so
+	// submissions never bounce off a full queue.
+	capacity := remoteDefaultWindow
+	if cap, _, _, err := remote.Status(ctx); err == nil && cap >= 1 {
+		capacity = cap
+	}
+
+	// Pre-filter the id list: skip non-static images and rows that
+	// can't be looked up, counting each as done+skipped so progress
+	// still reaches 100%.
 	total := len(ids)
 	done := 0
 	var skipped int
-	batchNum := 0
-	batchCount := (total + batchSize - 1) / batchSize
+	remaining := make([]remoteTarget, 0, len(ids))
+	for _, id := range ids {
+		var canonPath, fileType string
+		if err := database.Read.QueryRowContext(ctx,
+			`SELECT canonical_path, file_type FROM images WHERE id = ?`, id,
+		).Scan(&canonPath, &fileType); err != nil {
+			skipped++
+			done++
+			continue
+		}
+		if !isStaticImageType(fileType) {
+			skipped++
+			done++
+			continue
+		}
+		remaining = append(remaining, remoteTarget{id: id, path: canonPath})
+	}
 
-	for start := 0; start < total; start += batchSize {
+	cursor := int64(0)
+	// outstanding maps an A-side job id back to the B-side image id.
+	// Draining by cursor is idempotent, so the map also de-duplicates
+	// results a reconnected drain would otherwise re-deliver.
+	outstanding := map[string]int64{}
+	submittedAt := map[string]time.Time{}
+
+	for len(remaining) > 0 || len(outstanding) > 0 {
 		if ctx.Err() != nil {
 			return skipped, ctx.Err()
 		}
-		end := start + batchSize
-		if end > total {
-			end = total
-		}
-		batch := ids[start:end]
-		batchNum++
 
-		mgr.Update(done, total, fmt.Sprintf("remote tagging: batch %d/%d", batchNum, batchCount))
+		progressed := false
 
-		requests := make([]BackendImageRequest, 0, len(batch))
-		for _, id := range batch {
-			var canonPath, fileType string
-			if err := database.Read.QueryRowContext(ctx,
-				`SELECT canonical_path, file_type FROM images WHERE id = ?`, id,
-			).Scan(&canonPath, &fileType); err != nil {
-				skipped++
-				done++
+		// 1) Drain completed results. Skipped when nothing is in flight
+		// so the very first iteration doesn't wait a full drain hold.
+		if len(outstanding) > 0 {
+			newCursor, results, err := remote.Drain(ctx, cursor, remoteDrainHold)
+			if err != nil {
+				if ctx.Err() != nil {
+					return skipped, ctx.Err()
+				}
+				// A transient drain failure shouldn't abort the batch;
+				// retry after a short backoff.
+				select {
+				case <-time.After(500 * time.Millisecond):
+				case <-ctx.Done():
+					return skipped, ctx.Err()
+				}
 				continue
 			}
-			if !isStaticImageType(fileType) {
-				skipped++
-				done++
-				continue
-			}
-			requests = append(requests, BackendImageRequest{
-				ID: id, FramePaths: []string{canonPath},
-			})
-		}
-
-		if len(requests) == 0 {
-			continue
-		}
-
-		resp, err := remote.Run(ctx, RunRequest{Images: requests})
-		if err != nil {
-			return skipped + done, fmt.Errorf("batch around image %d: %w", start, err)
-		}
-
-		for _, r := range resp.Results {
-			if r.Err != "" {
-				skipped++
-			} else {
-				if err := storeResults(ctx, database, r.ID, r.Tags, nil, 0); err != nil {
+			cursor = newCursor
+			for _, r := range results {
+				id, ok := outstanding[r.JobID]
+				if !ok {
+					continue // duplicate from a re-drain
+				}
+				delete(outstanding, r.JobID)
+				delete(submittedAt, r.JobID)
+				if r.Err != "" {
+					skipped++
+				} else if err := storeResults(ctx, database, id, r.Tags, nil, 0); err != nil {
+					logx.Warnf("remote tagger: store results for image %d: %v", id, err)
 					skipped++
 				}
+				done++
+				progressed = true
+				mgr.Update(done, total, "remote tagging")
 			}
-			done++
+		}
+
+		// Drop jobs that never completed in time (A-side crash, network
+		// partition); count them skipped so the batch terminates.
+		now := time.Now()
+		for jobID := range outstanding {
+			if at, ok := submittedAt[jobID]; ok && now.Sub(at) > remoteJobTimeout {
+				delete(outstanding, jobID)
+				delete(submittedAt, jobID)
+				skipped++
+				done++
+				progressed = true
+			}
+		}
+
+		// 2) Refill the window up to capacity.
+		for len(outstanding) < capacity && len(remaining) > 0 {
+			target := remaining[0]
+			jobID, err := remote.Submit(ctx, BackendImageRequest{ID: target.id, FramePaths: []string{target.path}})
+			if err != nil {
+				if errors.Is(err, errRemoteQueueFull) {
+					// Queue is full; drain again next iteration.
+					break
+				}
+				// Transient failure: back off and retry the same id.
+				if ctx.Err() != nil {
+					return skipped, ctx.Err()
+				}
+				select {
+				case <-time.After(500 * time.Millisecond):
+				case <-ctx.Done():
+					return skipped, ctx.Err()
+				}
+				break
+			}
+			remaining = remaining[1:]
+			outstanding[jobID] = target.id
+			submittedAt[jobID] = time.Now()
+			progressed = true
+		}
+
+		// 3) Prevent busy-spin: when nothing drained and nothing was
+		// accepted (queue full / transient error), wait before the next
+		// drain so the A-side has time to produce results.
+		if !progressed {
+			select {
+			case <-time.After(200 * time.Millisecond):
+			case <-ctx.Done():
+				return skipped, ctx.Err()
+			}
 		}
 	}
 

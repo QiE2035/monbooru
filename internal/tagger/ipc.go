@@ -352,10 +352,61 @@ func (b *ipcBackend) call(ctx context.Context, req ipcRequest, onProgress func(i
 // reclaim ticker or server shutdown.
 const shortCallTimeout = 30 * time.Second
 
+// maxFrameDataBytes caps the raw frame bytes shipped in a single IPC
+// Run frame. gob adds a per-batch header and a small per-image
+// overhead, so keeping raw payloads under 48 MiB guarantees the
+// encoded frame stays well under maxFrameBytes even with large merged
+// tag maps. A single image that alone exceeds the budget still ships
+// on its own: it either fits in one frame or fails, it is never split
+// mid-image.
+const maxFrameDataBytes uint32 = 48 << 20
+
+// splitRuns partitions a RunRequest into byte-budgeted sub-runs so a
+// large batch of big images never exceeds maxFrameBytes in a single
+// gob frame, while keeping each sub-run large enough for the child's
+// worker pool to parallelise across images (parallel > 1). Splitting
+// per image would leave the child with parallel=1, so the split
+// honours the byte budget first and only falls back to single images
+// for oversized frames. Image order is preserved so merged results
+// stay aligned with the request.
+func splitRuns(req RunRequest) []RunRequest {
+	if len(req.Images) <= 1 {
+		return []RunRequest{req}
+	}
+	var runs []RunRequest
+	var currentImages []BackendImageRequest
+	var budget uint32
+	flush := func() {
+		if len(currentImages) > 0 {
+			sub := req
+			sub.Images = currentImages
+			sub.OnProgress = nil
+			runs = append(runs, sub)
+		}
+	}
+	for _, im := range req.Images {
+		var size uint32
+		for _, fb := range im.FrameBytes {
+			size += uint32(len(fb))
+		}
+		if len(currentImages) > 0 && budget+size > maxFrameDataBytes {
+			flush()
+			currentImages = nil
+			budget = 0
+		}
+		currentImages = append(currentImages, im)
+		budget += size
+	}
+	flush()
+	return runs
+}
+
 // Run sends the batch to the child, forwards every Stream=true
 // progress frame it emits through req.OnProgress, and returns the
-// terminal response. ctx cancellation unwedges the IPC reader and
-// returns ctx.Err to the caller; the next Run respawns.
+// terminal response. The batch is split into byte-budgeted sub-runs
+// (splitRuns); each sub-run is one IPC call. ctx cancellation unwedges
+// the IPC reader and returns ctx.Err to the caller; the next Run
+// respawns.
 func (b *ipcBackend) Run(ctx context.Context, req RunRequest) (RunResponse, error) {
 	wire := req
 	wire.OnProgress = nil
@@ -369,12 +420,8 @@ func (b *ipcBackend) Run(ctx context.Context, req RunRequest) (RunResponse, erro
 		return RunResponse{}, err
 	}
 
-	// Send one IPC call per image so the gob-encoded frame never
-	// exceeds maxFrameBytes regardless of image size.
 	var merged RunResponse
-	for i := range req.Images {
-		sub := wire
-		sub.Images = req.Images[i : i+1]
+	for _, sub := range splitRuns(wire) {
 		var callOnProgress func(int, string)
 		if req.OnProgress != nil {
 			orig := req.OnProgress
@@ -385,14 +432,21 @@ func (b *ipcBackend) Run(ctx context.Context, req RunRequest) (RunResponse, erro
 			return RunResponse{}, err
 		}
 		if resp.Err != "" {
-			merged.Results = append(merged.Results, BackendImageResult{ID: req.Images[i].ID, Err: resp.Err})
+			// A whole sub-run failed; mark every image in it as failed
+			// so the orchestrator's done/skipped accounting still
+			// reaches the batch total.
+			for _, im := range sub.Images {
+				merged.Results = append(merged.Results, BackendImageResult{ID: im.ID, Err: resp.Err})
+			}
 			continue
 		}
 		if resp.Run == nil || len(resp.Run.Results) == 0 {
-			merged.Results = append(merged.Results, BackendImageResult{ID: req.Images[i].ID, Err: "tagger-worker returned empty response"})
+			for _, im := range sub.Images {
+				merged.Results = append(merged.Results, BackendImageResult{ID: im.ID, Err: "tagger-worker returned empty response"})
+			}
 			continue
 		}
-		merged.Results = append(merged.Results, resp.Run.Results[0])
+		merged.Results = append(merged.Results, resp.Run.Results...)
 	}
 	return merged, nil
 }
