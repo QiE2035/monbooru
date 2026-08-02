@@ -684,7 +684,7 @@ var RepoURL = "https://github.com/monbooru/monbooru"
 
 // DocURL is the online documentation URL, set at build time via -ldflags from
 // DOC.md.
-var DocURL = "https://leqwin.github.io/mondocs/index.html"
+var DocURL = "https://monbooru.github.io/mondocs/index.html"
 
 // Variant identifies the build flavour (e.g. "cuda") and is injected at
 // build time via -ldflags from the CUDA Dockerfile. Empty for the default
@@ -855,7 +855,6 @@ func (s *Server) base(r *http.Request, nav, title string) baseData {
 	}
 	galleries := s.galleries()
 	active := readRatingCookie(r)
-	active = cmp.Or(active, "explicit")
 	conn, connVer, ptrReady, ptrSyncing, ptrContrib := s.monloaderStatusSeed()
 	if s.monloaderPaused() {
 		// A paused link renders as paused everywhere and hides the

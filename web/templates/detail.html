@@ -96,7 +96,7 @@
         <button type="button" class="btn-sm btn-view" title="View image (v)"
                 onclick="openLightbox(null, '/images/{{.Image.ID}}/file')">⛶</button>
         {{end}}
-        <a href="/images/{{.Image.ID}}/file" download class="btn-sm" title="Download image">⤓</a>
+        <a href="/images/{{.Image.ID}}/file" download="{{.Filename}}" class="btn-sm" title="Download image">⤓</a>
       </div>
     </div>
   </div>
