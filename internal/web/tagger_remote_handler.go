@@ -81,6 +81,24 @@ func (s *Server) taggerRemoteRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Optional model selection: the B-side may name one enabled tagger
+	// to run instead of the whole set. Unknown names are rejected so a
+	// stale B-side list can never silently fall back to "all".
+	if name := strings.TrimSpace(r.FormValue("tagger_name")); name != "" {
+		found := false
+		for _, t := range taggers {
+			if t.Name == name {
+				taggers = []tagger.TaggerStatus{t}
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeRemoteTaggerError(w, http.StatusBadRequest, "unknown tagger "+strconv.Quote(name))
+			return
+		}
+	}
+
 	// Read cat IDs from the active gallery.
 	cx := s.Active()
 	catIDs := map[string]int64{}
@@ -220,12 +238,16 @@ func (s *Server) taggerRemoteStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	capacity, queued, inflight := tagger.RemoteQueueStatus()
+	s.cfgMu.RLock()
+	taggers := tagger.RemoteTaggersInfo(s.cfg, s.activeName)
+	s.cfgMu.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]int{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"capacity": capacity,
 		"queued":   queued,
 		"inflight": inflight,
+		"taggers":  taggers,
 	})
 }
 

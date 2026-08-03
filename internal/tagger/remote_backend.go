@@ -94,10 +94,12 @@ type remoteDrainedResult struct {
 	Err   string
 }
 
-// Submit uploads a single image and enqueues it on the A-side. It
-// returns the job id; when the A-side queue is full it returns a
+// Submit uploads a single image and enqueues it on the A-side. A
+// non-empty taggerName restricts the run to that one model on the
+// server; empty runs every model the server has enabled. It returns
+// the job id; when the A-side queue is full it returns a
 // *remoteQueueFullError so the caller can drain before refilling.
-func (b *remoteBackend) Submit(ctx context.Context, image BackendImageRequest) (string, error) {
+func (b *remoteBackend) Submit(ctx context.Context, image BackendImageRequest, taggerName string) (string, error) {
 	var buf bytes.Buffer
 	mp := multipart.NewWriter(&buf)
 
@@ -128,6 +130,17 @@ func (b *remoteBackend) Submit(ctx context.Context, image BackendImageRequest) (
 			f.Close()
 		}
 		return "", errors.New("unsupported image type")
+	}
+	// Written before the file part so a server-side parser sees a
+	// plain form value; the field is optional on the wire, keeping the
+	// protocol backward compatible with older servers.
+	if taggerName != "" {
+		if err := mp.WriteField("tagger_name", taggerName); err != nil {
+			if f != nil {
+				f.Close()
+			}
+			return "", fmt.Errorf("write tagger field: %w", err)
+		}
 	}
 	part, err := mp.CreateFormFile("images", fmt.Sprintf("%d%s", image.ID, extForContentType(contentType)))
 	if err != nil {

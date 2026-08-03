@@ -48,6 +48,22 @@ type TaggerStatus struct {
 	config.TaggerInstance
 	Available bool
 	Reason    string
+	// RemoteModel names the specific model a paired server should run
+	// when this status is the synthetic "remote" entry; empty means
+	// "every enabled model on the server". Set by the web layer when
+	// the operator picks one model in the auto-tag dialog; never
+	// persisted in TOML.
+	RemoteModel string
+}
+
+// RemoteTaggerInfo describes one tagger a paired server can run,
+// advertised through the remote-tagger protocol so a B-side can pick
+// which model to submit against. Name matches the server's tagger
+// subfolder / TOML name; Description is the catalog blurb when one
+// exists and empty otherwise.
+type RemoteTaggerInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // DiscoverTaggers merges tagger subfolders under paths.model_path with
@@ -157,6 +173,49 @@ func EnabledTaggersForGallery(cfg *config.Config, gallery string) []TaggerStatus
 			continue
 		}
 		out = append(out, t)
+	}
+	// A paired remote server is offered as one more "tagger" so the
+	// auto-tag dialog can route the job to it; RemoteModel picks a
+	// specific model on that server. Skip when a local tagger already
+	// claims the name.
+	if cfg.Tagger.RemoteClient.URL != "" && cfg.Tagger.RemoteClient.Token != "" {
+		claimed := false
+		for _, t := range out {
+			if t.Name == "remote" {
+				claimed = true
+				break
+			}
+		}
+		if !claimed {
+			out = append(out, TaggerStatus{
+				TaggerInstance: config.TaggerInstance{
+					Name:    "remote",
+					Enabled: true,
+				},
+				Available: true,
+			})
+		}
+	}
+	return out
+}
+
+// RemoteTaggersInfo lists every tagger a server would run for the
+// named gallery right now (enabled + available + applicable). Used to
+// advertise the model set to paired B-sides via remote-status; the
+// list always follows the server's own configuration, so a B-side can
+// only ever request models the operator actually enabled.
+func RemoteTaggersInfo(cfg *config.Config, gallery string) []RemoteTaggerInfo {
+	enabled := EnabledTaggersForGallery(cfg, gallery)
+	if len(enabled) == 0 {
+		return nil
+	}
+	desc := map[string]string{}
+	for _, e := range LoadCatalog(cfg.Paths.ModelPath) {
+		desc[e.Name] = e.Description
+	}
+	out := make([]RemoteTaggerInfo, 0, len(enabled))
+	for _, t := range enabled {
+		out = append(out, RemoteTaggerInfo{Name: t.Name, Description: desc[t.Name]})
 	}
 	return out
 }

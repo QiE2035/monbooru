@@ -225,6 +225,16 @@ type remoteTarget struct {
 // batches. Draining by cursor is idempotent, so a reconnecting B-side
 // resumes without loss or duplication.
 func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, ids []int64, taggers []TaggerStatus, mgr *jobs.Manager, provider string, mangaCacheDir string) (int, error) {
+	// The B-side may restrict the run to one model on the A-side; the
+	// synthetic "remote" TaggerStatus carries the chosen name. Empty
+	// means every model the server has enabled.
+	remoteModel := ""
+	for _, t := range taggers {
+		if t.Name == "remote" {
+			remoteModel = t.RemoteModel
+			break
+		}
+	}
 	remote := newRemoteBackend(cfg.Tagger.RemoteClient.URL, cfg.Tagger.RemoteClient.Token)
 	// Remote tagging is the last big heap consumer of the job; give the
 	// OS the Go heap back when it finishes so a long batch doesn't stay
@@ -368,7 +378,7 @@ func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, 
 		// 2) Refill the window up to capacity.
 		for len(outstanding) < capacity && len(remaining) > 0 {
 			target := remaining[0]
-			jobID, err := remote.Submit(ctx, BackendImageRequest{ID: target.id, FramePaths: []string{target.path}})
+			jobID, err := remote.Submit(ctx, BackendImageRequest{ID: target.id, FramePaths: []string{target.path}}, remoteModel)
 			if err != nil {
 				if errors.Is(err, errRemoteQueueFull) {
 					// Queue is full; drain again next iteration.

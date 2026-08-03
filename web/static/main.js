@@ -1168,6 +1168,18 @@ document.body.addEventListener('change', function(e) {
   if (form) ptrContribRefresh(form);
 });
 
+// Auto-tag dialogs: picking the synthetic "remote" tagger enables the
+// paired server's model dropdown; any other pick disables it. The
+// dropdown is htmx-loaded and keeps its list across dialog opens.
+document.body.addEventListener('change', function(e) {
+  var radio = e.target;
+  if (!radio || radio.name !== 'tagger_name') return;
+  var form = radio.closest && radio.closest('form');
+  if (!form) return;
+  var model = form.querySelector('select[name="remote_tagger_name"]');
+  if (model) model.disabled = radio.value !== 'remote';
+});
+
 document.addEventListener('click', function(e) {
   if (!e.target.closest) return;
   var form = e.target.closest('#ptr-contrib-form');

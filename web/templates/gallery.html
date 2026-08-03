@@ -156,7 +156,9 @@
     <input type="hidden" id="batch-autotag-scope">
     <div class="field">
       <label style="display:block"><input type="radio" name="tagger_name" value="" checked> All enabled taggers</label>
-      {{range .EnabledTaggers}}<label style="display:block"><input type="radio" name="tagger_name" value="{{.Name}}"> {{.Name}}</label>{{end}}
+      {{range .EnabledTaggers}}<label style="display:block"><input type="radio" name="tagger_name" value="{{.Name}}"> {{if eq .Name "remote"}}Remote server{{else}}{{.Name}}{{end}}</label>{{end}}
+      <select name="remote_tagger_name" class="upload-wide-input" disabled
+              hx-get="/internal/remote-taggers" hx-trigger="load" hx-swap="innerHTML"></select>
     </div>
     <div id="batch-autotag-flash"></div>
     <div class="dialog-actions">
@@ -711,11 +713,17 @@ function confirmBatchAutotag() {
   var form = document.getElementById('batch-autotag-form');
   if (!form) return;
   var tagger = (form.querySelector('input[name="tagger_name"]:checked') || {}).value || '';
+  var params = ['tagger_name=' + encodeURIComponent(tagger)];
+  if (tagger === 'remote') {
+    var modelEl = form.querySelector('select[name="remote_tagger_name"]');
+    var model = (modelEl && !modelEl.disabled) ? modelEl.value : '';
+    params.push('remote_tagger_name=' + encodeURIComponent(model));
+  }
   // Auto-tag does not need _pendingGalleryReload (the job updates tags
   // out-of-band and the user often wants to keep watching the grid).
   // runBatchOp clears selection on selection scope by default.
   confirmBatchSimple('batch-autotag', '/internal/autotag',
-    ['tagger_name=' + encodeURIComponent(tagger)], 'Auto-tag failed.');
+    params, 'Auto-tag failed.');
 }
 
 // Open the Add-tags dialog scoped to the current search or the checked

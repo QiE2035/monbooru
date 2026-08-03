@@ -299,7 +299,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 
 	// Optionally kick off auto-tagging on the newly uploaded images.
 	if autotagAfter && len(addedIDs) > 0 && tagger.IsAvailable(s.cfg) {
-		selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName)
+		selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName, r.FormValue("remote_tagger_name"))
 		if selErr != nil {
 			fmt.Fprintf(&msg, " (autotag skipped: %s)", html.EscapeString(selErr.Error()))
 		} else if err := s.jobs.Start(models.JobTypeAutotag); err != nil {
@@ -341,7 +341,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 	scope := strings.TrimSpace(r.FormValue("scope"))
 	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
 
-	selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName)
+	selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName, r.FormValue("remote_tagger_name"))
 	if selErr != nil {
 		externalErr(w, r, selErr.Error(), http.StatusBadRequest)
 		return
@@ -425,7 +425,7 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 	}
 	taggerName := strings.TrimSpace(r.FormValue("tagger_name"))
 
-	selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName)
+	selected, selErr := selectTaggers(s.cfg, s.activeName, taggerName, r.FormValue("remote_tagger_name"))
 	if selErr != nil {
 		externalErr(w, r, selErr.Error(), http.StatusBadRequest)
 		return
@@ -477,16 +477,23 @@ func (s *Server) autotagImage(w http.ResponseWriter, r *http.Request) {
 // selectTaggers resolves a user-supplied tagger_name to the concrete
 // TaggerStatus list to run on the named gallery. Empty name means
 // every tagger enabled + available + applicable to that gallery.
-// Returns an error if the requested tagger is not enabled, unavailable,
-// or restricted to a different gallery.
-func selectTaggers(cfg *config.Config, gallery, name string) ([]tagger.TaggerStatus, error) {
+// remoteModel is the optional model the paired server should run when
+// the synthetic "remote" entry is selected; it rides along on the
+// returned status so the remote submit path can forward it. Returns an
+// error if the requested tagger is not enabled, unavailable, or
+// restricted to a different gallery.
+func selectTaggers(cfg *config.Config, gallery, name, remoteModel string) ([]tagger.TaggerStatus, error) {
 	enabled := tagger.EnabledTaggersForGallery(cfg, gallery)
 	if name == "" {
 		return enabled, nil
 	}
-	for _, t := range enabled {
+	for i := range enabled {
+		t := &enabled[i]
 		if t.Name == name {
-			return []tagger.TaggerStatus{t}, nil
+			if name == "remote" {
+				t.RemoteModel = remoteModel
+			}
+			return []tagger.TaggerStatus{*t}, nil
 		}
 	}
 	return nil, fmt.Errorf("tagger %q is not enabled or available for gallery %q", name, gallery)

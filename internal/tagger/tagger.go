@@ -132,6 +132,25 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 	if len(taggers) == 0 {
 		return 0, fmt.Errorf("no tagger is enabled or available")
 	}
+	// A paired remote server is offered as a synthetic "remote" entry
+	// alongside the local taggers; split it out so the local backend
+	// only ever sees real models. A run that is purely remote (a noop
+	// install or an operator who disabled every local tagger) skips
+	// the local machinery entirely.
+	var local []TaggerStatus
+	for _, t := range taggers {
+		if t.Name == "remote" {
+			continue
+		}
+		local = append(local, t)
+	}
+	remoteConfigured := cfg.Tagger.RemoteClient.URL != "" && cfg.Tagger.RemoteClient.Token != ""
+	if len(local) == 0 {
+		if !remoteConfigured {
+			return 0, fmt.Errorf("no tagger is enabled or available")
+		}
+		return runRemoteTaggers(ctx, database, cfg, ids, taggers, mgr, provider, mangaCacheDir)
+	}
 	backend := activeBackend()
 	if backend == nil {
 		return 0, fmt.Errorf("auto-tagger disabled (no backend registered)")
@@ -165,7 +184,7 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 	// `character:hakurei_reimu` instead of going under general.
 	inferredCats := map[string]int64{}
 	hasSingleGeneral := false
-	for _, t := range taggers {
+	for _, t := range local {
 		profile, perr := ResolveProfile(cfg.Paths.ModelPath, t.Name, t.TagsFile)
 		if perr == nil && profile.CategoryScheme == "single_general" {
 			hasSingleGeneral = true
@@ -254,8 +273,8 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 		mgr.Update(int(completed.Load()), total, out)
 	}
 
-	taggerNames := make([]string, 0, len(taggers))
-	for _, t := range taggers {
+	taggerNames := make([]string, 0, len(local))
+	for _, t := range local {
 		taggerNames = append(taggerNames, t.Name)
 	}
 
@@ -300,7 +319,7 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 
 	resp, err := backend.Run(ctx, RunRequest{
 		Cfg:            cfg,
-		Taggers:        taggers,
+		Taggers:        local,
 		Provider:       provider,
 		CatIDs:         catIDs,
 		GeneralCatID:   generalCatID,
@@ -342,6 +361,19 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 	// Final status update so the progress bar reaches total when the
 	// last image is the cancelled / skipped tail.
 	mgr.Update(int(completed.Load()), total, "tagging images")
+
+	// The selected set also named the paired remote server; push the
+	// same ids through it after the local pass so "All enabled
+	// taggers" means every local model plus every model the server
+	// enables. The progress bar briefly rewinds because the remote
+	// pass re-counts the same total.
+	if remoteConfigured {
+		remoteSkipped, remoteErr := runRemoteTaggers(ctx, database, cfg, ids, taggers, mgr, provider, mangaCacheDir)
+		skipped.Add(int64(remoteSkipped))
+		if remoteErr != nil {
+			return int(skipped.Load()), remoteErr
+		}
+	}
 	return int(skipped.Load()), ctx.Err()
 }
 

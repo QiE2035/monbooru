@@ -619,6 +619,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /internal/remote-tagger/status", s.remoteTaggerPairStatus)
 	mux.HandleFunc("POST /settings/remote-tagger/pair", s.remoteTaggerPairPost)
 	mux.HandleFunc("POST /settings/remote-tagger/unpair", s.remoteTaggerUnpairPost)
+	mux.HandleFunc("GET /internal/remote-taggers", s.remoteTaggerModelsFragment)
 	mux.HandleFunc("GET /internal/remote-tagger/pending", s.remoteTaggerPendingFragment)
 	mux.HandleFunc("POST /settings/remote-tagger/pair/{id}/approve", s.remoteTaggerPendingApprove)
 	mux.HandleFunc("POST /settings/remote-tagger/pair/{id}/deny", s.remoteTaggerPendingDeny)

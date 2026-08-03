@@ -16,7 +16,7 @@ func buildSpec(baseURL string) map[string]any {
 		"info": map[string]any{
 			"title":       "Monbooru API",
 			"description": "REST API for monbooru image library",
-			"version":     "1.1.0",
+			"version":     "1.2.0",
 		},
 		"servers": []map[string]any{
 			{"url": baseURL + "/api/v1", "description": "This server"},
@@ -247,6 +247,94 @@ func buildSpec(baseURL string) map[string]any {
 						"version_child":     map[string]any{"type": "integer", "nullable": true, "description": "id of the newer revision; null when this image is the chain leaf."},
 						"derivative_source": map[string]any{"type": "integer", "nullable": true, "description": "id of the source image when this image is a derivative; null otherwise."},
 						"derivatives":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
+					},
+				},
+				"RemoteTaggerInfo": map[string]any{
+					"type":        "object",
+					"description": "One tagger a paired server currently enables, advertised through remote-status so a B-side can pick which model to submit against. The list always mirrors the server's own configuration.",
+					"properties": map[string]any{
+						"name":        map[string]any{"type": "string", "description": "Tagger subfolder / TOML name on the server"},
+						"description": map[string]any{"type": "string", "description": "Catalog blurb when one exists; empty otherwise"},
+					},
+				},
+				"RemoteStatus": map[string]any{
+					"type":        "object",
+					"description": "A-side queue watermarks plus the model list the caller may request.",
+					"properties": map[string]any{
+						"capacity": map[string]any{"type": "integer", "description": "Max concurrent in-flight images the A-side queue accepts"},
+						"queued":   map[string]any{"type": "integer"},
+						"inflight": map[string]any{"type": "integer"},
+						"taggers":  map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/RemoteTaggerInfo"}, "description": "Enabled taggers for the server's active gallery. Absent on servers running an older protocol."},
+					},
+				},
+				"RemoteRunResponse": map[string]any{
+					"type":        "object",
+					"description": "Accepted remote submission. The job runs asynchronously; results are collected via GET /tagger/remote-results.",
+					"properties": map[string]any{
+						"job_id": map[string]any{"type": "string"},
+					},
+				},
+				"RemoteQueueFullError": map[string]any{
+					"type":        "object",
+					"description": "Returned with 429 when the A-side queue is at capacity; the watermarks let the caller size its sliding window.",
+					"properties": map[string]any{
+						"error":    map[string]any{"type": "string"},
+						"capacity": map[string]any{"type": "integer"},
+						"queued":   map[string]any{"type": "integer"},
+						"inflight": map[string]any{"type": "integer"},
+					},
+				},
+				"RemoteTagEntry": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"name":        map[string]any{"type": "string"},
+						"category_id": map[string]any{"type": "integer"},
+						"score":       map[string]any{"type": "number", "format": "float"},
+						"tagger_name": map[string]any{"type": "string", "description": "Which model on the server produced the tag"},
+					},
+				},
+				"RemoteDrainResult": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"job_id": map[string]any{"type": "string"},
+						"tags":   map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/RemoteTagEntry"}, "nullable": true, "description": "Null when the job was cancelled or interrupted without a result"},
+						"error":  map[string]any{"type": "string", "description": "Per-image inference failure reason; empty on success"},
+					},
+				},
+				"RemoteDrainResponse": map[string]any{
+					"type":        "object",
+					"description": "One drain page. Draining from the returned cursor is idempotent, so a reconnecting peer resumes without loss or duplication.",
+					"properties": map[string]any{
+						"cursor":  map[string]any{"type": "integer"},
+						"results": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/RemoteDrainResult"}},
+					},
+				},
+				"RemoteCancelRequest": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"job_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Job ids to cancel; ignored when all is true"},
+						"all":     map[string]any{"type": "boolean", "description": "Cancel every queued and in-flight job of the calling peer"},
+					},
+				},
+				"RemoteCancelResponse": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"cancelled": map[string]any{"type": "integer"},
+					},
+				},
+				"RemoteJob": map[string]any{
+					"type":        "object",
+					"description": "One queued or in-flight remote job of the calling peer. Status is \"queued\" while waiting for a dispatcher slot and \"running\" once a batch picked it up.",
+					"properties": map[string]any{
+						"id":         map[string]any{"type": "string"},
+						"status":     map[string]any{"type": "string"},
+						"created_at": map[string]any{"type": "string", "format": "date-time"},
+					},
+				},
+				"RemoteJobs": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"jobs": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/RemoteJob"}},
 					},
 				},
 			},
@@ -872,6 +960,89 @@ func buildSpec(baseURL string) map[string]any {
 					"operationId": "listGalleries",
 					"responses": map[string]any{
 						"200": map[string]any{"description": "Galleries with counts and the active flag", "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/Gallery"}}}}},
+					},
+				},
+			},
+			"/tagger/remote-run": map[string]any{
+				"post": map[string]any{
+					"summary":     "Submit one image for remote tagging",
+					"operationId": "remoteRun",
+					"description": "Paired-server protocol used by the remote-tagger client: uploads one image and enqueues it on this server's tagger queue. Runs asynchronously; collect results via GET /tagger/remote-results. Requires a token with the write or tag scope issued to the paired instance.",
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"multipart/form-data": map[string]any{
+								"schema": map[string]any{
+									"type":     "object",
+									"required": []string{"images"},
+									"properties": map[string]any{
+										"images":      map[string]any{"type": "string", "format": "binary", "description": "One image (jpeg, png, webp, or gif)"},
+										"tagger_name": map[string]any{"type": "string", "description": "Optional model to run instead of every enabled model. Must be one of the names advertised by GET /tagger/remote-status; unknown names are rejected with 400."},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"202": resp("Enqueued; inference runs asynchronously", "#/components/schemas/RemoteRunResponse"),
+						"400": resp("Exactly one image required, unsupported image type, or unknown tagger_name", "#/components/schemas/Error"),
+						"401": resp("Missing or invalid token", "#/components/schemas/Error"),
+						"403": resp("Remote tagging not enabled on this server", "#/components/schemas/Error"),
+						"429": resp("Queue at capacity; back off until a drain frees slots", "#/components/schemas/RemoteQueueFullError"),
+						"500": resp("Failed to enqueue image", "#/components/schemas/Error"),
+						"503": resp("No enabled taggers on this server", "#/components/schemas/Error"),
+					},
+				},
+			},
+			"/tagger/remote-results": map[string]any{
+				"get": map[string]any{
+					"summary":     "Drain completed remote tagging results",
+					"operationId": "remoteResults",
+					"description": "Long-poll (up to ~5s) for results newer than the cursor. Idempotent: re-draining from the same cursor yields the same results, so a reconnecting peer resumes without loss or duplication.",
+					"parameters": []map[string]any{
+						queryParam("after", "Drain cursor; omit or 0 to start from the beginning"),
+					},
+					"responses": map[string]any{
+						"200": resp("Results newer than the cursor (possibly empty)", "#/components/schemas/RemoteDrainResponse"),
+						"400": resp("Invalid cursor", "#/components/schemas/Error"),
+						"401": resp("Missing or invalid token", "#/components/schemas/Error"),
+					},
+				},
+			},
+			"/tagger/remote-status": map[string]any{
+				"get": map[string]any{
+					"summary":     "Remote tagger queue status and model list",
+					"operationId": "remoteStatus",
+					"description": "Returns the queue watermarks a paired client sizes its sliding window against, plus the taggers it may request by name in POST /tagger/remote-run.",
+					"responses": map[string]any{
+						"200": resp("Queue watermarks and advertised taggers", "#/components/schemas/RemoteStatus"),
+						"401": resp("Missing or invalid token", "#/components/schemas/Error"),
+					},
+				},
+			},
+			"/tagger/remote-cancel": map[string]any{
+				"post": map[string]any{
+					"summary":     "Cancel queued and in-flight remote jobs",
+					"operationId": "remoteCancel",
+					"description": "Aborts the calling peer's jobs - all of them when all is true, otherwise just the listed ids. Cancelled jobs complete with a null result so the peer's drain advances immediately.",
+					"requestBody": jsonBodySchema(true, map[string]any{
+						"$ref": "#/components/schemas/RemoteCancelRequest",
+					}),
+					"responses": map[string]any{
+						"200": resp("Number of jobs cancelled", "#/components/schemas/RemoteCancelResponse"),
+						"401": resp("Missing or invalid token", "#/components/schemas/Error"),
+						"500": resp("Failed to cancel jobs", "#/components/schemas/Error"),
+					},
+				},
+			},
+			"/tagger/remote-jobs": map[string]any{
+				"get": map[string]any{
+					"summary":     "List the caller's remote tagging jobs",
+					"operationId": "remoteJobs",
+					"description": "Lists the calling peer's queued and in-flight jobs (oldest first) for debugging and cancellation workflows.",
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Queued and in-flight jobs", "content": jsonContent("#/components/schemas/RemoteJobs")},
+						"401": resp("Missing or invalid token", "#/components/schemas/Error"),
 					},
 				},
 			},
