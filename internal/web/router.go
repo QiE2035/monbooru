@@ -607,6 +607,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/tagger/remote-run", s.taggerRemoteRun)
 	mux.HandleFunc("GET /api/v1/tagger/remote-results", s.taggerRemoteResults)
 	mux.HandleFunc("GET /api/v1/tagger/remote-status", s.taggerRemoteStatus)
+	mux.HandleFunc("POST /api/v1/tagger/remote-cancel", s.taggerRemoteCancel)
+	mux.HandleFunc("GET /api/v1/tagger/remote-jobs", s.taggerRemoteJobs)
 	mux.HandleFunc("GET /internal/monloader-pairing", s.monloaderPairingFragment)
 	mux.HandleFunc("POST /settings/monloader/pair/{id}/approve", s.monloaderPairApprove)
 	mux.HandleFunc("POST /settings/monloader/pair/{id}/deny", s.monloaderPairDeny)
@@ -621,6 +623,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/remote-tagger/pair/{id}/approve", s.remoteTaggerPendingApprove)
 	mux.HandleFunc("POST /settings/remote-tagger/pair/{id}/deny", s.remoteTaggerPendingDeny)
 	mux.HandleFunc("POST /settings/remote-tagger/admin/unpair", s.remoteTaggerAdminUnpairPost)
+	mux.HandleFunc("GET /internal/tagger/remote-queue", s.remoteTaggerQueueFragment)
+	mux.HandleFunc("POST /settings/tagger/remote-cancel", s.remoteTaggerQueueCancelPost)
 
 	api.New(s.cfg, &s.cfgMu, s.jobs, s.apiResolver, Version).Mount(mux)
 

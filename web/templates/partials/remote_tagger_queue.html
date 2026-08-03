@@ -1,0 +1,42 @@
+{{define "partials/remote_tagger_queue.html"}}
+<div id="remote-tagger-queue" hx-get="/internal/tagger/remote-queue" hx-trigger="every 3s" hx-swap="outerHTML">
+  {{$csrf := .CSRFToken}}
+  <h4>Remote tagger queue</h4>
+  <p class="field-hint">
+    {{.Queued}} queued · {{.Inflight}} running · capacity {{.Capacity}}
+    {{if or .Queued .Inflight}}
+    <form hx-post="/settings/tagger/remote-cancel" hx-target="#remote-tagger-queue" hx-swap="outerHTML"
+          hx-confirm="Cancel all queued and running remote tagging jobs?" style="display:inline">
+      <input type="hidden" name="_csrf" value="{{$csrf}}">
+      <input type="hidden" name="all" value="1">
+      <button type="submit" class="btn-sm btn-danger">Cancel all</button>
+    </form>
+    {{end}}
+  </p>
+  {{if .RemoteJobs}}
+  <div class="table-scroll">
+  <table class="gallery-table">
+    <thead><tr><th>Job</th><th>Status</th><th>Submitted</th><th></th></tr></thead>
+    <tbody>
+      {{range .RemoteJobs}}
+      <tr>
+        <td><code>{{printf "%.8s" .ID}}</code></td>
+        <td>{{if eq .Status "running"}}running{{else}}queued{{end}}</td>
+        <td>{{.CreatedAt}}</td>
+        <td>
+          <form hx-post="/settings/tagger/remote-cancel" hx-target="#remote-tagger-queue" hx-swap="outerHTML" style="display:inline">
+            <input type="hidden" name="_csrf" value="{{$csrf}}">
+            <input type="hidden" name="job_id" value="{{.ID}}">
+            <button type="submit" class="btn-sm">Cancel</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}
+  <p class="field-hint">No remote tagging jobs queued or running.</p>
+  {{end}}
+</div>
+{{end}}

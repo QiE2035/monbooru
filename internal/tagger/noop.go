@@ -69,6 +69,13 @@ func SubmitRemoteImage(_ context.Context, _ RemoteRunParams, _ BackendImageReque
 // RemoteQueueStatus is a no-op stub on the non-tagger build.
 func RemoteQueueStatus() (int, int, int) { return 0, 0, 0 }
 
+// RemoteCancelJobs is a no-op stub on the non-tagger build; there is
+// no local queue to cancel.
+func RemoteCancelJobs(_ string, _ []string, _ bool) (int, error) { return 0, nil }
+
+// RemoteListJobs is a no-op stub on the non-tagger build.
+func RemoteListJobs(_ string) []RemoteJobInfo { return nil }
+
 // RemoteDrainResults is a no-op stub on the non-tagger build.
 func RemoteDrainResults(_ string, _ int64, _ time.Duration) (int64, []RemoteDrainedResult, error) {
 	return 0, nil, nil

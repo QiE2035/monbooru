@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"runtime/debug"
 	"time"
 
@@ -256,6 +259,25 @@ func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, 
 			done++
 			continue
 		}
+		// The DB's file_type reflects what ingest accepted; the file
+		// itself may still be something the remote tagger cannot use
+		// (content swapped after ingest, a HEIC masquerading under a
+		// webp name, a missing file). Sniff the header here so such
+		// images are skipped locally instead of being pushed to the
+		// A-side, which would reject them and burn a retry cycle.
+		head, err := readFileHead(canonPath)
+		if err != nil {
+			logx.Warnf("remote tagger: skip image %d: cannot read file: %v", id, err)
+			skipped++
+			done++
+			continue
+		}
+		if detectImageContentType(head) == "" {
+			logx.Warnf("remote tagger: skip image %d: unsupported content (only jpeg, png, webp, gif accepted)", id)
+			skipped++
+			done++
+			continue
+		}
 		remaining = append(remaining, remoteTarget{id: id, path: canonPath})
 	}
 
@@ -268,6 +290,7 @@ func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, 
 
 	for len(remaining) > 0 || len(outstanding) > 0 {
 		if ctx.Err() != nil {
+			notifyRemoteCancel(remote, keysOf(outstanding))
 			return skipped, ctx.Err()
 		}
 
@@ -279,6 +302,7 @@ func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, 
 			newCursor, results, err := remote.Drain(ctx, cursor, remoteDrainHold)
 			if err != nil {
 				if ctx.Err() != nil {
+					notifyRemoteCancel(remote, keysOf(outstanding))
 					return skipped, ctx.Err()
 				}
 				// A transient drain failure shouldn't abort the batch;
@@ -286,6 +310,7 @@ func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, 
 				select {
 				case <-time.After(500 * time.Millisecond):
 				case <-ctx.Done():
+					notifyRemoteCancel(remote, keysOf(outstanding))
 					return skipped, ctx.Err()
 				}
 				continue
@@ -299,7 +324,16 @@ func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, 
 				delete(outstanding, r.JobID)
 				delete(submittedAt, r.JobID)
 				if r.Err != "" {
+					// The A-side reports per-image inference failures
+					// (e.g. an undecodable upload); surface the reason
+					// instead of silently counting the image skipped.
+					logx.Warnf("remote tagger: image %d failed: %s", id, r.Err)
 					skipped++
+				} else if r.Tags == nil {
+					// Cancelled or interrupted on the A-side; nothing
+					// to store. Mirrors RunWithTaggers' Tags==nil
+					// sentinel, so a cancelled job is neither stored
+					// nor counted as a failure.
 				} else if err := storeResults(ctx, database, id, r.Tags, nil, 0); err != nil {
 					logx.Warnf("remote tagger: store results for image %d: %v", id, err)
 					skipped++
@@ -311,16 +345,24 @@ func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, 
 		}
 
 		// Drop jobs that never completed in time (A-side crash, network
-		// partition); count them skipped so the batch terminates.
+		// partition); count them skipped so the batch terminates. The
+		// A-side is told to drop them too so it stops tagging images
+		// nobody will consume.
 		now := time.Now()
+		var timedOut []string
 		for jobID := range outstanding {
 			if at, ok := submittedAt[jobID]; ok && now.Sub(at) > remoteJobTimeout {
+				timedOut = append(timedOut, jobID)
+				logx.Warnf("remote tagger: job %s timed out after %s; skipping image %d", jobID, remoteJobTimeout, outstanding[jobID])
 				delete(outstanding, jobID)
 				delete(submittedAt, jobID)
 				skipped++
 				done++
 				progressed = true
 			}
+		}
+		if len(timedOut) > 0 {
+			notifyRemoteCancel(remote, timedOut)
 		}
 
 		// 2) Refill the window up to capacity.
@@ -332,13 +374,35 @@ func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, 
 					// Queue is full; drain again next iteration.
 					break
 				}
+				var rejected *remoteSubmitRejectedError
+				if errors.As(err, &rejected) {
+					if rejected.status == http.StatusBadRequest {
+						// The A-side rejected this image outright (e.g.
+						// an unsupported format); retrying would loop
+						// forever on the same file, so count it skipped
+						// and move on to the next image.
+						logx.Warnf("remote tagger: image %d rejected by A-side: %s", target.id, rejected.body)
+						remaining = remaining[1:]
+						skipped++
+						done++
+						progressed = true
+						mgr.Update(done, total, "remote tagging")
+						continue
+					}
+					// Authentication or configuration failures (401/403)
+					// affect every image; fail the whole job instead of
+					// spinning on retries.
+					return skipped, fmt.Errorf("remote tagger: submission rejected with %d: %s", rejected.status, rejected.body)
+				}
 				// Transient failure: back off and retry the same id.
 				if ctx.Err() != nil {
+					notifyRemoteCancel(remote, keysOf(outstanding))
 					return skipped, ctx.Err()
 				}
 				select {
 				case <-time.After(500 * time.Millisecond):
 				case <-ctx.Done():
+					notifyRemoteCancel(remote, keysOf(outstanding))
 					return skipped, ctx.Err()
 				}
 				break
@@ -356,6 +420,7 @@ func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, 
 			select {
 			case <-time.After(200 * time.Millisecond):
 			case <-ctx.Done():
+				notifyRemoteCancel(remote, keysOf(outstanding))
 				return skipped, ctx.Err()
 			}
 		}
@@ -363,6 +428,44 @@ func runRemoteTaggers(ctx context.Context, database *db.DB, cfg *config.Config, 
 
 	mgr.Update(done, total, "remote tagging: done")
 	return skipped, nil
+}
+
+// notifyRemoteCancel best-effort tells the A-side to drop the given
+// jobs so it stops tagging images nobody will consume. Called when the
+// local job is cancelled or a submitted job times out; it never blocks
+// the caller for long and failures are only logged.
+func notifyRemoteCancel(remote *remoteBackend, jobIDs []string) {
+	if len(jobIDs) == 0 {
+		return
+	}
+	// The job context may already be cancelled at this point, so the
+	// notification gets its own short deadline instead.
+	nctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := remote.Cancel(nctx, jobIDs, false); err != nil {
+		logx.Warnf("remote tagger: notify A-side cancel for %d job(s): %v", len(jobIDs), err)
+	}
+}
+
+// keysOf returns the keys of m in arbitrary order.
+func keysOf(m map[string]int64) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// readFileHead reads up to 12 bytes from path for content sniffing.
+func readFileHead(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	head := make([]byte, 12)
+	n, _ := io.ReadFull(f, head)
+	return head[:n], nil
 }
 
 func isStaticImageType(ft string) bool {

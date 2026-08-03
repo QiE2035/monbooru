@@ -8,6 +8,7 @@ import (
 
 	"github.com/monbooru/monbooru/internal/config"
 	"github.com/monbooru/monbooru/internal/logx"
+	"github.com/monbooru/monbooru/internal/tagger"
 )
 
 // remoteTaggerPairingFragment renders the remote tagger pairing panel.
@@ -170,8 +171,48 @@ func (s *Server) remoteTaggerAdminViewData(r *http.Request) map[string]any {
 	return map[string]any{
 		"Pending":   s.pairs.listPendingByApp("remote_tagger"),
 		"Paired":    s.pairedWith("remote_tagger"),
+		"Queue":     s.remoteTaggerQueueViewData(r),
 		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
 	}
+}
+
+// remoteTaggerQueueViewData builds the remote queue panel data. Jobs
+// are listed across every paired token since the local operator owns
+// all of them.
+func (s *Server) remoteTaggerQueueViewData(r *http.Request) map[string]any {
+	capacity, queued, inflight := tagger.RemoteQueueStatus()
+	return map[string]any{
+		"Capacity":   capacity,
+		"Queued":     queued,
+		"Inflight":   inflight,
+		"RemoteJobs": tagger.RemoteListJobs(""),
+		"CSRFToken":  s.csrfToken(sessionFromContext(r.Context())),
+	}
+}
+
+// remoteTaggerQueueFragment is the htmx poll target for the remote
+// queue panel on the Settings page. It re-renders the queue state and
+// job list so an operator can see and cancel in-flight work.
+func (s *Server) remoteTaggerQueueFragment(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, "partials/remote_tagger_queue.html", s.remoteTaggerQueueViewData(r))
+}
+
+// remoteTaggerQueueCancelPost cancels queued and in-flight remote
+// jobs from the local operator UI. A job_id form value cancels one
+// job; all=1 cancels every job across all peers. The response
+// re-renders the queue panel with the updated state.
+func (s *Server) remoteTaggerQueueCancelPost(w http.ResponseWriter, r *http.Request) {
+	if !parseFormOK(w, r) {
+		return
+	}
+	jobID := strings.TrimSpace(r.FormValue("job_id"))
+	all := r.FormValue("all") == "1"
+	jobIDs := []string{}
+	if jobID != "" {
+		jobIDs = []string{jobID}
+	}
+	tagger.RemoteCancelJobs("", jobIDs, all || jobID != "")
+	s.renderTemplate(w, "partials/remote_tagger_queue.html", s.remoteTaggerQueueViewData(r))
 }
 
 func (s *Server) remoteTaggerPendingFragment(w http.ResponseWriter, r *http.Request) {

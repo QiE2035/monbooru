@@ -111,6 +111,7 @@ func (s *Server) taggerRemoteRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if detectMultipartImageType(data) == "" {
+		logx.Warnf("remote-tagger: rejected %d-byte upload from peer: unsupported image type (only jpeg, png, webp, gif accepted)", len(data))
 		writeRemoteTaggerError(w, http.StatusBadRequest, "unsupported image type (only jpeg, png, webp, gif accepted)")
 		return
 	}
@@ -226,6 +227,52 @@ func (s *Server) taggerRemoteStatus(w http.ResponseWriter, r *http.Request) {
 		"queued":   queued,
 		"inflight": inflight,
 	})
+}
+
+// taggerRemoteCancel handles POST /api/v1/tagger/remote-cancel. It
+// aborts the calling peer's queued and in-flight jobs - all of them
+// when "all" is true, otherwise just the listed job ids - and returns
+// the number of jobs cancelled. Cancelled jobs complete with the zero
+// result so the peer's drain advances immediately instead of waiting
+// for its own timeout.
+func (s *Server) taggerRemoteCancel(w http.ResponseWriter, r *http.Request) {
+	secret, ok := s.remoteTaggerAuth(r)
+	if !ok {
+		writeRemoteTaggerError(w, http.StatusUnauthorized, "invalid or insufficient token")
+		return
+	}
+	var req struct {
+		JobIDs []string `json:"job_ids"`
+		All    bool     `json:"all"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeRemoteTaggerError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	cancelled, err := tagger.RemoteCancelJobs(secret, req.JobIDs, req.All)
+	if err != nil {
+		logx.Errorf("remote-tagger: cancel failed: %v", err)
+		writeRemoteTaggerError(w, http.StatusInternalServerError, "failed to cancel jobs")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]int{"cancelled": cancelled})
+}
+
+// taggerRemoteJobs handles GET /api/v1/tagger/remote-jobs. It lists
+// the calling peer's queued and in-flight jobs (oldest first) for
+// debugging and cancellation workflows.
+func (s *Server) taggerRemoteJobs(w http.ResponseWriter, r *http.Request) {
+	secret, ok := s.remoteTaggerAuth(r)
+	if !ok {
+		writeRemoteTaggerError(w, http.StatusUnauthorized, "invalid or insufficient token")
+		return
+	}
+	jobs := tagger.RemoteListJobs(secret)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"jobs": jobs})
 }
 
 type remoteDrainResultOut struct {

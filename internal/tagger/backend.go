@@ -155,6 +155,16 @@ type RemoteDrainedResult struct {
 	Err   string
 }
 
+// RemoteJobInfo describes one queued or in-flight remote tagging job
+// on the A-side, listed for the submitting peer (token-scoped) or the
+// local operator. Status is "queued" while the job waits for a
+// dispatcher slot and "running" once a batch has picked it up.
+type RemoteJobInfo struct {
+	ID        string    `json:"id"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 var (
 	backendMu      sync.RWMutex
 	currentBackend Backend

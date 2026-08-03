@@ -43,5 +43,10 @@
   {{else if not .Pending}}
   <p class="field-hint">No pending remote tagger pairing requests.</p>
   {{end}}
+  {{if .Queue}}
+  {{template "partials/remote_tagger_queue.html" .Queue}}
+  {{else}}
+  <div id="remote-tagger-queue" hx-get="/internal/tagger/remote-queue" hx-trigger="every 3s" hx-swap="outerHTML"></div>
+  {{end}}
 </div>
 {{end}}

@@ -615,6 +615,7 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 		}
 		merged := map[TagKey]Scored{}
 		anyInferred := false
+		var firstFrameErr error
 		minHits := ResolveMinHits(req.MinHitFraction, frameCount)
 		for tIdx, lt := range loaded {
 			if ctx.Err() != nil {
@@ -642,6 +643,9 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 					continue
 				}
 				if err != nil {
+					if firstFrameErr == nil {
+						firstFrameErr = err
+					}
 					frameDesc := "(memory)"
 					if fi < len(im.FramePaths) {
 						frameDesc = im.FramePaths[fi]
@@ -670,9 +674,14 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 		}
 		// Every frame failed to decode or infer. Report an error rather
 		// than an empty map: the store loop reconciles an empty result by
-		// deleting the image's existing auto-tags.
+		// deleting the image's existing auto-tags. The first frame's
+		// original error is appended so the peer (and logs) see the real
+		// cause, e.g. "webp: invalid format" for a corrupt upload.
 		if !anyInferred {
 			results[idx].Err = "all frames failed"
+			if firstFrameErr != nil {
+				results[idx].Err = fmt.Sprintf("all frames failed: %v", firstFrameErr)
+			}
 			return
 		}
 		results[idx].Tags = merged

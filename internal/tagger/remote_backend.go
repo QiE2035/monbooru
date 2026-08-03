@@ -59,6 +59,33 @@ func (e *remoteQueueFullError) Is(target error) bool {
 // against with errors.Is.
 var errRemoteQueueFull = &remoteQueueFullError{}
 
+// remoteSubmitRejectedError is returned by Submit when the A-side
+// rejects the image outright with a non-429 4xx, e.g. an unsupported
+// format. Unlike transient failures these images will never succeed,
+// so the caller skips them instead of retrying forever. The status
+// code distinguishes per-image rejections (400) from persistent
+// configuration/authorisation problems (401/403) that should fail the
+// whole job.
+type remoteSubmitRejectedError struct {
+	status int
+	body   string
+}
+
+func (e *remoteSubmitRejectedError) Error() string {
+	return fmt.Sprintf("remote tagger rejected image (HTTP %d): %s", e.status, e.body)
+}
+
+// Is lets errors.Is(err, errRemoteSubmitRejected) match any rejection
+// regardless of the concrete status it carries.
+func (e *remoteSubmitRejectedError) Is(target error) bool {
+	_, ok := target.(*remoteSubmitRejectedError)
+	return ok
+}
+
+// errRemoteSubmitRejected is the sentinel the submit loop matches
+// against with errors.As to read the status code.
+var errRemoteSubmitRejected = &remoteSubmitRejectedError{}
+
 // remoteDrainedResult is one A-side result entry returned by Drain,
 // mapped back to the B-side image by JobID.
 type remoteDrainedResult struct {
@@ -162,7 +189,7 @@ func (b *remoteBackend) Submit(ctx context.Context, image BackendImageRequest) (
 		_ = json.Unmarshal(body, &out)
 		return "", &remoteQueueFullError{capacity: out.Capacity, queued: out.Queued, inflight: out.Inflight}
 	default:
-		return "", fmt.Errorf("remote tagger submit returned %d: %s", httpResp.StatusCode, string(body))
+		return "", &remoteSubmitRejectedError{status: httpResp.StatusCode, body: string(body)}
 	}
 }
 
@@ -253,6 +280,36 @@ func (b *remoteBackend) Drain(ctx context.Context, after int64, wait time.Durati
 		results = append(results, d)
 	}
 	return out.Cursor, results, nil
+}
+
+// Cancel asks the A-side to abort queued and in-flight jobs. all
+// cancels every job of this token; otherwise only the listed job ids
+// are cancelled and unknown ids are ignored. Best-effort by contract:
+// callers (local job cancel, timeout cleanup) must not block on it,
+// so failures are returned for the caller to log, never retried.
+func (b *remoteBackend) Cancel(ctx context.Context, jobIDs []string, all bool) error {
+	body, err := json.Marshal(map[string]any{"job_ids": jobIDs, "all": all})
+	if err != nil {
+		return fmt.Errorf("encode cancel request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", b.url+"/api/v1/tagger/remote-cancel", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if b.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+b.token)
+	}
+	httpResp, err := b.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("remote tagger cancel: %w", err)
+	}
+	defer httpResp.Body.Close()
+	if httpResp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(httpResp.Body)
+		return fmt.Errorf("remote tagger cancel returned %d: %s", httpResp.StatusCode, string(respBody))
+	}
+	return nil
 }
 
 func detectImageContentType(data []byte) string {
