@@ -12,6 +12,13 @@ import (
 // ErrJobRunning is returned when a job is already running.
 var ErrJobRunning = errors.New("a job is already running")
 
+// Auto-dismiss windows for a finished job: the full one a summary no
+// client has rendered gets, and the shorter one it drops to afterwards.
+const (
+	dismissDelay       = 30 * time.Second
+	viewedDismissDelay = 6 * time.Second
+)
+
 // Manager is a thread-safe singleton job state machine. Only one job may
 // run at a time.
 type Manager struct {
@@ -218,15 +225,16 @@ func (m *Manager) IsRunning() bool {
 // MarkViewed shortens the auto-dismiss timer to a few seconds once at
 // least one client has rendered the completed state, so the flash
 // doesn't linger across page navigations. The 30s fallback stays for
-// jobs that finish unattended.
+// jobs that finish unattended. A failed job never shortens: the status
+// bar is the only place its error is reported.
 func (m *Manager) MarkViewed() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.state == nil || m.state.Running || m.viewed {
+	if m.state == nil || m.state.Running || m.viewed || m.state.Error != "" {
 		return
 	}
 	m.viewed = true
-	m.armDismiss(6 * time.Second)
+	m.armDismiss(viewedDismissDelay)
 }
 
 // Dismiss clears the completed/failed job state so the status widget goes idle.
@@ -260,10 +268,10 @@ func (m *Manager) SetWatcherMessage(msg string) {
 	m.scheduleAutoDismiss()
 }
 
-// scheduleAutoDismiss arms the 30s auto-dismiss for the current completed
-// state. Caller must hold m.mu.
+// scheduleAutoDismiss arms the full auto-dismiss for the current
+// completed state. Caller must hold m.mu.
 func (m *Manager) scheduleAutoDismiss() {
-	m.armDismiss(30 * time.Second)
+	m.armDismiss(dismissDelay)
 }
 
 // armDismiss replaces any pending dismiss with one d from now. It fires

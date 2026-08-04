@@ -3059,9 +3059,10 @@ function mergeCategoryCollision(tagID, catID) {
       stashActionFlash('Merged into the existing tag.', 'ok');
       window.location.reload();
     } else {
+      // Raw fetch, so the handler answers with an unescaped plain-text
+      // body; tag names legally carry < and >.
       r.text().then(function(t) {
-        var el = document.getElementById('tag-flash');
-        if (el) el.innerHTML = '<div class="flash flash-err">' + (t || 'Merge failed.') + '</div>';
+        setFlashText(document.getElementById('tag-flash'), 'err', t || 'Merge failed.');
       });
     }
   });

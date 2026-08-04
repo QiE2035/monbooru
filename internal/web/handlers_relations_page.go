@@ -277,6 +277,10 @@ type treeRow struct {
 	ID     int64
 	Depth  int
 	Trunks []string
+	// Source is the image this row hangs under, 0 on the root. The
+	// browse card needs it to offer the edge for review; Members alone
+	// is a flat DFS list with no parent link.
+	Source int64
 }
 
 // relationsPage serves /relations: header counters and the per-section
@@ -808,7 +812,7 @@ func loadDerivativeTreeCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]bro
 		var members []int64
 		var treeRows []treeRow
 		latestTS := ""
-		dfsDerivativeTree(root, 0, nil, true, derivativesOf, derivCreated, &members, &treeRows, &latestTS)
+		dfsDerivativeTree(root, 0, 0, nil, true, derivativesOf, derivCreated, &members, &treeRows, &latestTS)
 		if ceiling.AnyTainted(members) {
 			continue
 		}
@@ -830,9 +834,9 @@ func loadDerivativeTreeCards(cx *galleryCtx, limit int, ceiling *Ceiling) ([]bro
 // every descendant of this node (one entry per ancestor depth);
 // isLast says whether this node is the last child of its parent so
 // the connector is drawn as an elbow when true and a tee when false.
-func dfsDerivativeTree(node int64, depth int, ancestorTrunks []string, isLast bool, derivativesOf map[int64][]int64, derivCreated map[int64]string, members *[]int64, rows *[]treeRow, latestTS *string) {
+func dfsDerivativeTree(node, source int64, depth int, ancestorTrunks []string, isLast bool, derivativesOf map[int64][]int64, derivCreated map[int64]string, members *[]int64, rows *[]treeRow, latestTS *string) {
 	*members = append(*members, node)
-	*rows = append(*rows, treeRow{ID: node, Depth: depth, Trunks: rowTrunks(ancestorTrunks, depth, isLast)})
+	*rows = append(*rows, treeRow{ID: node, Depth: depth, Trunks: rowTrunks(ancestorTrunks, depth, isLast), Source: source})
 	if ts := derivCreated[node]; ts > *latestTS {
 		*latestTS = ts
 	}
@@ -840,7 +844,7 @@ func dfsDerivativeTree(node int64, depth int, ancestorTrunks []string, isLast bo
 	children := derivativesOf[node]
 	for i, child := range children {
 		childIsLast := i == len(children)-1
-		dfsDerivativeTree(child, depth+1, childAncestors, childIsLast, derivativesOf, derivCreated, members, rows, latestTS)
+		dfsDerivativeTree(child, node, depth+1, childAncestors, childIsLast, derivativesOf, derivCreated, members, rows, latestTS)
 	}
 }
 

@@ -92,42 +92,57 @@ func sortIndexHint(expr Expr, sort string, hasMissingFilter, ceilingRewrote bool
 	return ""
 }
 
-func isPureTagExpr(expr Expr) bool {
+// walkLeaves visits every leaf of expr, descending through And / Or /
+// Not. visit returns false to stop the walk early.
+func walkLeaves(expr Expr, visit func(Expr) bool) bool {
 	switch e := expr.(type) {
 	case AndExpr:
-		return isPureTagExpr(e.Left) && isPureTagExpr(e.Right)
+		return walkLeaves(e.Left, visit) && walkLeaves(e.Right, visit)
 	case OrExpr:
-		return isPureTagExpr(e.Left) && isPureTagExpr(e.Right)
+		return walkLeaves(e.Left, visit) && walkLeaves(e.Right, visit)
 	case NotExpr:
-		return isPureTagExpr(e.Expr)
-	case TagExpr:
-		return true
-	case FilterExpr:
-		switch e.Key {
-		case "cat", "rating", "tagged", "autotagged", "stale", "inbox",
-			"width", "height", "date", "ratio", "pages", "tagcount":
-			return true
-		}
-		return !searchkw.IsKeyword(e.Key)
+		return walkLeaves(e.Expr, visit)
 	}
-	return false
+	return visit(expr)
+}
+
+// anyLeaf reports whether any leaf satisfies pred; allLeaves whether
+// every one does. A nil expr reaches pred as a leaf rather than reading
+// as an empty set, and every pred here answers false for it, so both
+// report false on nil.
+func anyLeaf(expr Expr, pred func(Expr) bool) bool {
+	return !walkLeaves(expr, func(e Expr) bool { return !pred(e) })
+}
+
+func allLeaves(expr Expr, pred func(Expr) bool) bool {
+	return walkLeaves(expr, pred)
+}
+
+func isPureTagExpr(expr Expr) bool {
+	return allLeaves(expr, func(e Expr) bool {
+		switch v := e.(type) {
+		case TagExpr:
+			return true
+		case FilterExpr:
+			switch v.Key {
+			case "cat", "rating", "tagged", "autotagged", "stale", "inbox",
+				"width", "height", "date", "ratio", "pages", "tagcount":
+				return true
+			}
+			return !searchkw.IsKeyword(v.Key)
+		}
+		return false
+	})
 }
 
 // containsMissingFilter reports whether expr carries a `missing:` filter
 // anywhere in the AST. Used to gate optimisations whose density
 // estimates assume `is_missing = 0` (the implicit visibility filter).
 func containsMissingFilter(expr Expr) bool {
-	switch e := expr.(type) {
-	case AndExpr:
-		return containsMissingFilter(e.Left) || containsMissingFilter(e.Right)
-	case OrExpr:
-		return containsMissingFilter(e.Left) || containsMissingFilter(e.Right)
-	case NotExpr:
-		return containsMissingFilter(e.Expr)
-	case FilterExpr:
-		return e.Key == "missing"
-	}
-	return false
+	return anyLeaf(expr, func(e Expr) bool {
+		v, ok := e.(FilterExpr)
+		return ok && v.Key == "missing"
+	})
 }
 
 // columnFilterIndexHint returns the INDEXED BY clause for a single
@@ -197,23 +212,19 @@ func columnFilterIndexHint(expr Expr, sort string) string {
 // the library on popular roots. Drives the random-sort bucket gate
 // in ExecuteAdjacent.
 func containsTagPredicate(expr Expr) bool {
-	switch e := expr.(type) {
-	case AndExpr:
-		return containsTagPredicate(e.Left) || containsTagPredicate(e.Right)
-	case OrExpr:
-		return containsTagPredicate(e.Left) || containsTagPredicate(e.Right)
-	case NotExpr:
-		return containsTagPredicate(e.Expr)
-	case TagExpr:
-		return true
-	case FilterExpr:
-		switch e.Key {
-		case "cat", "tagged", "autotagged", "stale", "folder", "folderonly":
+	return anyLeaf(expr, func(e Expr) bool {
+		switch v := e.(type) {
+		case TagExpr:
 			return true
+		case FilterExpr:
+			switch v.Key {
+			case "cat", "tagged", "autotagged", "stale", "folder", "folderonly":
+				return true
+			}
+			return !searchkw.IsKeyword(v.Key)
 		}
-		return !searchkw.IsKeyword(e.Key)
-	}
-	return false
+		return false
+	})
 }
 
 // andDriverThreshold caps how many image_tags rows the AND-driver shape
@@ -282,26 +293,10 @@ func expensiveAdjacencyTags(expr Expr) bool {
 	if len(collectAndedTags(expr)) >= 3 {
 		return true
 	}
-	found := false
-	var walk func(Expr)
-	walk = func(e Expr) {
-		switch v := e.(type) {
-		case AndExpr:
-			walk(v.Left)
-			walk(v.Right)
-		case OrExpr:
-			walk(v.Left)
-			walk(v.Right)
-		case NotExpr:
-			walk(v.Expr)
-		case TagExpr:
-			if v.Wildcard != "" {
-				found = true
-			}
-		}
-	}
-	walk(expr)
-	return found
+	return anyLeaf(expr, func(e Expr) bool {
+		v, ok := e.(TagExpr)
+		return ok && v.Wildcard != ""
+	})
 }
 
 // collectAndedFilterLeaves returns the FilterExpr leaves whose Key
@@ -962,7 +957,7 @@ func (b *whereBuilder) buildTagExpr(e TagExpr) string {
 // comparison. parseVal reads one half of a range, parseComp an
 // operator-plus-value.
 func (b *whereBuilder) buildCompFilter(template, val string, parseVal func(string) (any, bool), parseComp func(string) (string, any, bool)) string {
-	if s, ok := b.tryRangeComp(template, val, parseVal); ok {
+	if s, ok := b.tryRangeComp(template, val, parseVal, parseVal); ok {
 		return s
 	}
 	op, n, ok := parseComp(val)
@@ -1104,7 +1099,9 @@ func (b *whereBuilder) buildInboxFilter(e FilterExpr) string {
 // seek - the four-LIKE shape below would force the planner past
 // idx_images_source_type onto idx_images_missing.
 func (b *whereBuilder) buildAIFilter(e FilterExpr) string {
-	val := e.Val
+	// Lowercased like every sibling filter, so ai:NONE takes the same
+	// branch the index hint already assumes it does.
+	val := strings.ToLower(e.Val)
 	if val == "sd" {
 		val = "a1111"
 	}
@@ -1132,7 +1129,7 @@ func (b *whereBuilder) buildAIFilter(e FilterExpr) string {
 func (b *whereBuilder) buildSourceFilter(e FilterExpr) string {
 	switch strings.ToLower(e.Val) {
 	case "", "none":
-		return "NOT EXISTS (SELECT 1 FROM image_sources s WHERE s.image_id = i.id)"
+		return b.imageIDExists("image_sources s", "s", "", true)
 	case "any":
 		return "i.id IN (SELECT image_id FROM image_sources)"
 	}
@@ -1381,19 +1378,22 @@ func (b *whereBuilder) buildViaFilter(e FilterExpr) string {
 }
 
 func (b *whereBuilder) buildTaggedFilter(e FilterExpr) string {
-	val, ok := parseBoolVal(e.Val)
-	if !ok {
-		return "1=0"
-	}
-	return b.imageTagsPredicate("", !val)
+	return b.boolTagsPredicate("", e.Val)
 }
 
 func (b *whereBuilder) buildAutotaggedFilter(e FilterExpr) string {
-	val, ok := parseBoolVal(e.Val)
+	return b.boolTagsPredicate("it.is_auto = 1", e.Val)
+}
+
+// boolTagsPredicate answers a has-any-such-tag filter: true matches
+// images carrying a row the extra predicate selects, false their
+// complement.
+func (b *whereBuilder) boolTagsPredicate(extra, val string) string {
+	v, ok := parseBoolVal(val)
 	if !ok {
 		return "1=0"
 	}
-	return b.imageTagsPredicate("it.is_auto = 1", !val)
+	return b.imageTagsPredicate(extra, !v)
 }
 
 // buildStaleFilter matches images carrying a source-dropped (stale) tag.
@@ -1617,45 +1617,14 @@ func (b *whereBuilder) buildDateFilter(val string) string {
 		b.args = append(b.args, bound)
 		return "i.ingested_at " + op + " ?"
 	}
-	if idx := strings.Index(val, ".."); idx >= 0 {
-		from := val[:idx]
-		to := val[idx+2:]
-		// Bare `..` is meaningless on its own; both halves empty is the
-		// silent-zero shape callers hit when they delete the wrong end
-		// of an existing range.
-		if from == "" && to == "" {
-			return "1=0"
-		}
-		if from != "" && !dateFilterRe.MatchString(from) {
-			return "1=0"
-		}
-		if to != "" && !dateFilterRe.MatchString(to) {
-			return "1=0"
-		}
-		// Open-ended forms collapse to a single inclusive bound: `..X`
-		// is `<=X` (every day up to and including X), `X..` is `>=X`
-		// (every day from X forward). Mirrors the level-2 cheat-sheet
-		// hint that includes `..` next to `>=` / `<=`.
-		fromBound, toBound := dateBoundStart(from), dateBoundEnd(to)
-		switch {
-		case from == "":
-			if toBound == "" {
-				return "1=0"
-			}
-			b.args = append(b.args, toBound)
-			return "i.ingested_at <= ?"
-		case to == "":
-			if fromBound == "" {
-				return "1=0"
-			}
-			b.args = append(b.args, fromBound)
-			return "i.ingested_at >= ?"
-		}
-		if fromBound == "" || toBound == "" {
-			return "1=0"
-		}
-		b.args = append(b.args, fromBound, toBound)
-		return "i.ingested_at BETWEEN ? AND ?"
+	// Open-ended forms collapse to a single inclusive bound: `..X` is
+	// `<=X` (every day up to and including X), `X..` is `>=X` (every day
+	// from X forward). Mirrors the level-2 cheat-sheet hint that includes
+	// `..` next to `>=` / `<=`. The `..` check runs after the operator
+	// prefixes above, not before them as the numeric filters do.
+	if s, ok := b.tryRangeComp("i.ingested_at %s ?", val,
+		dateRangeBound(dateBoundStart), dateRangeBound(dateBoundEnd)); ok {
+		return s
 	}
 	// `=YYYY-MM-DD` is the explicit form of the bare `date:YYYY-MM-DD`
 	// shape - the user types the operator the sibling filters (size:=,
@@ -1687,23 +1656,28 @@ func parseCompOp(val string) (string, string) {
 // result via `1=0`) instead of SQLite silently coercing the operand to
 // 0 and returning everything wider than 0.
 func parseIntComp(val string) (string, any, bool) {
-	op, raw := parseCompOp(val)
-	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return op, int64(0), false
-	}
-	return op, n, true
+	return compOf(val, func(raw string) (any, bool) {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		return n, err == nil
+	})
 }
 
 // parseFloatComp is the float-arg twin of parseIntComp. Used by ratio:
 // and duration:. Rejects empty / non-numeric input the same way.
 func parseFloatComp(val string) (string, any, bool) {
+	return compOf(val, func(raw string) (any, bool) {
+		n, err := strconv.ParseFloat(raw, 64)
+		return n, err == nil
+	})
+}
+
+// compOf splits val into its comparison operator and value half and
+// runs parse over the half. The value is only read when ok, so a
+// rejected parse hands back whatever zero the parser produced.
+func compOf(val string, parse func(string) (any, bool)) (string, any, bool) {
 	op, raw := parseCompOp(val)
-	n, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return op, float64(0), false
-	}
-	return op, n, true
+	v, ok := parse(strings.TrimSpace(raw))
+	return op, v, ok
 }
 
 // parseSizeComp parses a size comparison value like ">=10MB", "<2GiB",
@@ -1713,9 +1687,7 @@ func parseFloatComp(val string) (string, any, bool) {
 // the UI (humanBytes uses 1024-based MiB). Bare numbers are bytes.
 // Returns ok=false on parse failures so callers emit `1=0`.
 func parseSizeComp(val string) (string, any, bool) {
-	op, raw := parseCompOp(val)
-	n, ok := parseSizeValue(raw)
-	return op, n, ok
+	return compOf(val, func(raw string) (any, bool) { return parseSizeValue(raw) })
 }
 
 // parseSizeValue parses the bare numeric-plus-unit half of a size:
@@ -1766,7 +1738,7 @@ func parseSizeValue(raw string) (int64, bool) {
 // ok=true with a `1=0` clause so the silent-zero shape stays explicit.
 // `..X` collapses to `<= X`, `X..` to `>= X`, `X..Y` to `BETWEEN X AND Y`;
 // bare `..` is the meaningless 1=0 form date: also emits.
-func (b *whereBuilder) tryRangeComp(template, val string, parse func(string) (any, bool)) (string, bool) {
+func (b *whereBuilder) tryRangeComp(template, val string, parseFrom, parseTo func(string) (any, bool)) (string, bool) {
 	idx := strings.Index(val, "..")
 	if idx < 0 {
 		return "", false
@@ -1778,30 +1750,43 @@ func (b *whereBuilder) tryRangeComp(template, val string, parse func(string) (an
 	}
 	switch {
 	case fromS == "":
-		toV, ok := parse(toS)
+		toV, ok := parseTo(toS)
 		if !ok {
 			return "1=0", true
 		}
 		b.args = append(b.args, toV)
 		return fmt.Sprintf(template, "<="), true
 	case toS == "":
-		fromV, ok := parse(fromS)
+		fromV, ok := parseFrom(fromS)
 		if !ok {
 			return "1=0", true
 		}
 		b.args = append(b.args, fromV)
 		return fmt.Sprintf(template, ">="), true
 	}
-	fromV, ok := parse(fromS)
+	fromV, ok := parseFrom(fromS)
 	if !ok {
 		return "1=0", true
 	}
-	toV, ok := parse(toS)
+	toV, ok := parseTo(toS)
 	if !ok {
 		return "1=0", true
 	}
 	b.args = append(b.args, fromV, toV)
 	return fmt.Sprintf(template, "BETWEEN ? AND"), true
+}
+
+// dateRangeBound wraps a day-bound renderer as a range half-parser: the
+// regexp gate lives here so a malformed half collapses to 1=0 the same
+// way a non-numeric one does.
+func dateRangeBound(bound func(string) string) func(string) (any, bool) {
+	return func(raw string) (any, bool) {
+		if !dateFilterRe.MatchString(raw) {
+			return "", false
+		}
+		v := bound(raw)
+		return v, v != ""
+	}
 }
 
 // parseIntValue and parseFloatValue are the bare-numeric counterparts of

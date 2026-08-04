@@ -7,7 +7,6 @@ import (
 	"os"
 
 	"github.com/monbooru/monbooru/internal/models"
-	"github.com/rwcarlsen/goexif/exif"
 )
 
 // exifMagic is the JPEG-style EXIF header WebP encoders may or may not
@@ -25,10 +24,8 @@ func extractSDFromWebP(path string) *models.SDMetadata {
 }
 
 // decodeWebPEXIF walks the WebP RIFF container for its EXIF chunk and
-// decodes it, re-prefixing exifMagic so exif.Decode succeeds whether or
-// not the chunk already carries the header. Returns nil for non-WebP or
-// no EXIF chunk.
-func decodeWebPEXIF(path string) (*exif.Exif, error) {
+// decodes it. Returns nil for non-WebP or no EXIF chunk.
+func decodeWebPEXIF(path string) (*exifData, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err

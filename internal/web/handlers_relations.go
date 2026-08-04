@@ -403,7 +403,7 @@ func dfsDerivativeChildren(cx *galleryCtx, parent int64, depth int, ancestorTrun
 	_ = children.Close()
 	for i, id := range ids {
 		isLast := i == len(ids)-1
-		*rows = append(*rows, treeRow{ID: id, Depth: depth, Trunks: rowTrunks(ancestorTrunks, depth, isLast)})
+		*rows = append(*rows, treeRow{ID: id, Depth: depth, Trunks: rowTrunks(ancestorTrunks, depth, isLast), Source: parent})
 		childAncestors := extendAncestorTrunks(ancestorTrunks, depth, isLast)
 		if err := dfsDerivativeChildren(cx, id, depth+1, childAncestors, rows); err != nil {
 			return err
@@ -547,12 +547,12 @@ func (s *Server) recomputePhashPost(w http.ResponseWriter, r *http.Request) {
 		logx.Warnf("recompute phash %d: %v", id, err)
 		// Flash at 200: htmx ignores HX-Trigger on a non-2xx response and
 		// the form is hx-swap="none", so a 500 here gives no feedback.
+		// Only the success arm refreshes, or the reload would wipe this.
 		setFlashHeader(w, "phash recompute failed (is the thumbnail present?)", "err", nil)
 		return
 	}
 	cx.InvalidatePhashMissing()
-	setFlashHeader(w, "phash recomputed.", "ok", nil)
-	writeInlineFlash(w, "ok", "phash recomputed.")
+	hxDone(w, r, "phash recomputed.", "", "/images/"+strconv.FormatInt(id, 10))
 }
 
 // addRelationPost installs a relation between two images. Form fields:
@@ -750,15 +750,19 @@ func reviewAgainPost(w http.ResponseWriter, r *http.Request, cx *galleryCtx) {
 		if !ok {
 			return
 		}
+		// A group dissolved since the page rendered still yields one row
+		// of NULLs, and MIN / MAX alone can't tell a pair from a wider
+		// group.
+		var n int
 		var ar, br int64
-		err := cx.DB.Read.QueryRow(
-			`SELECT MIN(image_id), MAX(image_id) FROM `+groupMembersTable(subkind)+` WHERE group_id = ?`, gid,
-		).Scan(&ar, &br)
-		if err != nil {
+		if err := cx.DB.Read.QueryRow(
+			`SELECT COUNT(*), COALESCE(MIN(image_id), 0), COALESCE(MAX(image_id), 0)
+			 FROM `+groupMembersTable(subkind)+` WHERE group_id = ?`, gid,
+		).Scan(&n, &ar, &br); err != nil {
 			writeRelationError(w, err)
 			return
 		}
-		if ar == 0 || br == 0 || ar == br {
+		if n != 2 {
 			flashStatus(w, http.StatusBadRequest, "Group must have exactly two members.")
 			return
 		}

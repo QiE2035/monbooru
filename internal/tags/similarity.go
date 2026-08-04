@@ -17,11 +17,18 @@ var errVisibleCount = errors.New("tags: visible image count unavailable")
 
 // SimilarMaxTagUsage bounds which tags can pull candidates into a
 // scan: a tag sitting on a large share of the library would drag every
-// one of those rows in. It is only a scan bound - an over-cap tag still
-// scores when both images carry it, and still counts toward both norms,
-// because dropping it from the norm lets a truncated tag set inflate
-// the score.
+// one of those rows in.
 const SimilarMaxTagUsage = relatedMaxTagUsage
+
+// evidenceUsageCap is the usage_count past which a tag neither opens a
+// candidate scan nor counts as something two images have in common. The
+// absolute bound above is unreachable below a library ten times its
+// size, which leaves a tag on half a small library reading as evidence,
+// so the cap follows the library instead; the floor keeps it from
+// rounding to nothing under thirty images.
+func evidenceUsageCap(visible int64) int64 {
+	return min(int64(SimilarMaxTagUsage), max(3, visible/10))
+}
 
 // categoryWeights scales a tag's rarity by how strongly its namespace
 // identifies the subject. Artist is the one namespace worth a bump:
@@ -34,16 +41,21 @@ var categoryWeights = map[string]float64{
 }
 
 // SimilarityTag is one counted seed tag and what a candidate earns for
-// carrying it. Seeds is false past SimilarMaxTagUsage: the tag scores
-// but never opens a candidate scan.
+// carrying it. Seeds is false past evidenceUsageCap: the tag still
+// scores and still counts toward both norms - dropping it would let a
+// truncated tag set inflate the score - but it neither opens a candidate
+// scan nor counts as evidence. Implied says the row came from another
+// tag's fan-out rather than from a decision about this image, which is
+// the same distinction on the evidence side.
 //
 // Field order and width are deliberate: the whole-library pass holds
 // one of these per counted tag row, where the padding a wider id costs
 // runs to hundreds of megabytes.
 type SimilarityTag struct {
-	Weight float64
-	TagID  int32
-	Seeds  bool
+	Weight  float64
+	TagID   int32
+	Seeds   bool
+	Implied bool
 }
 
 // SimilaritySeed carries the scoring inputs for one seed image: its
@@ -97,7 +109,7 @@ func LoadSimilaritySeed(database *db.DB, imageID int64) (SimilaritySeed, error) 
 		return seed, nil
 	}
 	rows, err := database.Read.Query(
-		`SELECT it.tag_id, t.usage_count, tc.name
+		`SELECT it.tag_id, t.usage_count, tc.name, it.is_implied
 		   FROM image_tags it
 		   JOIN tags t ON t.id = it.tag_id
 		   JOIN tag_categories tc ON tc.id = t.category_id
@@ -109,10 +121,12 @@ func LoadSimilaritySeed(database *db.DB, imageID int64) (SimilaritySeed, error) 
 		return seed, err
 	}
 	defer func() { _ = rows.Close() }()
+	evidence := evidenceUsageCap(visible)
 	for rows.Next() {
 		var tagID, usage int64
 		var category string
-		if err := rows.Scan(&tagID, &usage, &category); err != nil {
+		var implied bool
+		if err := rows.Scan(&tagID, &usage, &category, &implied); err != nil {
 			return seed, err
 		}
 		w := tagWeight(visible, usage, category)
@@ -120,7 +134,7 @@ func LoadSimilaritySeed(database *db.DB, imageID int64) (SimilaritySeed, error) 
 			continue
 		}
 		seed.Tags = append(seed.Tags, SimilarityTag{
-			TagID: int32(tagID), Weight: w, Seeds: usage <= SimilarMaxTagUsage,
+			TagID: int32(tagID), Weight: w, Seeds: usage <= evidence, Implied: implied,
 		})
 		seed.Norm += w
 	}
@@ -164,7 +178,7 @@ func LoadSimilarityCorpus(database *db.DB, minTagCount int) ([]SimilarityCorpusI
 		return nil, err
 	}
 	rows, err := database.Read.Query(
-		`SELECT image_id, tag_id FROM image_tags ORDER BY image_id, tag_id`)
+		`SELECT image_id, tag_id, is_implied FROM image_tags ORDER BY image_id, tag_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +197,8 @@ func LoadSimilarityCorpus(database *db.DB, minTagCount int) ([]SimilarityCorpusI
 	keep := false
 	for rows.Next() {
 		var imageID, tagID int64
-		if err := rows.Scan(&imageID, &tagID); err != nil {
+		var implied bool
+		if err := rows.Scan(&imageID, &tagID, &implied); err != nil {
 			return nil, err
 		}
 		if imageID != current {
@@ -202,6 +217,7 @@ func LoadSimilarityCorpus(database *db.DB, minTagCount int) ([]SimilarityCorpusI
 		if !ok || t.Weight <= 0 {
 			continue
 		}
+		t.Implied = implied
 		arena = append(arena, t)
 		corpus[len(corpus)-1].Norm += t.Weight
 	}
@@ -231,6 +247,7 @@ func loadTagWeights(database *db.DB, visible int64) (map[int64]SimilarityTag, in
 	}
 	defer func() { _ = rows.Close() }()
 	weights := make(map[int64]SimilarityTag)
+	evidence := evidenceUsageCap(visible)
 	rowTotal := 0
 	for rows.Next() {
 		var tagID, usage int64
@@ -242,7 +259,7 @@ func loadTagWeights(database *db.DB, visible int64) (map[int64]SimilarityTag, in
 		if w <= 0 {
 			continue
 		}
-		weights[tagID] = SimilarityTag{TagID: int32(tagID), Weight: w, Seeds: usage <= SimilarMaxTagUsage}
+		weights[tagID] = SimilarityTag{TagID: int32(tagID), Weight: w, Seeds: usage <= evidence}
 		rowTotal += int(usage)
 	}
 	return weights, rowTotal, rows.Err()

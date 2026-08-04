@@ -389,7 +389,11 @@ func (s *Server) buildTagFilter(catIDStr, prefix, sortStr, orderStr, originStr, 
 		ZeroOnly:     zeroOnly,
 	}
 	if catIDStr != "" {
+		// The sidebar buttons emit the id; a hand-edited URL is likelier
+		// to carry the name, which every other /tags filter takes.
 		if id, err := strconv.ParseInt(catIDStr, 10, 64); err == nil {
+			f.CategoryID = &id
+		} else if id, ok := s.categoryIDByName(catIDStr); ok {
 			f.CategoryID = &id
 		}
 	}
@@ -638,36 +642,16 @@ func (s *Server) deleteTagsSearchPost(w http.ResponseWriter, r *http.Request) {
 // progress through the job manager and honouring cancellation.
 // DeleteTag handles cascade and usage-count cleanup per row.
 func (s *Server) runDeleteTagsByIDs(ids []int64) {
-	ctx := s.jobs.Context()
-	total := len(ids)
-	processed, deleted, skipped := 0, 0, 0
-	cancelled := false
-	var reasons skipReasons
-
-	s.jobs.Update(0, total, "deleting tags…")
-	for i, id := range ids {
-		if ctx.Err() != nil {
-			cancelled = true
-			break
-		}
+	deleted, skipped, reasons, cancelled := s.runTagScopeLoop(ids, "deleting tags…", 50, func(id int64) (bool, error) {
 		if err := s.tagSvc().DeleteTag(id); err != nil {
 			logx.Warnf("delete tag %d: %v", id, err)
-			reasons.add(err)
-			skipped++
-		} else {
-			deleted++
+			return false, err
 		}
-		processed = i + 1
-		if processed%50 == 0 || processed == total {
-			s.jobs.Update(processed, total, "deleting tags…")
-		}
-	}
+		return true, nil
+	})
 
 	s.Active().InvalidateCaches()
-	summary := fmt.Sprintf("deleted %d tag(s)", deleted)
-	if skipped > 0 {
-		summary += fmt.Sprintf(", skipped %d", skipped)
-	}
+	summary := skippedSuffix(fmt.Sprintf("deleted %d tag(s)", deleted), skipped)
 	s.finishTagScopeJob(deleted, reasons, cancelled, "delete tags", summary)
 }
 

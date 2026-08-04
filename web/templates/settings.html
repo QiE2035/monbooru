@@ -661,7 +661,7 @@
         </div>
         <div class="settings-sub">
           <h4>Rare tag similarity match strength</h4>
-          {{template "partials/range_field.html" dict "Name" "tag_pair_threshold" "Label" "Strength (%)" "Min" 70 "Max" 100 "Step" 1 "Value" (pct $cfg.Relations.TagPairThreshold) "Ticks" (list 70 80 90 100) "Hint" "100% catches only images with identical tags."}}
+          {{template "partials/range_field.html" dict "Name" "tag_pair_threshold" "Label" "Strength (%)" "Min" 70 "Max" 100 "Step" 1 "Value" (pct $cfg.Relations.TagPairThreshold) "Ticks" (list 70 80 90 100) "Hint" "100% requires exactly the same rare tags on both sides to match."}}
         </div>
       </div>
       <div class="settings-actions"><button type="submit">Save</button></div>

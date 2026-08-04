@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/gif"
 	"image/jpeg"
 	_ "image/png"
@@ -21,21 +22,69 @@ import (
 const thumbMaxDim = 300
 const thumbQuality = 85
 
-// maxImagePixels caps the number of pixels in any image the decode
-// path is willing to allocate the destination bitmap for. A 256-MPx
-// PNG with random IHDR (e.g. 50000x50000) would otherwise demand
-// ~1 GiB just for the RGBA buffer, OOM-killing the process at ingest
-// or thumbnail regen. The cap is generous enough that no realistic
-// camera or scanner output trips it; pathological synthetic headers
-// are the only blocked input.
-const maxImagePixels = 256 * 1000 * 1000
+// maxImageBytes caps the destination bitmap the decode path is willing
+// to allocate, so a header claiming 50000x50000 truecolor is refused
+// instead of demanding 10 GiB and OOM-killing the process at ingest or
+// thumbnail regen. Budgeting bytes rather than pixels is what lets a
+// 670-MPx map through at 640 MiB greyscale while a 16-bit header of the
+// same geometry, four times the cost, stays out.
+const maxImageBytes = 3 << 30
 
-// DecodeImageWithCap is image.Decode gated on a megapixel ceiling.
-// Runs image.DecodeConfig first to read just the header, refuses any
-// image whose width*height exceeds maxImagePixels, then replays the
-// header bytes alongside the rest of the stream so the full Decode
-// works on non-seekable readers (zip page streams). Mirrors the
-// stdlib signature minus the format-name return.
+// decodedBytesPerPixel is the per-pixel cost of the concrete image type
+// the stdlib decoders return for a header's colour model. Models not
+// listed bill at 4, the truecolor width.
+func decodedBytesPerPixel(m color.Model) int64 {
+	switch m {
+	case color.GrayModel:
+		return 1
+	case color.Gray16Model:
+		return 2
+	case color.YCbCrModel:
+		return 3
+	case color.RGBA64Model, color.NRGBA64Model:
+		return 8
+	}
+	if _, ok := m.(color.Palette); ok {
+		return 1
+	}
+	return 4
+}
+
+// decodeBudgetError refuses a header whose decoded bitmap would not fit
+// maxImageBytes.
+func decodeBudgetError(cfg image.Config) error {
+	// Nothing decodes to less than a byte per pixel, so gating on the
+	// pixel count first also keeps the byte multiply from overflowing.
+	pixels := int64(cfg.Width) * int64(cfg.Height)
+	if pixels > maxImageBytes || pixels*decodedBytesPerPixel(cfg.ColorModel) > maxImageBytes {
+		return fmt.Errorf("image %dx%d exceeds the %d GiB decode cap", cfg.Width, cfg.Height, maxImageBytes>>30)
+	}
+	return nil
+}
+
+// DecodeBudgetError reports why the file at path is past the decode
+// budget, or nil when it fits - and when it cannot be read or is not a
+// still image, since a caller explaining a missing thumbnail has nothing
+// to add in those cases. Reads the header only.
+func DecodeBudgetError(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		return nil
+	}
+	return decodeBudgetError(cfg)
+}
+
+// DecodeImageWithCap is image.Decode gated on maxImageBytes. Runs
+// image.DecodeConfig first to read just the header, refuses any image
+// whose decoded bitmap would exceed the budget, then replays the header
+// bytes alongside the rest of the stream so the full Decode works on
+// non-seekable readers (zip page streams). Mirrors the stdlib signature
+// minus the format-name return.
 func DecodeImageWithCap(r io.Reader) (image.Image, error) {
 	var buf bytes.Buffer
 	tee := io.TeeReader(r, &buf)
@@ -43,8 +92,8 @@ func DecodeImageWithCap(r io.Reader) (image.Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode config: %w", err)
 	}
-	if int64(cfg.Width)*int64(cfg.Height) > int64(maxImagePixels) {
-		return nil, fmt.Errorf("image %dx%d exceeds %d-megapixel cap", cfg.Width, cfg.Height, maxImagePixels/1_000_000)
+	if err := decodeBudgetError(cfg); err != nil {
+		return nil, err
 	}
 	img, _, err := image.Decode(io.MultiReader(&buf, r))
 	return img, err
@@ -234,12 +283,7 @@ func scaleImage(src image.Image, maxDim int) image.Image {
 		nh = maxDim
 		nw = w * maxDim / h
 	}
-	if nh == 0 {
-		nh = 1
-	}
-	if nw == 0 {
-		nw = 1
-	}
+	nh, nw = max(nh, 1), max(nw, 1)
 
 	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
 	draw.BiLinear.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
@@ -248,17 +292,27 @@ func scaleImage(src image.Image, maxDim int) image.Image {
 
 // writeJPEGAtomic encodes img as JPEG at path via a temp file + rename.
 func writeJPEGAtomic(img image.Image, path string, quality int) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".thumb.*")
+	return writeAtomic(path, ".thumb.*", func(f *os.File) error {
+		if err := jpeg.Encode(f, img, &jpeg.Options{Quality: quality}); err != nil {
+			return fmt.Errorf("encoding jpeg: %w", err)
+		}
+		return nil
+	})
+}
+
+// writeAtomic runs write against a temp file beside path and renames it
+// into place, so a concurrent reader never sees a partial file. The temp
+// is removed on every failure path.
+func writeAtomic(path, pattern string, write func(*os.File) error) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), pattern)
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpName := tmp.Name()
-
-	if err := jpeg.Encode(tmp, img, &jpeg.Options{Quality: quality}); err != nil {
+	if err := write(tmp); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
-		return fmt.Errorf("encoding jpeg: %w", err)
+		return err
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)

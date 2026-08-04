@@ -156,6 +156,7 @@ document.querySelectorAll('.btn-delete-category').forEach(function(btn) {
         var targetSel = document.getElementById('del-cat-target');
         Array.from(targetSel.options).forEach(function(opt) {
           opt.disabled = (opt.value == catId);
+          opt.hidden = opt.disabled;
           if (opt.disabled && targetSel.value == catId) {
             var first = Array.from(targetSel.options).find(function(o) { return !o.disabled; });
             if (first) targetSel.value = first.value;

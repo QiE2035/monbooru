@@ -327,12 +327,11 @@ func ingestLightManifestEntries(database *db.DB, galleryPath, thumbsPath string,
 			applyImportTagsToImage(database, tagSvc, imgID, r.Tags, generalID, source)
 			continue
 		}
-		ft, err := gallery.DetectFileType(path)
-		if err != nil {
+		if _, err := gallery.DetectFileType(path); err != nil {
 			logx.Warnf("light import: unsupported file %q: %v", r.Path, err)
 			continue
 		}
-		img, _, err := gallery.Ingest(database, galleryPath, thumbsPath, path, ft, source)
+		img, _, err := gallery.Ingest(database, galleryPath, thumbsPath, path, source)
 		if err != nil {
 			logx.Warnf("light import: ingest %q: %v", r.Path, err)
 			continue
@@ -643,8 +642,7 @@ func applyMergeRecords(cx *galleryCtx, records []mergeRecord, source string, max
 			logx.Warnf("merge: extract %q: %v", r.SourcePath, err)
 			continue
 		}
-		ft, err := gallery.DetectFileType(dst)
-		if err != nil {
+		if _, err := gallery.DetectFileType(dst); err != nil {
 			logx.Warnf("merge: unsupported file %q: %v", r.SourcePath, err)
 			_ = os.Remove(dst)
 			continue
@@ -654,7 +652,7 @@ func applyMergeRecords(cx *galleryCtx, records []mergeRecord, source string, max
 		// reporting every compat-merged row as a generic 'ingest'. The
 		// tags side already inherits source via tagger_name; this aligns
 		// the image row's attribution with the tag rows.
-		img, _, err := gallery.Ingest(cx.DB, cx.GalleryPath, cx.ThumbnailsPath, dst, ft, source)
+		img, _, err := gallery.Ingest(cx.DB, cx.GalleryPath, cx.ThumbnailsPath, dst, source)
 		if err != nil {
 			logx.Warnf("merge: ingest %q: %v", r.SourcePath, err)
 			_ = os.Remove(dst)

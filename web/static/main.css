@@ -321,7 +321,9 @@ button.footer-rating-link:hover { color: var(--fg); }
   flex-shrink: 0;
 }
 .cat-name { flex: 1; }
-.cat-collapse {
+.cat-collapse,
+#folder-tree-toggle, #source-labels-toggle, #tags-toggle,
+.folder-toggle-btn[data-path] {
   background: none;
   border: none;
   padding: 0;
@@ -357,23 +359,9 @@ button.footer-rating-link:hover { color: var(--fg); }
   gap: 6px;
   padding: 3px 8px;
 }
-#folder-tree-toggle, #source-labels-toggle, #tags-toggle {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--fg-dim);
-  cursor: pointer;
-  font-size: 10px;
-}
 .folder-tree { list-style: none; margin: 0; padding: 0 0 0 4px; }
 .folder-children { list-style: none; margin: 0; padding: 0 0 0 12px; }
 .folder-toggle-btn[data-path] {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--fg-dim);
-  cursor: pointer;
-  font-size: 10px;
   width: 12px;
   flex-shrink: 0;
 }
@@ -716,6 +704,8 @@ button.footer-rating-link:hover { color: var(--fg); }
   overflow-wrap: break-word;
 }
 .meta-table th { color: var(--fg-dim); width: 100px; word-break: normal; }
+/* Prose values wrap on spaces; break-all is for the hash and path cells. */
+.meta-table td.meta-prose { word-break: normal; }
 
 .meta-table tr:has(> th) {
   display: flex;
@@ -1631,9 +1621,8 @@ details.tag-source-group[data-source="implied"][open] > summary::before { conten
 #implications-dialog { min-width: 480px; }
 #implications-dialog .add-tag-form { margin-top: 8px; }
 
-/* /tags page header: dense row of action buttons; danger pinned right. */
+/* /tags page header: dense row of action buttons. */
 #tags-page-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-#tags-page-header #btn-delete-tags-search { margin-left: auto; }
 
 .settings-subseparator { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .meta-editable-separator { border: 0; border-top: 1px solid var(--border); margin: 8px 0; }
@@ -1993,7 +1982,8 @@ details[open] > .relations-card-summary::before { content: "▼"; }
 
 .relations-session { padding: 16px; }
 .session-order-form { display: inline-flex; gap: 12px; align-items: center; margin-left: 16px; }
-.session-detector-form { margin-left: auto; }
+#relations-session-page .detail-topbar { flex-wrap: wrap; row-gap: 8px; }
+#relations-session-page .detail-nav-group { flex: 1 0 auto; }
 .session-order-form > .field-hint,
 .session-order-form > label { display: inline-flex; align-items: center; gap: 4px; line-height: 1; }
 .session-order-form label { font-size: 13px; color: var(--fg-dim); }
@@ -2340,7 +2330,6 @@ details[open] > .relations-card-summary::before { content: "▼"; }
 
 /* Merge dialog */
 .merge-arrow { font-size: 18px; margin: 0 4px; }
-#merge-dialog { min-width: 340px; }
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 
 /* Save search area */

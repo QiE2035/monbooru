@@ -5,7 +5,7 @@
         <form hx-post="/relations/remove" hx-target="#flash-relations" hx-swap="innerHTML"
               hx-confirm="{{.Confirm}}"
               data-confirm-ok="{{.OK}}"
-              {{if .Reload}}hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" {{end}}style="display:inline">
+              {{if .Reload}}hx-on::after-request="if(event.detail.successful){setTimeout(function(){window.location.reload()},1500)}" {{end}}{{with .ExtraClass}}class="{{.}}" {{end}}style="display:inline">
           <input type="hidden" name="_csrf" value="{{.CSRF}}">
           {{range $k, $v := .Fields}}<input type="hidden" name="{{$k}}" value="{{$v}}">
           {{end}}<button type="submit" class="btn-link-accent">[{{.Label}}]</button>
@@ -135,9 +135,15 @@
           <span class="relations-card-summary-meta">{{len .Members}} images</span>
         </summary>
         <div class="relations-card-chain">
+          {{$deep := gt (len .Members) 2}}
           {{range $i, $id := .Members}}
           {{if $i}}<span class="relations-chain-arrow" aria-hidden="true">→</span>{{end}}
-          {{template "partials/relations_card_thumb.html" (dict "ID" $id "ActiveGallery" $.ActiveGallery "Title" (printf "Image %d - added %s" $id (index $card.MemberIngestedAt $id)) "Date" (index $card.MemberIngestedAt $id))}}
+          <div class="relations-chain-cell">
+            {{template "partials/relations_card_thumb.html" (dict "ID" $id "ActiveGallery" $.ActiveGallery "Title" (printf "Image %d - added %s" $id (index $card.MemberIngestedAt $id)) "Date" (index $card.MemberIngestedAt $id))}}
+            {{if and $deep $i}}
+            {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Unlink this revision edge and queue the pair for the session?" "OK" "Review again" "Label" "review again" "ExtraClass" "relations-inline-action" "Fields" (dict "type" "review-again" "kind" "version" "a" (index $card.Members (sub $i 1)) "b" $id)}}
+            {{end}}
+          </div>
           {{end}}
         </div>
       </details>
@@ -149,6 +155,7 @@
           <span class="relations-card-summary-meta">tree, {{len .Members}} images</span>
         </summary>
         <div class="relations-card-tree">
+          {{$deep := gt (len .Members) 2}}
           {{range .TreeRows}}
           {{$row := .}}
           <div class="relations-tree-row" data-depth="{{.Depth}}">
@@ -158,6 +165,9 @@
             </div>
             {{end}}
             {{template "partials/relations_card_thumb.html" (dict "ID" .ID "ActiveGallery" $.ActiveGallery "Title" (printf "Image %d - added %s" .ID (index $card.MemberIngestedAt .ID)) "Date" (index $card.MemberIngestedAt .ID))}}
+            {{if and $deep .Source}}
+            {{template "relation_remove_form" dict "CSRF" $.CSRFToken "Confirm" "Unlink this derivative edge and queue the pair for the session?" "OK" "Review again" "Label" "review again" "ExtraClass" "relations-inline-action" "Fields" (dict "type" "review-again" "kind" "derivative" "a" $row.Source "b" $row.ID)}}
+            {{end}}
           </div>
           {{end}}
         </div>

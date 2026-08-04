@@ -5,17 +5,7 @@
 
 <div id="gallery-header">
   <form id="search-form" hx-get="/" hx-target="#gallery-grid" hx-push-url="true" hx-swap="innerHTML">
-    <div class="search-input-wrap">
-      <input type="text" name="q" id="search-input" value="{{.Query}}" placeholder="Search tags… (system: lists filters)" autocomplete="off"
-             hx-get="/internal/search/suggest"
-             hx-trigger="input changed delay:200ms"
-             hx-target="#search-suggest"
-             hx-swap="innerHTML"
-             hx-push-url="false"
-             hx-include="this"
-             onkeydown="handleSuggestKey(event, 'search-suggest', 'search-input')">
-      <div id="search-suggest" class="suggest-dropdown search-suggest-dropdown"></div>
-    </div>
+    {{template "partials/search_input.html" .Query}}
     {{/* Applied on change: the select showing a sort the grid is not in
          reads as a broken grid, not as a pending edit. */}}
     {{template "partials/sort_select.html" .}}

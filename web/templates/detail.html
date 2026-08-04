@@ -9,22 +9,10 @@
 <div id="detail-page"{{if .RefURL}} data-ref="{{.RefURL}}"{{end}}>
   {{/* Search bar: mirrors the gallery's #gallery-header so the input stays
        visually in place when switching between gallery and detail. Plain
-       GET submit to / - no HTMX, since detail has no #gallery-grid target.
-       The tag-suggest dropdown uses the same endpoint and ids gallery does
-       so applySearchSuggest and initSuggestDismiss work unchanged. */}}
+       GET submit to / - no HTMX, since detail has no #gallery-grid target. */}}
   <div id="gallery-header">
     <form id="search-form" action="/" method="GET">
-      <div class="search-input-wrap">
-        <input type="text" name="q" id="search-input" value="{{.BackQuery}}" placeholder="Search tags… (system: lists filters)" autocomplete="off"
-               hx-get="/internal/search/suggest"
-               hx-trigger="input changed delay:200ms"
-               hx-target="#search-suggest"
-               hx-swap="innerHTML"
-               hx-push-url="false"
-               hx-include="this"
-               onkeydown="handleSuggestKey(event, 'search-suggest', 'search-input')">
-        <div id="search-suggest" class="suggest-dropdown search-suggest-dropdown"></div>
-      </div>
+      {{template "partials/search_input.html" .BackQuery}}
       <select name="sort" id="search-sort" aria-label="Sort">
         <option value="newest"   {{if eq .BackSort "newest"}}selected{{end}}>Newest</option>
         <option value="filesize" {{if eq .BackSort "filesize"}}selected{{end}}>File size</option>
@@ -767,6 +755,9 @@
               <span class="copy-flash" hidden>copied</span>
             </td></tr>
             <tr><th>Type</th><td>{{.Image.FileType}}
+              {{if .MisnamedExt}}
+                <span class="field-hint" title="The contents are {{.Image.FileType}}; the file is named {{.MisnamedExt}}">(named {{.MisnamedExt}})</span>
+              {{end}}
               {{if and .Image.SourceType (ne .Image.SourceType "none")}}
                 <span class="source-badge">AI</span>
                 {{if eq .Image.SourceType "a1111,comfyui"}}
@@ -789,6 +780,9 @@
                       data-copy="{{.Image.SHA256}}" title="Click to copy">{{.Image.SHA256}}</button>
               <span class="copy-flash" hidden>copied</span>
             </td></tr>
+            {{if .NoPreview}}
+            <tr><th>Preview</th><td class="meta-prose"><span class="field-hint">none{{with .PreviewNote}} - {{.}}{{end}}</span></td></tr>
+            {{end}}
             <tr><th>pHash</th><td>
               {{if .Image.Phash}}
                 {{$hex := phashHex .Image.Phash}}
@@ -797,11 +791,12 @@
                 <span class="copy-flash" hidden>copied</span>
               {{else}}
                 <span class="field-hint">(not computed)</span>
-                <form hx-post="/relations/phash/{{.Image.ID}}/recompute" hx-swap="none"
-                      hx-on::after-request="if(event.detail.successful){window.location.reload()}" style="display:inline">
+                {{if not .NoPreview}}
+                <form hx-post="/relations/phash/{{.Image.ID}}/recompute" hx-swap="none" style="display:inline">
                   <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
                   <button type="submit" class="btn-link-accent">[backfill]</button>
                 </form>
+                {{end}}
               {{end}}
             </td></tr>
             <tr><th>Ingested</th><td>{{localTime .Image.IngestedAt}}</td></tr>

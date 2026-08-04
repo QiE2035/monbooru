@@ -27,8 +27,8 @@ var ErrAliasNameInUse = errors.New("a tag with this name already has image_tags 
 //   - non-alias with zero usage → upgrade in place (set is_alias=1,
 //     canonical_tag_id=canonical, usage_count=0).
 //
-// Mirrors MergeTags's rating-category and target-not-alias guards so
-// the resolver invariants hold the same way.
+// Mirrors MergeTags's rating and target-not-alias guards so the
+// resolver invariants hold the same way.
 func (s *Service) CreateAlias(name string, categoryID, canonicalID int64) (*models.Tag, error) {
 	return s.CreateAliasFrom(name, categoryID, canonicalID, "user")
 }
@@ -41,10 +41,10 @@ func (s *Service) CreateAliasFrom(name string, categoryID, canonicalID int64, or
 	if err != nil {
 		return nil, err
 	}
+	// An alias row inside the rating category would either add a fifth
+	// name to the locked vocabulary or upgrade a canonical row in place.
+	// Pointing at one from another category is fine.
 	if s.ratingCatID != 0 && categoryID == s.ratingCatID {
-		return nil, ErrRatingTagImmutable
-	}
-	if s.isRatingTag(canonicalID) {
 		return nil, ErrRatingTagImmutable
 	}
 
@@ -137,9 +137,13 @@ func (s *Service) MergeTags(aliasID, canonicalID int64) error {
 	if aliasID == canonicalID {
 		return fmt.Errorf("cannot merge a tag into itself")
 	}
-	if s.isRatingTag(aliasID) || s.isRatingTag(canonicalID) {
+	// Only the source is locked: the merge turns it into an alias, which
+	// would retire one of the four canonical rows. A rating on the target
+	// side is left a plain tag in its own category.
+	if s.isLockedRatingTag(aliasID) {
 		return ErrRatingTagImmutable
 	}
+	ratingTarget := s.isRatingTag(canonicalID)
 
 	return s.inWriteTx(func(tx *sql.Tx) error {
 		// Refuse merge-into-alias: the alias resolver only follows one hop
@@ -272,6 +276,15 @@ func (s *Service) MergeTags(aliasID, canonicalID int64) error {
 			for _, imageID := range newCarrierIDs {
 				if err := applyImpliedClosureTx(tx, imageID, impliedClosure, s.ratingCatID, 0); err != nil {
 					return fmt.Errorf("merge fan out implications onto image %d: %w", imageID, err)
+				}
+				// A rating canonical lands on carriers that may already be
+				// rated. Keeping the highest holds the one-rating invariant
+				// and means a merge can only raise a level, never expose an
+				// image the ceiling was hiding.
+				if ratingTarget {
+					if err := pruneLowerRatingsTx(tx, s.ratingCatID, imageID); err != nil {
+						return fmt.Errorf("merge prune ratings on image %d: %w", imageID, err)
+					}
 				}
 			}
 		}

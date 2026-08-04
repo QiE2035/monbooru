@@ -119,7 +119,7 @@ const NormalizeWindowsFolderPathSQL = `UPDATE images SET folder_path = ltrim(rep
 // and refreshed sqlite_stat1. Bump it when a migration adds a column or
 // index the planner needs stats for; Bootstrap then runs ANALYZE on the
 // next boot after the upgrade and skips it on every boot afterwards.
-const bootstrapSchemaVersion = 11
+const bootstrapSchemaVersion = 12
 
 // DB holds read and write connection pools for the SQLite database.
 // WAL mode allows concurrent readers but serialises writers, so the read
@@ -334,6 +334,13 @@ func Bootstrap(db *DB) error {
 		`UPDATE potential_relation_pairs SET collection_hidden = 1 WHERE `+pairHiddenProbe("a_image_id", "b_image_id"),
 		"backfill potential_relation_pairs.collection_hidden")
 	b.ensureColumn("relation_session", "detector", `ALTER TABLE relation_session ADD COLUMN detector TEXT NOT NULL DEFAULT 'both'`)
+	// A group below two members is not a group. Bulk deletes that predate
+	// the relations hook cascaded the member rows away without dissolving
+	// the group row, and an import replays whatever the export carried.
+	b.exec("dissolve degenerate dup groups",
+		`DELETE FROM dup_groups WHERE (SELECT COUNT(*) FROM dup_group_members m WHERE m.group_id = dup_groups.id) < 2`)
+	b.exec("dissolve degenerate alt groups",
+		`DELETE FROM alt_groups WHERE (SELECT COUNT(*) FROM alt_group_members m WHERE m.group_id = alt_groups.id) < 2`)
 	// Per-upload batch token stamped on web-UI uploads; NULL elsewhere. No
 	// index - it is only read for the page of rows the inbox cluster view
 	// already loaded, never filtered or sorted on.
@@ -456,18 +463,12 @@ func Bootstrap(db *DB) error {
 	b.exec("create trg_image_collections_pairs_ai", `CREATE TRIGGER IF NOT EXISTS trg_image_collections_pairs_ai
 		AFTER INSERT ON image_collections
 		BEGIN
-			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
-			WHERE a_image_id = NEW.image_id;
-			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
-			WHERE b_image_id = NEW.image_id;
+			`+pairsResweepBody("a_image_id = NEW.image_id", "b_image_id = NEW.image_id")+`
 		END`)
 	b.exec("create trg_image_collections_pairs_ad", `CREATE TRIGGER IF NOT EXISTS trg_image_collections_pairs_ad
 		AFTER DELETE ON image_collections
 		BEGIN
-			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
-			WHERE a_image_id = OLD.image_id;
-			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
-			WHERE b_image_id = OLD.image_id;
+			`+pairsResweepBody("a_image_id = OLD.image_id", "b_image_id = OLD.image_id")+`
 		END`)
 	b.exec("create trg_image_collections_pairs_au", `CREATE TRIGGER IF NOT EXISTS trg_image_collections_pairs_au
 		AFTER UPDATE OF name ON image_collections
@@ -480,18 +481,12 @@ func Bootstrap(db *DB) error {
 	b.exec("create trg_collection_find_relations_pairs_ai", `CREATE TRIGGER IF NOT EXISTS trg_collection_find_relations_pairs_ai
 		AFTER INSERT ON collection_find_relations
 		BEGIN
-			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
-			WHERE a_image_id IN (SELECT image_id FROM image_collections WHERE name = NEW.name);
-			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
-			WHERE b_image_id IN (SELECT image_id FROM image_collections WHERE name = NEW.name);
+			`+pairsResweepBody("a_image_id IN (SELECT image_id FROM image_collections WHERE name = NEW.name)", "b_image_id IN (SELECT image_id FROM image_collections WHERE name = NEW.name)")+`
 		END`)
 	b.exec("create trg_collection_find_relations_pairs_ad", `CREATE TRIGGER IF NOT EXISTS trg_collection_find_relations_pairs_ad
 		AFTER DELETE ON collection_find_relations
 		BEGIN
-			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
-			WHERE a_image_id IN (SELECT image_id FROM image_collections WHERE name = OLD.name);
-			UPDATE potential_relation_pairs SET collection_hidden = `+pairHiddenProbe("a_image_id", "b_image_id")+`
-			WHERE b_image_id IN (SELECT image_id FROM image_collections WHERE name = OLD.name);
+			`+pairsResweepBody("a_image_id IN (SELECT image_id FROM image_collections WHERE name = OLD.name)", "b_image_id IN (SELECT image_id FROM image_collections WHERE name = OLD.name)")+`
 		END`)
 	// Reading-order index for per-collection member walks (preview
 	// samples, the reorder dialog). The `position IS NULL` expression
@@ -515,18 +510,7 @@ func Bootstrap(db *DB) error {
 	// wins" semantics.
 	b.backfillIfFreshColumn("images", "rating_rank",
 		`ALTER TABLE images ADD COLUMN rating_rank INTEGER NOT NULL DEFAULT -1`,
-		`UPDATE images SET rating_rank = COALESCE((
-			SELECT MAX(CASE t.name
-				WHEN 'general' THEN 0
-				WHEN 'sensitive' THEN 1
-				WHEN 'questionable' THEN 2
-				WHEN 'explicit' THEN 3
-				ELSE -1 END)
-			FROM image_tags it
-			JOIN tags t ON t.id = it.tag_id
-			JOIN tag_categories tc ON tc.id = t.category_id
-			WHERE it.image_id = images.id AND tc.name = 'rating'
-		), -1)`,
+		`UPDATE images SET rating_rank = `+ratingRankExpr("images.id")+``,
 		"backfill images.rating_rank")
 	// Tag provenance: origin is stamped once at creation with the label
 	// of whatever created the row (user, a booru site, ptr, an
@@ -643,35 +627,13 @@ func Bootstrap(db *DB) error {
 		AFTER INSERT ON image_tags
 		WHEN NEW.tag_id IN (SELECT t.id FROM tags t JOIN tag_categories tc ON tc.id = t.category_id WHERE tc.name = 'rating')
 		BEGIN
-			UPDATE images SET rating_rank = COALESCE((
-				SELECT MAX(CASE t.name
-					WHEN 'general' THEN 0
-					WHEN 'sensitive' THEN 1
-					WHEN 'questionable' THEN 2
-					WHEN 'explicit' THEN 3
-					ELSE -1 END)
-				FROM image_tags it
-				JOIN tags t ON t.id = it.tag_id
-				JOIN tag_categories tc ON tc.id = t.category_id
-				WHERE it.image_id = NEW.image_id AND tc.name = 'rating'
-			), -1) WHERE id = NEW.image_id;
+			UPDATE images SET rating_rank = `+ratingRankExpr("NEW.image_id")+` WHERE id = NEW.image_id;
 		END`)
 	b.exec("create trg_image_tags_rating_rank_ad", `CREATE TRIGGER IF NOT EXISTS trg_image_tags_rating_rank_ad
 		AFTER DELETE ON image_tags
 		WHEN OLD.tag_id IN (SELECT t.id FROM tags t JOIN tag_categories tc ON tc.id = t.category_id WHERE tc.name = 'rating')
 		BEGIN
-			UPDATE images SET rating_rank = COALESCE((
-				SELECT MAX(CASE t.name
-					WHEN 'general' THEN 0
-					WHEN 'sensitive' THEN 1
-					WHEN 'questionable' THEN 2
-					WHEN 'explicit' THEN 3
-					ELSE -1 END)
-				FROM image_tags it
-				JOIN tags t ON t.id = it.tag_id
-				JOIN tag_categories tc ON tc.id = t.category_id
-				WHERE it.image_id = OLD.image_id AND tc.name = 'rating'
-			), -1) WHERE id = OLD.image_id;
+			UPDATE images SET rating_rank = `+ratingRankExpr("OLD.image_id")+` WHERE id = OLD.image_id;
 		END`)
 	// potential_relation_pairs.max_rating_rank mirrors the higher of
 	// the two members' rating_rank so the ceiling-aware queue reads
@@ -731,14 +693,14 @@ func Bootstrap(db *DB) error {
 	}
 	// Pinned to the version that introduced them so a later marker bump
 	// can't re-run them over pairs find-pairs has produced since.
-	if ratingRankUserVersion < 10 {
-		// Tag scores from an earlier metric sit on a different scale and
-		// cannot be re-thresholded; drop them and let the next find-pairs
-		// run requeue. Both-detector rows keep their pixel evidence.
+	if ratingRankUserVersion < 12 {
+		// Tag rows an earlier metric admitted cannot be re-thresholded into
+		// the current one; drop them and let the next find-pairs run
+		// requeue. Both-detector rows keep their pixel evidence.
 		b.exec("drop stale tag-scored pairs", `DELETE FROM potential_relation_pairs WHERE source = 'tags'`)
 		b.exec("demote stale both-detector pairs", `UPDATE potential_relation_pairs SET source = 'phash', score = NULL WHERE source = 'both'`)
 	}
-	if ratingRankUserVersion < bootstrapSchemaVersion {
+	if ratingRankUserVersion < 11 {
 		// basename() splits on both separators now, so keys materialised
 		// under the old body are stale - and the backfill below reads
 		// basename_lower straight back out.
@@ -840,6 +802,34 @@ func (b *bootstrapper) exec(label, sql string) {
 	}
 }
 
+// ratingRankExpr is the highest-wins rating rank of one image, read off
+// its rating-category tags. imageIDCol names the row under test: the
+// backfill correlates to images.id, the triggers to NEW / OLD.
+func ratingRankExpr(imageIDCol string) string {
+	return `COALESCE((
+				SELECT MAX(CASE t.name
+					WHEN 'general' THEN 0
+					WHEN 'sensitive' THEN 1
+					WHEN 'questionable' THEN 2
+					WHEN 'explicit' THEN 3
+					ELSE -1 END)
+				FROM image_tags it
+				JOIN tags t ON t.id = it.tag_id
+				JOIN tag_categories tc ON tc.id = t.category_id
+				WHERE it.image_id = ` + imageIDCol + ` AND tc.name = 'rating'
+			), -1)`
+}
+
+// pairsResweepBody re-derives collection_hidden for every queue pair
+// the changed collection row can reach, once from each side of the
+// pair. predA / predB select those rows.
+func pairsResweepBody(predA, predB string) string {
+	return `UPDATE potential_relation_pairs SET collection_hidden = ` + pairHiddenProbe("a_image_id", "b_image_id") + `
+			WHERE ` + predA + `;
+			UPDATE potential_relation_pairs SET collection_hidden = ` + pairHiddenProbe("a_image_id", "b_image_id") + `
+			WHERE ` + predB + `;`
+}
+
 // pairHiddenProbe returns the EXISTS clause deciding a queue pair's
 // collection_hidden flag: true when the two images share a collection
 // that has not opted into relation finding. aCol / bCol name the pair
@@ -857,36 +847,44 @@ func (b *bootstrapper) ensureColumn(table, column, alterSQL string) {
 	if b.err != nil {
 		return
 	}
-	b.err = ensureColumn(b.db, table, column, alterSQL)
-}
-
-func (b *bootstrapper) backfillIfFreshColumn(table, column, alterSQL, backfillSQL, backfillLabel string) {
-	if b.err != nil {
+	var count int
+	if err := b.db.Write.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_xinfo(?) WHERE name = ?`, table, column,
+	).Scan(&count); err != nil {
+		b.err = fmt.Errorf("inspect %s.%s: %w", table, column, err)
 		return
 	}
-	b.err = backfillIfFreshColumn(b.db, table, column, alterSQL, backfillSQL, backfillLabel)
+	if count > 0 {
+		return
+	}
+	if _, err := b.db.Write.Exec(alterSQL); err != nil {
+		b.err = fmt.Errorf("add column %s.%s: %w", table, column, err)
+	}
 }
 
 // backfillIfFreshColumn runs backfillSQL only when the ALTER actually
 // added the column - re-bootstraps of an in-use library must not
-// overwrite values the triggers have since maintained.
-func backfillIfFreshColumn(db *DB, table, column, alterSQL, backfillSQL, backfillLabel string) error {
+// overwrite values the triggers have since maintained. The pre-check
+// reads table_info rather than xinfo: a generated column is never
+// backfilled, so only a real stored column counts as fresh.
+func (b *bootstrapper) backfillIfFreshColumn(table, column, alterSQL, backfillSQL, backfillLabel string) {
+	if b.err != nil {
+		return
+	}
 	var pre int
-	if err := db.Write.QueryRow(
+	if err := b.db.Write.QueryRow(
 		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column,
 	).Scan(&pre); err != nil {
-		return fmt.Errorf("inspect %s.%s: %w", table, column, err)
+		b.err = fmt.Errorf("inspect %s.%s: %w", table, column, err)
+		return
 	}
-	if err := ensureColumn(db, table, column, alterSQL); err != nil {
-		return err
+	b.ensureColumn(table, column, alterSQL)
+	if b.err != nil || pre > 0 {
+		return
 	}
-	if pre > 0 {
-		return nil
+	if _, err := b.db.Write.Exec(backfillSQL); err != nil {
+		b.err = fmt.Errorf("%s: %w", backfillLabel, err)
 	}
-	if _, err := db.Write.Exec(backfillSQL); err != nil {
-		return fmt.Errorf("%s: %w", backfillLabel, err)
-	}
-	return nil
 }
 
 // backfillIfFreshTable runs backfillSQL only when the CREATE actually
@@ -912,27 +910,6 @@ func (b *bootstrapper) backfillIfFreshTable(table, createSQL, backfillSQL, backf
 	if _, err := b.db.Write.Exec(backfillSQL); err != nil {
 		b.err = fmt.Errorf("%s: %w", backfillLabel, err)
 	}
-}
-
-// ensureColumn adds a column on the named table when it is absent. The
-// caller supplies the full ALTER TABLE so the default and type stay
-// adjacent to the original schema definition. table_xinfo (vs table_info)
-// reports VIRTUAL / STORED generated columns too, so the idempotency
-// check survives those.
-func ensureColumn(db *DB, table, column, alterSQL string) error {
-	var count int
-	if err := db.Write.QueryRow(
-		`SELECT COUNT(*) FROM pragma_table_xinfo(?) WHERE name = ?`, table, column,
-	).Scan(&count); err != nil {
-		return fmt.Errorf("inspect %s.%s: %w", table, column, err)
-	}
-	if count > 0 {
-		return nil
-	}
-	if _, err := db.Write.Exec(alterSQL); err != nil {
-		return fmt.Errorf("add column %s.%s: %w", table, column, err)
-	}
-	return nil
 }
 
 // cachedCount returns the cached value or runs sql once. Errors return

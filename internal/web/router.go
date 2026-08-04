@@ -1209,10 +1209,10 @@ func (s *Server) serveImageFile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	var canonPath string
+	var canonPath, fileType string
 	if err := cx.DB.Read.QueryRow(
-		`SELECT canonical_path FROM images WHERE id = ?`, idStr,
-	).Scan(&canonPath); err != nil {
+		`SELECT canonical_path, file_type FROM images WHERE id = ?`, idStr,
+	).Scan(&canonPath, &fileType); err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -1239,6 +1239,9 @@ func (s *Server) serveImageFile(w http.ResponseWriter, r *http.Request) {
 	// match. no-cache forces revalidation on every visit so the
 	// matching gallery still hits 304.
 	setGalleryScopedCache(w, s.activeName, idStr, canonPath)
+	if ct := gallery.MIMEForFileType(fileType); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
 	http.ServeFile(w, r, canonPath)
 }
 

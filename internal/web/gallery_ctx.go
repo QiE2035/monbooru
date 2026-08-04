@@ -473,14 +473,19 @@ func (s *Server) tagSvc() *tags.Service {
 // colon. Database errors (including nil gallery) count as "no match" so
 // an ambiguous input degrades to literal.
 func (s *Server) categoryExists(name string) bool {
+	_, ok := s.categoryIDByName(name)
+	return ok
+}
+
+// categoryIDByName resolves a category name to its row id.
+func (s *Server) categoryIDByName(name string) (int64, bool) {
 	d := s.db()
 	if d == nil {
-		return false
+		return 0, false
 	}
-	var n int
-	return d.Read.QueryRow(
-		`SELECT 1 FROM tag_categories WHERE name = ? LIMIT 1`, name,
-	).Scan(&n) == nil
+	var id int64
+	err := d.Read.QueryRow(`SELECT id FROM tag_categories WHERE name = ?`, name).Scan(&id)
+	return id, err == nil
 }
 
 func (s *Server) galleryPath() string {

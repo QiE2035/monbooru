@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/monbooru/monbooru/internal/db"
 	"github.com/monbooru/monbooru/internal/gallery"
 	"github.com/monbooru/monbooru/internal/logx"
 	"github.com/monbooru/monbooru/internal/models"
@@ -239,44 +240,37 @@ func (s *Server) promoteCanonical(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newFolder := gallery.FolderPath(s.galleryPath(), newCanonical)
-
-	tx, err := s.db().Write.Begin()
-	if err != nil {
+	if err := s.promoteCanonicalPath(id, newCanonical,
+		`UPDATE image_paths SET is_canonical = 1 WHERE image_id = ? AND path = ?`, id, newCanonical); err != nil {
 		fail(err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.Exec(`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ?`, id); err != nil {
-		fail(err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if _, err := tx.Exec(
-		`UPDATE image_paths SET is_canonical = 1 WHERE image_id = ? AND path = ?`,
-		id, newCanonical,
-	); err != nil {
-		fail(err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if _, err := tx.Exec(
-		`UPDATE images SET canonical_path = ?, folder_path = ? WHERE id = ?`,
-		newCanonical, newFolder, id,
-	); err != nil {
-		fail(err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		fail(err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// folder_path drives folder:/folderonly: search and the cached
-	// folder tree; promoting a different canonical can land the image
-	// in a different folder, so the per-gallery and adjacency caches
-	// have to drop.
-	s.Active().InvalidateCaches()
-
 	hxDone(w, r, "Canonical path updated.", "", fmt.Sprintf("/images/%d", id))
+}
+
+// promoteCanonicalPath demotes every path of the image, promotes the one
+// promoteWhere selects, and repoints the row at newPath. folder_path
+// travels with it and the caches drop: promoting a path in another
+// folder moves the image for folder:/folderonly: search and the cached
+// folder tree.
+func (s *Server) promoteCanonicalPath(imageID int64, newPath, promoteSQL string, promoteArgs ...any) error {
+	newFolder := gallery.FolderPath(s.galleryPath(), newPath)
+	if err := db.InWriteTx(s.db().Write, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ?`, imageID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(promoteSQL, promoteArgs...); err != nil {
+			return err
+		}
+		_, err := tx.Exec(
+			`UPDATE images SET canonical_path = ?, folder_path = ? WHERE id = ?`,
+			newPath, newFolder, imageID)
+		return err
+	}); err != nil {
+		return err
+	}
+	s.Active().InvalidateCaches()
+	return nil
 }
 
 const (
@@ -764,13 +758,13 @@ func (s *Server) setCollection(w http.ResponseWriter, r *http.Request) {
 		}
 		order = &n
 	}
+	var err error
 	if prev := strings.TrimSpace(r.FormValue("prev")); prev != "" && !strings.EqualFold(prev, name) {
-		if err := gallery.RemoveCollectionMembership(s.db(), id, prev); err != nil {
-			externalErr(w, r, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		err = gallery.RenameCollectionMembership(s.db(), id, prev, name, order)
+	} else {
+		err = gallery.AddCollectionMembership(s.db(), id, name, order)
 	}
-	if err := gallery.AddCollectionMembership(s.db(), id, name, order); err != nil {
+	if err != nil {
 		externalErr(w, r, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -30,21 +30,12 @@ func updateSourceField(database *db.DB, imageID int64, site, postID, col string,
 
 // SourcesForImage returns every origin of imageID, primary first.
 func SourcesForImage(database *db.DB, imageID int64) ([]models.ImageSource, error) {
-	rows, err := database.Read.Query(
-		`SELECT site, post_id, url, commentary, original, similarity, md5, md5_match FROM image_sources WHERE image_id = ? ORDER BY rowid`, imageID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []models.ImageSource
-	for rows.Next() {
+	return db.QueryAll(database.Read, func(rows *sql.Rows) (models.ImageSource, error) {
 		var s models.ImageSource
-		if err := rows.Scan(&s.Site, &s.PostID, &s.URL, &s.Commentary, &s.Original, &s.Similarity, &s.MD5, &s.MD5Match); err != nil {
-			return nil, err
-		}
-		out = append(out, s)
-	}
-	return out, rows.Err()
+		err := rows.Scan(&s.Site, &s.PostID, &s.URL, &s.Commentary, &s.Original, &s.Similarity, &s.MD5, &s.MD5Match)
+		return s, err
+	},
+		`SELECT site, post_id, url, commentary, original, similarity, md5, md5_match FROM image_sources WHERE image_id = ? ORDER BY rowid`, imageID)
 }
 
 // AddSourceMembership upserts one origin (adding it or updating its url,
@@ -122,21 +113,12 @@ func ImageIDBySourceURL(database *db.DB, url string) (int64, bool) {
 // ChildIDsByParentURL returns the images whose origin rows declare the given
 // URL as their parent - the child-side probe of the derivative-edge linking.
 func ChildIDsByParentURL(database *db.DB, url string) ([]int64, error) {
-	rows, err := database.Read.Query(
-		`SELECT DISTINCT image_id FROM image_sources WHERE parent_url = ? ORDER BY image_id`, url)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []int64
-	for rows.Next() {
+	return db.QueryAll(database.Read, func(rows *sql.Rows) (int64, error) {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
+		err := rows.Scan(&id)
+		return id, err
+	},
+		`SELECT DISTINCT image_id FROM image_sources WHERE parent_url = ? ORDER BY image_id`, url)
 }
 
 // SetSourceSimilarity records the score a similarity lookup matched one

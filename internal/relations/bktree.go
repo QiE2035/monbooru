@@ -2,6 +2,7 @@ package relations
 
 import (
 	"math/bits"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -232,11 +233,8 @@ func (t *BKTree) removeIDLocked(id, phash int64) {
 	cur := t.root
 	for cur != nil {
 		if cur.phash == phash {
-			for i, x := range cur.ids {
-				if x == id {
-					cur.ids = append(cur.ids[:i], cur.ids[i+1:]...)
-					break
-				}
+			if i := slices.Index(cur.ids, id); i >= 0 {
+				cur.ids = slices.Delete(cur.ids, i, i+1)
 			}
 			return
 		}
@@ -249,10 +247,7 @@ func (t *BKTree) searchLocked(node *bkNode, query int64, d int, out *[]int64) {
 	if dist <= d {
 		*out = append(*out, node.ids...)
 	}
-	lo := dist - d
-	if lo < 0 {
-		lo = 0
-	}
+	lo := max(dist-d, 0)
 	hi := dist + d
 	for _, edge := range node.children {
 		if edge.dist < lo || edge.dist > hi {

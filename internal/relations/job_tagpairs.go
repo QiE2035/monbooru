@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"time"
 
@@ -54,12 +55,7 @@ const tagPairMinShared = 10
 
 // TagPairDistance maps a score into the queue's ordering key.
 func TagPairDistance(score float64) int {
-	switch {
-	case score > 1:
-		score = 1
-	case score < 0:
-		score = 0
-	}
+	score = min(max(score, 0), 1)
 	return tagPairDistanceBase + int(math.Round((1-score)*tagPairDistanceSpan))
 }
 
@@ -172,13 +168,14 @@ func (p *tagPostings) carriers(tagID int32) []int32 {
 }
 
 // scorable reports whether an image can take part in an admissible
-// pair at all: the shared-tag floor counts seeding tags, so an image
-// carrying fewer than that can never clear it, whichever side it is on.
-// Keeping those out of the index removes them as candidates too.
+// pair at all: the shared-tag floor counts what sharedWeight counts, so
+// an image carrying fewer than that can never clear it, whichever side
+// it is on. Keeping those out of the index removes them as candidates
+// too.
 func scorable(img *tags.SimilarityCorpusImage) bool {
 	n := 0
 	for _, t := range img.Tags {
-		if t.Seeds {
+		if t.Seeds && !t.Implied {
 			n++
 			if n >= tagPairMinShared {
 				return true
@@ -354,7 +351,10 @@ func prefixTags(img *tags.SimilarityCorpusImage, floor float64, scan *pairScan) 
 // and reports how many of them say something about the subject. A tag
 // too popular to seed a scan is too popular to count as evidence
 // either - both images being tagged "1girl" is not something the pair
-// has in common - so it adds weight but not count.
+// has in common - so it adds weight but not count. An implied row is
+// the same story: one parent tag with thirty implications would
+// otherwise clear a floor meant to ask for thirty separate agreements,
+// and it has to be a decision on both sides to be one.
 func sharedWeight(a, b []tags.SimilarityTag) (float64, int) {
 	var sum float64
 	n := 0
@@ -366,7 +366,7 @@ func sharedWeight(a, b []tags.SimilarityTag) (float64, int) {
 			j++
 		default:
 			sum += a[i].Weight
-			if a[i].Seeds {
+			if a[i].Seeds && !a[i].Implied && !b[j].Implied {
 				n++
 			}
 			i++
@@ -390,9 +390,7 @@ func insertTopK(list []tagPairCandidate, c tagPairCandidate) []tagPairCandidate 
 	if pos >= tagPairTopK {
 		return list
 	}
-	list = append(list, tagPairCandidate{})
-	copy(list[pos+1:], list[pos:])
-	list[pos] = c
+	list = slices.Insert(list, pos, c)
 	if len(list) > tagPairTopK {
 		list = list[:tagPairTopK]
 	}
@@ -493,14 +491,15 @@ func collectionPairExclusion(aCol, bCol string) string {
 }
 
 // pairHasDeclaredRelation reports whether the pair already carries a
-// relation or a not-related mark. Unlike pairAlreadyKnown it ignores
-// the queue, so a caller can tell "already decided" from "already
-// queued" and upgrade the latter instead of skipping it.
+// relation, a not-related mark, or a place on one chain or tree path.
+// Unlike pairAlreadyKnown it ignores the queue, so a caller can tell
+// "already decided" from "already queued" and upgrade the latter
+// instead of skipping it.
 func pairHasDeclaredRelation(ctx context.Context, database *db.DB, a, b int64) (bool, error) {
 	tx, err := database.Read.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	return pairHasOtherRelationTx(tx, a, b, "")
+	return pairSettledTx(tx, a, b)
 }

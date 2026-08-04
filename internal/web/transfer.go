@@ -110,28 +110,10 @@ func (s *Server) transferTarget(w http.ResponseWriter, r *http.Request) (*galler
 // rest.
 func (s *Server) runBatchTransfer(ids []int64, dstCx *galleryCtx, removeAfter bool) {
 	srcCx := s.Active()
-	ctx := s.jobs.Context()
 	total := len(ids)
-	transferred, failed := 0, 0
-	cancelled := false
-
-	s.jobs.Update(0, total, "transferring…")
-
-	for i, id := range ids {
-		if ctx.Err() != nil {
-			cancelled = true
-			break
-		}
-		if err := s.transferOneImage(srcCx, dstCx, id, removeAfter); err != nil {
-			logx.Warnf("batch transfer %d: %v", id, err)
-			failed++
-			continue
-		}
-		transferred++
-		if (i+1)%25 == 0 || i == total-1 {
-			s.jobs.Update(i+1, total, "transferring…")
-		}
-	}
+	transferred, failed, cancelled := s.perImageLoop(ids, "transfer", "transferring", func(_ int, id int64) error {
+		return s.transferOneImage(srcCx, dstCx, id, removeAfter)
+	})
 
 	if transferred > 0 {
 		dstCx.InvalidateCaches()
@@ -213,12 +195,11 @@ func (s *Server) transferOneImage(srcCx, dstCx *galleryCtx, id int64, removeAfte
 		if err := copyFileContents(canonPath, dst); err != nil {
 			return fmt.Errorf("copy file: %w", err)
 		}
-		ft, err := gallery.DetectFileType(dst)
-		if err != nil {
+		if _, err := gallery.DetectFileType(dst); err != nil {
 			_ = os.Remove(dst)
 			return fmt.Errorf("unsupported file: %w", err)
 		}
-		img, _, err := gallery.Ingest(dstCx.DB, dstCx.GalleryPath, dstCx.ThumbnailsPath, dst, ft, origin)
+		img, _, err := gallery.Ingest(dstCx.DB, dstCx.GalleryPath, dstCx.ThumbnailsPath, dst, origin)
 		if err != nil {
 			_ = os.Remove(dst)
 			return fmt.Errorf("ingest: %w", err)

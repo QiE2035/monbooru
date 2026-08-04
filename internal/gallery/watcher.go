@@ -38,12 +38,19 @@ type Watcher struct {
 
 const debounceDelay = 500 * time.Millisecond
 
+// movedOutGrace outlasts the debounced ingest a move inside the tree
+// pairs with, so the destination has claimed the row before the vanished
+// source is judged gone.
+const movedOutGrace = 2 * time.Second
+
 // debounceTimer pairs a pending timer with the deadline of its latest
 // arm, so a callback that fired just before a Reset can tell the re-arm
-// happened and yield to the later fire.
+// happened and yield to the later fire. run is what the fire does: the
+// last event on a path decides that too, not just when it lands.
 type debounceTimer struct {
 	t        *time.Timer
 	deadline time.Time
+	run      func(string)
 }
 
 // NewWatcher creates and initializes a filesystem watcher for one gallery.
@@ -134,6 +141,13 @@ func (w *Watcher) Run(ctx context.Context) error {
 			if event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) {
 				info, err := os.Stat(event.Name)
 				if err != nil {
+					// inotify reports the source of a move as Rename
+					// carrying the old name. A move inside the tree pairs
+					// it with a Create for the destination; one that
+					// nothing claims took the file out of the library.
+					if event.Has(fsnotify.Rename) {
+						w.schedule(event.Name, movedOutGrace, w.reconcileMovedOut)
+					}
 					continue
 				}
 
@@ -241,6 +255,12 @@ func (w *Watcher) shutdown() {
 }
 
 func (w *Watcher) debounce(path string) {
+	w.schedule(path, debounceDelay, w.ingestFile)
+}
+
+// schedule arms run(path) for delay from now, replacing anything already
+// pending on the same path.
+func (w *Watcher) schedule(path string, delay time.Duration, run func(string)) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -248,13 +268,14 @@ func (w *Watcher) debounce(path string) {
 		return
 	}
 	if e, ok := w.timers[path]; ok {
-		e.deadline = time.Now().Add(debounceDelay)
-		e.t.Reset(debounceDelay)
+		e.deadline = time.Now().Add(delay)
+		e.run = run
+		e.t.Reset(delay)
 		return
 	}
 
-	e := &debounceTimer{deadline: time.Now().Add(debounceDelay)}
-	e.t = time.AfterFunc(debounceDelay, func() { w.onDebounceFired(path, e) })
+	e := &debounceTimer{deadline: time.Now().Add(delay), run: run}
+	e.t = time.AfterFunc(delay, func() { w.onDebounceFired(path, e) })
 	w.timers[path] = e
 }
 
@@ -271,19 +292,33 @@ func (w *Watcher) onDebounceFired(path string, e *debounceTimer) {
 		return
 	}
 	delete(w.timers, path)
+	run := e.run
 	w.wg.Add(1)
 	w.mu.Unlock()
 	defer w.wg.Done()
 
-	w.ingestFile(path)
+	run(path)
+}
+
+// reconcileMovedOut marks the row at path missing when nothing has taken
+// the file over in the meantime. A move inside the tree re-ingests at the
+// destination and repoints the row, which leaves markFileMissing nothing
+// to match; only a file that left the watched tree is still standing here.
+func (w *Watcher) reconcileMovedOut(path string) {
+	if w.jobSuppressesIngest() {
+		return
+	}
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	w.markFileMissing(path)
 }
 
 func (w *Watcher) ingestFile(path string) {
 	if w.jobSuppressesIngest() {
 		return
 	}
-	ft, err := DetectFileType(path)
-	if err != nil {
+	if _, err := DetectFileType(path); err != nil {
 		return
 	}
 
@@ -300,7 +335,7 @@ func (w *Watcher) ingestFile(path string) {
 		}
 	}
 
-	_, isDup, err := Ingest(w.db, w.galleryPath, w.thumbnailsPath, path, ft, "")
+	_, isDup, err := Ingest(w.db, w.galleryPath, w.thumbnailsPath, path, "")
 	if err != nil {
 		logx.Warnf("watcher ingest %q: %v", path, err)
 	} else if isDup {

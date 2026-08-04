@@ -97,13 +97,13 @@
           <button type="button" id="session-swap" title="Swap which side is left (W)">Swap sides (W)</button>
           <button type="button" id="session-compare" title="Compare the two images (C)">Compare (C)</button>
         </div>
-        {{if .Pair.SharedSource}}
+        {{if .Pair.SharedAncestor}}
         <div class="session-parent">
           <span>both based on</span>
-          <a href="/images/{{.Pair.SharedSource}}" target="_blank">
-            <img src="/thumbnails/{{.ActiveGallery}}/{{.Pair.SharedSource}}.jpg" alt="image {{.Pair.SharedSource}}">
+          <a href="/images/{{.Pair.SharedAncestor}}" target="_blank">
+            <img src="/thumbnails/{{.ActiveGallery}}/{{.Pair.SharedAncestor}}.jpg" alt="image {{.Pair.SharedAncestor}}">
           </a>
-          <a href="/images/{{.Pair.SharedSource}}" target="_blank" class="mono-small">#{{.Pair.SharedSource}}</a>
+          <a href="/images/{{.Pair.SharedAncestor}}" target="_blank" class="mono-small">#{{.Pair.SharedAncestor}}</a>
         </div>
         {{end}}
       </div>
@@ -146,9 +146,9 @@
                 title="Right is based on left (4)">4 Based on (Derivative)</button>
       </div>
       <div class="session-buttons session-buttons-secondary">
-        {{if .Pair.SharedSource}}
+        {{if .Pair.SharedAncestor}}
         <button type="submit" name="type" value="not_related"
-                data-prompt-sentence="{left} and {right} have no direct relation - they stay siblings under #{{.Pair.SharedSource}}."
+                data-prompt-sentence="{left} and {right} have no direct relation - they stay siblings under #{{.Pair.SharedAncestor}}."
                 title="Simple siblings (5)">5 Simple siblings</button>
         {{else}}
         <button type="submit" name="type" value="not_related"

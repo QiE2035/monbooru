@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/monbooru/monbooru/internal/db"
 	"github.com/monbooru/monbooru/internal/gallery"
+	"github.com/monbooru/monbooru/internal/jobs"
 	"github.com/monbooru/monbooru/internal/logx"
 	meta "github.com/monbooru/monbooru/internal/metadata"
 	"github.com/monbooru/monbooru/internal/models"
@@ -367,16 +369,12 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 		flashStatus(w, http.StatusBadRequest, "Invalid path id.")
 		return
 	}
-	tx, err := s.db().Write.Begin()
-	if err != nil {
-		flashStatus(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	defer func() { _ = tx.Rollback() }()
 	var imageID int64
 	var newPath string
 	var alreadyCanonical int
-	if err := tx.QueryRow(`SELECT image_id, path, is_canonical FROM image_paths WHERE id = ?`, pathID).Scan(&imageID, &newPath, &alreadyCanonical); err != nil {
+	if err := s.db().Read.QueryRow(
+		`SELECT image_id, path, is_canonical FROM image_paths WHERE id = ?`, pathID,
+	).Scan(&imageID, &newPath, &alreadyCanonical); err != nil {
 		flashStatus(w, http.StatusNotFound, "Path not found.")
 		return
 	}
@@ -388,19 +386,8 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 		flashStatus(w, http.StatusBadRequest, "Cannot promote: file is missing on disk.")
 		return
 	}
-	if _, err := tx.Exec(`UPDATE image_paths SET is_canonical = 0 WHERE image_id = ?`, imageID); err != nil {
-		flashStatus(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if _, err := tx.Exec(`UPDATE image_paths SET is_canonical = 1 WHERE id = ?`, pathID); err != nil {
-		flashStatus(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if _, err := tx.Exec(`UPDATE images SET canonical_path = ? WHERE id = ?`, newPath, imageID); err != nil {
-		flashStatus(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := tx.Commit(); err != nil {
+	if err := s.promoteCanonicalPath(imageID, newPath,
+		`UPDATE image_paths SET is_canonical = 1 WHERE id = ?`, pathID); err != nil {
 		flashStatus(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -409,6 +396,10 @@ func (s *Server) promoteAliasPathPost(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) rebuildThumbnailsPost(w http.ResponseWriter, r *http.Request) {
 	if err := s.startRebuildThumbsJob(s.Active()); err != nil {
+		if errors.Is(err, jobs.ErrJobRunning) {
+			flashStatus(w, http.StatusConflict, "A job is already running.")
+			return
+		}
 		writeInlineFlash(w, "err", err.Error())
 		return
 	}
@@ -448,23 +439,34 @@ func (s *Server) startRebuildThumbsJob(cx *galleryCtx) error {
 	}
 
 	if err := s.jobs.Start(models.JobTypeRebuildThumbs); err != nil {
-		return fmt.Errorf("a job is already running")
+		return err
 	}
 	thumbnailsPath := cx.ThumbnailsPath
 	galleryName := cx.Name
 	database := cx.DB
 	go func() {
 		ctx := s.jobs.Context()
-		processed := 0
+		processed, rebuilt := 0, 0
 		total := len(imgs)
+		// A refused row - past the decode budget, or a video with no ffmpeg -
+		// still advances the walk, so the progress bar counts it while the
+		// summary keeps it out of the rebuilt tally.
+		failedNote := func() string {
+			if processed == rebuilt {
+				return ""
+			}
+			return fmt.Sprintf(", %d failed", processed-rebuilt)
+		}
 		for _, img := range imgs {
 			if ctx.Err() != nil {
-				s.jobs.Complete(fmt.Sprintf("[%s] rebuild cancelled (%d/%d rebuilt)", galleryName, processed, total))
+				s.jobs.Complete(fmt.Sprintf("[%s] rebuild cancelled (%d/%d rebuilt%s)", galleryName, rebuilt, total, failedNote()))
 				return
 			}
 			s.jobs.Update(processed, total, fmt.Sprintf("[%s] rebuilding…", galleryName))
 			if err := gallery.Generate(img.Path, thumbnailsPath, img.ID, img.FileType); err != nil {
 				logx.Warnf("rebuild thumbnail for %d: %v", img.ID, err)
+			} else {
+				rebuilt++
 			}
 			// Backfill width/height for video rows that pre-date the
 			// ingest-time ffprobe probe. Cheap (one ffprobe per row, only
@@ -482,7 +484,7 @@ func (s *Server) startRebuildThumbsJob(cx *galleryCtx) error {
 			}
 			processed++
 		}
-		s.jobs.Complete(fmt.Sprintf("[%s] rebuilt %d thumbnail(s).", galleryName, processed))
+		s.jobs.Complete(fmt.Sprintf("[%s] rebuilt %d thumbnail(s)%s.", galleryName, rebuilt, failedNote()))
 	}()
 	return nil
 }

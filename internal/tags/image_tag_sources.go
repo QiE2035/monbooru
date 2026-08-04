@@ -39,20 +39,7 @@ func RecordTagSourceTx(tx *sql.Tx, imageID, tagID int64, source string) error {
 // per distinct value over idx_image_tag_sources_source rather than
 // walking the ledger.
 func (s *Service) UsedByLabels() ([]string, error) {
-	rows, err := s.db.Read.Query(`SELECT DISTINCT source FROM image_tag_sources ORDER BY source`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []string
-	for rows.Next() {
-		var label string
-		if err := rows.Scan(&label); err != nil {
-			return nil, err
-		}
-		out = append(out, label)
-	}
-	return out, rows.Err()
+	return db.QueryStrings(s.db.Read, `SELECT DISTINCT source FROM image_tag_sources ORDER BY source`)
 }
 
 // UsedByForTags reports which of labels applied each of tagIDs, keyed by

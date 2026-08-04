@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"regexp"
+	"slices"
 	"strings"
+
+	"github.com/monbooru/monbooru/internal/db"
 )
 
 // Folded-duplicate detection pairs a pre-widening folded tag with the richer
@@ -37,35 +40,25 @@ func LegacyFold(name string) string {
 // A's rows are flagged ambiguous so the merge leaves them for manual
 // resolution.
 func (s *Service) ScanFoldedDuplicates() (int, error) {
-	rows, err := s.db.Read.Query(`SELECT id, name, category_id FROM tags WHERE is_alias = 0`)
-	if err != nil {
-		return 0, err
-	}
 	type tagRow struct {
 		id   int64
 		name string
 		cat  int64
 	}
-	var all []tagRow
-	byNameCat := map[int64]map[string]int64{}
-	for rows.Next() {
+	all, err := db.QueryAll(s.db.Read, func(rows *sql.Rows) (tagRow, error) {
 		var tr tagRow
-		if err := rows.Scan(&tr.id, &tr.name, &tr.cat); err != nil {
-			_ = rows.Close()
-			return 0, err
-		}
-		all = append(all, tr)
+		err := rows.Scan(&tr.id, &tr.name, &tr.cat)
+		return tr, err
+	}, `SELECT id, name, category_id FROM tags WHERE is_alias = 0`)
+	if err != nil {
+		return 0, err
+	}
+	byNameCat := map[int64]map[string]int64{}
+	for _, tr := range all {
 		if byNameCat[tr.cat] == nil {
 			byNameCat[tr.cat] = map[string]int64{}
 		}
 		byNameCat[tr.cat][tr.name] = tr.id
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return 0, err
-	}
-	if err := rows.Close(); err != nil {
-		return 0, err
 	}
 
 	type pair struct{ old, new, cat int64 }
@@ -123,34 +116,57 @@ func (s *Service) FoldedDuplicatesCount() (int, error) {
 	return n, err
 }
 
+// FoldedMergeResult reports what MergeFolded did. Refused carries the
+// distinct MergeTags errors behind the skipped count - a pair that no
+// longer holds contributes to Skipped and nothing else, so a caller can
+// tell "nothing left to do" from "every merge was refused".
+type FoldedMergeResult struct {
+	Merged    int
+	Skipped   int
+	Refused   []error
+	Cancelled bool
+}
+
+// addRefusal records err unless an identical message is already held, so
+// one repeated refusal doesn't grow a slice the length of the scope.
+func (r *FoldedMergeResult) addRefusal(err error) {
+	if slices.ContainsFunc(r.Refused, func(seen error) bool { return seen.Error() == err.Error() }) {
+		return
+	}
+	r.Refused = append(r.Refused, err)
+}
+
 // MergeFolded merges each given folded original into its corrected spelling,
 // resolving the target from folded_tag_pairs and skipping ambiguous ones or any
 // whose pair no longer holds. ctx aborts between merges, leaving the ones
-// already committed in place. Returns merged and skipped counts.
-func (s *Service) MergeFolded(ctx context.Context, oldIDs []int64) (merged, skipped int, cancelled bool, err error) {
+// already committed in place.
+func (s *Service) MergeFolded(ctx context.Context, oldIDs []int64) (FoldedMergeResult, error) {
+	var res FoldedMergeResult
 	for _, oldID := range oldIDs {
 		if ctx.Err() != nil {
-			return merged, skipped, true, nil
+			res.Cancelled = true
+			return res, nil
 		}
 		var newID int64
 		e := s.db.Read.QueryRow(
 			`SELECT new_id FROM folded_tag_pairs WHERE old_id = ? AND ambiguous = 0`, oldID,
 		).Scan(&newID)
 		if e == sql.ErrNoRows {
-			skipped++
+			res.Skipped++
 			continue
 		}
 		if e != nil {
-			return merged, skipped, false, e
+			return res, e
 		}
 		if e := s.MergeTags(oldID, newID); e != nil {
-			skipped++
+			res.Skipped++
+			res.addRefusal(e)
 			continue
 		}
 		// The old spelling is now a zero-usage alias; drop its pair so the
 		// folded view reflects the merge before the next scan.
 		_, _ = s.db.Write.Exec(`DELETE FROM folded_tag_pairs WHERE old_id = ?`, oldID)
-		merged++
+		res.Merged++
 	}
-	return merged, skipped, false, nil
+	return res, nil
 }

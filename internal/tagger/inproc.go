@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -139,6 +140,9 @@ func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, provi
 
 	mode := strings.ToUpper(provider)
 	logx.Infof("tagger: loading %d session(s) on %s", len(taggers), mode)
+	if provider == "directml" {
+		logx.Warnf("tagger: directml forces parallel=1 (EP is not thread-safe)")
+	}
 	loadStart := time.Now()
 
 	// First-ever CUDA inference on a host with a recent GPU pays a
@@ -177,6 +181,11 @@ func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, provi
 	// CUDA ignores these for kernel work but cuDNN still honours them
 	// for host-side helpers.
 	parallel := max(1, cfg.Tagger.Parallel)
+	if provider == "directml" {
+		// Run serialises directml to one worker, so that session gets
+		// every core rather than the configured share.
+		parallel = 1
+	}
 	intra := max(1, runtime.NumCPU()/parallel)
 	if err := opts.SetIntraOpNumThreads(intra); err != nil {
 		b.teardownLocked()
@@ -263,6 +272,26 @@ func (b *inprocBackend) ensure(cfg *config.Config, taggers []TaggerStatus, provi
 	return nil
 }
 
+// parseDirectMLDeviceID resolves a DirectML adapter id. Anything ORT
+// would reject falls back to adapter 0 rather than failing the load.
+func parseDirectMLDeviceID(v string) int {
+	if v == "" {
+		return 0
+	}
+	id, err := strconv.Atoi(v)
+	if err != nil || id < 0 {
+		logx.Warnf("tagger: invalid MONBOORU_TAGGER_DIRECTML_DEVICE_ID %q, falling back to device 0", v)
+		return 0
+	}
+	return id
+}
+
+// directmlDeviceID reads the operator's adapter selection. The tagger
+// child inherits the variable from the parent's environment.
+func directmlDeviceID() int {
+	return parseDirectMLDeviceID(os.Getenv("MONBOORU_TAGGER_DIRECTML_DEVICE_ID"))
+}
+
 // appendExecutionProvider attaches the requested ONNX Runtime execution
 // provider to the session options. cacheDir hosts provider-specific
 // compile caches (OpenVINO); pass "" to skip cache configuration, e.g.
@@ -306,7 +335,18 @@ func appendExecutionProvider(opts *ort.SessionOptions, provider, cacheDir string
 		}
 		return func() { _ = cudaOpts.Destroy() }, nil
 	case "directml":
-		if err := opts.AppendExecutionProviderDirectML(0); err != nil {
+		// The DirectML EP requires memory pattern disabled and the
+		// sequential execution mode; the ORT docs reject sessions built
+		// with the defaults. Set both explicitly so the session never
+		// trips the requirement, and honour MONBOORU_TAGGER_DIRECTML_DEVICE_ID
+		// for multi-GPU hosts instead of hardcoding adapter 0.
+		if err := opts.SetMemPattern(false); err != nil {
+			return nil, fmt.Errorf("set directml mem pattern: %w", err)
+		}
+		if err := opts.SetExecutionMode(ort.ExecutionModeSequential); err != nil {
+			return nil, fmt.Errorf("set directml execution mode: %w", err)
+		}
+		if err := opts.AppendExecutionProviderDirectML(directmlDeviceID()); err != nil {
 			return nil, fmt.Errorf("append directml provider: %w", err)
 		}
 		return nil, nil
@@ -499,7 +539,13 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 	// Resolve every label's routing once per loaded tagger. Inputs
 	// (profile, catIDs, dispatch, inferredCats) are invariant across
 	// images; doing this per-image burns 10k+ map lookups and
-	// function calls on each pass.
+	// function calls on each pass. The id->name view is built once for
+	// the same reason: a linear scan per label is ~200k comparisons on
+	// a 10k-label vocabulary.
+	catNames := make(map[int64]string, len(req.CatIDs))
+	for name, cid := range req.CatIDs {
+		catNames[cid] = name
+	}
 	for i := range loaded {
 		lt := &loaded[i]
 		cands := make([]CandidateLabel, len(lt.labels))
@@ -528,13 +574,19 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 			cands[idx] = CandidateLabel{
 				Name:    name,
 				CatID:   catID,
-				CatName: catNameByID(req.CatIDs, catID),
+				CatName: catNames[catID],
 			}
 		}
 		lt.candidates = cands
 	}
 
-	parallel := min(max(1, req.Parallel), len(req.Images))
+	parallel := max(1, req.Parallel)
+	if req.Provider == "directml" {
+		// Concurrent Run on one session crashes the EP's allocator
+		// (onnxruntime issue #22147).
+		parallel = 1
+	}
+	parallel = min(parallel, len(req.Images))
 
 	results := make([]BackendImageResult, len(req.Images))
 	for i, im := range req.Images {

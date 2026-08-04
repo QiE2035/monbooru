@@ -50,11 +50,10 @@ func SourceLabelCountsQuery(database *db.DB, limit int) ([]SourceLabelCount, err
 // either taken from the (size+mtime)-unchanged shortcut or freshly
 // hashed during the walk.
 type syncFileInfo struct {
-	path     string
-	sha256   string
-	fileType string
-	size     int64
-	mtime    int64
+	path   string
+	sha256 string
+	size   int64
+	mtime  int64
 }
 
 // syncKnownEntry is one image_paths row preloaded for the unchanged-
@@ -210,8 +209,7 @@ func walkGalleryFiles(ctx context.Context, galleryPath string, maxBytes int64, k
 		if d.IsDir() {
 			return nil
 		}
-		ft, typeErr := DetectFileType(path)
-		if typeErr != nil {
+		if _, typeErr := DetectFileType(path); typeErr != nil {
 			return nil
 		}
 		info, statErr := d.Info()
@@ -240,7 +238,7 @@ func walkGalleryFiles(ctx context.Context, galleryPath string, maxBytes int64, k
 			// were already claimed by a previous sync.
 			ClaimOwnership(path)
 		}
-		found = append(found, syncFileInfo{path: path, sha256: hash, fileType: ft, size: info.Size(), mtime: mtimeUnix})
+		found = append(found, syncFileInfo{path: path, sha256: hash, size: info.Size(), mtime: mtimeUnix})
 		return nil
 	})
 	if err != nil {
@@ -288,7 +286,7 @@ func reconcileFile(database *db.DB, galleryPath, thumbnailsPath string, fi syncF
 	// a re-hash; apply the new SHA / size / dimensions / metadata to
 	// the existing image row so tags survive the rewrite.
 	if k, knownPath := known[fi.path]; knownPath && k.sha256 != fi.sha256 {
-		if err := applyInPlaceEdit(database, thumbnailsPath, fi.path, fi.fileType, fi.sha256, fi.mtime, fi.size); err != nil {
+		if err := applyInPlaceEdit(database, thumbnailsPath, fi.path, fi.sha256, fi.mtime, fi.size); err != nil {
 			logx.Warnf("sync: in-place edit %q: %v", fi.path, err)
 			return
 		}
@@ -315,7 +313,7 @@ func reconcileFile(database *db.DB, galleryPath, thumbnailsPath string, fi syncF
 // reconcileNewFile handles the new-SHA branch: a fresh ingest reusing
 // the Phase-1 hash so Ingest doesn't hash twice.
 func reconcileNewFile(database *db.DB, galleryPath, thumbnailsPath string, fi syncFileInfo, bySHA map[string]syncBySHARow, result *SyncResult) {
-	img, _, ingestErr := ingestWithHash(database, galleryPath, thumbnailsPath, fi.path, fi.fileType, fi.sha256, "")
+	img, _, ingestErr := ingestWithHash(database, galleryPath, thumbnailsPath, fi.path, fi.sha256, "")
 	if ingestErr != nil {
 		logx.Warnf("ingest failed for %q: %v", fi.path, ingestErr)
 		return
@@ -557,12 +555,20 @@ func pruneStaleAliasPaths(ctx context.Context, database *db.DB, foundPaths map[s
 // on disk, and the thumbnail is regenerated. The mtime gate at the top
 // of the walk is what triggers entry; the corresponding image_paths
 // row's mtime is updated here so the next sync's shortcut can fire.
-func applyInPlaceEdit(database *db.DB, thumbnailsPath, path, fileType, newSHA string, newMtime, newSize int64) error {
+func applyInPlaceEdit(database *db.DB, thumbnailsPath, path, newSHA string, newMtime, newSize int64) error {
 	var imageID int64
 	if err := database.Read.QueryRow(
 		`SELECT image_id FROM image_paths WHERE path = ?`, path,
 	).Scan(&imageID); err != nil {
 		return fmt.Errorf("locate image for path %q: %w", path, err)
+	}
+
+	// The rewrite can change the type under a name that never moved, and
+	// bytes that are no longer media leave the row describing what the file
+	// used to be rather than a row with no dimensions and no thumbnail.
+	fileType, err := detectMagicType(path)
+	if err != nil {
+		return fmt.Errorf("contents of %q are not a supported media type: %w", path, err)
 	}
 
 	var imgWidth, imgHeight *int
@@ -584,6 +590,7 @@ func applyInPlaceEdit(database *db.DB, thumbnailsPath, path, fileType, newSHA st
 	} else {
 		imgWidth, imgHeight = decodeImageDimensions(path)
 	}
+	sdMeta, comfyMeta, sourceType := extractGenerationMeta(path, fileType)
 
 	tx, err := database.Write.Begin()
 	if err != nil {
@@ -592,8 +599,8 @@ func applyInPlaceEdit(database *db.DB, thumbnailsPath, path, fileType, newSHA st
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec(
-		`UPDATE images SET sha256 = ?, file_size = ?, width = ?, height = ?, page_count = ? WHERE id = ?`,
-		newSHA, newSize, toNullInt(imgWidth), toNullInt(imgHeight), toNullInt(pageCount), imageID,
+		`UPDATE images SET sha256 = ?, file_size = ?, file_type = ?, width = ?, height = ?, page_count = ?, source_type = ? WHERE id = ?`,
+		newSHA, newSize, fileType, toNullInt(imgWidth), toNullInt(imgHeight), toNullInt(pageCount), sourceType, imageID,
 	); err != nil {
 		return fmt.Errorf("update images row: %w", err)
 	}
@@ -602,13 +609,25 @@ func applyInPlaceEdit(database *db.DB, thumbnailsPath, path, fileType, newSHA st
 	); err != nil {
 		return fmt.Errorf("update image_paths mtime: %w", err)
 	}
-	// Drop the side-table metadata so the regenerated row reflects what
-	// the new bytes actually carry. Re-extract is best-effort below.
+	// Replace the side-table metadata rather than keeping rows the old
+	// bytes carried: an edit can add a recipe, change it, or strip it.
 	if _, err := tx.Exec(`DELETE FROM sd_metadata WHERE image_id = ?`, imageID); err != nil {
 		return fmt.Errorf("clear sd_metadata: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM comfyui_metadata WHERE image_id = ?`, imageID); err != nil {
 		return fmt.Errorf("clear comfyui_metadata: %w", err)
+	}
+	if sdMeta != nil {
+		sdMeta.ImageID = imageID
+		if err := insertSDMeta(tx, sdMeta); err != nil {
+			return fmt.Errorf("insert sd_metadata: %w", err)
+		}
+	}
+	if comfyMeta != nil {
+		comfyMeta.ImageID = imageID
+		if err := insertComfyMeta(tx, comfyMeta); err != nil {
+			return fmt.Errorf("insert comfyui_metadata: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

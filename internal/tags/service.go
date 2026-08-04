@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/monbooru/monbooru/internal/db"
@@ -21,7 +23,8 @@ var (
 	ErrBuiltinCategoryName  = errors.New("cannot rename a built-in category")
 	ErrReservedCategoryName = errors.New("this name is used by a search filter (e.g. " + reservedCategoryHint() + ")")
 	ErrNonCanonicalRating   = errors.New("rating category accepts only general, sensitive, questionable, explicit")
-	ErrRatingTagImmutable   = errors.New("rating category tags cannot be renamed, merged, deleted, or moved")
+	ErrRatingTagImmutable   = errors.New("rating category tags cannot be renamed, moved, or turned into aliases")
+	ErrInvalidMoveTarget    = errors.New("tags must move to another existing category")
 
 	// #rgb or #rrggbb. Anything else gets ZgotmplZ'd in the template's
 	// CSS context, so reject it up front with a useful error.
@@ -71,14 +74,6 @@ var (
 	// adding a future filter is a single edit in internal/searchkw.
 	reservedCategoryList = append(append([]string{}, searchkw.Keywords...), "system")
 
-	reservedCategoryNames = func() map[string]struct{} {
-		m := make(map[string]struct{}, len(reservedCategoryList))
-		for _, n := range reservedCategoryList {
-			m[n] = struct{}{}
-		}
-		return m
-	}()
-
 	// RatingLevels is the canonical rating vocabulary, ordered low to high.
 	// Highest-wins resolution and the cookie ceiling both rely on this order.
 	RatingLevels = []string{"general", "sensitive", "questionable", "explicit"}
@@ -91,8 +86,7 @@ func IsCanonicalRating(name string) bool {
 }
 
 func isReservedCategoryName(name string) bool {
-	_, ok := reservedCategoryNames[name]
-	return ok
+	return slices.Contains(reservedCategoryList, name)
 }
 
 // reservedCategoryHint formats reservedCategoryList as a human-readable
@@ -293,11 +287,7 @@ func (s *Service) ChunkedDeleteWithTagRecalc(
 			cancelled = true
 			break
 		}
-		end := start + chunkSize
-		if end > len(ids) {
-			end = len(ids)
-		}
-		chunk := ids[start:end]
+		chunk := ids[start:min(start+chunkSize, len(ids))]
 		placeholders, chunkArgs := db.InPlaceholders(chunk)
 		args := append(chunkArgs, extraArgs...)
 
@@ -333,7 +323,7 @@ func (s *Service) ChunkedDeleteWithTagRecalc(
 		if afterCommit != nil {
 			afterCommit(chunk)
 		}
-		processed = end
+		processed += len(chunk)
 	}
 	return tagIDsFromSet(seen), processed, cancelled, nil
 }
@@ -342,11 +332,7 @@ func tagIDsFromSet(seen map[int64]struct{}) []int64 {
 	if len(seen) == 0 {
 		return nil
 	}
-	out := make([]int64, 0, len(seen))
-	for id := range seen {
-		out = append(out, id)
-	}
-	return out
+	return slices.Collect(maps.Keys(seen))
 }
 
 // RecalcIDs recomputes usage_count for the given tag IDs. Lets bulk

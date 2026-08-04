@@ -52,9 +52,13 @@ var Keywords = []string{
 }
 
 // keywordSet is the membership-test view of Keywords. Built once at
-// init so IsKeyword is a single map lookup.
+// init so IsKeyword is a single map lookup. `system` joins it here
+// rather than in Keywords: it is the cheat-sheet's own namespace, not a
+// filter the dropdown lists, but a query carrying it must not be read
+// as a category-qualified tag and probed for a category first.
 var keywordSet = func() map[string]struct{} {
-	m := make(map[string]struct{}, len(Keywords))
+	m := make(map[string]struct{}, len(Keywords)+1)
+	m["system"] = struct{}{}
 	for _, k := range Keywords {
 		m[k] = struct{}{}
 	}

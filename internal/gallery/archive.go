@@ -134,26 +134,12 @@ func (m *Manga) ExtractPage(n int, dst string) error {
 		return err
 	}
 	defer func() { _ = rc.Close() }()
-	dir := filepath.Dir(dst)
-	tmp, err := os.CreateTemp(dir, ".page.*")
-	if err != nil {
-		return fmt.Errorf("create temp page: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := io.Copy(tmp, rc); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("write page %d: %w", n+1, err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, dst); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("rename page %d: %w", n+1, err)
-	}
-	return nil
+	return writeAtomic(dst, ".page.*", func(f *os.File) error {
+		if _, err := io.Copy(f, rc); err != nil {
+			return fmt.Errorf("write page %d: %w", n+1, err)
+		}
+		return nil
+	})
 }
 
 // CoverImage decodes page 1 (entry 0 of the sorted list) into an

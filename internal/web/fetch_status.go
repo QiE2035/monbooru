@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"html"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -82,11 +83,9 @@ func (s *Server) pruneFetchStatusLocked(now time.Time) {
 		s.fetchStatus = map[string]fetchStatusEntry{}
 		return
 	}
-	for k, e := range s.fetchStatus {
-		if now.Sub(e.At) > fetchStatusTTL {
-			delete(s.fetchStatus, k)
-		}
-	}
+	maps.DeleteFunc(s.fetchStatus, func(_ string, e fetchStatusEntry) bool {
+		return now.Sub(e.At) > fetchStatusTTL
+	})
 }
 
 func (s *Server) loadFetchStatus(gallery string, id int64) (fetchStatusEntry, bool) {
@@ -117,6 +116,7 @@ func writeFetchPending(w http.ResponseWriter, id, n int64) {
 // the triggering button placed it (#fetch-status or #fetch-pending). body must
 // be valid HTML; escaping is the caller's responsibility.
 func writeFetchOutcome(w http.ResponseWriter, kind, body string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(`<div id="fetch-status" class="fetch-status" hx-swap-oob="true"><div class="flash flash-` + kind + `">` + body + `</div></div>`))
 }
 
@@ -138,7 +138,6 @@ func (s *Server) fetchStatusHandler(w http.ResponseWriter, r *http.Request) {
 	switch e.State {
 	case "pending":
 		if n >= fetchPollMax {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			writeFetchOutcome(w, "warn", html.EscapeString("Still fetching from monloader; reload to check for new tags."))
 			return
 		}
@@ -159,21 +158,18 @@ func (s *Server) fetchStatusHandler(w http.ResponseWriter, r *http.Request) {
 		// per-source trail; render it as a list with the searched hashes
 		// recorded at enqueue time.
 		s.clearFetchStatus(s.activeName, id)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		writeFetchOutcome(w, "warn", lookupMissBody(e.Msg, e.Hashes))
 	case "already_exists":
 		// A replace found its original already in the library as another
 		// image; the pair was recorded as potential duplicates. A standing
 		// state the operator resolves in the dup workflow, not an error.
 		s.clearFetchStatus(s.activeName, id)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		writeFetchOutcome(w, "warn", alreadyExistsBody(e.Msg))
 	default:
 		// Any other state is terminal: a hash mismatch or apply error from
 		// enrich, or a code monloader reported for a fetch that failed before
 		// it could enrich. Surface it inline and stop polling.
 		s.clearFetchStatus(s.activeName, id)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		writeFetchOutcome(w, "err", html.EscapeString(fetchFailureMessage(e.State, e.Msg)))
 	}
 }

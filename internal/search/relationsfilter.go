@@ -95,6 +95,15 @@ func (b *whereBuilder) buildPhashFilter(e FilterExpr) string {
 // front. The cold relation:none scan on a 1M-row visible set used to
 // land in seconds; here it folds into the outer sort with no
 // per-row work.
+// The per-source predicates the relation: switch and the any-union both
+// emit, in one place so the two cannot drift apart.
+const (
+	relDupMemberExists = "EXISTS (SELECT 1 FROM dup_group_members m WHERE m.image_id = i.id)"
+	relAltMemberExists = "EXISTS (SELECT 1 FROM alt_group_members m WHERE m.image_id = i.id)"
+	relVersionExists   = "EXISTS (SELECT 1 FROM version_edges v WHERE v.child_image_id = i.id OR v.parent_image_id = i.id)"
+	relSeriesCarrier   = "i.series IS NOT NULL AND i.series != ''"
+)
+
 func (b *whereBuilder) buildRelationFilter(e FilterExpr) string {
 	val := strings.ToLower(strings.TrimSpace(e.Val))
 	b.resolveRelationPresence()
@@ -103,7 +112,7 @@ func (b *whereBuilder) buildRelationFilter(e FilterExpr) string {
 		if !b.relPresence.dup {
 			return "1=0"
 		}
-		return "EXISTS (SELECT 1 FROM dup_group_members m WHERE m.image_id = i.id)"
+		return relDupMemberExists
 	case "original":
 		if !b.relPresence.dup {
 			return "1=0"
@@ -113,12 +122,12 @@ func (b *whereBuilder) buildRelationFilter(e FilterExpr) string {
 		if !b.relPresence.alt {
 			return "1=0"
 		}
-		return "EXISTS (SELECT 1 FROM alt_group_members m WHERE m.image_id = i.id)"
+		return relAltMemberExists
 	case "version":
 		if !b.relPresence.version {
 			return "1=0"
 		}
-		return "EXISTS (SELECT 1 FROM version_edges v WHERE v.child_image_id = i.id OR v.parent_image_id = i.id)"
+		return relVersionExists
 	case "derivative":
 		if !b.relPresence.derivative {
 			return "1=0"
@@ -133,7 +142,7 @@ func (b *whereBuilder) buildRelationFilter(e FilterExpr) string {
 		if !b.relPresence.series {
 			return "1=0"
 		}
-		return "i.series IS NOT NULL AND i.series != ''"
+		return relSeriesCarrier
 	case "any":
 		if !b.anyRelationPresent() {
 			return "1=0"
@@ -194,17 +203,17 @@ func (b *whereBuilder) relationAnyClauseForPresence() string {
 	parts := make([]string, 0, 5)
 	if p.dup {
 		parts = append(parts,
-			"EXISTS (SELECT 1 FROM dup_group_members m WHERE m.image_id = i.id)",
+			relDupMemberExists,
 		)
 	}
 	if p.alt {
 		parts = append(parts,
-			"EXISTS (SELECT 1 FROM alt_group_members m WHERE m.image_id = i.id)",
+			relAltMemberExists,
 		)
 	}
 	if p.version {
 		parts = append(parts,
-			"EXISTS (SELECT 1 FROM version_edges v WHERE v.child_image_id = i.id OR v.parent_image_id = i.id)",
+			relVersionExists,
 		)
 	}
 	if p.derivative {
@@ -213,7 +222,7 @@ func (b *whereBuilder) relationAnyClauseForPresence() string {
 		)
 	}
 	if p.series {
-		parts = append(parts, "(i.series IS NOT NULL AND i.series != '')")
+		parts = append(parts, "("+relSeriesCarrier+")")
 	}
 	if len(parts) == 0 {
 		return "1=0"

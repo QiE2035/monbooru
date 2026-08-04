@@ -3,6 +3,7 @@ package gallery
 import (
 	"crypto/md5"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -120,24 +121,33 @@ func Md5File(path string) (string, error) {
 // DetectFileType returns the file type constant for the given path,
 // trying extension matching first and falling back to magic bytes.
 func DetectFileType(path string) (string, error) {
+	if t := ExtFileType(path); t != "" {
+		return t, nil
+	}
+	return detectMagicType(path)
+}
+
+// ExtFileType returns the type the path's extension claims, or "" when it
+// claims none. Ingest records what the bytes say, so comparing the two is
+// what tells the operator a file is misnamed.
+func ExtFileType(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".jpg", ".jpeg":
-		return models.FileTypeJPEG, nil
+		return models.FileTypeJPEG
 	case ".png":
-		return models.FileTypePNG, nil
+		return models.FileTypePNG
 	case ".webp":
-		return models.FileTypeWEBP, nil
+		return models.FileTypeWEBP
 	case ".gif":
-		return models.FileTypeGIF, nil
+		return models.FileTypeGIF
 	case ".mp4":
-		return models.FileTypeMP4, nil
+		return models.FileTypeMP4
 	case ".webm":
-		return models.FileTypeWEBM, nil
+		return models.FileTypeWEBM
 	case ".cbz", ".zip":
-		return models.FileTypeCBZ, nil
+		return models.FileTypeCBZ
 	}
-
-	return detectMagicType(path)
+	return ""
 }
 
 // detectMagicType reads the file's leading bytes and returns the type
@@ -149,8 +159,10 @@ func detectMagicType(path string) (string, error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	buf := make([]byte, 16)
-	n, _ := f.Read(buf)
+	// Enough for the longest ftyp brand list in practice; every other
+	// signature fits in 12.
+	buf := make([]byte, 64)
+	n, _ := io.ReadFull(f, buf)
 	buf = buf[:n]
 
 	return detectMagic(buf)
@@ -181,15 +193,13 @@ func detectMagic(buf []byte) (string, error) {
 		buf[8] == 0x57 && buf[9] == 0x45 && buf[10] == 0x42 && buf[11] == 0x50 {
 		return models.FileTypeWEBP, nil
 	}
-	// MP4: ftyp box at offset 4 (66 74 79 70). The ftyp brand at
-	// offset 8..11 disambiguates ISO base-media containers; without
-	// the brand check `.mov`, `.3gp`, and `.heic` files would be
-	// accepted as MP4 and then fail to decode in the browser.
-	if len(buf) >= 12 && buf[4] == 0x66 && buf[5] == 0x74 && buf[6] == 0x79 && buf[7] == 0x70 {
-		switch string(buf[8:12]) {
-		case "mp42", "mp41", "isom", "iso2", "avc1":
-			return models.FileTypeMP4, nil
-		}
+	// MP4: ftyp box at offset 4 (66 74 79 70). Its brands disambiguate
+	// ISO base-media containers; without the brand check `.mov`,
+	// `.heic`, and old `.3gp` files would be accepted as MP4 and then
+	// fail to decode in the browser.
+	if len(buf) >= 12 && buf[4] == 0x66 && buf[5] == 0x74 && buf[6] == 0x79 && buf[7] == 0x70 &&
+		hasMP4Brand(buf) {
+		return models.FileTypeMP4, nil
 	}
 	// WEBM: 1A 45 DF A3 (EBML header)
 	if buf[0] == 0x1A && buf[1] == 0x45 && buf[2] == 0xDF && buf[3] == 0xA3 {
@@ -205,7 +215,73 @@ func detectMagic(buf []byte) (string, error) {
 	return "", ErrUnsupportedType
 }
 
+// hasMP4Brand reports whether an ftyp box names a brand monbooru can
+// serve. The playable brand lands in compatible_brands as readily as in
+// major_brand: danbooru's mp4s are major iso5 and name mp41 only there.
+func hasMP4Brand(buf []byte) bool {
+	// Bounded by the declared box size so the scan stops at ftyp.
+	end := min(int(binary.BigEndian.Uint32(buf[:4])), len(buf))
+	for off := 8; off+4 <= end; off += 4 {
+		if off == 12 {
+			continue // minor_version
+		}
+		switch string(buf[off : off+4]) {
+		case "mp42", "mp41", "isom", "iso2", "avc1":
+			return true
+		}
+	}
+	return false
+}
+
 // IsVideoType returns true for video file types.
 func IsVideoType(fileType string) bool {
 	return fileType == models.FileTypeMP4 || fileType == models.FileTypeWEBM
+}
+
+// ExtForFileType returns the extension a file of this type is named with,
+// or "" when unmapped. Only for files monbooru names itself; an
+// operator's own file keeps the name they gave it.
+func ExtForFileType(fileType string) string {
+	switch fileType {
+	case models.FileTypeJPEG:
+		return ".jpg"
+	case models.FileTypePNG:
+		return ".png"
+	case models.FileTypeWEBP:
+		return ".webp"
+	case models.FileTypeGIF:
+		return ".gif"
+	case models.FileTypeMP4:
+		return ".mp4"
+	case models.FileTypeWEBM:
+		return ".webm"
+	case models.FileTypeCBZ:
+		return ".cbz"
+	}
+	return ""
+}
+
+// MIMEForFileType maps a stored file type to the media type to serve it
+// under, or "" when unmapped. Handlers set this explicitly because
+// http.ServeFile answers from the extension, which the bytes can
+// contradict.
+func MIMEForFileType(fileType string) string {
+	switch fileType {
+	case models.FileTypeJPEG:
+		return "image/jpeg"
+	case models.FileTypePNG:
+		return "image/png"
+	case models.FileTypeWEBP:
+		return "image/webp"
+	case models.FileTypeGIF:
+		return "image/gif"
+	case models.FileTypeMP4:
+		return "video/mp4"
+	case models.FileTypeWEBM:
+		return "video/webm"
+	case models.FileTypeCBZ:
+		// What the stdlib sniffer already answers for a PK archive.
+		return "application/zip"
+	}
+	return ""
 }

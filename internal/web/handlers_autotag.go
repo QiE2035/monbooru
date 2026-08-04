@@ -2,12 +2,12 @@ package web
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"html"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -42,25 +42,35 @@ func (s *Server) spawnAutoTagJob(ids []int64, selected []tagger.TaggerStatus, lo
 	go func() {
 		ctx := s.jobs.Context()
 		skipped, err := tagger.RunWithTaggers(ctx, database, s.cfg, ids, selected, s.jobs, s.cfg.Tagger.ExecutionProvider, cx.MangaCacheDir())
-		// New tags are commonly created by a tagger run, so the cached
-		// tag count is stale once the worker returns regardless of
-		// outcome (cancelled runs still wrote rows for completed images).
-		cx.InvalidateCaches()
-		if ctx.Err() != nil {
-			s.jobs.Complete(fmt.Sprintf("auto-tagging cancelled (%d image(s) queued)", len(ids)))
-			return
-		}
-		if err != nil {
-			s.jobs.Fail(err.Error())
-			return
-		}
-		logAutotagPeak(fmt.Sprintf("%s %d image(s)", logScope, len(ids)), baseline)
-		if skipped > 0 {
-			s.jobs.Complete(fmt.Sprintf("auto-tagged %d of %d %simage(s), %d skipped", len(ids)-skipped, len(ids), itemNoun, skipped))
-			return
-		}
-		s.jobs.Complete(fmt.Sprintf("auto-tagged %d %simage(s)", len(ids), itemNoun))
+		_ = s.completeAutotagRun(cx, ctx, "", itemNoun, logScope, len(ids), skipped, baseline, err)
 	}()
+}
+
+// completeAutotagRun writes a finished tagger run's terminal job state:
+// caches dropped, then the cancelled / failed / partial / full summary.
+// prefix ("" or "[gallery] ") and itemNoun ("" or "uploaded ") splice
+// into the summaries the two callers surface. Returns err so the
+// scheduler can log and propagate it.
+func (s *Server) completeAutotagRun(cx *galleryCtx, ctx context.Context, prefix, itemNoun, logScope string, total, skipped int, baseline uint64, err error) error {
+	// New tags are commonly created by a tagger run, so the cached tag
+	// count is stale once the worker returns regardless of outcome
+	// (cancelled runs still wrote rows for completed images).
+	cx.InvalidateCaches()
+	if ctx.Err() != nil {
+		s.jobs.Complete(fmt.Sprintf("%sauto-tagging cancelled (%d image(s) queued)", prefix, total))
+		return nil
+	}
+	if err != nil {
+		s.jobs.Fail(err.Error())
+		return err
+	}
+	logAutotagPeak(fmt.Sprintf("%s %d image(s)", logScope, total), baseline)
+	if skipped > 0 {
+		s.jobs.Complete(fmt.Sprintf("%sauto-tagged %d of %d %simage(s), %d skipped", prefix, total-skipped, total, itemNoun, skipped))
+		return nil
+	}
+	s.jobs.Complete(fmt.Sprintf("%sauto-tagged %d %simage(s)", prefix, total, itemNoun))
+	return nil
 }
 
 // logAutotagPeak writes the peak-RSS-delta for a finished autotag run
@@ -138,7 +148,8 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 	var addedIDs []int64
 	var dupeIDs []int64
 	var tagWarnings []string
-	added, dupes, failed, oversized := 0, 0, 0, 0
+	added, dupes, oversized := 0, 0, 0
+	unsupported, unsaved, noPreview := 0, 0, 0
 	for _, fh := range files {
 		// Enforce the per-file cap up front; the watcher and API handler do the
 		// same. The MaxBytesReader cap above only bounds the total request body,
@@ -150,7 +161,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		}
 		file, err := fh.Open()
 		if err != nil {
-			failed++
+			unsaved++
 			continue
 		}
 
@@ -158,7 +169,7 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		dst, err := os.Create(dstPath)
 		if err != nil {
 			_ = file.Close()
-			failed++
+			unsaved++
 			continue
 		}
 
@@ -166,20 +177,19 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 			_ = dst.Close()
 			_ = file.Close()
 			_ = os.Remove(dstPath)
-			failed++
+			unsaved++
 			continue
 		}
 		_ = dst.Close()
 		_ = file.Close()
 
-		ft, ftErr := gallery.DetectFileType(dstPath)
-		if ftErr != nil {
+		if _, ftErr := gallery.DetectFileType(dstPath); ftErr != nil {
 			_ = os.Remove(dstPath)
-			failed++
+			unsupported++
 			continue
 		}
 
-		img, isDup, ingestErr := gallery.Ingest(s.db(), s.galleryPath(), s.thumbnailsPath(), dstPath, ft, models.OriginUpload)
+		img, isDup, ingestErr := gallery.Ingest(s.db(), s.galleryPath(), s.thumbnailsPath(), dstPath, models.OriginUpload)
 		if ingestErr != nil {
 			logx.Warnf("upload ingest %q: %v", fh.Filename, ingestErr)
 			// Bytes the ingest will never accept: drop the copy we just
@@ -189,8 +199,10 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 			// are not ours to discard over a busy write pool.
 			if errors.Is(ingestErr, gallery.ErrUnsupportedType) {
 				_ = os.Remove(dstPath)
+				unsupported++
+			} else {
+				unsaved++
 			}
-			failed++
 			continue
 		}
 		if isDup {
@@ -222,6 +234,11 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 			if err := s.tagSvc().AddTagToImage(img.ID, tag.ID, false, nil); err != nil {
 				tagWarnings = append(tagWarnings, ct.name+": "+err.Error())
 			}
+		}
+		// Ingest logs a failed thumbnail and carries on, so the absent file
+		// is the only signal the operator would otherwise never get.
+		if _, statErr := os.Stat(gallery.ThumbnailPath(s.thumbnailsPath(), img.ID)); statErr != nil {
+			noPreview++
 		}
 		addedIDs = append(addedIDs, img.ID)
 		added++
@@ -262,11 +279,15 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 			msg.WriteString(")")
 		}
 	}
+	if noPreview > 0 {
+		fmt.Fprintf(&msg, ", %d without a preview", noPreview)
+	}
 	if oversized > 0 {
 		fmt.Fprintf(&msg, ", %d skipped (exceeds %d MB)", oversized, s.cfg.Gallery.MaxFileSizeMB)
 	}
+	failed := unsupported + unsaved
 	if failed > 0 {
-		fmt.Fprintf(&msg, ", %d error(s)", failed)
+		fmt.Fprintf(&msg, ", %d error(s): %s", failed, uploadErrorReasons(unsupported, unsaved))
 	}
 	if len(tagWarnings) > 0 {
 		fmt.Fprintf(&msg, " (%d tag warning(s): %s)", len(tagWarnings), html.EscapeString(strings.Join(tagWarnings, "; ")))
@@ -293,6 +314,19 @@ func (s *Server) uploadPost(w http.ResponseWriter, r *http.Request) {
 		kind = "err"
 	}
 	writeInlineFlashHTML(w, kind, msg.String())
+}
+
+// uploadErrorReasons names why an upload's files failed. Grouping by
+// reason instead of listing files keeps the summary on one line whatever
+// the size of the drop.
+func uploadErrorReasons(unsupported, unsaved int) string {
+	if unsupported > 0 && unsaved > 0 {
+		return fmt.Sprintf("%d unsupported file type(s), %d could not be saved", unsupported, unsaved)
+	}
+	if unsupported > 0 {
+		return "unsupported file type"
+	}
+	return "could not be saved"
 }
 
 func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
@@ -348,11 +382,7 @@ func (s *Server) autotagTrigger(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// scope=selection or empty: read the checked ids from the form.
-		for _, idStr := range r.Form["ids"] {
-			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-				ids = append(ids, id)
-			}
-		}
+		ids = parseIDList(r.Form["ids"])
 	}
 
 	if len(ids) == 0 {

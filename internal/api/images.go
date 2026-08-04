@@ -1129,7 +1129,7 @@ func (h *Handler) createImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	img, isDuplicate, err := gallery.Ingest(g.DB, g.GalleryPath, g.ThumbnailsPath, in.imgPath, fileType, origin)
+	img, isDuplicate, err := gallery.Ingest(g.DB, g.GalleryPath, g.ThumbnailsPath, in.imgPath, origin)
 	if err != nil {
 		if in.uploadedToDisk {
 			_ = os.Remove(in.imgPath)
@@ -1315,7 +1315,14 @@ func (h *Handler) deleteImage(w http.ResponseWriter, r *http.Request) {
 
 	result, err := gallery.DeleteImage(g.DB, g.GalleryPath, g.ThumbnailsPath, id, tags.RemoveAllTagsFromImageTx, relationsOnDelete(g.RelationsSvc))
 	if err != nil {
-		apiError(w, http.StatusNotFound, "not_found", "image not found")
+		// ErrNoRows on the canonical-path lookup is the genuine "no such
+		// id"; a busy write pool or a filesystem refusal is ours, and a
+		// caller retrying one told it does not exist never gets there.
+		if errors.Is(err, sql.ErrNoRows) {
+			apiError(w, http.StatusNotFound, "not_found", "image not found")
+			return
+		}
+		apiError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	g.invalidate()

@@ -171,7 +171,7 @@ func suggestUsageRanked(database *db.DB, prefix, categoryName string, requireUsa
 			return prior, err
 		}
 		defer func() { _ = rows.Close() }()
-		scanned, err := scanTags(rows)
+		scanned, err := ScanTags(rows)
 		if err != nil {
 			return prior, err
 		}
@@ -218,12 +218,12 @@ func (s *Service) SuggestTagsInCategory(prefix, categoryName string, limit int) 
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	return scanTags(rows)
+	return ScanTags(rows)
 }
 
-// scanTags collects the rows of a five-column tag SELECT (id, name,
+// ScanTags collects the rows of a five-column tag SELECT (id, name,
 // category name, color, usage_count). The caller owns rows.Close.
-func scanTags(rows *sql.Rows) ([]models.Tag, error) {
+func ScanTags(rows *sql.Rows) ([]models.Tag, error) {
 	var out []models.Tag
 	for rows.Next() {
 		var t models.Tag

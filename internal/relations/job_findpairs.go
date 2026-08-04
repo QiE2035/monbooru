@@ -247,9 +247,9 @@ func pairAlreadyKnown(ctx context.Context, database *db.DB, a, b int64) (bool, e
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	// pairHasOtherRelationTx only does SELECTs, so the read pool is
-	// fine; `not_related` blocks find-pairs from resurfacing rejections.
-	if got, err := pairHasOtherRelationTx(tx, a, b, ""); err != nil {
+	// pairSettledTx only does SELECTs, so the read pool is fine;
+	// `not_related` blocks find-pairs from resurfacing rejections.
+	if got, err := pairSettledTx(tx, a, b); err != nil {
 		return false, err
 	} else if got {
 		return true, nil

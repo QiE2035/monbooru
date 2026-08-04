@@ -40,10 +40,7 @@ type Query struct {
 
 // Execute runs the query against the DB and returns paginated results.
 func Execute(database *db.DB, q Query) (*models.SearchResult, error) {
-	page := q.Page
-	if page < 1 {
-		page = 1
-	}
+	page := max(q.Page, 1)
 	limit := q.Limit
 	if limit < 1 {
 		limit = 40
@@ -335,10 +332,7 @@ func executeFromCachedIDs(database *db.DB, ids []int64, page, limit int) (*model
 // ctx bounds the fan for callers that render behind a deadline; Execute
 // has none to hand down and passes a background context.
 func fetchSortedMatchIDs(ctx context.Context, database *db.DB, indexHint, where string, args []any, orderClause string, orderArgs []any, total int) []int64 {
-	n := total
-	if n > adjacencyCacheMaxIDs {
-		n = adjacencyCacheMaxIDs
-	}
+	n := min(total, adjacencyCacheMaxIDs)
 	sql := fmt.Sprintf(
 		`SELECT i.id FROM images i%s WHERE %s %s LIMIT ?`,
 		indexHint, where, orderClause,
@@ -894,16 +888,7 @@ func SidebarTagsWithGlobalCount(database *db.DB, imageIDs []int64) ([]models.Tag
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-
-	var out []models.Tag
-	for rows.Next() {
-		var t models.Tag
-		if err := rows.Scan(&t.ID, &t.Name, &t.CategoryName, &t.CategoryColor, &t.UsageCount); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
+	return tags.ScanTags(rows)
 }
 
 // suggestCandidateCap bounds how many prefix/substring-matching tags are
@@ -1041,15 +1026,24 @@ func SuggestTagsWithFilter(database *db.DB, expr Expr, prefix, categoryName stri
 	return out, nil
 }
 
+// sqlDir renders the ORDER BY direction, falling back to def when the
+// order parameter names neither.
+func sqlDir(order, def string) string {
+	switch order {
+	case "asc":
+		return "ASC"
+	case "desc":
+		return "DESC"
+	}
+	return def
+}
+
 // collectionOrderClause sorts a result set pinned to one collection by
 // that collection's per-image position (NULLs last in both directions),
 // then id. The position is read from the join table so an image filed
 // under several collections sorts by the pinned one, not its home order.
 func collectionOrderClause(name, order string) (string, []any) {
-	dir := "ASC"
-	if order == "desc" {
-		dir = "DESC"
-	}
+	dir := sqlDir(order, "ASC")
 	sub := "(SELECT position FROM image_collections WHERE image_id = i.id AND name = ?)"
 	clause := "ORDER BY " + sub + " IS NULL, " + sub + " " + dir + ", i.id " + dir
 	return clause, []any{name, name}
@@ -1084,10 +1078,7 @@ func PinnedCollectionName(expr Expr) string {
 func buildOrder(sort, order string, randomSeed int64) string {
 	switch sort {
 	case "filesize":
-		dir := "DESC"
-		if order == "asc" {
-			dir = "ASC"
-		}
+		dir := sqlDir(order, "DESC")
 		return "ORDER BY i.file_size " + dir + ", i.id " + dir
 	case "order":
 		// Group by series alphabetically, then by within-series position
@@ -1115,10 +1106,7 @@ func buildOrder(sort, order string, randomSeed int64) string {
 		}
 		return "ORDER BY RANDOM(), i.id"
 	default: // "newest"
-		dir := "DESC"
-		if order == "asc" {
-			dir = "ASC"
-		}
+		dir := sqlDir(order, "DESC")
 		return "ORDER BY i.ingested_at " + dir + ", i.id " + dir
 	}
 }

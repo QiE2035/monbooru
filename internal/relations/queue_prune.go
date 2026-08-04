@@ -31,26 +31,25 @@ func PruneQueue(ctx context.Context, database *db.DB, opts FindPairsOptions) (in
 		); err != nil {
 			return err
 		}
-		res, err := tx.ExecContext(ctx,
-			`DELETE FROM potential_relation_pairs WHERE source = ? AND COALESCE(score, 0) < ?`,
-			SourceTags, threshold)
-		if err != nil {
+		del := func(where string, args ...any) error {
+			res, err := tx.ExecContext(ctx,
+				`DELETE FROM potential_relation_pairs WHERE `+where, args...)
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			removed += int(n)
+			return nil
+		}
+		if err := del(`source = ? AND COALESCE(score, 0) < ?`, SourceTags, threshold); err != nil {
 			return err
 		}
-		n, _ := res.RowsAffected()
-		removed += int(n)
+		// Between the two deletes on purpose: the demotion re-keys rows
+		// the distance delete would otherwise take with it.
 		if err := demoteOverDistanceTx(ctx, tx, opts.Distance); err != nil {
 			return err
 		}
-		res, err = tx.ExecContext(ctx,
-			`DELETE FROM potential_relation_pairs WHERE source = ? AND distance > ?`,
-			SourcePhash, opts.Distance)
-		if err != nil {
-			return err
-		}
-		n, _ = res.RowsAffected()
-		removed += int(n)
-		return nil
+		return del(`source = ? AND distance > ?`, SourcePhash, opts.Distance)
 	})
 	if err != nil {
 		return 0, err
@@ -63,28 +62,18 @@ func PruneQueue(ctx context.Context, database *db.DB, opts FindPairsOptions) (in
 // the tag band so the queue order stays consistent. Runs per row
 // because the band mapping lives in TagPairDistance.
 func demoteOverDistanceTx(ctx context.Context, tx *sql.Tx, distance int) error {
-	rows, err := tx.QueryContext(ctx,
-		`SELECT a_image_id, b_image_id, COALESCE(score, 0)
-		   FROM potential_relation_pairs WHERE source = ? AND distance > ?`,
-		SourceBoth, distance)
-	if err != nil {
-		return err
-	}
 	type demotion struct {
 		a, b  int64
 		score float64
 	}
-	var pending []demotion
-	for rows.Next() {
+	pending, err := db.QueryAll(tx, func(rows *sql.Rows) (demotion, error) {
 		var d demotion
-		if err := rows.Scan(&d.a, &d.b, &d.score); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		pending = append(pending, d)
-	}
-	_ = rows.Close()
-	if err := rows.Err(); err != nil {
+		err := rows.Scan(&d.a, &d.b, &d.score)
+		return d, err
+	}, `SELECT a_image_id, b_image_id, COALESCE(score, 0)
+		   FROM potential_relation_pairs WHERE source = ? AND distance > ?`,
+		SourceBoth, distance)
+	if err != nil {
 		return err
 	}
 	for _, d := range pending {

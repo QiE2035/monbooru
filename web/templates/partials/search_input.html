@@ -1,0 +1,17 @@
+{{/* The search box and its suggest dropdown, shared by the gallery header
+     and the detail page's mirror of it. The htmx wiring has to stay
+     identical between the two - applySearchSuggest and initSuggestDismiss
+     key on these ids. The dot is the value to prefill. */}}
+{{define "partials/search_input.html"}}
+<div class="search-input-wrap">
+  <input type="text" name="q" id="search-input" value="{{.}}" placeholder="Search tags… (system: lists filters)" autocomplete="off"
+         hx-get="/internal/search/suggest"
+         hx-trigger="input changed delay:200ms"
+         hx-target="#search-suggest"
+         hx-swap="innerHTML"
+         hx-push-url="false"
+         hx-include="this"
+         onkeydown="handleSuggestKey(event, 'search-suggest', 'search-input')">
+  <div id="search-suggest" class="suggest-dropdown search-suggest-dropdown"></div>
+</div>
+{{end}}

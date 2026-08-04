@@ -73,25 +73,11 @@ func (s *Server) resolveTagScope(r *http.Request) ([]int64, error) {
 		}
 		return ids, nil
 	}
-	zeroParam := q.Get("show_zero")
-	zeroOnly := zeroParam == "only"
-	showZero := zeroOnly || zeroParam != "0"
-	// Plain tags by default, mirroring the listing's type default so a
-	// POST without type= acts on exactly what the page shows.
-	typeStr := q.Get("type")
-	if !q.Has("type") && q.Get("origin") != "alias" {
-		typeStr = "tag"
-	}
-	filter := s.buildTagFilter(
-		q.Get("cat"), q.Get("q"), q.Get("sort"), q.Get("order"),
-		q.Get("origin"), typeStr, q.Get("created_after"), showZero, zeroOnly, 1, 0,
-	)
-	filter.ConflictsOnly = q.Get("conflicts") == "1"
-	if s := q.Get("stale"); s == "has" || s == "full" {
-		filter.Stale = s
-	}
-	filter.FoldedOnly = q.Get("folded") == "1"
-	filter.UsedBy = q.Get("used_by")
+	// Resolve the posted filter fields exactly as the listing does, so a
+	// whole-search escalation acts on what the page shows. ListTagIDs
+	// orders by id and reads neither the page nor the limit.
+	filter := s.tagListingFilter(tagListingParamsFrom(q))
+	filter.PageIndex, filter.Limit = 0, 0
 	return s.tagSvc().ListTagIDs(filter)
 }
 
@@ -127,6 +113,43 @@ func (s *Server) startTagScopeRun(w http.ResponseWriter, r *http.Request, run fu
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// runTagScopeLoop walks a tag-scope batch with cancellation and
+// progress, counting each row as changed or skipped. op reports which;
+// an error it returns is recorded as a refusal reason. Callers own the
+// summary - they differ in nouns and in what else they count.
+func (s *Server) runTagScopeLoop(ids []int64, gerund string, stride int, op func(id int64) (bool, error)) (changed, skipped int, reasons skipReasons, cancelled bool) {
+	ctx := s.jobs.Context()
+	total := len(ids)
+	s.jobs.Update(0, total, gerund)
+	for i, id := range ids {
+		if ctx.Err() != nil {
+			return changed, skipped, reasons, true
+		}
+		switch ok, err := op(id); {
+		case err != nil:
+			reasons.add(err)
+			skipped++
+		case ok:
+			changed++
+		default:
+			skipped++
+		}
+		if (i+1)%stride == 0 || i+1 == total {
+			s.jobs.Update(i+1, total, gerund)
+		}
+	}
+	return changed, skipped, reasons, false
+}
+
+// skippedSuffix appends the shared ", skipped N" tail every tag-scope
+// summary carries.
+func skippedSuffix(summary string, skipped int) string {
+	if skipped > 0 {
+		summary += fmt.Sprintf(", skipped %d", skipped)
+	}
+	return summary
+}
+
 // batchTagCategoryPost moves every tag in scope to the posted category
 // as a background job. merge=1 resolves (name, target) collisions by
 // merging into the existing row; otherwise collisions are skipped and
@@ -145,51 +168,32 @@ func (s *Server) batchTagCategoryPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runBatchTagCategory(ids []int64, catID int64, merge bool) {
-	ctx := s.jobs.Context()
-	total := len(ids)
-	moved, mergedCount, skipped := 0, 0, 0
-	cancelled := false
-	var reasons skipReasons
-
-	s.jobs.Update(0, total, "moving tags…")
-	for i, id := range ids {
-		if ctx.Err() != nil {
-			cancelled = true
-			break
-		}
-		if merge {
-			didMerge, err := s.tagSvc().ChangeTagCategoryMerge(id, catID)
-			switch {
-			case err != nil:
+	mergedCount := 0
+	changed, skipped, reasons, cancelled := s.runTagScopeLoop(ids, "moving tags…", 50, func(id int64) (bool, error) {
+		if !merge {
+			if err := s.tagSvc().ChangeTagCategory(id, catID); err != nil {
 				logx.Warnf("batch category tag %d: %v", id, err)
-				reasons.add(err)
-				skipped++
-			case didMerge:
-				mergedCount++
-			default:
-				moved++
+				return false, err
 			}
-		} else if err := s.tagSvc().ChangeTagCategory(id, catID); err != nil {
+			return true, nil
+		}
+		didMerge, err := s.tagSvc().ChangeTagCategoryMerge(id, catID)
+		if err != nil {
 			logx.Warnf("batch category tag %d: %v", id, err)
-			reasons.add(err)
-			skipped++
-		} else {
-			moved++
+			return false, err
 		}
-		if (i+1)%50 == 0 || i+1 == total {
-			s.jobs.Update(i+1, total, "moving tags…")
+		if didMerge {
+			mergedCount++
 		}
-	}
+		return true, nil
+	})
 
 	s.Active().InvalidateCaches()
-	summary := fmt.Sprintf("moved %d tag(s)", moved)
+	summary := fmt.Sprintf("moved %d tag(s)", changed-mergedCount)
 	if mergedCount > 0 {
 		summary += fmt.Sprintf(", merged %d", mergedCount)
 	}
-	if skipped > 0 {
-		summary += fmt.Sprintf(", skipped %d", skipped)
-	}
-	s.finishTagScopeJob(moved+mergedCount, reasons, cancelled, "category move", summary)
+	s.finishTagScopeJob(changed, reasons, cancelled, "category move", skippedSuffix(summary, skipped))
 }
 
 // batchTagAliasPost merges every tag in scope into one canonical (an
@@ -208,39 +212,21 @@ func (s *Server) batchTagAliasPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runBatchTagAlias(ids []int64, canonID int64) {
-	ctx := s.jobs.Context()
-	total := len(ids)
-	aliased, skipped := 0, 0
-	cancelled := false
-	var reasons skipReasons
-
-	s.jobs.Update(0, total, "aliasing tags…")
-	for i, id := range ids {
-		if ctx.Err() != nil {
-			cancelled = true
-			break
-		}
+	aliased, skipped, reasons, cancelled := s.runTagScopeLoop(ids, "aliasing tags…", 50, func(id int64) (bool, error) {
 		if id == canonID {
 			// The Merge dialog puts the chosen canonical in the scope
 			// too; self-skipping it is not a refusal.
-			skipped++
-		} else if err := s.tagSvc().MergeTags(id, canonID); err != nil {
+			return false, nil
+		}
+		if err := s.tagSvc().MergeTags(id, canonID); err != nil {
 			logx.Warnf("batch alias tag %d: %v", id, err)
-			reasons.add(err)
-			skipped++
-		} else {
-			aliased++
+			return false, err
 		}
-		if (i+1)%50 == 0 || i+1 == total {
-			s.jobs.Update(i+1, total, "aliasing tags…")
-		}
-	}
+		return true, nil
+	})
 
 	s.Active().InvalidateCaches()
-	summary := fmt.Sprintf("aliased %d tag(s)", aliased)
-	if skipped > 0 {
-		summary += fmt.Sprintf(", skipped %d", skipped)
-	}
+	summary := skippedSuffix(fmt.Sprintf("aliased %d tag(s)", aliased), skipped)
 	s.finishTagScopeJob(aliased, reasons, cancelled, "alias", summary)
 }
 
@@ -256,17 +242,18 @@ func (s *Server) batchMergeFoldedPost(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) runMergeFolded(ids []int64) {
 	s.jobs.Update(0, len(ids), "merging folded tags…")
-	merged, skipped, cancelled, err := s.tagSvc().MergeFolded(s.jobs.Context(), ids)
+	res, err := s.tagSvc().MergeFolded(s.jobs.Context(), ids)
 	if err != nil {
 		s.jobs.Fail(err.Error())
 		return
 	}
 	s.Active().InvalidateCaches()
-	summary := fmt.Sprintf("merged %d folded tag(s)", merged)
-	if skipped > 0 {
-		summary += fmt.Sprintf(", skipped %d", skipped)
+	var reasons skipReasons
+	for _, e := range res.Refused {
+		reasons.add(e)
 	}
-	s.finishJob(nil, cancelled, fmt.Sprintf("folded merge cancelled (%s)", summary), summary)
+	summary := skippedSuffix(fmt.Sprintf("merged %d folded tag(s)", res.Merged), res.Skipped)
+	s.finishTagScopeJob(res.Merged, reasons, res.Cancelled, "folded merge", summary)
 }
 
 // batchTagImplyPost declares (mode=add) or removes (mode=remove) the
@@ -287,10 +274,6 @@ func (s *Server) batchTagImplyPost(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) runBatchTagImply(ids []int64, targetID int64, remove bool) {
 	ctx := s.jobs.Context()
-	total := len(ids)
-	changed, skipped := 0, 0
-	cancelled := false
-	var reasons skipReasons
 	verb := "declaring implications…"
 	if remove {
 		verb = "removing implications…"
@@ -306,44 +289,32 @@ func (s *Server) runBatchTagImply(ids []int64, targetID int64, remove bool) {
 		}
 	}
 
-	s.jobs.Update(0, total, verb)
-	for i, parentID := range ids {
-		if ctx.Err() != nil {
-			cancelled = true
-			break
-		}
+	changed, skipped, reasons, cancelled := s.runTagScopeLoop(ids, verb, 10, func(parentID int64) (bool, error) {
 		if parentID == targetID {
-			skipped++
-		} else if remove {
+			return false, nil
+		}
+		if remove {
 			if err := s.tagSvc().RemoveImplication(parentID, targetID); err != nil {
-				reasons.add(err)
-				skipped++
-			} else if err := s.sweepImplicationRemovalInline(ctx, parentID, removeClosure); err != nil {
+				return false, err
+			}
+			if err := s.sweepImplicationRemovalInline(ctx, parentID, removeClosure); err != nil {
 				logx.Warnf("batch imply sweep parent %d: %v", parentID, err)
-				changed++
-			} else {
-				changed++
 			}
-		} else {
-			created, err := s.tagSvc().AddImplicationFrom(parentID, targetID, "user")
-			switch {
-			case err != nil:
-				logx.Warnf("batch imply parent %d: %v", parentID, err)
-				reasons.add(err)
-				skipped++
-			case created:
-				changed++
-				if err := s.fanOutImplicationsInline(ctx, parentID); err != nil {
-					logx.Warnf("batch imply fan-out parent %d: %v", parentID, err)
-				}
-			default:
-				skipped++
-			}
+			return true, nil
 		}
-		if (i+1)%10 == 0 || i+1 == total {
-			s.jobs.Update(i+1, total, verb)
+		created, err := s.tagSvc().AddImplicationFrom(parentID, targetID, "user")
+		if err != nil {
+			logx.Warnf("batch imply parent %d: %v", parentID, err)
+			return false, err
 		}
-	}
+		if !created {
+			return false, nil
+		}
+		if err := s.fanOutImplicationsInline(ctx, parentID); err != nil {
+			logx.Warnf("batch imply fan-out parent %d: %v", parentID, err)
+		}
+		return true, nil
+	})
 
 	if err := s.tagSvc().RecalcIDs([]int64{targetID}); err != nil {
 		logx.Warnf("batch imply recalc: %v", err)
@@ -353,10 +324,7 @@ func (s *Server) runBatchTagImply(ids []int64, targetID int64, remove bool) {
 	if remove {
 		noun = "removed"
 	}
-	summary := fmt.Sprintf("%s %d implication(s)", noun, changed)
-	if skipped > 0 {
-		summary += fmt.Sprintf(", skipped %d", skipped)
-	}
+	summary := skippedSuffix(fmt.Sprintf("%s %d implication(s)", noun, changed), skipped)
 	s.finishTagScopeJob(changed, reasons, cancelled, "implication batch", summary)
 }
 

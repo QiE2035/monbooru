@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -97,6 +98,7 @@ type detailData struct {
 	GenericMeta       []models.SDParam
 	MangaMeta         *models.MangaMetadata // populated for cbz rows when ComicInfo.xml was parsed
 	IsManga           bool                  // shorthand for FileType == "cbz" so the template doesn't string-compare
+	MisnamedExt       string                // on-disk extension when it contradicts FileType, "" when they agree
 	ResumePage        int                   // reader bookmark for manga rows, 0 when unstarted or finished
 	Collections       []models.Collection   // every collection this image belongs to, ordered for display
 	Sources           []models.ImageSource  // every origin this image came from, primary first
@@ -133,6 +135,12 @@ type detailData struct {
 	// Config.Relations.DefaultDistance so a settings tweak is honoured
 	// without a restart.
 	PhashDistance int
+	// NoPreview is true when no thumbnail file exists for this row, which
+	// is also why the phash cannot be backfilled - it is hashed from the
+	// thumbnail. PreviewNote carries the reason when the decode budget is
+	// the one that refused it.
+	NoPreview   bool
+	PreviewNote string
 }
 
 // imageByHashHandler redirects /i/{sha} to the detail page of the image with
@@ -298,6 +306,12 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		nextID      *int64
 	)
 	isManga := img.FileType == models.FileTypeCBZ
+	// Ingest records the type the bytes declare and leaves the file named
+	// as the operator named it, so the two can legitimately disagree.
+	misnamedExt := ""
+	if claimed := gallery.ExtFileType(img.CanonicalPath); claimed != "" && claimed != img.FileType {
+		misnamedExt = strings.ToLower(filepath.Ext(img.CanonicalPath))
+	}
 	var wg sync.WaitGroup
 	wg.Add(8)
 	go func() {
@@ -385,6 +399,14 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		sourcePanels = append(sourcePanels, sourcePanelView{ImageSource: src, Annotations: boxes, OriginalLines: buildOriginalLines(src.Original)})
 	}
 
+	noPreview, previewNote := false, ""
+	if _, statErr := os.Stat(gallery.ThumbnailPath(s.thumbnailsPath(), img.ID)); statErr != nil {
+		noPreview = true
+		if budgetErr := gallery.DecodeBudgetError(img.CanonicalPath); budgetErr != nil {
+			previewNote = budgetErr.Error()
+		}
+	}
+
 	baseName := filepath.Base(img.CanonicalPath)
 	// Prefix the immediate parent folder so a tab strip with several
 	// generic basenames (file.png, vol2.cbz, ...) stays distinguishable.
@@ -403,6 +425,7 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		GenericMeta:       genericMeta,
 		MangaMeta:         mangaMeta,
 		IsManga:           isManga,
+		MisnamedExt:       misnamedExt,
 		ResumePage:        resumePage(img),
 		Collections:       collections,
 		Sources:           sources,
@@ -430,6 +453,8 @@ func (s *Server) detailHandler(w http.ResponseWriter, r *http.Request) {
 		Aliases:           s.aliasesForImageTags(imageTags),
 		TagSources:        tagSources,
 		PhashDistance:     s.findPairsDistance(),
+		NoPreview:         noPreview,
+		PreviewNote:       previewNote,
 	}
 	s.renderTemplate(w, "detail.html", data)
 }

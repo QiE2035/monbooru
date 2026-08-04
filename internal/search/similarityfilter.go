@@ -82,10 +82,7 @@ func parseSimilarValue(val string) (seedID int64, threshold float64, ok bool) {
 // not a column, so it rides a correlated count the same way the
 // collection sort reads its position.
 func similarityOrderClause(seed tags.OverlapSeed, order string) (string, []any) {
-	dir := "DESC"
-	if order == "asc" {
-		dir = "ASC"
-	}
+	dir := sqlDir(order, "DESC")
 	sub, args := seed.ScoreExpr("i.id", "it")
 	return "ORDER BY " + sub + " " + dir + ", i.id " + dir, args
 }
@@ -98,7 +95,7 @@ func similarityRankSeed(database *db.DB, expr Expr) (tags.OverlapSeed, bool) {
 	if database == nil {
 		return tags.OverlapSeed{}, false
 	}
-	id, ok := leftmostSimilarSeedID(expr)
+	id, ok := SimilaritySeedID(expr)
 	if !ok {
 		return tags.OverlapSeed{}, false
 	}
@@ -109,21 +106,24 @@ func similarityRankSeed(database *db.DB, expr Expr) (tags.OverlapSeed, bool) {
 	return seed, true
 }
 
-// leftmostSimilarSeedID returns the seed id of the first positive
-// similar: term in reading order. Negated terms are skipped: ranking
-// by a seed the operator asked to exclude is never what they meant.
-func leftmostSimilarSeedID(expr Expr) (int64, bool) {
+// SimilaritySeedID returns the seed the query ranks against: the first
+// positive similar: term in reading order. Negated terms are skipped -
+// ranking by a seed the operator asked to exclude is never what they
+// meant. The gallery handler reads it to default the sort to
+// similarity, the way a collection: term defaults it to collection
+// order, and to score the page it is about to render.
+func SimilaritySeedID(expr Expr) (int64, bool) {
 	switch e := expr.(type) {
 	case AndExpr:
-		if id, ok := leftmostSimilarSeedID(e.Left); ok {
+		if id, ok := SimilaritySeedID(e.Left); ok {
 			return id, true
 		}
-		return leftmostSimilarSeedID(e.Right)
+		return SimilaritySeedID(e.Right)
 	case OrExpr:
-		if id, ok := leftmostSimilarSeedID(e.Left); ok {
+		if id, ok := SimilaritySeedID(e.Left); ok {
 			return id, true
 		}
-		return leftmostSimilarSeedID(e.Right)
+		return SimilaritySeedID(e.Right)
 	case FilterExpr:
 		if e.Key != "similar" {
 			return 0, false
@@ -134,17 +134,9 @@ func leftmostSimilarSeedID(expr Expr) (int64, bool) {
 	return 0, false
 }
 
-// SimilaritySeedID returns the seed the query ranks against: the
-// leftmost positive similar: term. The gallery handler reads it to
-// default the sort to similarity, the way a collection: term defaults
-// it to collection order, and to score the page it is about to render.
-func SimilaritySeedID(expr Expr) (int64, bool) {
-	return leftmostSimilarSeedID(expr)
-}
-
 // HasSimilarTerm reports whether expr carries a positive similar: term.
 func HasSimilarTerm(expr Expr) bool {
-	_, ok := leftmostSimilarSeedID(expr)
+	_, ok := SimilaritySeedID(expr)
 	return ok
 }
 
@@ -166,6 +158,17 @@ func similarityMatchIDs(ctx context.Context, database *db.DB, q Query) []int64 {
 	seed, ok := similarityRankSeed(database, q.Expr)
 	if !ok {
 		return nil
+	}
+	// The gallery-side fan takes this gate so concurrent misses on one
+	// key don't each run the whole scored pass; this fan rides the same
+	// key for the same reason. A loser renders without prev/next and
+	// the winner leaves the list cached for the next hit. A keyless
+	// render has nothing to share and nothing to seed.
+	if q.CacheKey != "" {
+		if !AdjacencyCacheTryAcquireFan(q.CacheKey) {
+			return nil
+		}
+		defer AdjacencyCacheReleaseFan(q.CacheKey)
 	}
 	driverLegs, _ := pickAndDriverTag(database, q.Expr, false)
 	where, args, hasMissingFilter, _ := buildWhereDBDriverFull(q.Expr, database, driverLegs)
@@ -212,7 +215,7 @@ func fanSimilarityIDs(ctx context.Context, database *db.DB, seed tags.OverlapSee
 		// which is what a negative sentinel reproduces.
 		score := -1.0
 		if total := totals.Total(id); total > 0 {
-			score = 2 * float64(shared[id]) / (float64(len(seed.TagIDs)) + float64(total))
+			score = tags.OverlapScore(int(shared[id]), len(seed.TagIDs), int(total))
 		}
 		rows[i] = ranked{id: id, score: score}
 	}

@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/monbooru/monbooru/internal/models"
-	"github.com/rwcarlsen/goexif/exif"
 )
 
 // extractSDFromJPEG reads A1111 metadata from a JPEG's EXIF UserComment.
@@ -19,13 +18,13 @@ func extractSDFromJPEG(path string) (*models.SDMetadata, error) {
 
 // sdFromEXIF decodes A1111 parameters from an EXIF UserComment tag,
 // returning nil when the tag is absent or not A1111-shaped.
-func sdFromEXIF(x *exif.Exif) *models.SDMetadata {
-	tag, err := x.Get(exif.UserComment)
-	if err != nil {
+func sdFromEXIF(x *exifData) *models.SDMetadata {
+	tag, ok := x.get(userCommentField)
+	if !ok {
 		return nil
 	}
-	raw, err := tag.StringVal()
-	if err != nil {
+	raw, ok := tag.stringVal()
+	if !ok {
 		return nil
 	}
 	// EXIF UserComment may carry a charset prefix like "ASCII\x00\x00\x00".

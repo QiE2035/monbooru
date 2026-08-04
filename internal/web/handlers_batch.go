@@ -27,13 +27,7 @@ func (s *Server) resolveBatchScope(w http.ResponseWriter, r *http.Request, errLa
 	scope := strings.TrimSpace(r.FormValue("scope"))
 	switch scope {
 	case "selection":
-		var ids []int64
-		for _, idStr := range r.Form["ids"] {
-			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-				ids = append(ids, id)
-			}
-		}
-		return ids, true
+		return parseIDList(r.Form["ids"]), true
 	case "search":
 		expr, parseErr := search.Parse(r.FormValue("q"))
 		if parseErr != nil {
@@ -66,16 +60,7 @@ func (s *Server) batchDelete(w http.ResponseWriter, r *http.Request) {
 	if !parseFormOK(w, r) {
 		return
 	}
-	idStrs := r.Form["ids"]
-
-	ids := make([]int64, 0, len(idStrs))
-	for _, idStr := range idStrs {
-		id, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
-			continue
-		}
-		ids = append(ids, id)
-	}
+	ids := parseIDList(r.Form["ids"])
 	if len(ids) == 0 {
 		s.startBulkDelete(w, nil)
 		return
@@ -260,17 +245,17 @@ func (s *Server) batchMove(w http.ResponseWriter, r *http.Request) {
 // per-image failures rather than stopping on them - a single unreadable
 // file must not strand the rest of the scope. Progress lands every 25
 // images; the caches are dropped only when something actually changed.
-func (s *Server) runPerImageJob(ids []int64, verb, gerund, past string, op func(i int, id int64) error) {
+// perImageLoop walks ids with per-image error isolation, reporting
+// progress every 25th and on the last. The callers own the completion
+// summary: they differ in which caches to invalidate and what to name
+// the result.
+func (s *Server) perImageLoop(ids []int64, verb, gerund string, op func(i int, id int64) error) (done, failed int, cancelled bool) {
 	ctx := s.jobs.Context()
 	total := len(ids)
-	done, failed := 0, 0
-	cancelled := false
-
 	s.jobs.Update(0, total, gerund+"…")
 	for i, id := range ids {
 		if ctx.Err() != nil {
-			cancelled = true
-			break
+			return done, failed, true
 		}
 		if err := op(i, id); err != nil {
 			logx.Warnf("batch %s %d: %v", verb, id, err)
@@ -282,6 +267,12 @@ func (s *Server) runPerImageJob(ids []int64, verb, gerund, past string, op func(
 			s.jobs.Update(i+1, total, gerund+"…")
 		}
 	}
+	return done, failed, false
+}
+
+func (s *Server) runPerImageJob(ids []int64, verb, gerund, past string, op func(i int, id int64) error) {
+	total := len(ids)
+	done, failed, cancelled := s.perImageLoop(ids, verb, gerund, op)
 
 	if done > 0 {
 		s.Active().InvalidateCaches()
@@ -325,13 +316,10 @@ func (s *Server) batchRename(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// runBatchRename renames the scope one image at a time to base + a
-// zero-padded position (base01.ext, base02.ext, ...), padding to the
-// scope's width with a two-digit floor. Collisions still auto-suffix
-// inside RenameImage; per-image failures are logged and counted like
-// batch moves.
 // runBatchRename renames the scope to a numbered sequence, zero-padded
 // to the width the whole run needs so the names sort in one order.
+// Collisions still auto-suffix inside RenameImage; per-image failures
+// are logged and counted like batch moves.
 func (s *Server) runBatchRename(ids []int64, base string) {
 	width := max(len(strconv.Itoa(len(ids))), 2)
 	s.runPerImageJob(ids, "rename", "renaming", "renamed", func(i int, id int64) error {
@@ -439,6 +427,7 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 	ctx := s.jobs.Context()
 	total := len(ids)
 	applied := 0
+	reRated := 0
 
 	tagIDs := make([]int64, 0, len(resolved))
 	for _, t := range resolved {
@@ -459,9 +448,9 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 		if err != nil {
 			return err
 		}
-		var n int
+		var n, replaced int
 		if op == "add" {
-			n, err = s.tagSvc().BatchAddTagsTx(tx, chunk, tagIDs)
+			n, replaced, err = s.tagSvc().BatchAddTagsTx(tx, chunk, tagIDs)
 		} else {
 			n, err = s.tagSvc().BatchRemoveTagsTx(tx, chunk, tagIDs)
 		}
@@ -473,6 +462,7 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 			return err
 		}
 		applied += n
+		reRated += replaced
 		return nil
 	})
 	if err != nil {
@@ -485,7 +475,11 @@ func (s *Server) runBatchTag(ids []int64, op string, catTags []catTag) {
 	}
 	s.Active().InvalidateCaches()
 
-	s.finishJob(nil, cancelled, fmt.Sprintf("%s cancelled (%d/%d processed)", label, processed, total), fmt.Sprintf("%s %d image(s) (%d row change(s)).", summary, processed, applied))
+	done := fmt.Sprintf("%s %d image(s) (%d row change(s)).", summary, processed, applied)
+	if reRated > 0 {
+		done += fmt.Sprintf(" Replaced the rating on %d image(s).", reRated)
+	}
+	s.finishJob(nil, cancelled, fmt.Sprintf("%s cancelled (%d/%d processed)", label, processed, total), done)
 }
 
 // batchStrip kicks off a background `tag` job that strips tags by category
@@ -839,10 +833,15 @@ func (s *Server) runBatchLookup(mode string, ids []int64) {
 	}
 	galleryName := cx.Name
 	enqueued, skipped := 0, 0
-	for _, id := range ids {
+	total := len(ids)
+	s.jobs.Update(0, total, "looking up…")
+	for i, id := range ids {
 		if ctx.Err() != nil {
 			s.jobs.Complete(fmt.Sprintf("Lookup cancelled after queueing %d.", enqueued))
 			return
+		}
+		if (i+1)%25 == 0 || i == total-1 {
+			s.jobs.Update(i+1, total, "looking up…")
 		}
 		var canonPath, sha string
 		if err := cx.DB.Read.QueryRow(

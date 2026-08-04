@@ -58,12 +58,9 @@ func NormalizeTagName(name string) string { return buildTagName(name, false) }
 // HasTagContent reports whether name carries a rune outside the decoration
 // class, so pure separators are rejected while emoticons pass.
 func HasTagContent(name string) bool {
-	for _, r := range name {
-		if !strings.ContainsRune(tagDecorationClass, r) {
-			return true
-		}
-	}
-	return false
+	return strings.ContainsFunc(name, func(r rune) bool {
+		return !strings.ContainsRune(tagDecorationClass, r)
+	})
 }
 
 // ValidateTagName normalizes name and checks the tag-name rules: 1-200 runes,
@@ -77,10 +74,8 @@ func ValidateTagName(name string) (string, error) {
 	if n := utf8.RuneCountInString(name); n == 0 || n > 200 {
 		return "", fmt.Errorf("%w: length must be 1-200 characters", ErrInvalidTagName)
 	}
-	for _, r := range name {
-		if r == '"' || r == '*' {
-			return "", fmt.Errorf(`%w: contains invalid characters (allowed: any character except whitespace, " and *)`, ErrInvalidTagName)
-		}
+	if strings.ContainsAny(name, `"*`) {
+		return "", fmt.Errorf(`%w: contains invalid characters (allowed: any character except whitespace, " and *)`, ErrInvalidTagName)
 	}
 	if !HasTagContent(name) {
 		return "", fmt.Errorf("%w: name must contain at least one letter, digit, or emoticon character", ErrInvalidTagName)
@@ -431,22 +426,13 @@ type OriginCount struct {
 // OriginCounts returns the distinct non-empty creation origins in the
 // catalog, most-populated first, for the /tags sidebar filter.
 func (s *Service) OriginCounts() ([]OriginCount, error) {
-	rows, err := s.db.Read.Query(
+	return db.QueryAll(s.db.Read, func(rows *sql.Rows) (OriginCount, error) {
+		var oc OriginCount
+		err := rows.Scan(&oc.Label, &oc.Count)
+		return oc, err
+	},
 		`SELECT origin, COUNT(*) FROM tags WHERE origin <> '' GROUP BY origin ORDER BY COUNT(*) DESC, origin ASC`,
 	)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []OriginCount
-	for rows.Next() {
-		var oc OriginCount
-		if err := rows.Scan(&oc.Label, &oc.Count); err != nil {
-			return nil, err
-		}
-		out = append(out, oc)
-	}
-	return out, rows.Err()
 }
 
 // AutoTaggerLabels reports which of labels appear as an auto-tagger
@@ -455,8 +441,7 @@ func (s *Service) OriginCounts() ([]OriginCount, error) {
 func (s *Service) AutoTaggerLabels(labels []string) (map[string]struct{}, error) {
 	set := make(map[string]struct{})
 	seen := make(map[string]struct{}, len(labels))
-	var args []any
-	var ph []string
+	var wanted []string
 	for _, l := range labels {
 		if l == "" {
 			continue
@@ -465,19 +450,19 @@ func (s *Service) AutoTaggerLabels(labels []string) (map[string]struct{}, error)
 			continue
 		}
 		seen[l] = struct{}{}
-		args = append(args, l)
-		ph = append(ph, "?")
+		wanted = append(wanted, l)
 	}
-	if len(args) == 0 {
+	if len(wanted) == 0 {
 		return set, nil
 	}
+	placeholders, args := db.InPlaceholders(wanted)
 	// The literal IS NOT NULL / != '' terms restate
 	// idx_image_tags_auto_tagger's partial predicate; without them the
 	// planner can't prove the index applies and scans image_tags.
 	rows, err := s.db.Read.Query(
 		`SELECT DISTINCT tagger_name FROM image_tags
 		 WHERE is_auto = 1 AND tagger_name IS NOT NULL AND tagger_name != ''
-		   AND tagger_name IN (`+strings.Join(ph, ",")+`)`,
+		   AND tagger_name IN (`+placeholders+`)`,
 		args...,
 	)
 	if err != nil {
@@ -643,32 +628,28 @@ type AliasKey struct {
 func (s *Service) SyncAliasStaleness(canonicalID int64, origin string, fresh map[AliasKey]bool) (int, error) {
 	flagged := 0
 	err := s.inWriteTx(func(tx *sql.Tx) error {
-		rows, err := tx.Query(
-			`SELECT id, category_id, name, stale FROM tags
+		type aliasRow struct {
+			id, catID, stale int64
+			name             string
+		}
+		present, err := db.QueryAll(tx, func(rows *sql.Rows) (aliasRow, error) {
+			var a aliasRow
+			err := rows.Scan(&a.id, &a.catID, &a.name, &a.stale)
+			return a, err
+		}, `SELECT id, category_id, name, stale FROM tags
 			 WHERE is_alias = 1 AND canonical_tag_id = ? AND origin = ?`, canonicalID, origin)
 		if err != nil {
 			return err
 		}
 		var flag, clear []int64
-		for rows.Next() {
-			var id, catID, stale int64
-			var name string
-			if err := rows.Scan(&id, &catID, &name, &stale); err != nil {
-				_ = rows.Close()
-				return err
-			}
-			switch current := fresh[AliasKey{CategoryID: catID, Name: name}]; {
-			case !current && stale == 0:
-				flag = append(flag, id)
-			case current && stale == 1:
-				clear = append(clear, id)
+		for _, a := range present {
+			switch current := fresh[AliasKey{CategoryID: a.catID, Name: a.name}]; {
+			case !current && a.stale == 0:
+				flag = append(flag, a.id)
+			case current && a.stale == 1:
+				clear = append(clear, a.id)
 			}
 		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		_ = rows.Close()
 		if err := setTagsStaleTx(tx, flag, 1); err != nil {
 			return err
 		}
@@ -682,11 +663,21 @@ func (s *Service) SyncAliasStaleness(canonicalID int64, origin string, fresh map
 }
 
 func setTagsStaleTx(tx *sql.Tx, ids []int64, stale int) error {
+	return setStaleTx(tx, "tags", "id", "", ids, stale)
+}
+
+// setStaleTx flags or clears the stale column on the rows keyCol
+// selects, narrowed further by extraWhere when the table needs a
+// second key (an implication is keyed by its parent too).
+func setStaleTx(tx *sql.Tx, table, keyCol, extraWhere string, ids []int64, stale int) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	placeholders, args := db.InPlaceholders(ids)
-	_, err := tx.Exec(`UPDATE tags SET stale = `+strconv.Itoa(stale)+` WHERE id IN (`+placeholders+`)`, args...)
+	_, err := tx.Exec(
+		`UPDATE `+table+` SET stale = `+strconv.Itoa(stale)+
+			` WHERE `+extraWhere+keyCol+` IN (`+placeholders+`)`,
+		args...)
 	return err
 }
 
@@ -816,9 +807,9 @@ func (s *Service) GetImageTags(imageID int64) (string, []models.ImageTag, error)
 		it := models.ImageTag{
 			ImageID:    imgID.Int64,
 			TagID:      tagID.Int64,
-			TagName:    nullStringValue(tagName),
-			Category:   nullStringValue(category),
-			Color:      nullStringValue(color),
+			TagName:    tagName.String,
+			Category:   category.String,
+			Color:      color.String,
 			UsageCount: int(usage.Int64),
 			IsAuto:     isAuto.Int64 == 1,
 			IsImplied:  isImplied.Int64 == 1,
@@ -836,13 +827,6 @@ func (s *Service) GetImageTags(imageID int64) (string, []models.ImageTag, error)
 		result = append(result, it)
 	}
 	return folder, result, rows.Err()
-}
-
-func nullStringValue(s sql.NullString) string {
-	if s.Valid {
-		return s.String
-	}
-	return ""
 }
 
 // deleteTagsTx strips ids from every image - including each id's transitive
@@ -918,12 +902,14 @@ func deleteTagsTx(tx *sql.Tx, ids []int64) ([]int64, error) {
 // rather than the number of carrier images. Final RecalcIDs reconciles
 // usage_count for every tag the cascade touched.
 //
-// Rating-category tags are immutable in the catalog (the four canonical
+// The four canonical rating tags are immutable in the catalog (their
 // names are part of the data model) so the row itself stays. Delete on
 // one of them strips its image_tags rows instead - the user-visible
-// "remove this rating from every image" the UI exposes.
+// "remove this rating from every image" the UI exposes. An imported
+// rating-category row under any other name is not vocabulary and
+// deletes outright.
 func (s *Service) DeleteTag(id int64) error {
-	if s.isRatingTag(id) {
+	if s.isLockedRatingTag(id) {
 		return s.stripTagFromAllImages(id)
 	}
 	var closure []int64
@@ -972,44 +958,57 @@ func (s *Service) stripTagFromAllImages(tagID int64) error {
 // category. Returns false on lookup error so a missing row falls through
 // to the existing ErrTagNotFound path in the caller.
 func (s *Service) isRatingTag(id int64) bool {
+	_, ok := s.ratingRowName(id)
+	return ok
+}
+
+// isLockedRatingTag reports whether the tag with this id is one of the
+// four canonical rating rows. Those are the rows the vocabulary is made
+// of; a rating-category row under any other name only reaches the
+// catalog through a raw import (§13.5 normalizes colours and the alias
+// graph, not rating names) and stays repairable.
+func (s *Service) isLockedRatingTag(id int64) bool {
+	name, ok := s.ratingRowName(id)
+	return ok && IsCanonicalRating(name)
+}
+
+func (s *Service) ratingRowName(id int64) (string, bool) {
 	if s.ratingCatID == 0 {
-		return false
+		return "", false
 	}
 	var catID int64
-	if err := s.db.Read.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, id).Scan(&catID); err != nil {
-		return false
+	var name string
+	if err := s.db.Read.QueryRow(`SELECT category_id, name FROM tags WHERE id = ?`, id).Scan(&catID, &name); err != nil {
+		return "", false
 	}
-	return catID == s.ratingCatID
+	return name, catID == s.ratingCatID
 }
 
 // RenameTag renames a tag. The new name must pass validation and must
 // not collide with another tag in the same category.
 func (s *Service) RenameTag(id int64, newName string) error {
-	normalized, err := ValidateTagName(newName)
-	if err != nil {
-		return err
-	}
-	var catID int64
-	if err := s.db.Read.QueryRow(`SELECT category_id FROM tags WHERE id = ?`, id).Scan(&catID); err != nil {
-		// Surface 404 for a missing id. The downstream UPDATE would
-		// otherwise no-op silently and the handler would report a
-		// successful rename for a tag that doesn't exist.
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrTagNotFound
-		}
-		return fmt.Errorf("look up tag %d: %w", id, err)
-	}
-	if s.ratingCatID != 0 && catID == s.ratingCatID {
-		return ErrRatingTagImmutable
-	}
+	return s.renameTag(id, newName, false)
+}
+
+// rowQuerier is the single-row read surface both *sql.DB and *sql.Tx
+// satisfy.
+type rowQuerier interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// nameTaken returns the id of another tag holding (name, catID), or 0
+// when the slot is free. exceptID is the row being renamed or moved.
+func nameTaken(q rowQuerier, name string, catID, exceptID int64) (int64, error) {
 	var existing int64
-	if err := s.db.Read.QueryRow(
-		`SELECT id FROM tags WHERE name = ? AND category_id = ? AND id != ?`, normalized, catID, id,
-	).Scan(&existing); err == nil {
-		return fmt.Errorf("a tag named %q already exists in this category", normalized)
+	switch err := q.QueryRow(
+		`SELECT id FROM tags WHERE name = ? AND category_id = ? AND id != ?`, name, catID, exceptID,
+	).Scan(&existing); {
+	case err == sql.ErrNoRows:
+		return 0, nil
+	case err != nil:
+		return 0, fmt.Errorf("check name %q in category %d: %w", name, catID, err)
 	}
-	_, err = s.db.Write.Exec(`UPDATE tags SET name = ? WHERE id = ?`, normalized, id)
-	return err
+	return existing, nil
 }
 
 // RenameTagKeepAlias renames the tag and installs its old name as an
@@ -1018,6 +1017,14 @@ func (s *Service) RenameTag(id int64, newName string) error {
 // leftover alias would point at an alias, a chain the resolver doesn't
 // follow.
 func (s *Service) RenameTagKeepAlias(id int64, newName string) error {
+	return s.renameTag(id, newName, true)
+}
+
+// renameTag is the shared body: validate, load, refuse a locked rating
+// row, check the destination slot, rename. keepAlias also installs the
+// old spelling as an alias of the renamed row, which is why the whole
+// thing runs in one transaction either way.
+func (s *Service) renameTag(id int64, newName string, keepAlias bool) error {
 	normalized, err := ValidateTagName(newName)
 	if err != nil {
 		return err
@@ -1027,32 +1034,41 @@ func (s *Service) RenameTagKeepAlias(id int64, newName string) error {
 		var oldName string
 		var isAlias int
 		if err := tx.QueryRow(`SELECT category_id, name, is_alias FROM tags WHERE id = ?`, id).Scan(&catID, &oldName, &isAlias); err != nil {
+			// Surface 404 for a missing id. The UPDATE below would
+			// otherwise no-op silently and the handler would report a
+			// successful rename for a tag that doesn't exist.
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrTagNotFound
 			}
 			return fmt.Errorf("look up tag %d: %w", id, err)
 		}
-		if isAlias == 1 {
+		if keepAlias && isAlias == 1 {
+			// The leftover alias would point at an alias, a chain the
+			// resolver doesn't follow.
 			return fmt.Errorf("cannot keep the old name of an alias; rename it plainly")
 		}
-		if s.ratingCatID != 0 && catID == s.ratingCatID {
+		if s.ratingCatID != 0 && catID == s.ratingCatID && IsCanonicalRating(oldName) {
 			return ErrRatingTagImmutable
 		}
 		if oldName == normalized {
 			return nil
 		}
-		var existing int64
-		if err := tx.QueryRow(
-			`SELECT id FROM tags WHERE name = ? AND category_id = ? AND id != ?`, normalized, catID, id,
-		).Scan(&existing); err == nil {
+		existing, err := nameTaken(tx, normalized, catID, id)
+		if err != nil {
+			return err
+		}
+		if existing != 0 {
 			return fmt.Errorf("a tag named %q already exists in this category", normalized)
 		}
 		if _, err := tx.Exec(`UPDATE tags SET name = ? WHERE id = ?`, normalized, id); err != nil {
 			return err
 		}
+		if !keepAlias {
+			return nil
+		}
 		// The old (name, category) slot vacated inside this tx, so the
 		// alias insert cannot collide.
-		_, err := tx.Exec(
+		_, err = tx.Exec(
 			`INSERT INTO tags (name, category_id, is_alias, canonical_tag_id, usage_count, origin) VALUES (?, ?, 1, ?, 0, 'user')`,
 			oldName, catID, id,
 		)
@@ -1102,7 +1118,10 @@ func (s *Service) ChangeTagCategory(tagID, newCategoryID int64) error {
 	if currentCatID == newCategoryID {
 		return nil
 	}
-	if s.ratingCatID != 0 && (currentCatID == s.ratingCatID || newCategoryID == s.ratingCatID) {
+	// Moving in stays refused whatever the name: the category takes only
+	// its four canonical rows. Moving out is refused only for those rows.
+	if s.ratingCatID != 0 && (newCategoryID == s.ratingCatID ||
+		(currentCatID == s.ratingCatID && IsCanonicalRating(name))) {
 		return ErrRatingTagImmutable
 	}
 	var catExists int
@@ -1113,13 +1132,13 @@ func (s *Service) ChangeTagCategory(tagID, newCategoryID int64) error {
 	}
 	// Reject up front so the user gets a clean message rather than the
 	// raw UNIQUE(name, category_id) constraint error.
-	var existing int64
-	if err := s.db.Read.QueryRow(
-		`SELECT id FROM tags WHERE name = ? AND category_id = ? AND id != ?`,
-		name, newCategoryID, tagID,
-	).Scan(&existing); err == nil {
+	existing, err := nameTaken(s.db.Read, name, newCategoryID, tagID)
+	if err != nil {
+		return err
+	}
+	if existing != 0 {
 		return &ErrCategoryCollision{Name: name, ExistingID: existing}
 	}
-	_, err := s.db.Write.Exec(`UPDATE tags SET category_id = ? WHERE id = ?`, newCategoryID, tagID)
+	_, err = s.db.Write.Exec(`UPDATE tags SET category_id = ? WHERE id = ?`, newCategoryID, tagID)
 	return err
 }

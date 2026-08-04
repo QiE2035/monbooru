@@ -162,12 +162,7 @@ func ExtractVideoFrames(srcPath, tmpDir string, positions []float64) ([]string, 
 	}
 	var out []string
 	for i, pos := range positions {
-		if pos < 0 {
-			pos = 0
-		} else if pos > 1 {
-			pos = 1
-		}
-		offset := duration * pos
+		offset := duration * min(max(pos, 0), 1)
 		tmp, err := os.CreateTemp(tmpDir, fmt.Sprintf(".frame-%d.*.jpg", i))
 		if err != nil {
 			return out, fmt.Errorf("creating temp frame file: %w", err)

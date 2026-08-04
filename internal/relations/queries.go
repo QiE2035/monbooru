@@ -2,6 +2,7 @@ package relations
 
 import (
 	"database/sql"
+	"slices"
 
 	"github.com/monbooru/monbooru/internal/db"
 )
@@ -50,25 +51,49 @@ func (r *ImageRelations) HasAny() bool {
 	return false
 }
 
-// SharedDerivativeSource returns the image both a and b are direct
-// derivatives of, when one exists. Each derivative has exactly one
-// source (PK on derivative_image_id), so the join yields at most one
-// row from two point seeks.
-func SharedDerivativeSource(database *db.DB, a, b int64) (int64, bool, error) {
-	var source int64
-	err := database.Read.QueryRow(`
-		SELECT ea.source_image_id
-		FROM derivative_edges ea
-		JOIN derivative_edges eb ON eb.source_image_id = ea.source_image_id
-		WHERE ea.derivative_image_id = ? AND eb.derivative_image_id = ?`, a, b,
-	).Scan(&source)
-	if err == sql.ErrNoRows {
-		return 0, false, nil
+// CommonDerivativeAncestor returns the nearest image both a and b
+// descend from, when one exists. Cousins several levels down are as
+// much tree context as two children of one source, so the walk reads
+// the whole ancestry rather than the source link alone.
+func CommonDerivativeAncestor(database *db.DB, a, b int64) (int64, bool, error) {
+	up, err := derivativeAncestors(database, a)
+	if err != nil || len(up) == 0 {
+		return 0, false, err
 	}
+	other, err := derivativeAncestors(database, b)
 	if err != nil {
 		return 0, false, err
 	}
-	return source, true, nil
+	for _, id := range up {
+		if slices.Contains(other, id) {
+			return id, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+// derivativeAncestors walks the source chain above imageID, nearest
+// first. Each derivative has exactly one source (PK on
+// derivative_image_id), so every step is a point seek. Depth-capped
+// like the service's chain walks.
+func derivativeAncestors(database *db.DB, imageID int64) ([]int64, error) {
+	var out []int64
+	cur := imageID
+	for i := 0; i < MaxVersionChainDepth; i++ {
+		var source int64
+		err := database.Read.QueryRow(
+			`SELECT source_image_id FROM derivative_edges WHERE derivative_image_id = ?`, cur,
+		).Scan(&source)
+		if err == sql.ErrNoRows {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, source)
+		cur = source
+	}
+	return out, nil
 }
 
 // LoadImageRelations gathers every relation the image participates in.

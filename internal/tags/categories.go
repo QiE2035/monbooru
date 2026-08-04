@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/monbooru/monbooru/internal/db"
 	"github.com/monbooru/monbooru/internal/models"
 )
 
@@ -141,7 +142,7 @@ func (s *Service) DeleteCategoryMoveOrDelete(id int64, action string, targetID i
 
 		switch action {
 		case "delete_all":
-			tagIDs, err := scanTagIDsTx(tx, `SELECT id FROM tags WHERE category_id = ?`, id)
+			tagIDs, err := db.QueryIDs(tx, `SELECT id FROM tags WHERE category_id = ?`, id)
 			if err != nil {
 				return err
 			}
@@ -156,11 +157,26 @@ func (s *Service) DeleteCategoryMoveOrDelete(id int64, action string, targetID i
 				return err
 			}
 		default: // "move"
-			if targetID == 0 {
+			switch targetID {
+			case 0:
 				if err := tx.QueryRow(
 					`SELECT id FROM tag_categories WHERE name = 'general'`,
 				).Scan(&targetID); err != nil {
 					return fmt.Errorf("finding general category: %w", err)
+				}
+			case id:
+				return ErrInvalidMoveTarget
+			default:
+				// Reparenting onto a row that is about to go, or was never
+				// there, trips the foreign key; answer in our own words.
+				var exists int
+				switch err := tx.QueryRow(
+					`SELECT 1 FROM tag_categories WHERE id = ?`, targetID,
+				).Scan(&exists); {
+				case err == sql.ErrNoRows:
+					return ErrInvalidMoveTarget
+				case err != nil:
+					return err
 				}
 			}
 			if _, err := tx.Exec(

@@ -64,29 +64,13 @@ func fastTagTotal(database *db.DB, expr Expr) (int, bool) {
 func adjacencyTotalEstimate(database *db.DB, expr Expr) (int, bool) {
 	switch e := expr.(type) {
 	case AndExpr:
-		l, lok := adjacencyTotalEstimate(database, e.Left)
-		if !lok {
-			return 0, false
-		}
-		r, rok := adjacencyTotalEstimate(database, e.Right)
-		if !rok {
-			return 0, false
-		}
-		return min(l, r), true
+		return fastCountBinary(database, e.Left, e.Right, adjacencyTotalEstimate, minInt)
 	case OrExpr:
-		l, lok := adjacencyTotalEstimate(database, e.Left)
-		if !lok {
+		sum, ok := fastCountBinary(database, e.Left, e.Right, adjacencyTotalEstimate, addInts)
+		if !ok {
 			return 0, false
 		}
-		r, rok := adjacencyTotalEstimate(database, e.Right)
-		if !rok {
-			return 0, false
-		}
-		sum := l + r
-		if v, vok := fastVisibleCount(database); vok && sum > v {
-			sum = v
-		}
-		return sum, true
+		return capToVisible(database, sum)
 	}
 	return fastTagTotal(database, expr)
 }
@@ -298,83 +282,91 @@ func fastCountNot(database *db.DB, e NotExpr) (int, bool) {
 	return max(visible-used, 0), true
 }
 
+// fastCountBinary resolves both sides of a binary node through recurse
+// and combines them, bailing as soon as either side has no answer.
+func fastCountBinary(database *db.DB, l, r Expr, recurse func(*db.DB, Expr) (int, bool), combine func(int, int) int) (int, bool) {
+	lv, ok := recurse(database, l)
+	if !ok {
+		return 0, false
+	}
+	rv, ok := recurse(database, r)
+	if !ok {
+		return 0, false
+	}
+	return combine(lv, rv), true
+}
+
+func addInts(a, b int) int { return a + b }
+
+func minInt(a, b int) int { return min(a, b) }
+
+// capToVisible clamps an OR's summed bound to the visible-image count:
+// the two sides may overlap, so the sum only bounds the union. A count
+// read that misses yields no answer at all - the fast path reports only
+// totals it can stand behind.
+func capToVisible(database *db.DB, sum int) (int, bool) {
+	v, ok := fastVisibleCount(database)
+	if !ok {
+		return 0, false
+	}
+	return min(sum, v), true
+}
+
 func fastCountAnd(database *db.DB, e AndExpr) (int, bool) {
-	l, ok := fastTagTotal(database, e.Left)
-	if !ok {
-		return 0, false
-	}
-	r, ok := fastTagTotal(database, e.Right)
-	if !ok {
-		return 0, false
-	}
-	minN := min(l, r)
-	if minN < fastApproxThreshold {
+	minN, ok := fastCountBinary(database, e.Left, e.Right, fastTagTotal, minInt)
+	if !ok || minN < fastApproxThreshold {
 		return 0, false
 	}
 	return minN, true
 }
 
 func fastCountOr(database *db.DB, e OrExpr) (int, bool) {
-	l, ok := fastTagTotal(database, e.Left)
-	if !ok {
+	sum, ok := fastCountBinary(database, e.Left, e.Right, fastTagTotal, addInts)
+	if !ok || sum < fastApproxThreshold {
 		return 0, false
 	}
-	r, ok := fastTagTotal(database, e.Right)
-	if !ok {
+	return capToVisible(database, sum)
+}
+
+// fastCountFilters routes a filter key to its shortcut. Dispatch is by
+// key, so no helper re-checks the key it was picked for.
+var fastCountFilters = map[string]func(*db.DB, FilterExpr) (int, bool){
+	"cat":        fastCountCat,
+	"generated":  fastCountGenerated,
+	"rating":     fastCountRating,
+	"tagged":     fastCountTagged,
+	"autotagged": fastCountTagged,
+	"inbox":      fastCountInbox,
+	"ai":         fastCountAI,
+	"folder":     fastCountFolder,
+}
+
+// fastCountCat sums usage_count over non-alias tags in the category.
+// Aliases have usage_count=0 after merge so they don't actually
+// contribute, but the explicit filter mirrors the slow path's
+// canonical-only image_tags rows.
+func fastCountCat(database *db.DB, e FilterExpr) (int, bool) {
+	var n int
+	if err := database.Read.QueryRow(
+		`SELECT COALESCE(SUM(usage_count), 0) FROM tags
+		 WHERE is_alias = 0
+		   AND category_id = (SELECT id FROM tag_categories WHERE name = ?)`,
+		e.Val,
+	).Scan(&n); err != nil {
 		return 0, false
 	}
-	sum := l + r
-	if sum < fastApproxThreshold {
+	if n < fastApproxThreshold {
 		return 0, false
 	}
-	v, ok := fastVisibleCount(database)
-	if !ok {
-		return 0, false
-	}
-	sum = min(sum, v)
-	return sum, true
+	return n, true
 }
 
 func fastCountFilter(database *db.DB, e FilterExpr) (int, bool) {
 	if e.Val == "" {
 		return 0, false
 	}
-	if e.Key == "cat" {
-		// Sum usage_count over non-alias tags in the category. Aliases
-		// have usage_count=0 after merge so they don't actually
-		// contribute, but the explicit filter mirrors the slow path's
-		// canonical-only image_tags rows.
-		var n int
-		if err := database.Read.QueryRow(
-			`SELECT COALESCE(SUM(usage_count), 0) FROM tags
-			 WHERE is_alias = 0
-			   AND category_id = (SELECT id FROM tag_categories WHERE name = ?)`,
-			e.Val,
-		).Scan(&n); err != nil {
-			return 0, false
-		}
-		if n < fastApproxThreshold {
-			return 0, false
-		}
-		return n, true
-	}
-	if e.Key == "generated" {
-		return fastCountGenerated(database, e)
-	}
-	if e.Key == "rating" {
-		return fastCountRating(database, e)
-	}
-	if e.Key == "tagged" || e.Key == "autotagged" {
-		return fastCountTagged(database, e)
-	}
-	if e.Key == "inbox" {
-		return fastCountInbox(database, e)
-	}
-	if e.Key == "ai" {
-		return fastCountAI(database, e)
-	}
-	if e.Key == "folder" {
-		return fastCountFolder(database, e)
+	if fn, ok := fastCountFilters[e.Key]; ok {
+		return fn(database, e)
 	}
 	if searchkw.IsKeyword(e.Key) {
 		// Other filter keywords (fav, ai, source, folder, ...) have their
@@ -423,9 +415,6 @@ func fastCountFilter(database *db.DB, e FilterExpr) (int, bool) {
 // fixtures with multi-rated images keep the slow path's exact count.
 // The highest level skips the gate because its bound is exact.
 func fastCountRating(database *db.DB, e FilterExpr) (int, bool) {
-	if e.Key != "rating" || e.Val == "" {
-		return 0, false
-	}
 	level := strings.ToLower(e.Val)
 	rank := tags.RatingRank(level)
 	if rank < 0 {
@@ -480,9 +469,6 @@ func fastCountRating(database *db.DB, e FilterExpr) (int, bool) {
 // Empty value falls through; the slow path emits `1=1` for `folder:`
 // alone (the recursive root, equivalent to "no filter").
 func fastCountFolder(database *db.DB, e FilterExpr) (int, bool) {
-	if e.Key != "folder" || e.Val == "" {
-		return 0, false
-	}
 	rangeLo := e.Val + "/"
 	rangeHi := e.Val + "0"
 	var n int
@@ -517,10 +503,7 @@ func fastCountFolder(database *db.DB, e FilterExpr) (int, bool) {
 // pinning idx_images_source_type), and `any` is a fixed three-element
 // OR the planner handles directly. Empty value is the no-op slow path.
 func fastCountAI(database *db.DB, e FilterExpr) (int, bool) {
-	if e.Key != "ai" || e.Val == "" {
-		return 0, false
-	}
-	val := e.Val
+	val := strings.ToLower(e.Val)
 	if val == "sd" {
 		val = "a1111"
 	}
@@ -533,21 +516,8 @@ func fastCountAI(database *db.DB, e FilterExpr) (int, bool) {
 		// not slow here.
 		return 0, false
 	}
-	rows, err := database.Read.Query(`SELECT DISTINCT source_type FROM images`)
+	present, err := db.QueryStrings(database.Read, `SELECT DISTINCT source_type FROM images`)
 	if err != nil {
-		return 0, false
-	}
-	var present []string
-	for rows.Next() {
-		var s string
-		if err := rows.Scan(&s); err != nil {
-			_ = rows.Close()
-			return 0, false
-		}
-		present = append(present, s)
-	}
-	_ = rows.Close()
-	if err := rows.Err(); err != nil {
 		return 0, false
 	}
 
@@ -604,9 +574,6 @@ func parseBoolVal(v string) (bool, bool) {
 // write. Falls back to (0, false) on any DB error so the slow path
 // takes over.
 func fastCountTagged(database *db.DB, e FilterExpr) (int, bool) {
-	if e.Key != "tagged" && e.Key != "autotagged" {
-		return 0, false
-	}
 	val, ok := parseBoolVal(e.Val)
 	if !ok || !val {
 		return 0, false
@@ -633,9 +600,6 @@ func fastCountTagged(database *db.DB, e FilterExpr) (int, bool) {
 // row fetch, so the slow path's full visible scan is the wrong tradeoff
 // even on small libraries.
 func fastCountInbox(database *db.DB, e FilterExpr) (int, bool) {
-	if e.Key != "inbox" {
-		return 0, false
-	}
 	val, ok := parseBoolVal(e.Val)
 	if !ok {
 		// Unparseable boolean: the slow path emits 1=0 (no rows match)
@@ -662,9 +626,6 @@ func fastCountInbox(database *db.DB, e FilterExpr) (int, bool) {
 // probe over every visible image. UNION dedups image_ids carrying both
 // sd and comfy metadata for the same hash.
 func fastCountGenerated(database *db.DB, e FilterExpr) (int, bool) {
-	if e.Key != "generated" || e.Val == "" {
-		return 0, false
-	}
 	var n int
 	if err := database.Read.QueryRow(
 		`SELECT COUNT(*) FROM (

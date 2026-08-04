@@ -9,8 +9,6 @@ import (
 
 	"github.com/monbooru/monbooru/internal/db"
 	"github.com/monbooru/monbooru/internal/logx"
-	"github.com/monbooru/monbooru/internal/metadata"
-	"github.com/monbooru/monbooru/internal/models"
 )
 
 // ApplyReplacedFile swaps an image's bytes for the staged file, keeping the
@@ -39,19 +37,18 @@ func ApplyReplacedFile(database *db.DB, thumbnailsPath string, imageID int64, st
 	if err != nil {
 		return fmt.Errorf("stat staged file: %w", err)
 	}
-	newW, newH := decodeImageDimensions(stagedPath)
-	sdMeta, comfyMeta, _ := metadata.Extract(stagedPath, newType)
-	sourceType := models.SourceTypeNone
-	if sdMeta != nil && comfyMeta != nil {
-		sourceType = models.SourceTypeBoth
-	} else if sdMeta != nil {
-		sourceType = models.SourceTypeA1111
-	} else if comfyMeta != nil {
-		sourceType = models.SourceTypeComfyUI
+	// newType came from the pushed filename, which the client chose. The
+	// bytes decide what the row records and what the file is renamed to.
+	if actual, magicErr := detectMagicType(stagedPath); magicErr == nil {
+		newType = actual
 	}
+	newW, newH := decodeImageDimensions(stagedPath)
+	sdMeta, comfyMeta, sourceType := extractGenerationMeta(stagedPath, newType)
 
+	// monbooru names this file, so it names it after the type it holds; an
+	// extension that already claims that type is left as the operator spelled it.
 	newPath := oldPath
-	if newExt := filepath.Ext(stagedPath); newExt != filepath.Ext(oldPath) {
+	if newExt := ExtForFileType(newType); newExt != "" && ExtFileType(oldPath) != newType {
 		stem := filepath.Base(oldPath)
 		stem = stem[:len(stem)-len(filepath.Ext(stem))]
 		newPath = UniqueDestPath(filepath.Dir(oldPath), stem+newExt)

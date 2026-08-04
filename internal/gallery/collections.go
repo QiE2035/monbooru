@@ -58,11 +58,12 @@ func AddCollectionMembership(database *db.DB, imageID int64, name string, order 
 	if name == "" {
 		return errors.New("collection name required")
 	}
-	tx, err := database.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return db.InWriteTx(database.Write, func(tx *sql.Tx) error {
+		return addMembershipTx(tx, imageID, name, order)
+	})
+}
+
+func addMembershipTx(tx *sql.Tx, imageID int64, name string, order *int) error {
 	if _, err := tx.Exec(
 		`INSERT INTO image_collections (image_id, name, position) VALUES (?, ?, ?)
 		 ON CONFLICT(image_id, name) DO UPDATE SET position = excluded.position`,
@@ -75,35 +76,45 @@ func AddCollectionMembership(database *db.DB, imageID int64, name string, order 
 	}
 	switch {
 	case home == "":
-		if _, err := tx.Exec(`UPDATE images SET series = ?, series_order = ? WHERE id = ?`,
-			name, orderValue(order), imageID); err != nil {
-			return err
-		}
+		_, err = tx.Exec(`UPDATE images SET series = ?, series_order = ? WHERE id = ?`,
+			name, orderValue(order), imageID)
 	case strings.EqualFold(home, name):
-		if _, err := tx.Exec(`UPDATE images SET series_order = ? WHERE id = ?`,
-			orderValue(order), imageID); err != nil {
-			return err
-		}
+		_, err = tx.Exec(`UPDATE images SET series_order = ? WHERE id = ?`,
+			orderValue(order), imageID)
 	}
-	return tx.Commit()
+	return err
 }
 
 // RemoveCollectionMembership drops a membership; when it was the home the
 // next membership is promoted (or the mirror cleared if none remain).
 func RemoveCollectionMembership(database *db.DB, imageID int64, name string) error {
-	tx, err := database.Write.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return db.InWriteTx(database.Write, func(tx *sql.Tx) error {
+		return removeMembershipTx(tx, imageID, name)
+	})
+}
+
+func removeMembershipTx(tx *sql.Tx, imageID int64, name string) error {
 	if _, err := tx.Exec(`DELETE FROM image_collections WHERE image_id = ? AND name = ?`,
 		imageID, name); err != nil {
 		return err
 	}
-	if err := rebindHomeTx(tx, imageID, name); err != nil {
-		return err
+	return rebindHomeTx(tx, imageID, name)
+}
+
+// RenameCollectionMembership relabels imageID's membership from prev to
+// name in one transaction. Split across two writes, a failure on the
+// second leaves the image in neither collection with nothing saying so.
+func RenameCollectionMembership(database *db.DB, imageID int64, prev, name string, order *int) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("collection name required")
 	}
-	return tx.Commit()
+	return db.InWriteTx(database.Write, func(tx *sql.Tx) error {
+		if err := removeMembershipTx(tx, imageID, prev); err != nil {
+			return err
+		}
+		return addMembershipTx(tx, imageID, name, order)
+	})
 }
 
 // SetHomeCollection points imageID's home at name with the given order,
@@ -414,43 +425,29 @@ func ReorderCollection(database *db.DB, name string, ids []int64) error {
 		 WHERE series = ? COLLATE NOCASE`
 
 	if len(ids) <= chunkSize {
-		tx, err := database.Write.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(clearAll, name); err != nil {
-			return err
-		}
-		for i, id := range ids {
-			if _, err := tx.Exec(setPos, i+1, id, name); err != nil {
+		return db.InWriteTx(database.Write, func(tx *sql.Tx) error {
+			if _, err := tx.Exec(clearAll, name); err != nil {
 				return err
 			}
-		}
-		if _, err := tx.Exec(resync, name, name); err != nil {
+			for i, id := range ids {
+				if _, err := tx.Exec(setPos, i+1, id, name); err != nil {
+					return err
+				}
+			}
+			_, err := tx.Exec(resync, name, name)
 			return err
-		}
-		return tx.Commit()
+		})
 	}
 
-	inTx := func(fn func(*sql.Tx) error) error {
-		tx, err := database.Write.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if err := fn(tx); err != nil {
-			return err
-		}
-		return tx.Commit()
-	}
-	if err := inTx(func(tx *sql.Tx) error { _, e := tx.Exec(clearAll, name); return e }); err != nil {
+	if err := db.InWriteTx(database.Write, func(tx *sql.Tx) error {
+		_, e := tx.Exec(clearAll, name)
+		return e
+	}); err != nil {
 		return err
 	}
 	for start := 0; start < len(ids); start += chunkSize {
-		end := min(start+chunkSize, len(ids))
-		lo, hi := start, end
-		if err := inTx(func(tx *sql.Tx) error {
+		lo, hi := start, min(start+chunkSize, len(ids))
+		if err := db.InWriteTx(database.Write, func(tx *sql.Tx) error {
 			for i := lo; i < hi; i++ {
 				if _, err := tx.Exec(setPos, i+1, ids[i], name); err != nil {
 					return err
@@ -461,7 +458,10 @@ func ReorderCollection(database *db.DB, name string, ids []int64) error {
 			return err
 		}
 	}
-	return inTx(func(tx *sql.Tx) error { _, e := tx.Exec(resync, name, name); return e })
+	return db.InWriteTx(database.Write, func(tx *sql.Tx) error {
+		_, e := tx.Exec(resync, name, name)
+		return e
+	})
 }
 
 // SortCollectionByFilename orders every non-missing member of name by filename

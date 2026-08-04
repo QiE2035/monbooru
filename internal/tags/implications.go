@@ -21,6 +21,33 @@ const MaxImplicationDepth = 16
 // path from ImpliedID back to ParentID through the existing graph.
 var ErrImplicationCycle = errors.New("implication would form a cycle")
 
+// scanImplications collects the rows of an implication SELECT. The
+// implied-side display columns are only present on the parent-side
+// listing; withImpliedCols says whether to expect them.
+func scanImplications(rows *sql.Rows, withImpliedCols bool) ([]models.Implication, error) {
+	var out []models.Implication
+	for rows.Next() {
+		var im models.Implication
+		var created string
+		var stale int64
+		cols := []any{
+			&im.ParentID, &im.ImpliedID,
+			&im.ParentName, &im.ParentCategoryName, &im.ParentCategoryColor,
+		}
+		if withImpliedCols {
+			cols = append(cols, &im.ImpliedName, &im.ImpliedCategoryName, &im.ImpliedCategoryColor)
+		}
+		cols = append(cols, &created, &im.Origin, &stale)
+		if err := rows.Scan(cols...); err != nil {
+			return nil, err
+		}
+		im.CreatedAt, _ = time.Parse(time.RFC3339, created)
+		im.Stale = stale == 1
+		out = append(out, im)
+	}
+	return out, rows.Err()
+}
+
 // ListImplications returns every direct implication whose parent is
 // parentID, with display fields joined for the /tags dialog.
 func (s *Service) ListImplications(parentID int64) ([]models.Implication, error) {
@@ -41,24 +68,7 @@ func (s *Service) ListImplications(parentID int64) ([]models.Implication, error)
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var out []models.Implication
-	for rows.Next() {
-		var im models.Implication
-		var created string
-		var stale int64
-		if err := rows.Scan(
-			&im.ParentID, &im.ImpliedID,
-			&im.ParentName, &im.ParentCategoryName, &im.ParentCategoryColor,
-			&im.ImpliedName, &im.ImpliedCategoryName, &im.ImpliedCategoryColor,
-			&created, &im.Origin, &stale,
-		); err != nil {
-			return nil, err
-		}
-		im.CreatedAt, _ = time.Parse(time.RFC3339, created)
-		im.Stale = stale == 1
-		out = append(out, im)
-	}
-	return out, rows.Err()
+	return scanImplications(rows, true)
 }
 
 // ImpliedBy returns the direct edges whose implied side is tagID, with
@@ -78,23 +88,7 @@ func (s *Service) ImpliedBy(tagID int64) ([]models.Implication, error) {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var out []models.Implication
-	for rows.Next() {
-		var im models.Implication
-		var created string
-		var stale int64
-		if err := rows.Scan(
-			&im.ParentID, &im.ImpliedID,
-			&im.ParentName, &im.ParentCategoryName, &im.ParentCategoryColor,
-			&created, &im.Origin, &stale,
-		); err != nil {
-			return nil, err
-		}
-		im.CreatedAt, _ = time.Parse(time.RFC3339, created)
-		im.Stale = stale == 1
-		out = append(out, im)
-	}
-	return out, rows.Err()
+	return scanImplications(rows, false)
 }
 
 // SyncImplicationStaleness mirrors SyncAliasStaleness for a parent's
@@ -104,31 +98,25 @@ func (s *Service) ImpliedBy(tagID int64) ([]models.Implication, error) {
 func (s *Service) SyncImplicationStaleness(parentID int64, origin string, fresh map[int64]bool) (int, error) {
 	flagged := 0
 	err := s.inWriteTx(func(tx *sql.Tx) error {
-		rows, err := tx.Query(
-			`SELECT implied_tag_id, stale FROM tag_implications
+		type edgeRow struct{ impliedID, stale int64 }
+		present, err := db.QueryAll(tx, func(rows *sql.Rows) (edgeRow, error) {
+			var e edgeRow
+			err := rows.Scan(&e.impliedID, &e.stale)
+			return e, err
+		}, `SELECT implied_tag_id, stale FROM tag_implications
 			 WHERE parent_tag_id = ? AND origin = ?`, parentID, origin)
 		if err != nil {
 			return err
 		}
 		var flag, clear []int64
-		for rows.Next() {
-			var impliedID, stale int64
-			if err := rows.Scan(&impliedID, &stale); err != nil {
-				_ = rows.Close()
-				return err
-			}
-			switch current := fresh[impliedID]; {
-			case !current && stale == 0:
-				flag = append(flag, impliedID)
-			case current && stale == 1:
-				clear = append(clear, impliedID)
+		for _, e := range present {
+			switch current := fresh[e.impliedID]; {
+			case !current && e.stale == 0:
+				flag = append(flag, e.impliedID)
+			case current && e.stale == 1:
+				clear = append(clear, e.impliedID)
 			}
 		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		_ = rows.Close()
 		if err := setImplicationsStaleTx(tx, parentID, flag, 1); err != nil {
 			return err
 		}
@@ -142,15 +130,8 @@ func (s *Service) SyncImplicationStaleness(parentID int64, origin string, fresh 
 }
 
 func setImplicationsStaleTx(tx *sql.Tx, parentID int64, impliedIDs []int64, stale int) error {
-	if len(impliedIDs) == 0 {
-		return nil
-	}
-	placeholders, args := db.InPlaceholders(impliedIDs)
-	_, err := tx.Exec(
-		`UPDATE tag_implications SET stale = `+strconv.Itoa(stale)+
-			` WHERE parent_tag_id = `+strconv.FormatInt(parentID, 10)+` AND implied_tag_id IN (`+placeholders+`)`,
-		args...)
-	return err
+	return setStaleTx(tx, "tag_implications", "implied_tag_id",
+		`parent_tag_id = `+strconv.FormatInt(parentID, 10)+` AND `, impliedIDs, stale)
 }
 
 // ImplicationsForParents returns the direct implications keyed by
@@ -383,7 +364,7 @@ func applyImpliedClosureTx(tx *sql.Tx, imageID int64, implied []int64, ratingCat
 		if n, _ := res.RowsAffected(); n == 0 {
 			continue
 		}
-		if err := bumpTagUsageTx(tx, id, imageID); err != nil {
+		if err := BumpTagUsageTx(tx, id, imageID); err != nil {
 			return err
 		}
 		// If this newly-inserted implied tag is a rating, mark for the
@@ -409,24 +390,15 @@ func applyImpliedClosureTx(tx *sql.Tx, imageID int64, implied []int64, ratingCat
 // being removed). Used by the propagation cleanup job and by
 // removeTagFromImageTx to decide whether an implied row should stay.
 func implicationParentsOnImageExcluding(tx *sql.Tx, imageID, impliedID, excludeParent int64) ([]int64, error) {
-	rows, err := tx.Query(
+	return db.QueryAll(tx, func(rows *sql.Rows) (int64, error) {
+		var id int64
+		err := rows.Scan(&id)
+		return id, err
+	},
 		`SELECT ti.parent_tag_id
 		 FROM tag_implications ti
 		 JOIN image_tags it ON it.tag_id = ti.parent_tag_id
 		 WHERE ti.implied_tag_id = ? AND it.image_id = ? AND ti.parent_tag_id != ?`,
 		impliedID, imageID, excludeParent,
 	)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
 }

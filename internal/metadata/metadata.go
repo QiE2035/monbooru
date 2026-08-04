@@ -5,8 +5,6 @@ import (
 	"sort"
 
 	"github.com/monbooru/monbooru/internal/models"
-	"github.com/rwcarlsen/goexif/exif"
-	"github.com/rwcarlsen/goexif/tiff"
 )
 
 // Extract reads SD and/or ComfyUI metadata from a file. Either return
@@ -79,24 +77,14 @@ func genericFromEXIF(path string) []models.SDParam {
 
 // collectEXIFTags walks every EXIF tag across all IFDs and returns them
 // as key/value pairs. UserComment is skipped because it's the SD source.
-func collectEXIFTags(x *exif.Exif) []models.SDParam {
-	type kv struct{ k, v string }
-	var pairs []kv
-	_ = x.Walk(walkFunc(func(name exif.FieldName, tag *tiff.Tag) error {
-		if name == exif.UserComment {
-			return nil
+func collectEXIFTags(x *exifData) []models.SDParam {
+	out := make([]models.SDParam, 0, len(x.tags))
+	x.walk(func(name string, tag *exifTag) {
+		if name == userCommentField {
+			return
 		}
-		pairs = append(pairs, kv{k: string(name), v: tag.String()})
-		return nil
-	}))
-	sort.Slice(pairs, func(i, j int) bool { return pairs[i].k < pairs[j].k })
-	out := make([]models.SDParam, 0, len(pairs))
-	for _, p := range pairs {
-		out = append(out, models.SDParam{Key: p.k, Val: p.v})
-	}
+		out = append(out, models.SDParam{Key: name, Val: tag.String()})
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out
 }
-
-type walkFunc func(name exif.FieldName, tag *tiff.Tag) error
-
-func (w walkFunc) Walk(name exif.FieldName, tag *tiff.Tag) error { return w(name, tag) }

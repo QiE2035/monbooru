@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -235,45 +236,17 @@ func (s *Server) addTagToImage(w http.ResponseWriter, r *http.Request) {
 	// Three flash buckets the template renders in three colours: red
 	// (errors only), orange (mixed success + reject), green (success
 	// only). Build the parts once, then route them.
-	addedPart := func() string {
-		if len(added) > 0 {
-			return "added: " + strings.Join(added, ", ")
-		}
-		return ""
-	}()
-	promotedPart := func() string {
-		if len(promotedTokens) > 0 {
-			return "promoted to user tag: " + strings.Join(promotedTokens, ", ")
-		}
-		return ""
-	}()
-	dupesPart := func() string {
-		if mutated && len(dupes) > 0 {
-			return "already on image: " + strings.Join(dupes, ", ")
-		}
-		return ""
-	}()
-	displacedPart := func() string {
-		if len(displacedRatings) > 0 {
-			return "replaced rating " + strings.Join(displacedRatings, ", ")
-		}
-		return ""
-	}()
-	rejectedPart := func() string {
-		if len(rejected) > 0 {
-			return "rejected: " + strings.Join(rejected, "; ")
-		}
-		return ""
-	}()
+	addedPart := joinLabeled("added: ", ", ", added)
+	promotedPart := joinLabeled("promoted to user tag: ", ", ", promotedTokens)
+	dupesPart := ""
+	if mutated {
+		dupesPart = joinLabeled("already on image: ", ", ", dupes)
+	}
+	displacedPart := joinLabeled("replaced rating ", ", ", displacedRatings)
+	rejectedPart := joinLabeled("rejected: ", "; ", rejected)
 
 	joinNonEmpty := func(parts ...string) string {
-		out := parts[:0]
-		for _, p := range parts {
-			if p != "" {
-				out = append(out, p)
-			}
-		}
-		return strings.Join(out, "; ")
+		return strings.Join(slices.DeleteFunc(parts, func(p string) bool { return p == "" }), "; ")
 	}
 
 	var addErrMsg, addWarnMsg, addOkMsg string
@@ -498,6 +471,15 @@ func (s *Server) removeTagFromImage(w http.ResponseWriter, r *http.Request) {
 		okMsg = "removed: " + name
 	}
 	s.renderTagListWithSidebar(w, r, id, "", "", okMsg, false)
+}
+
+// joinLabeled renders "<label><items joined by sep>", or "" when there
+// is nothing to label.
+func joinLabeled(label, sep string, items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	return label + strings.Join(items, sep)
 }
 
 func (s *Server) changeTagCategory(w http.ResponseWriter, r *http.Request) {

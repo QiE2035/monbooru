@@ -13,11 +13,7 @@ import (
 // cancellation hook lives in the web-package chunkedJob.
 func Chunked[T any](xs []T, chunkSize int, fn func(chunk []T) error) error {
 	for start := 0; start < len(xs); start += chunkSize {
-		end := start + chunkSize
-		if end > len(xs) {
-			end = len(xs)
-		}
-		if err := fn(xs[start:end]); err != nil {
+		if err := fn(xs[start:min(start+chunkSize, len(xs))]); err != nil {
 			return err
 		}
 	}
@@ -37,6 +33,41 @@ func ScanIDs(rows *sql.Rows) ([]int64, error) {
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// ScanAll walks rows through scan and collects what it returns. Rows is
+// closed by the caller. A scan error drops the partial result: a caller
+// that acted on half a set would be acting on a lie.
+func ScanAll[T any](rows *sql.Rows, scan func(*sql.Rows) (T, error)) ([]T, error) {
+	var out []T
+	for rows.Next() {
+		v, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// QueryAll runs the query and collects its rows through scan, owning the
+// Close on every path.
+func QueryAll[T any](q Querier, scan func(*sql.Rows) (T, error), query string, args ...any) ([]T, error) {
+	rows, err := q.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return ScanAll(rows, scan)
+}
+
+// QueryStrings is QueryAll over a single text column.
+func QueryStrings(q Querier, query string, args ...any) ([]string, error) {
+	return QueryAll(q, func(rows *sql.Rows) (string, error) {
+		var v string
+		err := rows.Scan(&v)
+		return v, err
+	}, query, args...)
 }
 
 // InWriteTx runs work inside a write transaction, committing on success

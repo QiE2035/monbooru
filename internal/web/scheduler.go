@@ -354,23 +354,12 @@ func (s *Server) scheduledAutotag(cx *galleryCtx) error {
 	ctx := s.jobs.Context()
 	baseline := readVmRSS()
 	skipped, err := tagger.RunWithTaggers(ctx, cx.DB, s.cfg, ids, enabled, s.jobs, s.cfg.Tagger.ExecutionProvider, cx.MangaCacheDir())
-	cx.InvalidateCaches()
-	if ctx.Err() != nil {
-		s.jobs.Complete(fmt.Sprintf("[%s] auto-tagging cancelled (%d image(s) queued)", cx.Name, len(ids)))
-		return nil
-	}
+	err = s.completeAutotagRun(cx, ctx, "["+cx.Name+"] ", "",
+		"scheduled "+cx.Name, len(ids), skipped, baseline, err)
 	if err != nil {
-		s.jobs.Fail(err.Error())
 		logx.Warnf("scheduler autotag %q: %v", cx.Name, err)
-		return err
 	}
-	logAutotagPeak(fmt.Sprintf("scheduled %s %d image(s)", cx.Name, len(ids)), baseline)
-	if skipped > 0 {
-		s.jobs.Complete(fmt.Sprintf("[%s] auto-tagged %d of %d image(s), %d skipped", cx.Name, len(ids)-skipped, len(ids), skipped))
-		return nil
-	}
-	s.jobs.Complete(fmt.Sprintf("[%s] auto-tagged %d image(s)", cx.Name, len(ids)))
-	return nil
+	return err
 }
 
 // recordScheduleRun stores the completion of a scheduler run so the Schedule

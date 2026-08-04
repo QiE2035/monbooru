@@ -401,23 +401,23 @@ func Default() *Config {
 			MaxFileSizeMB: 2048,
 		},
 		Tagger: TaggerConfig{
-			ExecutionProvider:       "cpu",
+			ExecutionProvider:       defaultExecutionProvider,
 			Parallel:                4,
 			IdleReleaseAfterMinutes: 15,
 			Aggregation:             TaggerAggregationCfg{MinHitFraction: 0.05},
 		},
 		Auth: AuthConfig{
-			SessionLifetimeDays: 7,
+			SessionLifetimeDays: defaultSessionLifetimeDays,
 		},
 		UI: UIConfig{
-			PageSize:     40,
-			ThumbnailFit: "natural",
+			PageSize:     defaultPageSize,
+			ThumbnailFit: defaultThumbnailFit,
 		},
 		Log: LogConfig{
 			Level: "warn",
 		},
 		Schedule: ScheduleConfig{
-			Time:              "01:00",
+			Time:              defaultScheduleTime,
 			SyncGallery:       true,
 			RemoveOrphans:     true,
 			RunAutoTaggers:    false,
@@ -619,6 +619,17 @@ func applyEnvOverrides(cfg *Config) {
 // single page well under SQLite's SQLITE_MAX_VARIABLE_NUMBER (32766).
 const MaxPageSize = 1000
 
+// The defaults both Default() and validate() have to agree on: one
+// states them for a fresh config, the other snaps a hand-edited TOML
+// back onto them.
+const (
+	defaultScheduleTime        = "01:00"
+	defaultExecutionProvider   = "cpu"
+	defaultPageSize            = 40
+	defaultThumbnailFit        = "natural"
+	defaultSessionLifetimeDays = 7
+)
+
 func validate(cfg *Config) error {
 	if cfg.Server.BindAddress == "" {
 		return fmt.Errorf("server.bind_address must not be empty")
@@ -670,12 +681,12 @@ func validate(cfg *Config) error {
 		cfg.DefaultGallery = cfg.Galleries[0].Name
 	}
 	if cfg.Schedule.Time == "" {
-		cfg.Schedule.Time = "01:00"
+		cfg.Schedule.Time = defaultScheduleTime
 	} else if err := ValidateScheduleTime(cfg.Schedule.Time); err != nil {
 		return err
 	}
 	if cfg.Tagger.ExecutionProvider == "" {
-		cfg.Tagger.ExecutionProvider = "cpu"
+		cfg.Tagger.ExecutionProvider = defaultExecutionProvider
 	} else if !IsValidExecutionProvider(cfg.Tagger.ExecutionProvider) {
 		return fmt.Errorf("tagger.execution_provider %q must be one of %v", cfg.Tagger.ExecutionProvider, ValidExecutionProviders)
 	}
@@ -685,20 +696,20 @@ func validate(cfg *Config) error {
 	// config typo, and cap it so a page's IN-clause can't overflow the
 	// SQL variable limit.
 	if cfg.UI.PageSize <= 0 {
-		cfg.UI.PageSize = 40
+		cfg.UI.PageSize = defaultPageSize
 	} else if cfg.UI.PageSize > MaxPageSize {
 		cfg.UI.PageSize = MaxPageSize
 	}
 	// ThumbnailFit gates the gallery grid CSS; an unknown value would
 	// leave the template class blank. Snap to the default.
 	if cfg.UI.ThumbnailFit != "square" {
-		cfg.UI.ThumbnailFit = "natural"
+		cfg.UI.ThumbnailFit = defaultThumbnailFit
 	}
 	// MaxAge=0 in net/http means "session cookie", so a hand-edited TOML
 	// with session_lifetime_days = 0 would expire the user's session at
 	// every browser close instead of after the documented 7 days.
 	if cfg.Auth.SessionLifetimeDays <= 0 {
-		cfg.Auth.SessionLifetimeDays = 7
+		cfg.Auth.SessionLifetimeDays = defaultSessionLifetimeDays
 	}
 	return nil
 }

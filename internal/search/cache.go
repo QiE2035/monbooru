@@ -1,6 +1,7 @@
 package search
 
 import (
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -146,23 +147,9 @@ func AdjacencyCacheDropForGallery(gallery string) {
 		return
 	}
 	prefix := gallery + "\x00"
-	adjCacheMu.Lock()
-	defer adjCacheMu.Unlock()
-	for k := range adjCacheEntries {
-		if strings.HasPrefix(k, prefix) {
-			delete(adjCacheEntries, k)
-		}
-	}
-	// Rebuild the LRU order without the dropped keys; len(adjCacheOrder)
-	// stays bounded by adjacencyCacheMaxEntries (4) so the rebuild is
-	// constant time.
-	newOrder := adjCacheOrder[:0]
-	for _, k := range adjCacheOrder {
-		if _, exists := adjCacheEntries[k]; exists {
-			newOrder = append(newOrder, k)
-		}
-	}
-	adjCacheOrder = newOrder
+	adjCacheDrop(func(k string, _ adjacencyCacheEntry) bool {
+		return strings.HasPrefix(k, prefix)
+	})
 }
 
 // AdjacencyCacheSweep drops every entry past its TTL. Get evicts one
@@ -170,15 +157,23 @@ func AdjacencyCacheDropForGallery(gallery string) {
 // process keeps expired lists - up to the cache's whole budget - until
 // something touches the cache again.
 func AdjacencyCacheSweep() {
+	now := time.Now()
+	adjCacheDrop(func(_ string, entry adjacencyCacheEntry) bool {
+		return now.After(entry.expiresAt)
+	})
+}
+
+// adjCacheDrop removes every entry drop reports and rebuilds the LRU
+// order around the survivors. len(adjCacheOrder) stays bounded by
+// adjacencyCacheMaxEntries (4), so the rebuild is constant time.
+func adjCacheDrop(drop func(string, adjacencyCacheEntry) bool) {
 	adjCacheMu.Lock()
 	defer adjCacheMu.Unlock()
-	now := time.Now()
-	for k, entry := range adjCacheEntries {
-		if now.After(entry.expiresAt) {
-			delete(adjCacheEntries, k)
-			removeFromOrder(k)
-		}
-	}
+	maps.DeleteFunc(adjCacheEntries, drop)
+	adjCacheOrder = slices.DeleteFunc(adjCacheOrder, func(k string) bool {
+		_, kept := adjCacheEntries[k]
+		return !kept
+	})
 }
 
 func removeFromOrder(key string) {
@@ -199,20 +194,7 @@ func BuildAdjacencyCacheKey(gallery, query, sort, order string, seed int64, ceil
 	if sort == "random" && seed != 0 {
 		seedStr = strconv.FormatInt(seed, 10)
 	}
-	var b strings.Builder
-	b.Grow(len(gallery) + len(query) + len(sort) + len(order) + len(seedStr) + len(ceiling) + 5)
-	b.WriteString(gallery)
-	b.WriteByte(0)
-	b.WriteString(query)
-	b.WriteByte(0)
-	b.WriteString(sort)
-	b.WriteByte(0)
-	b.WriteString(order)
-	b.WriteByte(0)
-	b.WriteString(seedStr)
-	b.WriteByte(0)
-	b.WriteString(ceiling)
-	return b.String()
+	return strings.Join([]string{gallery, query, sort, order, seedStr, ceiling}, "\x00")
 }
 
 // findInAdjacencyList returns the prev/next image ids around currentID
@@ -220,20 +202,18 @@ func BuildAdjacencyCacheKey(gallery, query, sort, order string, seed int64, ceil
 // neighbours; (nil, nil) when currentID isn't in the list (typically
 // because it was deleted or the list belongs to a different query).
 func findInAdjacencyList(ids []int64, currentID int64) (*int64, *int64) {
-	for i, id := range ids {
-		if id != currentID {
-			continue
-		}
-		var prev, next *int64
-		if i > 0 {
-			p := ids[i-1]
-			prev = &p
-		}
-		if i < len(ids)-1 {
-			n := ids[i+1]
-			next = &n
-		}
-		return prev, next
+	i := slices.Index(ids, currentID)
+	if i < 0 {
+		return nil, nil
 	}
-	return nil, nil
+	var prev, next *int64
+	if i > 0 {
+		p := ids[i-1]
+		prev = &p
+	}
+	if i < len(ids)-1 {
+		n := ids[i+1]
+		next = &n
+	}
+	return prev, next
 }

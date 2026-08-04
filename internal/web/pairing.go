@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -61,11 +62,9 @@ func pairID() string {
 
 func (ps *pairStore) sweepLocked() {
 	cutoff := time.Now().Add(-pairPendingTTL)
-	for id, r := range ps.m {
-		if r.CreatedAt.Before(cutoff) {
-			delete(ps.m, id)
-		}
-	}
+	maps.DeleteFunc(ps.m, func(_ string, r *pairReq) bool {
+		return r.CreatedAt.Before(cutoff)
+	})
 }
 
 // create records a pending request, capping the number outstanding.

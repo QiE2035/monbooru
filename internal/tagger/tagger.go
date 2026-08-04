@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -234,12 +235,7 @@ func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, id
 		statusMu.Lock()
 		defer statusMu.Unlock()
 		workerStatus[workerIdx] = msg
-		var active []string
-		for _, s := range workerStatus {
-			if s != "" {
-				active = append(active, s)
-			}
-		}
+		active := slices.DeleteFunc(slices.Clone(workerStatus), func(s string) bool { return s == "" })
 		out := "tagging images"
 		if len(active) > 0 {
 			shown := active
@@ -506,8 +502,7 @@ func storeResults(
 			`DELETE FROM image_tags WHERE image_id = ? AND tag_id = ? AND is_auto = 1`, imageID, tid); err != nil {
 			return fmt.Errorf("remove auto tag %d: %w", tid, err)
 		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE tags SET usage_count = MAX(0, usage_count - 1) WHERE id = ?`, tid); err != nil {
+		if err := tags.DropTagUsageTx(tx, tid, imageID); err != nil {
 			return fmt.Errorf("decrement usage for tag %d: %w", tid, err)
 		}
 	}
@@ -551,7 +546,10 @@ func storeResults(
 		if n, _ := res.RowsAffected(); n == 0 {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE tags SET usage_count = usage_count + 1, last_used_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, tid); err != nil {
+		// Through the tags helpers so the is_missing guard holds: a
+		// missing image is not in usage_count, and auto-tagging one
+		// must not inflate it.
+		if err := tags.BumpTagUsageTx(tx, tid, imageID); err != nil {
 			return fmt.Errorf("increment usage for tag %d: %w", tid, err)
 		}
 		if err := tags.ApplyImpliedFanoutTx(tx, imageID, tid, ratingCatID, true); err != nil {

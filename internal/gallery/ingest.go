@@ -40,13 +40,13 @@ func FolderPath(galleryPath, filePath string) string {
 // extraction, DB insert, thumbnail. Returns (image, isDuplicate, error).
 // origin records how the file got in ("ingest" / "upload" / caller-supplied
 // string); empty defaults to "ingest".
-func Ingest(database *db.DB, galleryPath, thumbnailsPath, path, fileType, origin string) (*models.Image, bool, error) {
+func Ingest(database *db.DB, galleryPath, thumbnailsPath, path, origin string) (*models.Image, bool, error) {
 	hash, err := HashFile(path)
 	if err != nil {
 		return nil, false, fmt.Errorf("hashing file: %w", err)
 	}
 	ClaimOwnership(path)
-	return ingestWithHash(database, galleryPath, thumbnailsPath, path, fileType, hash, origin)
+	return ingestWithHash(database, galleryPath, thumbnailsPath, path, hash, origin)
 }
 
 // decodeImageDimensions reads just the header of the image at path and
@@ -68,7 +68,7 @@ func decodeImageDimensions(path string) (w, h *int) {
 // ingestWithHash is the body of Ingest minus the HashFile +
 // ClaimOwnership preamble. Sync uses it directly to avoid double-hashing
 // the same file on large libraries.
-func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType, hash, origin string) (*models.Image, bool, error) {
+func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, hash, origin string) (*models.Image, bool, error) {
 	origin = cmp.Or(origin, models.OriginIngest)
 	var existingID int64
 	err := database.Read.QueryRow(
@@ -193,12 +193,13 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 	}
 
 	// DetectFileType trusts the extension so the sync walk stays free of
-	// per-file reads. That leaves bytes that are not media at all - a
+	// per-file reads, which leaves bytes that are not media at all - a
 	// text file renamed .png - reaching here, where they would insert a
-	// row with no dimensions, no thumbnail and no phash. Confirm the
-	// signature before committing to a row, like the cbz branch below
-	// refuses an archive that will not open.
-	if _, err := detectMagicType(path); err != nil {
+	// row with no dimensions, no thumbnail and no phash. The signature
+	// decides both whether to commit a row and what type it records, so
+	// a PNG saved as .jpg keeps its metadata and answers type:png.
+	fileType, err := detectMagicType(path)
+	if err != nil {
 		logx.Warnf("ingest: skip %q: contents are not a supported media type", path)
 		return nil, false, fmt.Errorf("ingest %q: %w", path, err)
 	}
@@ -253,19 +254,7 @@ func ingestWithHash(database *db.DB, galleryPath, thumbnailsPath, path, fileType
 		imgWidth, imgHeight = decodeImageDimensions(path)
 	}
 
-	var sdMeta *models.SDMetadata
-	var comfyMeta *models.ComfyUIMetadata
-	if fileType != models.FileTypeCBZ {
-		sdMeta, comfyMeta, _ = metadata.Extract(path, fileType)
-	}
-	sourceType := models.SourceTypeNone
-	if sdMeta != nil && comfyMeta != nil {
-		sourceType = models.SourceTypeBoth
-	} else if sdMeta != nil {
-		sourceType = models.SourceTypeA1111
-	} else if comfyMeta != nil {
-		sourceType = models.SourceTypeComfyUI
-	}
+	sdMeta, comfyMeta, sourceType := extractGenerationMeta(path, fileType)
 
 	// ON CONFLICT(sha256) DO NOTHING so a concurrent ingest that wrote the
 	// same SHA between our read-pool check and this transaction falls into
@@ -398,6 +387,22 @@ func toNullFloat(v *float64) interface{} {
 		return nil
 	}
 	return *v
+}
+
+// extractGenerationMeta reads whichever generation blobs the file
+// carries and classifies the pair into the source_type the row records.
+// Every path that rewrites a file's bytes owes the row all three.
+func extractGenerationMeta(path, fileType string) (*models.SDMetadata, *models.ComfyUIMetadata, string) {
+	sd, comfy, _ := metadata.Extract(path, fileType)
+	switch {
+	case sd != nil && comfy != nil:
+		return sd, comfy, models.SourceTypeBoth
+	case sd != nil:
+		return sd, comfy, models.SourceTypeA1111
+	case comfy != nil:
+		return sd, comfy, models.SourceTypeComfyUI
+	}
+	return sd, comfy, models.SourceTypeNone
 }
 
 func insertSDMeta(tx *sql.Tx, sd *models.SDMetadata) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -81,11 +82,9 @@ func (s *SessionStore) Clear() {
 func (s *SessionStore) SweepExpired() {
 	now := time.Now()
 	s.mu.Lock()
-	for id, sess := range s.sessions {
-		if now.After(sess.ExpiresAt) {
-			delete(s.sessions, id)
-		}
-	}
+	maps.DeleteFunc(s.sessions, func(_ string, sess Session) bool {
+		return now.After(sess.ExpiresAt)
+	})
 	s.mu.Unlock()
 }
 

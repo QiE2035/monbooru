@@ -1,5 +1,39 @@
 # Changelog
 
+## [v1.17.1] - 2026-08-04
+### Added
+- `[review again]` appears on every edge of a relation chain or tree, not just on a pair.
+
+### Changed
+- Rating tags accept aliases and merges; only the general/sensitive/questionable/explicit tags stay locked. ([#94](https://github.com/monbooru/monbooru/issues/94))
+- The upload drop summary says why files were rejected.
+- Review sessions name the nearest shared ancestor, not only a direct parent. ([#71](https://github.com/monbooru/monbooru/issues/71))
+- A batch tag add that replaces ratings now reports what it replaced.
+- Batch lookup reports progress instead of leaving the status bar empty.
+- Some dependencies updates.
+
+### Fixed
+- A file's type comes from its bytes, so a misnamed image searches and serves correctly. ([#98](https://github.com/monbooru/monbooru/issues/98))
+- MP4 files branded iso5 no longer land as an unsupported file type. ([#100](https://github.com/monbooru/monbooru/issues/100))
+- Very large images generate thumbnail instead of failing, and a refused preview says why. ([#99](https://github.com/monbooru/monbooru/issues/99))
+- A file moved out of the gallery is marked missing instead of staying listed.
+- A malformed EXIF block no longer hangs ingest and the detail page.
+- Relation groups emptied by deleted images are cleared instead of listing as 0 members. ([#95](https://github.com/monbooru/monbooru/issues/95))
+- Review sessions no longer offer pairs already related through a chain or tree. ([#71](https://github.com/monbooru/monbooru/issues/71))
+- Find pairs better calibrates rare tags on small libraries. ([#88](https://github.com/monbooru/monbooru/issues/88))
+- The DirectML auto-tagger no longer crashes or fails to load under concurrent inference. ([#97](https://github.com/monbooru/monbooru/issues/97))
+- Auto-tagging a missing image no longer inflates its tags' usage counts.
+- A folded-duplicate merge that refused every pair now says so instead of reporting success.
+- Rebuild thumbnails no longer counts refused rows as rebuilt.
+- A failed job's error stays in the status bar for the full dismiss window.
+- Deleting a tag category no longer offers itself as the destination for its tags.
+
+Thanks to @QiE2035 for the DirectML fix (https://github.com/monbooru/monbooru/issues/97) and the report (https://github.com/monbooru/monbooru/issues/98).
+Thanks to @gary-host-laptop for the reports (https://github.com/monbooru/monbooru/issues/71, https://github.com/monbooru/monbooru/issues/95, https://github.com/monbooru/monbooru/issues/99, https://github.com/monbooru/monbooru/issues/100).
+Thanks to @CeareDelafont for the reports (https://github.com/monbooru/monbooru/issues/88, https://github.com/monbooru/monbooru/issues/94).
+
+Co-authored-by: QiE2035 <18079122+QiE2035@users.noreply.github.com>
+
 ## [v1.17.0] - 2026-08-01
 ### Added
 - New dialog for configuring each tagger: browse a tagger's labels, rewrite their mappings, and export the merged rules. ([#59](https://github.com/monbooru/monbooru/issues/59))

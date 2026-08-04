@@ -393,6 +393,7 @@ func buildSpec(baseURL string) map[string]any {
 						"200": map[string]any{"description": "Deleted (folder also removed)"},
 						"204": map[string]any{"description": "Deleted"},
 						"404": resp("Not found", "#/components/schemas/Error"),
+						"500": resp("Delete failed server-side", "#/components/schemas/Error"),
 					},
 				},
 			},
@@ -860,7 +861,7 @@ func buildSpec(baseURL string) map[string]any {
 					}),
 					"responses": map[string]any{
 						"204": map[string]any{"description": "Deleted"},
-						"400": resp("Built-in category, or an unknown action", "#/components/schemas/Error"),
+						"400": resp("Built-in category, an unknown action, or an unusable move target", "#/components/schemas/Error"),
 						"404": resp("Category not found", "#/components/schemas/Error"),
 					},
 				},

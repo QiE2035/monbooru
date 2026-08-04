@@ -88,10 +88,10 @@ type sessionPairView struct {
 	// without a swap: the bigger-filesize side on a pixel match, the
 	// older image on a tag match. W swap reassigns it client-side.
 	LeftID int64
-	// SharedSource names the image both sides are direct derivatives
-	// of, 0 otherwise. The bridge renders it so a sibling pair reads
-	// as tree context, not as a pair the tree already relates.
-	SharedSource int64
+	// SharedAncestor names the nearest image both sides descend from,
+	// 0 otherwise. The bridge renders it so a pair from one tree reads
+	// as tree context rather than as two strangers.
+	SharedAncestor int64
 }
 
 // ScorePercent renders the tag score the way the card reads it.
@@ -189,10 +189,10 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 			}
 			sharedTags, sharedTotal = shared, total
 		}
-		if src, ok, sErr := relations.SharedDerivativeSource(cx.DB, pair.A.ID, pair.B.ID); sErr != nil {
-			logx.Debugf("session shared source: %v", sErr)
+		if src, ok, sErr := relations.CommonDerivativeAncestor(cx.DB, pair.A.ID, pair.B.ID); sErr != nil {
+			logx.Debugf("session shared ancestor: %v", sErr)
 		} else if ok {
-			pair.SharedSource = src
+			pair.SharedAncestor = src
 		}
 	}
 	s.renderTemplate(w, "relations_session.html", sessionPageData{

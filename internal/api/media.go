@@ -22,9 +22,12 @@ func (h *Handler) serveImageFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	canonPath, _, ok := containedCanonical(w, g, id)
+	canonPath, fileType, ok := containedCanonical(w, g, id)
 	if !ok {
 		return
+	}
+	if ct := gallery.MIMEForFileType(fileType); ct != "" {
+		w.Header().Set("Content-Type", ct)
 	}
 	http.ServeFile(w, r, canonPath)
 }

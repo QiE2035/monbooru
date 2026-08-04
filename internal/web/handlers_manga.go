@@ -243,15 +243,14 @@ func (s *Server) extractMangaPage(w http.ResponseWriter, r *http.Request) {
 		fail("copy page", err)
 		return
 	}
-	ft, err := gallery.DetectFileType(dstPath)
-	if err != nil {
+	if _, err := gallery.DetectFileType(dstPath); err != nil {
 		_ = os.Remove(dstPath)
 		fail("detect type", err)
 		return
 	}
 	// No MaxFileSizeMB check: the bytes are already in the library, inside
 	// the archive.
-	page, isDup, err := gallery.Ingest(s.db(), s.galleryPath(), s.thumbnailsPath(), dstPath, ft, models.OriginExtract)
+	page, isDup, err := gallery.Ingest(s.db(), s.galleryPath(), s.thumbnailsPath(), dstPath, models.OriginExtract)
 	if err != nil {
 		_ = os.Remove(dstPath)
 		fail("ingest", err)

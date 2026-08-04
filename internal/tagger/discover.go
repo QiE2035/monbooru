@@ -183,10 +183,7 @@ func resolveTaggerFiles(dir, explicitModel, explicitTags string) (string, string
 					hasTagsTXT = true
 				}
 			case ".json":
-				// `tagger.json` and `dispatch.json` are operator
-				// sidecars, never label files. Excluding them by name
-				// keeps the lone-label auto-pick honest.
-				if n != "tagger.json" && n != "dispatch.json" {
+				if !isTaggerSidecar(n) {
 					labelFiles = append(labelFiles, n)
 				}
 			}
@@ -220,6 +217,13 @@ func resolveTaggerFiles(dir, explicitModel, explicitTags string) (string, string
 	return modelFile, tagsFile
 }
 
+// isTaggerSidecar reports whether name is an operator sidecar rather
+// than a label file: excluding them by name keeps the lone-label
+// auto-pick and the empty-directory skip honest.
+func isTaggerSidecar(name string) bool {
+	return name == "tagger.json" || name == "dispatch.json"
+}
+
 // hasTaggerFiles reports whether dir contains at least one file with a
 // tagger-related extension, used to skip empty subdirectories during
 // discovery. `tagger.json` / `dispatch.json` sidecars don't count: a
@@ -238,7 +242,7 @@ func hasTaggerFiles(dir string) bool {
 		case ".onnx", ".csv", ".txt":
 			return true
 		case ".json":
-			if n != "tagger.json" && n != "dispatch.json" {
+			if !isTaggerSidecar(n) {
 				return true
 			}
 		}
