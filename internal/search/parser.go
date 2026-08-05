@@ -31,6 +31,10 @@ type TagExpr struct {
 type FilterExpr struct {
 	Key string
 	Val string
+	// IsJQFilter marks this as a jq expression filter (e.g., comfyui:jq=<expr>)
+	IsJQFilter bool
+	// JQExpr stores the extracted jq expression when IsJQFilter is true
+	JQExpr string
 }
 
 func (AndExpr) exprNode()    {}
@@ -51,6 +55,58 @@ func Parse(query string) (Expr, error) {
 		result = AndExpr{Left: result, Right: e}
 	}
 	return result, nil
+}
+
+// ParseWithJQ parses a query string and extracts jq filters from the AST.
+// It returns the parsed Expr and a list of jq expressions found in the query.
+func ParseWithJQ(query string) (Expr, []string, error) {
+	expr, err := Parse(query)
+	if err != nil {
+		return nil, nil, err
+	}
+	jqFilters := extractJQFilters(expr)
+	return expr, jqFilters, nil
+}
+
+// extractJQFilters recursively walks the AST and collects all jq filter expressions.
+func extractJQFilters(expr Expr) []string {
+	if expr == nil {
+		return nil
+	}
+	var filters []string
+	switch e := expr.(type) {
+	case FilterExpr:
+		if e.IsJQFilter && e.JQExpr != "" {
+			filters = append(filters, e.JQExpr)
+		}
+	case AndExpr:
+		filters = append(filters, extractJQFilters(e.Left)...)
+		filters = append(filters, extractJQFilters(e.Right)...)
+	case OrExpr:
+		filters = append(filters, extractJQFilters(e.Left)...)
+		filters = append(filters, extractJQFilters(e.Right)...)
+	case NotExpr:
+		filters = append(filters, extractJQFilters(e.Expr)...)
+	}
+	return filters
+}
+
+// HasJQFilters checks whether the AST contains any jq filter expressions.
+func HasJQFilters(expr Expr) bool {
+	if expr == nil {
+		return false
+	}
+	switch e := expr.(type) {
+	case FilterExpr:
+		return e.IsJQFilter && e.JQExpr != ""
+	case AndExpr:
+		return HasJQFilters(e.Left) || HasJQFilters(e.Right)
+	case OrExpr:
+		return HasJQFilters(e.Left) || HasJQFilters(e.Right)
+	case NotExpr:
+		return HasJQFilters(e.Expr)
+	}
+	return false
 }
 
 type tokenKind int
@@ -126,6 +182,30 @@ func tokenize(query string) []token {
 					}
 					if j < len(query) {
 						j++ // skip closing "
+					}
+					break
+				}
+				// Support backtick-quoted values: key:`value with "quotes"`
+				// Backticks allow unescaped double quotes inside.
+				if query[j] == ':' && j+1 < len(query) && query[j+1] == '`' {
+					j += 2 // skip :`
+					for j < len(query) && query[j] != '`' {
+						j++
+					}
+					if j < len(query) {
+						j++ // skip closing `
+					}
+					break
+				}
+				// Support backtick anywhere in the value: key:val`ue`
+				// When we encounter a backtick, read until closing backtick
+				if query[j] == '`' {
+					j++ // skip opening `
+					for j < len(query) && query[j] != '`' {
+						j++
+					}
+					if j < len(query) {
+						j++ // skip closing `
 					}
 					break
 				}
@@ -275,6 +355,20 @@ func (p *parser) parseTerm() Expr {
 		val := t.val[colonIdx+1:]
 		if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
 			val = unescapeQuoted(val[1 : len(val)-1])
+		}
+		// Handle backtick-quoted values: key:`content` or key:jq=`content`
+		// Backticks allow unescaped double quotes inside.
+		if len(val) >= 2 && val[0] == '`' && val[len(val)-1] == '`' {
+			val = val[1 : len(val)-1]
+		}
+		// Detect comfyui:jq=<expression> pattern
+		if key == "comfyui" && strings.HasPrefix(val, "jq=") {
+			jqExpr := strings.TrimPrefix(val, "jq=")
+			// Handle backtick inside jq= value: jq=`expression`
+			if len(jqExpr) >= 2 && jqExpr[0] == '`' && jqExpr[len(jqExpr)-1] == '`' {
+				jqExpr = jqExpr[1 : len(jqExpr)-1]
+			}
+			return FilterExpr{Key: key, Val: val, IsJQFilter: true, JQExpr: jqExpr}
 		}
 		return FilterExpr{Key: key, Val: val}
 

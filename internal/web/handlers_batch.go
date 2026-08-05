@@ -40,7 +40,7 @@ func (s *Server) resolveBatchScope(w http.ResponseWriter, r *http.Request, errLa
 		// would wipe explicit rows they can't even see.
 		expr = resolveCeiling(r, s.Active()).Apply(expr)
 		var ids []int64
-		err := search.ExecuteForDeleteStream(s.db(), expr, func(t search.DeleteTarget) error {
+		err := search.ExecuteForDeleteStreamWithJQ(s.db(), expr, func(t search.DeleteTarget) error {
 			ids = append(ids, t.ID)
 			return nil
 		})

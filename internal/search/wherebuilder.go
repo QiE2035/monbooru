@@ -30,9 +30,10 @@ import (
 // ORDER BY. fav / source / source_type (ai) / folder / file_type
 // (mime/type) / file_size / collection / hash / duration /
 // origin (via) / sd-metadata-backed (name / prompt / model /
-// sampler / seed) all have their own selective column or partial
-// index so the planner picks fine on its own; pinning the sort
-// index there forces a 1 M-row scan that the seek would otherwise
+// sampler / seed) / comfyui-metadata-backed (comfyui) all
+// have their own selective column or partial index so the
+// planner picks fine on its own; pinning the sort index there
+// forces a 1 M-row scan that the seek would otherwise
 // short-circuit.
 // andDefaultVisible appends the default `i.is_missing = 0` predicate
 // unless the caller's expression already pinned an explicit missing:
@@ -685,6 +686,10 @@ type whereBuilder struct {
 	// similarSeeds caches one resolved seed per image id so repeated
 	// similar: terms against the same seed share the read.
 	similarSeeds map[int64]tags.OverlapSeed
+	// jqFilters collects jq expressions that need to be applied in
+	// the application layer. When non-empty, the executor must
+	// post-filter candidates through these jq queries.
+	jqFilters []string
 }
 
 // similaritySeed resolves and caches the shareable tag set for one seed
@@ -914,7 +919,11 @@ func (b *whereBuilder) buildExpr(expr Expr) string {
 		return "(" + left + " OR " + right + ")"
 
 	case NotExpr:
+		beforeJQ := len(b.jqFilters)
 		inner := b.buildExpr(e.Expr)
+		if inner == "1=1" && len(b.jqFilters) > beforeJQ {
+			return "1=1"
+		}
 		return "NOT (" + inner + ")"
 
 	case TagExpr:
@@ -1045,6 +1054,7 @@ var filterBuilders = map[string]func(*whereBuilder, FilterExpr) string{
 	"model":      (*whereBuilder).buildModelFilter,
 	"sampler":    (*whereBuilder).buildSamplerFilter,
 	"seed":       (*whereBuilder).buildSeedFilter,
+	"comfyui":    (*whereBuilder).buildComfyUIFilter,
 	"via":        (*whereBuilder).buildViaFilter,
 	"tagged":     (*whereBuilder).buildTaggedFilter,
 	"autotagged": (*whereBuilder).buildAutotaggedFilter,
@@ -1362,6 +1372,37 @@ func (b *whereBuilder) buildSeedFilter(e FilterExpr) string {
 	}
 	b.args = append(b.args, seed, seed)
 	return "(i.id IN (SELECT image_id FROM sd_metadata WHERE seed = ?) OR i.id IN (SELECT image_id FROM comfyui_metadata WHERE seed = ?))"
+}
+
+// buildComfyUIFilter does a substring match against the raw_workflow
+// column in comfyui_metadata. LIKE cannot use a partial index on
+// raw_workflow (there is none), so the IN-subquery scans the metadata
+// table once rather than probing per visible image row.
+func (b *whereBuilder) buildComfyUIFilter(e FilterExpr) string {
+	// jq mode: collect expression for application-layer filtering
+	if e.IsJQFilter {
+		if e.JQExpr == "" {
+			return "1=0"
+		}
+		b.jqFilters = append(b.jqFilters, e.JQExpr)
+		return "1=1" // placeholder, actual filtering happens in executor
+	}
+	if e.Val == "" {
+		return "1=0"
+	}
+	pat := "%" + db.EscapeLike(e.Val) + "%"
+	b.args = append(b.args, pat)
+	return `i.id IN (SELECT image_id FROM comfyui_metadata WHERE raw_workflow LIKE ? ESCAPE '\')`
+}
+
+// HasJQFilters returns true if any jq filters were collected.
+func (b *whereBuilder) HasJQFilters() bool {
+	return len(b.jqFilters) > 0
+}
+
+// JQFilters returns the collected jq expressions.
+func (b *whereBuilder) GetJQFilters() []string {
+	return b.jqFilters
 }
 
 // buildViaFilter: origin is operator-supplied free text (app name,
