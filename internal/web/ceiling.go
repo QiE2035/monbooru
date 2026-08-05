@@ -47,13 +47,13 @@ func resolveCeiling(r *http.Request, cx *galleryCtx) *Ceiling {
 func readRatingCookie(r *http.Request) string {
 	c, err := r.Cookie(ratingCeilingCookieName)
 	if err != nil {
-		return ""
+		return "general"
 	}
 	switch c.Value {
 	case "general", "sensitive", "questionable", "explicit":
 		return c.Value
 	}
-	return ""
+	return "general"
 }
 
 // writeRatingCookie sets or clears the cookie. level=explicit (or any
@@ -61,7 +61,7 @@ func readRatingCookie(r *http.Request) string {
 // "no ceiling".
 func writeRatingCookie(w http.ResponseWriter, level string) {
 	switch level {
-	case "general", "sensitive", "questionable":
+	case "general", "sensitive", "questionable", "explicit":
 		http.SetCookie(w, &http.Cookie{
 			Name:     ratingCeilingCookieName,
 			Value:    level,

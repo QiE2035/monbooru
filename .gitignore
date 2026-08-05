@@ -25,3 +25,6 @@ coverage.out
 .vscode/
 .trae/
 .idea/
+
+# Local tooling
+.kilo/
