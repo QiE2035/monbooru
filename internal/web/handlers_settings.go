@@ -118,9 +118,11 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	data["ScheduleStatus"] = s.ScheduleStatus()
 	data["Stats"] = s.gatherStats()
 	data["ExecutionProviders"] = executionProviderRows()
-	data["MonloaderPending"] = s.pairs.listPending()
+	data["MonloaderPending"] = s.pairs.listPendingByApp("monloader")
 	data["MonloaderPaired"] = s.pairedWith("monloader")
 	data["MonloaderPeerURL"] = s.monloaderAPIBase()
+	data["AllowRemote"] = s.cfg.Tagger.RemoteServer.AllowRemote
+	data["RemoteTaggerAdminPending"] = s.pairs.listPendingByApp("remote_tagger")
 	s.renderTemplate(w, "settings.html", data)
 }
 
@@ -342,6 +344,7 @@ func (s *Server) settingsTokenPrivilegesGet(w http.ResponseWriter, r *http.Reque
 		config.ScopeRead:   "read - all GET endpoints",
 		config.ScopeWrite:  "write - create and modify",
 		config.ScopeDelete: "delete - destructive actions",
+		config.ScopeTag:    "tag - run auto-tagging on remote server",
 	}
 	rows := make([]tokenScopeRow, 0, len(config.AllScopes))
 	for _, sc := range config.AllScopes {

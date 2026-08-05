@@ -284,7 +284,9 @@
       <p>Auto-tag this image. Pick which tagger to run.</p>
       <div class="field">
         <label style="display:block"><input type="radio" name="tagger_name" value="" checked> All enabled taggers</label>
-        {{range .EnabledTaggers}}<label style="display:block"><input type="radio" name="tagger_name" value="{{.Name}}"> {{.Name}}</label>{{end}}
+        {{range .EnabledTaggers}}<label style="display:block"><input type="radio" name="tagger_name" value="{{.Name}}"> {{if eq .Name "remote"}}Remote server{{else}}{{.Name}}{{end}}</label>{{end}}
+        <select name="remote_tagger_name" class="upload-wide-input" disabled
+                hx-get="/internal/remote-taggers" hx-trigger="load" hx-swap="innerHTML"></select>
       </div>
       <div class="dialog-actions">
         <button type="submit">Auto-tag</button>

@@ -519,6 +519,14 @@
           </div>
           {{template "partials/range_field.html" dict "Name" "parallel" "Label" "Parallel workers" "Min" 1 "Max" 16 "Step" 1 "Value" $cfg.Tagger.Parallel "Ticks" (list 1 2 4 8 12 16) "Hint" "Images tagged in parallel."}}
           {{template "partials/range_field.html" dict "Name" "idle_release_after_minutes" "Label" "Tagger RAM/VRAM idle release (minutes)" "Min" 0 "Max" 60 "Step" 1 "Value" $cfg.Tagger.IdleReleaseAfterMinutes "Ticks" (list 0 15 30 45 60) "Hint" "Use 0 to free it just after inference."}}
+          <div class="field">
+            <label>
+              <input type="checkbox" name="allow_remote"{{if $cfg.Tagger.RemoteServer.AllowRemote}} checked{{end}}>
+              Allow remote tagging requests
+            </label>
+            <span class="field-hint">When enabled, other monbooru instances can send images for tagging via the remote-tagger pairing protocol.</span>
+          </div>
+          {{template "partials/range_field.html" dict "Name" "queue_size" "Label" "Remote queue size (images)" "Min" 1 "Max" 64 "Step" 1 "Value" $cfg.Tagger.RemoteServer.QueueSize "Ticks" (list 1 16 32 64) "Hint" "How many images this A-side accepts before rejecting with 429; the B-side keeps its sliding window at this size."}}
         </div>
         <div class="settings-actions"><button type="submit">Save</button></div>
       </div>
@@ -612,6 +620,15 @@
       <div id="tagger-config-{{.Name}}-body">Loading...</div>
     </dialog>
     {{end}}{{end}}
+    <div class="settings-sub">
+      <h4>Remote Tagger</h4>
+      {{template "partials/remote_tagger_pairing.html" (dict "Paired" (and $cfg.Tagger.RemoteClient.URL $cfg.Tagger.RemoteClient.Token) "Pairing" false "PeerURL" $cfg.Tagger.RemoteClient.URL "PairError" "" "CSRFToken" $csrf)}}
+      {{if index . "AllowRemote"}}
+      <hr>
+      <h5>Admin – Incoming pairing requests</h5>
+      {{template "partials/remote_tagger_admin.html" (dict "Pending" (index . "RemoteTaggerAdminPending") "CSRFToken" $csrf)}}
+      {{end}}
+    </div>
     <dialog id="tagger-cmd-dialog">
       <p><strong id="tagger-cmd-name"></strong> - <span id="tagger-cmd-desc"></span></p>
       <p class="field-hint">Run one of the commands below on a host with internet access, then reload the Settings page.</p>

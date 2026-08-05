@@ -3,10 +3,12 @@
 package tagger
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -606,33 +608,50 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 			return
 		}
 		im := req.Images[idx]
-		if len(im.FramePaths) == 0 {
+		frameCount := max(len(im.FramePaths), len(im.FrameBytes))
+		if frameCount == 0 {
 			results[idx].Err = "no frames"
 			return
 		}
 		merged := map[TagKey]Scored{}
 		anyInferred := false
-		minHits := ResolveMinHits(req.MinHitFraction, len(im.FramePaths))
+		var firstFrameErr error
+		minHits := ResolveMinHits(req.MinHitFraction, frameCount)
 		for tIdx, lt := range loaded {
 			if ctx.Err() != nil {
 				return
 			}
-			perFrame := make([][]float32, 0, len(im.FramePaths))
-			for fIdx, fp := range im.FramePaths {
+			perFrame := make([][]float32, 0, frameCount)
+			for fi := 0; fi < frameCount; fi++ {
 				if ctx.Err() != nil {
 					return
 				}
 				if im.MangaProgress && req.OnProgress != nil {
-					msg := fmt.Sprintf("image %d: page %d/%d", im.ID, fIdx+1, len(im.FramePaths))
+					msg := fmt.Sprintf("image %d: page %d/%d", im.ID, fi+1, frameCount)
 					if len(loaded) > 1 {
 						msg = fmt.Sprintf("%s (tagger %d/%d)", msg, tIdx+1, len(loaded))
 					}
 					req.OnProgress(workerIdx, msg)
 				}
-				scores, err := inferImage(lt, fp)
+				var scores []float32
+				var err error
+				if fi < len(im.FrameBytes) && len(im.FrameBytes[fi]) > 0 {
+					scores, err = inferImageFromReader(lt, bytes.NewReader(im.FrameBytes[fi]))
+				} else if fi < len(im.FramePaths) {
+					scores, err = inferImage(lt, im.FramePaths[fi])
+				} else {
+					continue
+				}
 				if err != nil {
+					if firstFrameErr == nil {
+						firstFrameErr = err
+					}
+					frameDesc := "(memory)"
+					if fi < len(im.FramePaths) {
+						frameDesc = im.FramePaths[fi]
+					}
 					logx.Warnf("tagger: inference failed: image %d via %q frame %d/%d (%s): %v",
-						im.ID, lt.cfg.Name, fIdx+1, len(im.FramePaths), fp, err)
+						im.ID, lt.cfg.Name, fi+1, frameCount, frameDesc, err)
 					continue
 				}
 				anyInferred = true
@@ -655,9 +674,14 @@ func (b *inprocBackend) Run(ctx context.Context, req RunRequest) (RunResponse, e
 		}
 		// Every frame failed to decode or infer. Report an error rather
 		// than an empty map: the store loop reconciles an empty result by
-		// deleting the image's existing auto-tags.
+		// deleting the image's existing auto-tags. The first frame's
+		// original error is appended so the peer (and logs) see the real
+		// cause, e.g. "webp: invalid format" for a corrupt upload.
 		if !anyInferred {
 			results[idx].Err = "all frames failed"
+			if firstFrameErr != nil {
+				results[idx].Err = fmt.Sprintf("all frames failed: %v", firstFrameErr)
+			}
 			return
 		}
 		results[idx].Tags = merged
@@ -708,8 +732,11 @@ func inferImage(lt loadedTagger, path string) ([]float32, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
+	return inferImageFromReader(lt, f)
+}
 
-	img, err := gallery.DecodeImageWithCap(f)
+func inferImageFromReader(lt loadedTagger, r io.Reader) ([]float32, error) {
+	img, err := gallery.DecodeImageWithCap(r)
 	if err != nil {
 		return nil, err
 	}

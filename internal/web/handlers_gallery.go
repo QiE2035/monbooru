@@ -2,6 +2,7 @@ package web
 
 import (
 	"cmp"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"net/http"
@@ -67,14 +68,17 @@ type galleryData struct {
 	// while the operator is still triaging the inbox.
 	InboxUploadActive bool
 	AcceptFileTypes   string // upload-zone accept= attribute; mirrors the value /upload uses
-	// SimilarityPercent keys the page's own ids to their score against
-	// the query's similar: seed. Nil for every other query; a missing
-	// id scored nothing and gets no badge.
 	SimilarityPercent map[int64]int
 	// SortSelectOOB marks the shared sort-select partial as an
 	// out-of-band swap, which the HTMX fragment needs and the full-page
 	// render must not carry.
 	SortSelectOOB bool
+	// TaggerNames lists distinct auto-tagger names from image_tags,
+	// used by the batch strip "Specific auto-tagger" dropdown. Unlike
+	// EnabledTaggers (which shows config-level taggers), this shows
+	// tagger names that actually exist on stored tags, including model
+	// names applied by a remote server.
+	TaggerNames []string
 }
 
 // inboxCluster describes one batch of time-adjacent inbox entries
@@ -321,6 +325,7 @@ func (s *Server) galleryHandler(w http.ResponseWriter, r *http.Request) {
 		SourceLabelCounts: sb.SourceLabels,
 		SavedSearches:     sb.Saved,
 		EnabledTaggers:    tagger.EnabledTaggersForGallery(s.cfg, s.activeName),
+		TaggerNames:       s.loadTaggerNames(),
 		ActiveTagTerms:    computeActiveTagTerms(queryStr),
 	}
 	// A similar: query ranks by a number the grid otherwise never shows;
@@ -803,4 +808,22 @@ func buildInboxCluster(rows []models.Image, queryStr string) *inboxCluster {
 		RangeLabel: rangeLabel,
 		RangeLink:  "/?" + url.Values{"q": []string{clusterQ}}.Encode(),
 	}
+}
+
+func (s *Server) loadTaggerNames() []string {
+	rows, err := s.db().Read.QueryContext(context.Background(),
+		`SELECT DISTINCT tagger_name FROM image_tags WHERE is_auto = 1 AND tagger_name != '' ORDER BY tagger_name`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }

@@ -17,11 +17,16 @@ func CheckProviderAvailable(_ string) error {
 	return errors.New("auto-tagger disabled (built without -tags tagger)")
 }
 
-func IsAvailable(_ *config.Config) bool { return false }
+func IsAvailable(cfg *config.Config) bool {
+	return cfg.Tagger.RemoteClient.URL != "" && cfg.Tagger.RemoteClient.Token != ""
+}
 
 func buildSupportsInference() bool { return false }
 
-func UnavailableReason(_ *config.Config) string {
+func UnavailableReason(cfg *config.Config) string {
+	if IsAvailable(cfg) {
+		return ""
+	}
 	return "inference disabled (built without -tags tagger)"
 }
 
@@ -37,7 +42,11 @@ func AvailableTaggers(cfg *config.Config) []TaggerStatus {
 }
 
 // RunWithTaggers is the no-op stub matching the tagger build signature.
-func RunWithTaggers(_ context.Context, _ *db.DB, _ *config.Config, _ []int64, _ []TaggerStatus, _ *jobs.Manager, _ string, _ string) (int, error) {
+// When a remote tagger is configured, it delegates to runRemoteTaggers.
+func RunWithTaggers(ctx context.Context, database *db.DB, cfg *config.Config, ids []int64, taggers []TaggerStatus, mgr *jobs.Manager, provider string, mangaCacheDir string) (int, error) {
+	if cfg.Tagger.RemoteClient.URL != "" && cfg.Tagger.RemoteClient.Token != "" {
+		return runRemoteTaggers(ctx, database, cfg, ids, taggers, mgr, provider, mangaCacheDir)
+	}
 	return 0, nil
 }
 
@@ -50,3 +59,27 @@ func ReleaseAll() {}
 
 // Status reports "not loaded" since the non-tagger build never caches.
 func Status() CacheStatus { return CacheStatus{} }
+
+// SubmitRemoteImage is a no-op stub on the non-tagger build; the noop
+// build never runs a local backend, it only consumes a remote one.
+func SubmitRemoteImage(_ context.Context, _ RemoteRunParams, _ BackendImageRequest, _ string) (string, error) {
+	return "", errors.New("not built with -tags tagger, inference unavailable")
+}
+
+// RemoteQueueStatus is a no-op stub on the non-tagger build.
+func RemoteQueueStatus() (int, int, int) { return 0, 0, 0 }
+
+// RemoteCancelJobs is a no-op stub on the non-tagger build; there is
+// no local queue to cancel.
+func RemoteCancelJobs(_ string, _ []string, _ bool) (int, error) { return 0, nil }
+
+// RemoteListJobs is a no-op stub on the non-tagger build.
+func RemoteListJobs(_ string) []RemoteJobInfo { return nil }
+
+// RemoteDrainResults is a no-op stub on the non-tagger build.
+func RemoteDrainResults(_ string, _ int64, _ time.Duration) (int64, []RemoteDrainedResult, error) {
+	return 0, nil, nil
+}
+
+// SetRemoteQueueCapacity is a no-op stub on the non-tagger build.
+func SetRemoteQueueCapacity(_ int) {}

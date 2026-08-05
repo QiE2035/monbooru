@@ -149,9 +149,29 @@ type TaggerConfig struct {
 	// IdleReleaseAfterMinutes is how long the cached ORT session may sit
 	// idle before the reclaim loop tears it down. 0 disables caching, so
 	// every run loads the model fresh. Default 15.
-	IdleReleaseAfterMinutes int                  `toml:"idle_release_after_minutes"`
-	Aggregation             TaggerAggregationCfg `toml:"aggregation"`
-	Taggers                 []TaggerInstance     `toml:"taggers"`
+	IdleReleaseAfterMinutes int                      `toml:"idle_release_after_minutes"`
+	Aggregation             TaggerAggregationCfg     `toml:"aggregation"`
+	Taggers                 []TaggerInstance         `toml:"taggers"`
+	RemoteServer            RemoteTaggerServerConfig `toml:"remote_server,omitempty"`
+	RemoteClient            RemoteTaggerClientConfig `toml:"remote_client,omitempty"`
+}
+
+// RemoteTaggerServerConfig controls whether this instance accepts remote
+// auto-tagging requests from other monbooru instances.
+type RemoteTaggerServerConfig struct {
+	AllowRemote bool `toml:"allow_remote"`
+	// QueueSize is the A-side capacity in images (queued + in-flight)
+	// accepted before submissions are rejected with 429. The B-side
+	// keeps its sliding window at this size. 0 is treated as the
+	// default 16; values are clamped to [1, 64].
+	QueueSize int `toml:"queue_size"`
+}
+
+// RemoteTaggerClientConfig holds the credentials to send tagging jobs to
+// a remote monbooru instance that has a GPU and a tagger.
+type RemoteTaggerClientConfig struct {
+	URL   string `toml:"url,omitempty"`
+	Token string `toml:"token,omitempty"`
 }
 
 // ValidExecutionProviders lists the ONNX Runtime execution providers the
@@ -237,10 +257,11 @@ const (
 	ScopeRead   = "read"
 	ScopeWrite  = "write"
 	ScopeDelete = "delete"
+	ScopeTag    = "tag"
 )
 
 // AllScopes is every scope a monbooru token can hold.
-var AllScopes = []string{ScopeRead, ScopeWrite, ScopeDelete}
+var AllScopes = []string{ScopeRead, ScopeWrite, ScopeDelete, ScopeTag}
 
 // Token is a named API credential. Only the secret's hash is stored; the
 // plaintext is shown once at creation. Paired is set by the monloader pairing
@@ -405,6 +426,7 @@ func Default() *Config {
 			Parallel:                4,
 			IdleReleaseAfterMinutes: 15,
 			Aggregation:             TaggerAggregationCfg{MinHitFraction: 0.05},
+			RemoteServer:            RemoteTaggerServerConfig{QueueSize: 16},
 		},
 		Auth: AuthConfig{
 			SessionLifetimeDays: defaultSessionLifetimeDays,
@@ -689,6 +711,16 @@ func validate(cfg *Config) error {
 		cfg.Tagger.ExecutionProvider = defaultExecutionProvider
 	} else if !IsValidExecutionProvider(cfg.Tagger.ExecutionProvider) {
 		return fmt.Errorf("tagger.execution_provider %q must be one of %v", cfg.Tagger.ExecutionProvider, ValidExecutionProviders)
+	}
+	// Remote queue capacity: 0 means "use the default", and a
+	// hand-edited absurd value is clamped rather than surfaced as a
+	// startup error for a user-fixable typo.
+	if cfg.Tagger.RemoteServer.QueueSize == 0 {
+		cfg.Tagger.RemoteServer.QueueSize = 16
+	} else if cfg.Tagger.RemoteServer.QueueSize < 1 {
+		cfg.Tagger.RemoteServer.QueueSize = 1
+	} else if cfg.Tagger.RemoteServer.QueueSize > 64 {
+		cfg.Tagger.RemoteServer.QueueSize = 64
 	}
 	// PageSize must be positive: the API path divides by it
 	// (offset/limit) and would panic on zero. Snap to the documented

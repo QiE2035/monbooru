@@ -99,6 +99,19 @@ func (ps *pairStore) listPending() []pairReq {
 	return out
 }
 
+func (ps *pairStore) listPendingByApp(app string) []pairReq {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	ps.sweepLocked()
+	var out []pairReq
+	for _, r := range ps.m {
+		if r.State == pairPending && r.App == app {
+			out = append(out, *r)
+		}
+	}
+	return out
+}
+
 func (ps *pairStore) get(id string) (pairReq, bool) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -280,7 +293,11 @@ func (s *Server) mintPairedToken(req pairReq) (string, error) {
 	tok.PeerURL = monloaderCallbackURL(req.URL, req.Source)
 	if err := s.withConfig(func(c *config.Config) error {
 		c.Auth.Tokens = append(c.Auth.Tokens, tok)
-		c.Monloader.APIToken = req.PeerToken
+		switch req.App {
+		case "monloader":
+			c.Monloader.APIToken = req.PeerToken
+		case "remote_tagger":
+		}
 		return nil
 	}); err != nil {
 		return "", err
@@ -291,7 +308,7 @@ func (s *Server) mintPairedToken(req pairReq) (string, error) {
 
 func (s *Server) pairViewData(r *http.Request) map[string]any {
 	return map[string]any{
-		"Pending":   s.pairs.listPending(),
+		"Pending":   s.pairs.listPendingByApp("monloader"),
 		"Paired":    s.pairedWith("monloader"),
 		"PeerURL":   s.monloaderAPIBase(),
 		"CSRFToken": s.csrfToken(sessionFromContext(r.Context())),
@@ -321,20 +338,24 @@ func (s *Server) monloaderPairApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	// Probe the url monbooru will actually call (the configured override, else
 	// the address the request came from) and refuse the pairing if unreachable.
-	s.cfgMu.RLock()
-	base := strings.TrimSpace(s.cfg.Monloader.APIURL)
-	s.cfgMu.RUnlock()
-	base = cmp.Or(base, monloaderCallbackURL(req.URL, req.Source))
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	if !s.monloaderReachable(ctx, base) {
-		msg := "no monloader api url to reach; pairing not completed."
-		if base != "" {
-			msg = "monloader is unreachable at " + base + "; pairing not completed. Check the api url and that monloader is running."
+	// remote_tagger pairing skips this probe since the client initiates the
+	// connection.
+	if req.App != "remote_tagger" {
+		s.cfgMu.RLock()
+		base := strings.TrimSpace(s.cfg.Monloader.APIURL)
+		s.cfgMu.RUnlock()
+		base = cmp.Or(base, monloaderCallbackURL(req.URL, req.Source))
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		if !s.monloaderReachable(ctx, base) {
+			msg := "no monloader api url to reach; pairing not completed."
+			if base != "" {
+				msg = "monloader is unreachable at " + base + "; pairing not completed. Check the api url and that monloader is running."
+			}
+			s.renderTemplate(w, "partials/monloader_pairing.html", s.pairViewData(r))
+			writeFlashOOB(w, "flash-monloader", "warn", msg)
+			return
 		}
-		s.renderTemplate(w, "partials/monloader_pairing.html", s.pairViewData(r))
-		writeFlashOOB(w, "flash-monloader", "warn", msg)
-		return
 	}
 	s.pairs.setState(id, pairApproved)
 	logx.Infof("pairing: approved request %s from %s", id, clientIP(r))
@@ -436,7 +457,13 @@ func (s *Server) teardownMonloaderPairing(r *http.Request) error {
 func (s *Server) removePairing(app string) error {
 	return s.withConfig(func(c *config.Config) error {
 		c.Auth.Tokens = slices.DeleteFunc(c.Auth.Tokens, func(t config.Token) bool { return t.Paired == app })
-		c.Monloader.APIToken = ""
+		switch app {
+		case "monloader":
+			c.Monloader.APIToken = ""
+		case "remote_tagger":
+			c.Tagger.RemoteClient.URL = ""
+			c.Tagger.RemoteClient.Token = ""
+		}
 		return nil
 	})
 }
