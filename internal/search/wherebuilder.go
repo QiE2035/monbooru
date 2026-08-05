@@ -1419,22 +1419,42 @@ func (b *whereBuilder) buildViaFilter(e FilterExpr) string {
 }
 
 func (b *whereBuilder) buildTaggedFilter(e FilterExpr) string {
+	if e.Val == "" {
+		return b.imageTagsPredicate("", false)
+	}
+	if strings.ToLower(e.Val) == "user" {
+		return b.imageTagsPredicate("(it.tagger_name IS NULL OR it.tagger_name = '')", false)
+	}
 	return b.boolTagsPredicate("", e.Val)
 }
 
 func (b *whereBuilder) buildAutotaggedFilter(e FilterExpr) string {
+	if e.Val == "" {
+		return b.imageTagsPredicate("it.is_auto = 1", false)
+	}
 	return b.boolTagsPredicate("it.is_auto = 1", e.Val)
 }
 
 // boolTagsPredicate answers a has-any-such-tag filter: true matches
 // images carrying a row the extra predicate selects, false their
-// complement.
+// complement. A non-boolean value is a tagger-name filter matching
+// rows tagged by that tagger.
 func (b *whereBuilder) boolTagsPredicate(extra, val string) string {
 	v, ok := parseBoolVal(val)
 	if !ok {
-		return "1=0"
+		b.args = append(b.args, val)
+		return b.imageTagsPredicate(b.andExtra(extra, "it.tagger_name = ?"), false)
 	}
 	return b.imageTagsPredicate(extra, !v)
+}
+
+// andExtra joins a tagger-name condition onto the base image_tags
+// predicate, dropping the AND when the base is empty.
+func (b *whereBuilder) andExtra(extra, cond string) string {
+	if extra == "" {
+		return cond
+	}
+	return extra + " AND " + cond
 }
 
 // buildStaleFilter matches images carrying a source-dropped (stale) tag.
