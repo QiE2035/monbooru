@@ -614,6 +614,12 @@ func Bootstrap(db *DB) error {
 	// EXISTS probe per (tag, label), the filter off a covering lookup.
 	b.exec("create idx_image_tag_sources_source",
 		`CREATE INDEX IF NOT EXISTS idx_image_tag_sources_source ON image_tag_sources(source, tag_id)`)
+	// The tagged: / autotagged: autocomplete matches source with
+	// COLLATE NOCASE, which the BINARY index above cannot bound; this
+	// NOCASE companion keeps the per-keystroke DISTINCT prefix seek
+	// off the full ledger scan.
+	b.exec("create idx_image_tag_sources_source_nocase",
+		`CREATE INDEX IF NOT EXISTS idx_image_tag_sources_source_nocase ON image_tag_sources(source COLLATE NOCASE)`)
 	// Removing a tag from an image drops its ledger rows. A trigger
 	// instead of per-call cleanup because image_tags rows die through
 	// many shapes (single remove, implied sweep, batch strip, tag

@@ -190,58 +190,97 @@ func (s *Server) queryDistinctLabels(table, col, prefix string, limit int, logLa
 	return out
 }
 
-// queryDistinctLabelsWhere is like queryDistinctLabels but accepts an
-// extra WHERE condition (without the WHERE keyword) that is AND-ed into
-// the filter. Used when the column alone is not enough (e.g. tagger_name
-// on is_auto = 1 rows only).
-func (s *Server) queryDistinctLabelsWhere(table, col, extraWhere, prefix string, limit int, logLabel string) []string {
+// queryTaggerLabels drives the `tagged:` autocomplete in the search-bar
+// `system:` level-2 dropdown. Returns every distinct source from the
+// image_tag_sources ledger - one row per source that applied or
+// re-confirmed a tag, where image_tags.tagger_name only keeps the
+// first - so the operator can filter by any tagger/source label,
+// including the reserved 'user' row anonymous adds record. COLLATE
+// NOCASE keeps the prefix range in step with the case-insensitive
+// `tagged:` filter, riding idx_image_tag_sources_source_nocase.
+func (s *Server) queryTaggerLabels(prefix string, limit int) []string {
 	var (
 		rows *sql.Rows
 		err  error
 	)
 	if prefix == "" {
 		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT `+col+` FROM `+table+` WHERE `+col+` != '' AND `+extraWhere+`
-			 ORDER BY `+col+` LIMIT ?`, limit)
+			`SELECT DISTINCT source FROM image_tag_sources WHERE source != ''
+			 ORDER BY source COLLATE NOCASE LIMIT ?`, limit)
 	} else {
 		lo, hi := nocasePrefixRange(prefix)
 		rows, err = s.db().Read.Query(
-			`SELECT DISTINCT `+col+` FROM `+table+`
-			 WHERE `+col+` >= ? AND `+col+` < ? AND `+extraWhere+`
-			 ORDER BY `+col+` LIMIT ?`, lo, hi, limit)
+			`SELECT DISTINCT source FROM image_tag_sources
+			 WHERE source >= ? COLLATE NOCASE AND source < ? COLLATE NOCASE
+			 ORDER BY source COLLATE NOCASE LIMIT ?`, lo, hi, limit)
 	}
 	if err != nil {
-		logx.Warnf("%s suggest: %v", logLabel, err)
+		logx.Warnf("tagger suggest: %v", err)
 		return nil
 	}
 	defer func() { _ = rows.Close() }()
-	var out []string
+	out := make([]string, 0, limit)
 	for rows.Next() {
 		var sv string
 		if err := rows.Scan(&sv); err != nil {
 			continue
 		}
+		if sv == "" {
+			continue
+		}
 		out = append(out, sv)
 	}
 	if err := rows.Err(); err != nil {
-		logx.Warnf("%s suggest: %v", logLabel, err)
+		logx.Warnf("tagger suggest: %v", err)
 	}
 	return out
 }
 
-// queryTaggerLabels drives the `tagged:` autocomplete in the search-bar
-// `system:` level-2 dropdown. Returns every distinct tagger_name from
-// the image_tags table (both auto and manual-sourced entries) so the
-// user can filter by any tagger/source label.
-func (s *Server) queryTaggerLabels(prefix string, limit int) []string {
-	return s.queryDistinctLabels("image_tags", "tagger_name", prefix, limit, "tagger")
-}
-
-// queryAutotaggerLabels drives the `autotagged:` autocomplete. It only
-// returns tagger_name values that appear on auto-tag rows (is_auto = 1),
-// riding the idx_image_tags_auto_tagger partial index for efficiency.
+// queryAutotaggerLabels drives the `autotagged:` autocomplete. Unlike
+// queryTaggerLabels it narrows to sources recorded on auto-tag rows
+// (is_auto = 1), joining the ledger to image_tags so a source that
+// only re-confirmed a tag scoped to another tagger's row still shows -
+// the same universe the `autotagged:<name>` filter answers.
 func (s *Server) queryAutotaggerLabels(prefix string, limit int) []string {
-	return s.queryDistinctLabelsWhere("image_tags", "tagger_name", "is_auto = 1", prefix, limit, "autotagger")
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if prefix == "" {
+		rows, err = s.db().Read.Query(
+			`SELECT DISTINCT s.source FROM image_tag_sources s
+			 JOIN image_tags it ON it.image_id = s.image_id AND it.tag_id = s.tag_id
+			 WHERE s.source != '' AND it.is_auto = 1
+			 ORDER BY s.source COLLATE NOCASE LIMIT ?`, limit)
+	} else {
+		lo, hi := nocasePrefixRange(prefix)
+		rows, err = s.db().Read.Query(
+			`SELECT DISTINCT s.source FROM image_tag_sources s
+			 JOIN image_tags it ON it.image_id = s.image_id AND it.tag_id = s.tag_id
+			 WHERE s.source >= ? COLLATE NOCASE AND s.source < ? COLLATE NOCASE
+			   AND it.is_auto = 1
+			 ORDER BY s.source COLLATE NOCASE LIMIT ?`, lo, hi, limit)
+	}
+	if err != nil {
+		logx.Warnf("autotagger suggest: %v", err)
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]string, 0, limit)
+	for rows.Next() {
+		var sv string
+		if err := rows.Scan(&sv); err != nil {
+			continue
+		}
+		if sv == "" {
+			continue
+		}
+		out = append(out, sv)
+	}
+	if err := rows.Err(); err != nil {
+		logx.Warnf("autotagger suggest: %v", err)
+	}
+	return out
 }
 
 // querySourceLabels drives the `source:` autocomplete in the search-bar
@@ -661,12 +700,23 @@ func (s *Server) systemSuggestLevel2(key, valPrefix string) []suggestItem {
 			quotedSDLabelRows("source", s.querySourceLabels(valPrefix, 10))...)
 	}
 	// tagged: / autotagged: take boolean shortcuts (true/false) or a
-	// tagger_name from image_tags. tagger names are short unquoted
-	// identifiers, returned bare like the expansionRows entries.
+	// source label from the image_tag_sources ledger. tagger names are
+	// short unquoted identifiers, returned bare like the expansionRows
+	// entries; the ledger's reserved 'user' source is folded into the
+	// matching expansion row by the seen set.
 	if key == "tagged" {
 		rows := expansionRows(key, valPrefix)
+		seen := make(map[string]bool, len(rows))
+		for _, r := range rows {
+			seen[r.Name] = true
+		}
 		for _, lbl := range s.queryTaggerLabels(valPrefix, 10) {
-			rows = append(rows, suggestItem{Name: key + ":" + lbl})
+			name := key + ":" + lbl
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			rows = append(rows, suggestItem{Name: name})
 		}
 		return rows
 	}

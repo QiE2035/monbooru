@@ -1379,12 +1379,14 @@ func (b *whereBuilder) buildViaFilter(e FilterExpr) string {
 	return "i.origin = ? COLLATE NOCASE"
 }
 
+// buildTaggedFilter: bare `tagged:` and the booleans keep the
+// has-any-tag image_tags shape (implied rows count, as they should
+// for a tag-presence test); a name value - the reserved 'user'
+// included - is a source filter answered by the provenance ledger,
+// because image_tags.tagger_name only keeps the first applier.
 func (b *whereBuilder) buildTaggedFilter(e FilterExpr) string {
 	if e.Val == "" {
 		return b.imageTagsPredicate("", false)
-	}
-	if strings.ToLower(e.Val) == "user" {
-		return b.imageTagsPredicate("(it.tagger_name IS NULL OR it.tagger_name = '')", false)
 	}
 	return b.boolTagsPredicate("", e.Val)
 }
@@ -1398,15 +1400,35 @@ func (b *whereBuilder) buildAutotaggedFilter(e FilterExpr) string {
 
 // boolTagsPredicate answers a has-any-such-tag filter: true matches
 // images carrying a row the extra predicate selects, false their
-// complement. A non-boolean value is a tagger-name filter matching
-// rows tagged by that tagger.
+// complement. A non-boolean value names a tagger or source and is
+// answered by the provenance ledger; 'user' is the reserved ledger
+// source anonymous adds record.
 func (b *whereBuilder) boolTagsPredicate(extra, val string) string {
 	v, ok := parseBoolVal(val)
 	if !ok {
 		b.args = append(b.args, val)
-		return b.imageTagsPredicate(b.andExtra(extra, "it.tagger_name = ?"), false)
+		return b.sourceLedgerPredicate(extra)
 	}
 	return b.imageTagsPredicate(extra, !v)
+}
+
+// sourceLedgerPredicate answers a has-a-tag-from-source filter via the
+// image_tag_sources ledger, which holds one row per source that
+// applied or re-confirmed the tag - image_tags.tagger_name only keeps
+// the first, so a tag applied by danbooru and re-confirmed by ptr
+// would otherwise hide from tagged:ptr. Implied fan-out rows never
+// record a source, so tagged:user can no longer match them either.
+// NOCASE keeps the match in step with the case-insensitive
+// autocomplete. extra constrains the image_tags side (autotagged:
+// carries it.is_auto = 1, so a source that only confirmed a manual
+// row still answers tagged: but never autotagged:).
+func (b *whereBuilder) sourceLedgerPredicate(extra string) string {
+	if extra == "" {
+		return b.imageIDExists("image_tag_sources s", "s", "s.source = ? COLLATE NOCASE", false)
+	}
+	return b.imageIDExists(
+		"image_tag_sources s JOIN image_tags it ON it.image_id = s.image_id AND it.tag_id = s.tag_id",
+		"s", extra+" AND s.source = ? COLLATE NOCASE", false)
 }
 
 // buildLookupFilter matches on the scheduled hash lookup's per-image state.
@@ -1438,15 +1460,6 @@ func (b *whereBuilder) buildLookupFilter(e FilterExpr) string {
 		return "(i.scheduled_lookup = 0 OR i.scheduled_lookup_ptr = 0)"
 	}
 	return "1=0"
-}
-
-// andExtra joins a tagger-name condition onto the base image_tags
-// predicate, dropping the AND when the base is empty.
-func (b *whereBuilder) andExtra(extra, cond string) string {
-	if extra == "" {
-		return cond
-	}
-	return extra + " AND " + cond
 }
 
 // buildStaleFilter matches images carrying a source-dropped (stale) tag.
